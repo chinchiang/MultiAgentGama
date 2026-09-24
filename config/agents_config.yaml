@@ -1,0 +1,87 @@
+# VibeHarness-MAS Agent Configuration
+# Supports multi-model de-biasing by mapping distinct LLMs to each agent
+
+global:
+  execution_mode: "hybrid"  # "live" (calls APIs), "mock" (offline/dry-run for testing), or "hybrid"
+  timeout_seconds: 60
+  max_retries: 2
+  sandbox_provider: "local_subprocess" # Options: "local_subprocess", "docker", "e2b"
+
+models:
+  # Provider definitions with environment variable fallbacks
+  claude:
+    model: "claude-3-7-sonnet-20250219"
+    api_key_env: "ANTHROPIC_API_KEY"
+    fallback_model: "claude-3-5-sonnet-20241022"
+    provider: "anthropic"
+
+  nemotron:
+    model: "nvidia/nemotron-4-340b-instruct"
+    api_key_env: "NVIDIA_API_KEY"
+    api_base: "https://integrate.api.nvidia.com/v1"
+    fallback_model: "meta-llama/llama-3.3-70b-instruct"
+    provider: "nvidia"
+
+  chatgpt:
+    model: "gpt-4o"
+    api_key_env: "OPENAI_API_KEY"
+    fallback_model: "gpt-4o-mini"
+    provider: "openai"
+
+agents:
+  # 0. Commander Harness (Orchestrator)
+  commander:
+    name: "Commander Harness"
+    model_alias: "claude"
+    temperature: 0.1
+    role: "System Orchestrator, Quality Gate Arbiter, Workflow Commander"
+
+  # 1. White-Box Agents (Multi-Model Ensemble to eliminate bias)
+  whitebox_reviewer_claude:
+    name: "Logic & State Reviewer (Claude)"
+    model_alias: "claude"
+    temperature: 0.2
+    focus: "Deep logical edge cases, unhandled exception states, state inconsistencies, hidden null-pointer/type bugs"
+
+  whitebox_reviewer_nemotron:
+    name: "Safety & Defensive Reviewer (Nemotron)"
+    model_alias: "nemotron"
+    temperature: 0.1
+    focus: "Input sanitization, defensive guards, resource exhaustion, unsafe memory/buffer/concurrency"
+
+  whitebox_reviewer_chatgpt:
+    name: "Specification & Contract Reviewer (ChatGPT)"
+    model_alias: "chatgpt"
+    temperature: 0.2
+    focus: "API signature compliance, business specification adherence, contract violations, standard test coverage"
+
+  whitebox_debater:
+    name: "Multi-Model Debate & Arbiter Agent"
+    model_alias: "claude"
+    temperature: 0.1
+    role: "Synthesizes multi-model reviews, resolves disputes, eliminates hallucinations and false positives"
+
+  whitebox_test_generator:
+    name: "Property & Unit Test Generator"
+    model_alias: "chatgpt"
+    temperature: 0.3
+    role: "Generates executable Pytest/Hypothesis test suites targeting identified blindspots"
+
+  # 2. Black-Box Agents (Threat-Model Driven)
+  blackbox_threat_modeler:
+    name: "STRIDE Threat Modeler Agent"
+    model_alias: "claude"
+    temperature: 0.2
+    role: "Extracts trust boundaries, assets, and builds STRIDE & OWASP risk matrix"
+
+  blackbox_test_synthesizer:
+    name: "Security Scenario & Exploit Test Generator"
+    model_alias: "chatgpt"
+    temperature: 0.2
+    role: "Translates threat scenarios into automated black-box tests (BOLA, Injection, Fuzzing, Rate-limit)"
+
+  blackbox_fuzzer:
+    name: "Dynamic Fuzzing & DAST Runner Agent"
+    model_alias: "nemotron"
+    temperature: 0.1
+    role: "Executes black-box attack cases, validates security violations, and captures minimal reproduction PoCs"
