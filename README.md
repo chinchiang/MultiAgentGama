@@ -1,6 +1,6 @@
 # 🛡️ VibeHarness-MAS: Multi-Agent Testing Harness for Vibe Coding
 
-> **先白箱（異構模型交叉評議與突變驗證）後黑箱（STRIDE/OWASP 威脅建模驅動動態穿透）的 AI 軟體品質保證工具包。**
+> **先白箱（異構模型交叉評議 + 可執行測試驗證）後黑箱（STRIDE/OWASP 威脅建模驅動的攻擊測試）的 AI 軟體品質保證工具包。**
 
 針對當前 **Vibe Coding（自然語言提示驅動編程）** 容易產生「表面看似可行（Happy Path 通過），內部缺乏防禦邊界、存在 BOLA/IDOR 與未捕獲異常」的特點設計。
 
@@ -21,14 +21,14 @@
       │ • Claude: 深度邏輯與狀態     │                   │ • 資產邊界與數據流解析     │
       │ • Nemotron: 防禦護欄與記憶體 │                   │ • STRIDE 矩陣與 OWASP Top 10│
       │ • ChatGPT: API規格與合約    │                   │ • 威脅轉化為自動化攻擊腳本  │
-      │ • 仲裁 Agent: 消除模型幻覺  │                   │ • 動態 DAST / 邊界 Fuzzing  │
+      │ • 仲裁 Agent: 過濾模型誤報  │                   │ • 執行攻擊測試驗證防禦      │
       └──────────────┬──────────────┘                   └──────────────┬──────────────┘
                      │                                                 │
                      └────────────────────────┬────────────────────────┘
                                               ▼
                                ┌─────────────────────────────┐
-                               │     安全隔離沙盒 (Sandbox)   │
-                               │  (Pytest / Process Isolation│
+                               │  本機子程序沙盒 (Sandbox)    │
+                               │  (Pytest / 暫存目錄 / 逾時)  │
                                └──────────────┬──────────────┘
                                               ▼
                                ┌─────────────────────────────┐
@@ -43,12 +43,25 @@
 
 1. **AI Harness 總指揮官**：掌控全域狀態機，自動依序調度白箱與黑箱各子 Agent，並執行最後的品質閘門（Quality Gate）仲裁。
 2. **多模型異構消除偏差（De-biasing）**：白箱審查階段可平行指派至不同權重體系的 LLM：
-   - **Claude 3.7**：專精複雜邊界條件、非空指針假設與狀態機漏洞。
+   - **Claude**：專精複雜邊界條件、非空指針假設與狀態機漏洞。
    - **NVIDIA Nemotron**：專精輸入清洗、資源消耗上限（DoS 防禦）與記憶體安全護欄。
-   - **ChatGPT (GPT-4o)**：專精 API 協定契約遵守、規範一致性與通用測試案例合成。
-   - **Arbiter Debater**：多 Agent 對抗評議，計算共識率（Consensus Ratio），剔除個別模型的誤報與幻覺。
+   - **ChatGPT**：專精 API 協定契約遵守、規範一致性與通用測試案例合成。
+   - **Arbiter Debater**：由仲裁模型評議三方發現，剔除它明確判定為誤報的項目，並回報共識率。僅在真實模型回應有效時套用；模擬或無效回應時不過濾任何發現，報告標示為 N/A。
 3. **黑箱強制威脅建模先行（Threat-Modeling First）**：拒絕盲目暴力測試，先依據 STRIDE（S 仿冒、T 竄改、R 否認、I 資訊洩漏、D 拒絕服務、E 越權）與 OWASP API Security Top 10 建立攻擊矩陣，再針對性生成攻擊測試。
-4. **安全隔離沙盒執行**：所有自動生成之測試與 Payload 皆在受保護的隔離目錄與子程序中執行，防止未受信任之程式碼逃逸。
+4. **以執行結果為準的品質閘門**：模型發現與威脅僅是假設；只有實際執行的測試能讓閘門失敗或封鎖。無斷言的空測試、無效的模型輸出（非 JSON／缺欄位，記錄為 `invalid`）、未測試的威脅都列為證據缺口。
+5. **本機子程序沙盒**：生成的測試在暫存目錄中以子程序執行，環境變數採白名單（不傳入 API 金鑰），每批與每個測試都有逾時，逾時會終止整個程序樹。
+
+> ⚠️ **沙盒不是安全邊界。** `local_subprocess` 以你的使用者權限執行模型生成的程式碼，可讀寫檔案與存取網路。請只對你信任的目標、在可拋棄的環境（VM／容器）中使用 live 模式。
+
+### 🧭 尚未實作（規劃中）
+
+| 功能 | 現況 |
+| :--- | :--- |
+| 突變測試（Mutation Testing） | 未實作；目前以行覆蓋率（pytest-cov）衡量白箱測試 |
+| 動態 DAST／Fuzzing 代理 | 未實作；黑箱測試由威脅模型逐項生成 pytest 攻擊腳本 |
+| Hypothesis 性質測試 | 未內建；模型可自行生成，但需目標環境已安裝 `hypothesis` |
+| `docker`／`e2b` 沙盒 | 未實作；`sandbox_provider` 僅支援 `local_subprocess`，其他值會直接報錯 |
+| JS/TS 測試執行 | 僅做啟發式符號擷取供審查與威脅建模；生成與執行的測試只支援 Python |
 
 ---
 
@@ -63,7 +76,9 @@ MultiAgentGama/
 │   ├── harness.py               # 指揮官狀態機 (Commander Orchestrator)
 │   ├── llm_gateway.py           # 統一 LiteLLM 閘道與模擬回退引擎
 │   ├── models.py                # Pydantic 數據模型
-│   └── sandbox.py               # 隔離執行沙盒
+│   ├── codecheck.py             # 生成測試的靜態檢查（需有 test_ 函式與斷言）
+│   ├── codecontext.py           # 提供給模型的原始碼與 import 指引
+│   └── sandbox.py               # 本機子程序沙盒（非安全邊界）
 ├── agents/
 │   ├── whitebox/
 │   │   ├── ast_extractor.py     # AST 符號解析與路由提取
@@ -79,8 +94,9 @@ MultiAgentGama/
 │   └── report_generator.py      # Markdown 審計報告生成器
 ├── examples/
 │   └── vibe_sample_app.py       # 具代表性的 Vibe-Coding 典型缺陷範例
-├── tests/
-│   └── test_harness_components.py # 工具包本身之單元測試
+├── docs/
+│   └── sample_report.md         # mock 模式產生的範例報告
+├── tests/                       # 工具包本身之測試（離線、不需 API 金鑰）
 └── main.py                      # CLI 執行入口
 ```
 
@@ -104,7 +120,17 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 export NVIDIA_API_KEY="nvapi-..."
 export OPENAI_API_KEY="sk-..."
 ```
-*註：若未配置 API 金鑰，工具包會自動啟用高保真模擬引擎（Simulation Engine），確保任何開發者皆可無痛體驗完整工作流。*
+預設模型見 `config/agents_config.yaml`（Claude `claude-sonnet-5`、Nemotron 經 NVIDIA NIM、ChatGPT `gpt-4o`），每個模型可設定 `fallback_model`，主模型重試失敗後會改用它，報告會記錄實際使用的模型。
+
+*註：若未配置 API 金鑰，`hybrid` 模式會退回模擬引擎（Simulation Engine）以便離線體驗工作流。模擬引擎回傳的是**與目標程式碼無關的固定範本**，報告會以 `[SIMULATED]` 與「Execution Provenance」表明確標示，且品質閘門不會因此給出 `READY_TO_SHIP`。*
+
+| `--mode` | 行為 |
+| :--- | :--- |
+| `live` | 只呼叫真實模型；缺金鑰或呼叫失敗即中止（exit code 4）。模型回應無法使用時記錄為 `invalid`，判定為 INCONCLUSIVE |
+| `hybrid`（預設） | 能呼叫就呼叫，否則退回模擬並在報告中標示 |
+| `mock` | 全部使用模擬引擎 |
+
+模擬模式下，白箱測試改用由目標函式自動推導的 None 輸入健壯性探針（`WB-PROBE-*`）；黑箱威脅若無可執行測試，會列為「Threats Not Tested」，不會捏造測試結果。
 
 ### 3. 對目標專案執行全流程檢驗
 
@@ -112,8 +138,20 @@ export OPENAI_API_KEY="sk-..."
 python main.py --target examples --output vibe_harness_report.md
 ```
 
+`--target` 可為目錄或單一檔案。若目標服務正在 `--base-url` 上執行，黑箱測試會發送真實 HTTP 請求；否則以 in-process 方式直接 import 目標呼叫。範例輸出見 [`docs/sample_report.md`](docs/sample_report.md)。
+
+Exit code（依序判定）：
+
+| Code | Verdict | 條件 |
+| :--- | :--- | :--- |
+| `2` | BLOCKED_CRITICAL_RISK | 至少一個黑箱攻擊測試確認防禦被突破 |
+| `1` | NEEDS_FIXES | 至少一個白箱測試失敗（暴露缺陷） |
+| `3` | INCONCLUSIVE | 無失敗，但有證據缺口：使用模擬引擎、模型輸出無效、測試錯誤／未執行、威脅未測試、檔案解析失敗等 |
+| `0` | READY_TO_SHIP | 以上皆無 |
+| `4` | — | live 模式模型呼叫失敗 |
+
 ### 4. 運行工具包本身單元測試
 
 ```bash
-python -m pytest tests/test_harness_components.py -v
+python -m pytest
 ```

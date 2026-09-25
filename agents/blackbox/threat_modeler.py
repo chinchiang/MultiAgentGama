@@ -2,8 +2,11 @@ import logging
 import os
 import yaml
 from typing import List, Dict, Any, Optional
-from core.models import ThreatItem, ThreatModelReport, STRIDECategory, FindingSeverity
+from core.models import ThreatItem, ThreatModelReport, STRIDECategory, FindingSeverity, CodeSymbol
 from core.llm_gateway import LLMGateway
+from core.codecontext import render_symbols
+
+DEFAULT_RULES_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config", "threat_rules.yaml")
 
 logger = logging.getLogger("VibeHarness.ThreatModeler")
 
@@ -15,7 +18,7 @@ class AutomatedThreatModeler:
     a rigorous Threat Matrix before any black-box test cases are designed.
     """
 
-    def __init__(self, gateway: LLMGateway, rules_path: str = "config/threat_rules.yaml"):
+    def __init__(self, gateway: LLMGateway, rules_path: str = DEFAULT_RULES_PATH):
         self.gateway = gateway
         self.rules = self._load_rules(rules_path)
 
@@ -25,11 +28,36 @@ class AutomatedThreatModeler:
                 return yaml.safe_load(f) or {}
         return {}
 
+    def _rules_guidance(self) -> str:
+        """STRIDE vibe-bug checklist and OWASP API Top 10 from config/threat_rules.yaml."""
+        lines = []
+        for cat in (self.rules.get("stride_categories") or {}).values():
+            bugs = "; ".join(cat.get("common_vibe_bugs") or [])
+            lines.append(f"- {cat.get('name')}: {bugs}")
+        owasp = [f"{o.get('id')} {o.get('name')}" for o in self.rules.get("owasp_api_top10") or []]
+        text = ""
+        if lines:
+            text += "Common vibe-coding flaws to check per STRIDE category:\n" + "\n".join(lines) + "\n\n"
+        if owasp:
+            text += "Use these OWASP API Top 10 ids for owasp_mapping: " + ", ".join(owasp) + "\n\n"
+        return text
+
+    @staticmethod
+    def _code_guidance(symbols: Optional[List[CodeSymbol]], root_dir: Optional[str]) -> str:
+        if not symbols:
+            return ""
+        root = root_dir or os.path.dirname(os.path.abspath(symbols[0].file_path))
+        # Entry points first: they are where untrusted input crosses the trust boundary
+        ordered = sorted(symbols, key=lambda s: s.symbol_type != "route")
+        return f"Target source code:\n{render_symbols(ordered, root, max_chars=30000)}\n\n"
+
     def model_system(
         self,
         system_description: str,
         entrypoints: List[str],
-        detected_routes: Optional[List[str]] = None
+        detected_routes: Optional[List[str]] = None,
+        symbols: Optional[List[CodeSymbol]] = None,
+        root_dir: Optional[str] = None
     ) -> ThreatModelReport:
         """
         Executes STRIDE threat modeling against the target system.
@@ -69,11 +97,16 @@ class AutomatedThreatModeler:
             f"System Description: {system_description}\n"
             f"Entrypoints: {entrypoints_summary}\n"
             f"Detected Routes: {routes_summary}\n\n"
-            f"Perform comprehensive threat modeling identifying vibe-coding vulnerabilities."
+            f"{self._rules_guidance()}"
+            f"{self._code_guidance(symbols, root_dir)}"
+            f"Perform comprehensive threat modeling identifying vibe-coding vulnerabilities. "
+            f"Only include threats that are plausible for the code shown, and name the concrete function/route in attack_vector."
         )
 
         logger.info("Initiating STRIDE & OWASP threat modeling...")
-        resp = self.gateway.generate("blackbox_threat_modeler", system_prompt, user_prompt, json_output=True)
+        resp = self.gateway.generate(
+            "blackbox_threat_modeler", system_prompt, user_prompt, json_output=True, required_keys=["threats"]
+        )
 
         raw_threats = resp.get("threats", [])
         threat_items: List[ThreatItem] = []
@@ -111,5 +144,6 @@ class AutomatedThreatModeler:
             entrypoints=resp.get("entrypoints", entrypoints),
             trust_boundaries=resp.get("trust_boundaries", ["Internet to Public Gateway", "Gateway to Database"]),
             assets=resp.get("assets", ["User Credentials", "Business Records"]),
-            threats=threat_items
+            threats=threat_items,
+            is_simulated=self.gateway.is_simulated(resp)
         )

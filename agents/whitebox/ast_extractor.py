@@ -1,8 +1,15 @@
 import ast
+import logging
 import os
 import re
-from typing import List, Dict, Any, Optional
+from typing import List, Optional
 from core.models import CodeSymbol
+
+logger = logging.getLogger("VibeHarness.ASTExtractor")
+
+SOURCE_EXTENSIONS = (".py", ".js", ".jsx", ".ts", ".tsx")
+# FastAPI/Starlette verbs plus Flask/Quart route decorators
+ROUTE_DECORATORS = {"get", "post", "put", "delete", "patch", "route", "api_route", "websocket"}
 
 
 class ASTExtractor:
@@ -13,6 +20,9 @@ class ASTExtractor:
 
     def __init__(self):
         self.detected_languages = set()
+        # Files that could not be read/parsed, and files left out by the max_files cap
+        self.parse_failures: List[str] = []
+        self.skipped_files: List[str] = []
 
     def parse_file(self, file_path: str) -> List[CodeSymbol]:
         if not os.path.exists(file_path):
@@ -28,20 +38,21 @@ class ASTExtractor:
         return []
 
     def parse_directory(self, dir_path: str, max_files: int = 50) -> List[CodeSymbol]:
-        all_symbols: List[CodeSymbol] = []
-        count = 0
+        """Parses a directory tree (up to max_files source files) or a single source file."""
+        self.parse_failures, self.skipped_files = [], []
+        if os.path.isfile(dir_path):
+            return self.parse_file(dir_path)
+        source_files: List[str] = []
         for root, dirs, files in os.walk(dir_path):
-            dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ["venv", "__pycache__", "node_modules", "dist", "build"]]
-            for file in files:
-                ext = os.path.splitext(file)[1].lower()
-                if ext in [".py", ".js", ".jsx", ".ts", ".tsx"]:
-                    full_path = os.path.join(root, file)
-                    all_symbols.extend(self.parse_file(full_path))
-                    count += 1
-                    if count >= max_files:
-                        break
-            if count >= max_files:
-                break
+            dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in ["venv", "__pycache__", "node_modules", "dist", "build"])
+            source_files.extend(os.path.join(root, f) for f in sorted(files) if f.lower().endswith(SOURCE_EXTENSIONS))
+
+        self.skipped_files = source_files[max_files:]
+        if self.skipped_files:
+            logger.warning(f"Only the first {max_files} of {len(source_files)} source files are analyzed; {len(self.skipped_files)} skipped.")
+        all_symbols: List[CodeSymbol] = []
+        for full_path in source_files[:max_files]:
+            all_symbols.extend(self.parse_file(full_path))
         return all_symbols
 
     def _parse_python_file(self, file_path: str) -> List[CodeSymbol]:
@@ -49,7 +60,9 @@ class ASTExtractor:
             with open(file_path, "r", encoding="utf-8") as f:
                 source = f.read()
             tree = ast.parse(source, filename=file_path)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Could not parse {file_path}: {e}")
+            self.parse_failures.append(file_path)
             return []
 
         symbols: List[CodeSymbol] = []
@@ -77,7 +90,9 @@ class ASTExtractor:
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Could not read {file_path}: {e}")
+            self.parse_failures.append(file_path)
             return []
 
         symbols: List[CodeSymbol] = []
@@ -128,11 +143,12 @@ class ASTExtractor:
         source_lines: List[str],
         class_name: Optional[str] = None
     ) -> Optional[CodeSymbol]:
-        start = node.lineno
-        end = getattr(node, "end_lineno", start + 1)
+        # Include decorators: they carry route paths and auth guards the reviewers need to see
+        start = min([d.lineno for d in node.decorator_list] + [node.lineno])
+        end = getattr(node, "end_lineno", node.lineno + 1)
         source_snippet = "\n".join(source_lines[start - 1 : end])
 
-        args = [arg.arg for arg in node.args.args]
+        args = [arg.arg for arg in node.args.posonlyargs + node.args.args + node.args.kwonlyargs]
         symbol_type = "method" if class_name else "function"
         full_name = f"{class_name}.{node.name}" if class_name else node.name
 
@@ -140,7 +156,7 @@ class ASTExtractor:
 
         for dec in node.decorator_list:
             if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute):
-                if dec.func.attr in ["get", "post", "put", "delete", "patch"]:
+                if dec.func.attr in ROUTE_DECORATORS:
                     symbol_type = "route"
 
         return CodeSymbol(

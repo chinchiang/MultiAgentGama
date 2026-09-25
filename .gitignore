@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .env
+.coverage
+.coverage.*
+# Generated audit reports (a sample lives in docs/sample_report.md)
+vibe_harness_report.md

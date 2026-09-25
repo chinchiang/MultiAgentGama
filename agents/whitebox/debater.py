@@ -20,8 +20,7 @@ class MultiModelDebater:
             return MultiModelDebateResult(
                 confirmed_findings=[],
                 disputed_findings=[],
-                consensus_summary="No findings submitted for arbitration.",
-                model_agreement_ratio=1.0
+                consensus_summary="No findings submitted for arbitration."
             )
 
         findings_summary = "\n".join([
@@ -46,26 +45,50 @@ class MultiModelDebater:
         )
 
         user_prompt = f"Review Findings to Arbitrate:\n\n{findings_summary}"
-        resp = self.gateway.generate("whitebox_debater", system_prompt, user_prompt, json_output=True)
+        resp = self.gateway.generate(
+            "whitebox_debater", system_prompt, user_prompt, json_output=True,
+            required_keys=["confirmed_findings_indices"]
+        )
+        simulated = self.gateway.is_simulated(resp)
 
-        confirmed_indices = set(resp.get("confirmed_findings_indices", []))
-        disputed_indices = set(resp.get("disputed_findings_indices", []))
+        if simulated or not self.gateway.is_usable(resp):
+            # A simulated arbiter returns a fixed template unrelated to these findings, and an unusable
+            # answer carries no decision: keep every finding (tests decide) and report no consensus figure.
+            reason = "simulated" if simulated else "unusable arbiter output"
+            logger.warning(f"Arbitration not applied ({reason}); all {len(findings)} findings kept unfiltered.")
+            return MultiModelDebateResult(
+                confirmed_findings=list(findings),
+                disputed_findings=[],
+                consensus_summary=f"Arbitration not applied ({reason}); findings are unfiltered reviewer hypotheses.",
+                model_agreement_ratio=None,
+                arbitration_applied=False,
+                is_simulated=simulated
+            )
+
+        valid_idx = range(len(findings))
+        confirmed_indices = {i for i in resp.get("confirmed_findings_indices") or [] if isinstance(i, int) and i in valid_idx}
+        disputed_indices = {i for i in resp.get("disputed_findings_indices") or [] if isinstance(i, int) and i in valid_idx}
 
         confirmed: List[ReviewFinding] = []
         disputed: List[ReviewFinding] = []
 
         for idx, f in enumerate(findings):
-            if idx in confirmed_indices or (idx not in disputed_indices and not confirmed_indices):
+            # Findings the arbiter did not rule on are kept rather than silently dropped
+            if idx in confirmed_indices or idx not in disputed_indices:
                 confirmed.append(f)
             else:
                 disputed.append(f)
 
-        agreement = float(resp.get("model_agreement_ratio", 0.85))
-        summary = resp.get("consensus_summary", "Consensus reached across heterogeneous models.")
+        agreement = resp.get("model_agreement_ratio")
+        if not isinstance(agreement, (int, float)) or not 0.0 <= agreement <= 1.0:
+            agreement = None
+        summary = resp.get("consensus_summary") or "Arbiter returned no summary."
 
         return MultiModelDebateResult(
             confirmed_findings=confirmed,
             disputed_findings=disputed,
             consensus_summary=summary,
-            model_agreement_ratio=agreement
+            model_agreement_ratio=float(agreement) if agreement is not None else None,
+            arbitration_applied=True,
+            is_simulated=False
         )

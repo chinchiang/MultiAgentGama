@@ -3,23 +3,27 @@
 
 global:
   execution_mode: "hybrid"  # "live" (calls APIs), "mock" (offline/dry-run for testing), or "hybrid"
-  timeout_seconds: 60
-  max_retries: 2
-  sandbox_provider: "local_subprocess" # Options: "local_subprocess", "docker", "e2b"
+  timeout_seconds: 60             # per LLM request
+  max_retries: 2                  # LLM request retries before falling back to fallback_model
+  max_output_tokens: 4096         # per LLM response
+  sandbox_provider: "local_subprocess"  # Only "local_subprocess" is implemented (docker / e2b are planned)
+  sandbox_timeout_seconds: 120    # budget for one batched pytest run
+  per_test_timeout_seconds: 30    # budget per test when a timed-out batch is re-run test by test
 
 models:
-  # Provider definitions with environment variable fallbacks
+  # Provider definitions. `model` / `fallback_model` are litellm model strings; the key is read from api_key_env.
+  # fallback_model is tried once when the primary model still fails after max_retries.
   claude:
-    model: "claude-3-7-sonnet-20250219"
+    model: "claude-sonnet-5"
     api_key_env: "ANTHROPIC_API_KEY"
-    fallback_model: "claude-3-5-sonnet-20241022"
+    fallback_model: "claude-haiku-4-5-20251001"
     provider: "anthropic"
 
   nemotron:
-    model: "nvidia/nemotron-4-340b-instruct"
+    model: "nvidia_nim/nvidia/nemotron-4-340b-instruct"
     api_key_env: "NVIDIA_API_KEY"
     api_base: "https://integrate.api.nvidia.com/v1"
-    fallback_model: "meta-llama/llama-3.3-70b-instruct"
+    fallback_model: "nvidia_nim/meta/llama-3.3-70b-instruct"
     provider: "nvidia"
 
   chatgpt:
@@ -29,13 +33,6 @@ models:
     provider: "openai"
 
 agents:
-  # 0. Commander Harness (Orchestrator)
-  commander:
-    name: "Commander Harness"
-    model_alias: "claude"
-    temperature: 0.1
-    role: "System Orchestrator, Quality Gate Arbiter, Workflow Commander"
-
   # 1. White-Box Agents (Multi-Model Ensemble to eliminate bias)
   whitebox_reviewer_claude:
     name: "Logic & State Reviewer (Claude)"
@@ -65,7 +62,7 @@ agents:
     name: "Property & Unit Test Generator"
     model_alias: "chatgpt"
     temperature: 0.3
-    role: "Generates executable Pytest/Hypothesis test suites targeting identified blindspots"
+    role: "Generates executable Pytest test modules targeting identified blindspots"
 
   # 2. Black-Box Agents (Threat-Model Driven)
   blackbox_threat_modeler:
@@ -78,10 +75,6 @@ agents:
     name: "Security Scenario & Exploit Test Generator"
     model_alias: "chatgpt"
     temperature: 0.2
-    role: "Translates threat scenarios into automated black-box tests (BOLA, Injection, Fuzzing, Rate-limit)"
+    role: "Translates threat scenarios into automated black-box tests (BOLA, Injection, Rate-limit)"
 
-  blackbox_fuzzer:
-    name: "Dynamic Fuzzing & DAST Runner Agent"
-    model_alias: "nemotron"
-    temperature: 0.1
-    role: "Executes black-box attack cases, validates security violations, and captures minimal reproduction PoCs"
+  # Planned (not yet implemented): a dynamic fuzzing / DAST runner agent.

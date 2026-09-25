@@ -1,6 +1,5 @@
 import logging
 import os
-import sys
 from typing import Optional, List
 from rich.console import Console
 from rich.panel import Panel
@@ -14,7 +13,7 @@ from core.models import (
     ThreatModelReport,
     TestExecutionResult
 )
-from core.llm_gateway import LLMGateway
+from core.llm_gateway import LLMGateway, DEFAULT_CONFIG_PATH
 from core.sandbox import LocalSubprocessSandbox
 from agents.whitebox.ast_extractor import ASTExtractor
 from agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
@@ -34,24 +33,23 @@ class VibeHarnessCommander:
     and synchronizes sub-agents across White-Box and Black-Box testing phases.
     """
 
-    def __init__(self, config_path: str = "config/agents_config.yaml"):
-        if sys.platform == "win32":
-            try:
-                import io
-                sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-                sys.stderr.reconfigure(encoding='utf-8', errors='replace')
-            except Exception:
-                pass
+    def __init__(self, config_path: str = DEFAULT_CONFIG_PATH, execution_mode: Optional[str] = None):
         self.console = Console(force_terminal=False)
-        self.gateway = LLMGateway(config_path)
-        self.sandbox = LocalSubprocessSandbox(timeout_seconds=30)
+        self.gateway = LLMGateway(config_path, execution_mode=execution_mode)
+        global_cfg = self.gateway.config.get("global", {})
+        provider = global_cfg.get("sandbox_provider", "local_subprocess")
+        if provider != "local_subprocess":
+            raise ValueError(f"sandbox_provider '{provider}' is not implemented; only 'local_subprocess' is supported")
+        self.sandbox = LocalSubprocessSandbox(timeout_seconds=int(global_cfg.get("sandbox_timeout_seconds", 120)))
         self.ast_extractor = ASTExtractor()
         self.multi_reviewer = HeterogeneousReviewerEnsemble(self.gateway)
         self.debater = MultiModelDebater(self.gateway)
         self.whitebox_test_gen = WhiteboxTestGenerator(self.gateway)
         self.threat_modeler = AutomatedThreatModeler(self.gateway)
         self.scenario_builder = ThreatScenarioBuilder(self.gateway)
-        self.executor = TestSuiteExecutor(self.sandbox)
+        self.executor = TestSuiteExecutor(
+            self.sandbox, per_test_timeout_seconds=int(global_cfg.get("per_test_timeout_seconds", 30))
+        )
         self.reporter = ReportGenerator()
 
     def run_full_pipeline(
@@ -65,7 +63,7 @@ class VibeHarnessCommander:
         Executes the complete dual-engine testing workflow:
         Phase 1: Code Ingestion & AST Extraction
         Phase 2: Heterogeneous Multi-Model White-Box Review & Debate
-        Phase 3: White-Box Unit & Property Test Execution in Sandbox
+        Phase 3: White-Box Unit Test Generation & Sandbox Execution
         Phase 4: Mandatory STRIDE/OWASP Threat Modeling
         Phase 5: Threat-Derived Black-Box Dynamic Test Execution
         Phase 6: Quality Gate Synthesis & Report Generation
@@ -73,7 +71,8 @@ class VibeHarnessCommander:
         self.console.print(Panel.fit(
             "[bold cyan][VibeHarness-MAS] Commander Harness Active[/bold cyan]\n"
             f"[yellow]Target Codebase:[/yellow] {os.path.abspath(target_dir)}\n"
-            "[green]Multi-Model Ensemble:[/green] Claude 3.7 | NVIDIA Nemotron | ChatGPT (GPT-4o)",
+            "[green]Multi-Model Ensemble:[/green] Claude | NVIDIA Nemotron | ChatGPT\n"
+            f"[magenta]Execution Mode:[/magenta] {self.gateway.execution_mode}",
             title="AI Test Orchestration Engine",
             border_style="cyan"
         ))
@@ -82,6 +81,8 @@ class VibeHarnessCommander:
         # Phase 1: AST Extraction
         # -------------------------------------------------------------
         self.console.print("\n[bold blue]=== Phase 1: AST Ingestion & Semantic Extraction ===[/bold blue]")
+        # A single-file target runs its tests from the containing directory
+        work_dir = target_dir if os.path.isdir(target_dir) else os.path.dirname(os.path.abspath(target_dir))
         symbols = self.ast_extractor.parse_directory(target_dir)
         routes = [s.name for s in symbols if s.symbol_type == "route"]
         detected_langs = list(self.ast_extractor.detected_languages) or ["Python"]
@@ -95,30 +96,38 @@ class VibeHarnessCommander:
         # Phase 2: Heterogeneous White-Box Review & Multi-Model Debate
         # -------------------------------------------------------------
         self.console.print("\n[bold blue]=== Phase 2: Heterogeneous Multi-Model White-Box Review ===[/bold blue]")
-        raw_findings = self.multi_reviewer.review_symbols(symbols)
+        raw_findings = self.multi_reviewer.review_symbols(symbols, root_dir=work_dir)
         self.console.print(f"[+] Received [bold]{len(raw_findings)}[/bold] raw review findings from Claude, Nemotron, and ChatGPT.")
 
         self.console.print("[yellow]Dispatching to Multi-Model Debater to resolve bias and hallucinations...[/yellow]")
         debate_result: MultiModelDebateResult = self.debater.arbitrate(raw_findings)
-        self.console.print(f"[+] Consensus Agreement Ratio: [bold green]{debate_result.model_agreement_ratio * 100:.1f}%[/bold green]")
+        if debate_result.arbitration_applied:
+            ratio = debate_result.model_agreement_ratio
+            ratio_display = f"{ratio * 100:.1f}%" if ratio is not None else "N/A (not reported)"
+            self.console.print(f"[+] Arbiter-Reported Agreement Ratio: [bold green]{ratio_display}[/bold green]")
+        else:
+            self.console.print("[yellow][!] Arbitration not applied; findings are unfiltered reviewer hypotheses.[/yellow]")
         self.console.print(f"[+] Confirmed Defect Hypotheses: [bold red]{len(debate_result.confirmed_findings)}[/bold red]")
 
         # -------------------------------------------------------------
         # Phase 3: White-Box Test Generation & Sandbox Execution
         # -------------------------------------------------------------
         self.console.print("\n[bold blue]=== Phase 3: White-Box Test Generation & Sandbox Execution ===[/bold blue]")
-        wb_tests = self.whitebox_test_gen.generate_tests_for_findings(debate_result.confirmed_findings, symbols)
+        wb_tests = self.whitebox_test_gen.generate_tests_for_findings(
+            debate_result.confirmed_findings, symbols, root_dir=work_dir
+        )
         self.console.print(f"[+] Generated [bold]{len(wb_tests)}[/bold] targeted Pytest unit/boundary tests (with self-healing validation).")
 
         wb_results, cov_pct = self.executor.execute_test_suite(
             wb_tests,
-            working_dir=target_dir,
+            working_dir=work_dir,
             collect_coverage=True
         )
         wb_passed = sum(1 for r in wb_results if r.status == TestStatus.PASSED)
-        wb_failed = sum(1 for r in wb_results if r.status != TestStatus.PASSED)
+        wb_failed = sum(1 for r in wb_results if r.status == TestStatus.FAILED)
+        wb_errored = sum(1 for r in wb_results if r.status in (TestStatus.ERROR, TestStatus.SKIPPED))
         cov_display = f"{cov_pct:.1f}%" if cov_pct is not None else "N/A"
-        self.console.print(f"[+] White-Box Execution Outcome: [green]{wb_passed} Passed[/green] | [red]{wb_failed} Failed/Exposed[/red] | Line Coverage: [bold cyan]{cov_display}[/bold cyan]")
+        self.console.print(f"[+] White-Box Execution Outcome: [green]{wb_passed} Passed[/green] | [red]{wb_failed} Failed/Exposed[/red] | [yellow]{wb_errored} Error/Not Run[/yellow] | Line Coverage: [bold cyan]{cov_display}[/bold cyan]")
 
         # -------------------------------------------------------------
         # Phase 4: Mandatory Black-Box Threat Modeling (STRIDE & OWASP)
@@ -128,7 +137,9 @@ class VibeHarnessCommander:
         threat_report: ThreatModelReport = self.threat_modeler.model_system(
             system_description=sys_desc,
             entrypoints=routes or ["HTTP/REST Endpoints"],
-            detected_routes=routes
+            detected_routes=routes,
+            symbols=symbols,
+            root_dir=work_dir
         )
         self.console.print(f"[+] STRIDE Matrix Constructed: [bold yellow]{len(threat_report.threats)}[/bold yellow] attack scenarios identified.")
         for t in threat_report.threats:
@@ -138,17 +149,22 @@ class VibeHarnessCommander:
         # Phase 5: Threat-Derived Black-Box Dynamic Test Execution
         # -------------------------------------------------------------
         self.console.print("\n[bold blue]=== Phase 5: Threat-Derived Black-Box Test Execution ===[/bold blue]")
-        bb_tests = self.scenario_builder.build_test_cases_from_threats(threat_report.threats, base_url=base_url)
+        bb_tests = self.scenario_builder.build_test_cases_from_threats(
+            threat_report.threats, base_url=base_url, symbols=symbols, root_dir=work_dir
+        )
         self.console.print(f"[+] Synthesized [bold]{len(bb_tests)}[/bold] black-box attack scripts targeting identified threats.")
 
         bb_results, _ = self.executor.execute_test_suite(
             bb_tests,
-            working_dir=target_dir,
+            working_dir=work_dir,
             collect_coverage=False
         )
         bb_passed = sum(1 for r in bb_results if r.status == TestStatus.PASSED)
         bb_breaches = sum(1 for r in bb_results if r.is_security_exploit_confirmed)
-        self.console.print(f"[+] Dynamic Black-Box Outcome: [green]{bb_passed} Defended[/green] | [red]{bb_breaches} Confirmed Breaches[/red]")
+        bb_errored = sum(1 for r in bb_results if r.status in (TestStatus.ERROR, TestStatus.SKIPPED))
+        tested_threat_ids = {t.source_ref for t in bb_tests}
+        untested_threats = [t.threat_id for t in threat_report.threats if t.threat_id not in tested_threat_ids]
+        self.console.print(f"[+] Dynamic Black-Box Outcome: [green]{bb_passed} Defended[/green] | [red]{bb_breaches} Confirmed Breaches[/red] | [yellow]{bb_errored} Error/Not Run[/yellow] | {len(untested_threats)} Threats Not Tested")
 
         # -------------------------------------------------------------
         # Phase 6: Quality Gate Synthesis & Reporting
@@ -156,18 +172,51 @@ class VibeHarnessCommander:
         self.console.print("\n[bold blue]=== Phase 6: Commander Quality Gate Synthesis ===[/bold blue]")
         critical_threats = sum(1 for t in threat_report.threats if t.severity == FindingSeverity.CRITICAL)
 
-        if bb_breaches > 0 or critical_threats > 2:
+        # Evidence gaps that forbid a READY_TO_SHIP verdict
+        inconclusive_reasons: List[str] = []
+        if self.gateway.used_simulation:
+            simulated_agents = sorted({rec.agent_id for rec in self.gateway.call_log if rec.mode == "simulated"})
+            inconclusive_reasons.append(f"Simulation engine (not real models) was used for: {', '.join(simulated_agents)}")
+        invalid_calls = self.gateway.invalid_calls
+        if invalid_calls:
+            invalid_agents = sorted({rec.agent_id for rec in invalid_calls})
+            inconclusive_reasons.append(
+                f"{len(invalid_calls)} model call(s) returned unusable output (invalid JSON / missing fields): {', '.join(invalid_agents)}"
+            )
+        if not symbols:
+            inconclusive_reasons.append("No analyzable source symbols were found in the target")
+        if self.ast_extractor.parse_failures:
+            inconclusive_reasons.append(
+                f"{len(self.ast_extractor.parse_failures)} source file(s) could not be parsed and were not analyzed"
+            )
+        if self.ast_extractor.skipped_files:
+            inconclusive_reasons.append(
+                f"{len(self.ast_extractor.skipped_files)} source file(s) were skipped by the max_files limit"
+            )
+        if wb_errored or bb_errored:
+            inconclusive_reasons.append(f"{wb_errored + bb_errored} generated test(s) errored, were skipped, or did not run")
+        if not wb_results:
+            inconclusive_reasons.append("No white-box tests were executed")
+        if not threat_report.threats:
+            inconclusive_reasons.append("Threat modeling produced no threats, so black-box coverage is unknown")
+        if untested_threats:
+            inconclusive_reasons.append(f"{len(untested_threats)} modeled threat(s) have no executable test: {', '.join(untested_threats)}")
+
+        # Only executed evidence can block or fail the gate; modeled threats are hypotheses until tested
+        if bb_breaches > 0:
             overall_status = "BLOCKED_CRITICAL_RISK"
         elif wb_failed > 0:
             overall_status = "NEEDS_FIXES"
+        elif inconclusive_reasons:
+            overall_status = "INCONCLUSIVE"
         else:
             overall_status = "READY_TO_SHIP"
+        for reason in inconclusive_reasons:
+            self.console.print(f"[yellow][!] Evidence gap: {reason}[/yellow]")
 
-        recommendations = [
-            "Implement server-side input length & type sanitization to prevent memory exhaustion / ReDoS.",
-            "Enforce strict Object Level Authorization (BOLA/IDOR checks) verifying user_id against token claims.",
-            "Sanitize internal error responses to suppress stack traces, SQL syntax, and internal paths."
-        ]
+        recommendations = self._build_recommendations(
+            wb_results, bb_results, threat_report, untested_threats, inconclusive_reasons
+        )
 
         summary = VibeHarnessSummary(
             overall_status=overall_status,
@@ -175,10 +224,15 @@ class VibeHarnessCommander:
             confirmed_whitebox_bugs=len(debate_result.confirmed_findings),
             whitebox_tests_passed=wb_passed,
             whitebox_tests_failed=wb_failed,
+            whitebox_tests_errored=wb_errored,
             total_threats_modeled=len(threat_report.threats),
             critical_threats_count=critical_threats,
             blackbox_tests_passed=bb_passed,
             blackbox_security_breaches=bb_breaches,
+            blackbox_tests_errored=bb_errored,
+            untested_threat_ids=untested_threats,
+            agent_calls=list(self.gateway.call_log),
+            inconclusive_reasons=inconclusive_reasons,
             line_coverage_pct=cov_pct,
             detected_language=lang_str,
             key_recommendations=recommendations
@@ -198,7 +252,7 @@ class VibeHarnessCommander:
             f.write(md_content)
 
         self.console.print(f"[+] Final audit report written to: [bold green]{output_report_path}[/bold green]")
-        verdict_color = "green" if overall_status == "READY_TO_SHIP" else "red"
+        verdict_color = {"READY_TO_SHIP": "green", "INCONCLUSIVE": "yellow"}.get(overall_status, "red")
         self.console.print(Panel.fit(
             f"[bold]Quality Gate Verdict:[/bold] [{verdict_color} bold]{overall_status}[/{verdict_color} bold]\n"
             f"White-Box Passed: {wb_passed} | Black-Box Breaches: {bb_breaches}\n"
@@ -208,3 +262,33 @@ class VibeHarnessCommander:
         ))
 
         return summary
+
+    @staticmethod
+    def _build_recommendations(
+        wb_results: List[TestExecutionResult],
+        bb_results: List[TestExecutionResult],
+        threat_report: ThreatModelReport,
+        untested_threats: List[str],
+        inconclusive_reasons: List[str]
+    ) -> List[str]:
+        """Recommendations derived from this run's evidence, most urgent first."""
+        recs: List[str] = []
+        threats_by_id = {t.threat_id: t for t in threat_report.threats}
+        for r in bb_results:
+            if r.is_security_exploit_confirmed:
+                threat = threats_by_id.get(r.source_ref or "")
+                label = f"{threat.threat_id} {threat.title}" if threat else r.test_id
+                recs.append(f"Fix confirmed security breach `{r.test_id}` ({label}): {r.failure_reason}")
+        for r in wb_results:
+            if r.status == TestStatus.FAILED:
+                recs.append(f"Fix defect exposed by `{r.test_id}` (from `{r.source_ref or '-'}`): {r.failure_reason}")
+        for r in bb_results:
+            if r.status == TestStatus.FAILED and not r.is_security_exploit_confirmed:
+                recs.append(f"Investigate black-box crash in `{r.test_id}`: {r.failure_reason}")
+        if untested_threats:
+            recs.append(f"Write or synthesize tests for untested threats: {', '.join(untested_threats)}")
+        if inconclusive_reasons:
+            recs.append("Close the evidence gaps listed above (e.g. run with `--mode live` and valid API keys) before trusting a pass verdict.")
+        if not recs:
+            recs.append("No defects were exposed by the executed tests; keep these tests in CI as regression guards.")
+        return recs

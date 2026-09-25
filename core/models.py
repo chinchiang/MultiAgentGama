@@ -57,6 +57,7 @@ class ReviewFinding(BaseModel):
     root_cause: str
     suspected_vibe_flaw: str
     suggested_test_scenario: str
+    is_simulated: bool = False  # True when produced by the offline simulation engine, not a real model
 
 
 class MultiModelDebateResult(BaseModel):
@@ -64,7 +65,9 @@ class MultiModelDebateResult(BaseModel):
     confirmed_findings: List[ReviewFinding] = Field(default_factory=list)
     disputed_findings: List[ReviewFinding] = Field(default_factory=list)
     consensus_summary: str
-    model_agreement_ratio: float = 1.0  # 0.0 to 1.0
+    model_agreement_ratio: Optional[float] = None  # arbiter-reported, 0.0 to 1.0; None when arbitration unavailable
+    arbitration_applied: bool = False  # False: findings were not filtered by a real arbiter
+    is_simulated: bool = False
 
 
 class ThreatItem(BaseModel):
@@ -89,6 +92,7 @@ class ThreatModelReport(BaseModel):
     trust_boundaries: List[str] = Field(default_factory=list)
     assets: List[str] = Field(default_factory=list)
     threats: List[ThreatItem] = Field(default_factory=list)
+    is_simulated: bool = False
 
 
 class GeneratedTest(BaseModel):
@@ -100,6 +104,7 @@ class GeneratedTest(BaseModel):
     code: str
     rationale: str
     expected_outcome: str
+    source_ref: Optional[str] = None  # finding_id / threat_id / symbol this test was derived from
 
 
 class TestExecutionResult(BaseModel):
@@ -115,19 +120,34 @@ class TestExecutionResult(BaseModel):
     failure_reason: Optional[str] = None
     is_security_exploit_confirmed: bool = False
     reproduction_poc: Optional[str] = None
+    source_ref: Optional[str] = None
+
+
+class AgentCallRecord(BaseModel):
+    """Provenance of a single agent invocation through the LLM gateway."""
+    agent_id: str
+    model_alias: str
+    model_name: str
+    mode: str  # "live", "simulated", or "invalid" (live call whose output was unusable)
+    reason: Optional[str] = None  # why simulation was used / why the output was rejected
 
 
 class VibeHarnessSummary(BaseModel):
     """Top-level assessment summary produced by the Commander Harness."""
-    overall_status: str  # "READY_TO_SHIP", "NEEDS_FIXES", "BLOCKED_CRITICAL_RISK"
+    overall_status: str  # "READY_TO_SHIP", "NEEDS_FIXES", "BLOCKED_CRITICAL_RISK", "INCONCLUSIVE"
     total_whitebox_findings: int
     confirmed_whitebox_bugs: int
     whitebox_tests_passed: int
     whitebox_tests_failed: int
+    whitebox_tests_errored: int = 0
     total_threats_modeled: int
     critical_threats_count: int
     blackbox_tests_passed: int
     blackbox_security_breaches: int
+    blackbox_tests_errored: int = 0
+    untested_threat_ids: List[str] = Field(default_factory=list)
+    agent_calls: List[AgentCallRecord] = Field(default_factory=list)
+    inconclusive_reasons: List[str] = Field(default_factory=list)
     line_coverage_pct: Optional[float] = None
     detected_language: str = "Python"
     key_recommendations: List[str] = Field(default_factory=list)
