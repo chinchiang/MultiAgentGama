@@ -10,6 +10,9 @@ DEFAULT_RULES_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirnam
 
 logger = logging.getLogger("VibeHarness.ThreatModeler")
 
+# Estimated-token budget for the target code shown to the threat modeler (entry points first)
+CODE_CONTEXT_TOKENS = 8000
+
 
 class AutomatedThreatModeler:
     """
@@ -49,7 +52,7 @@ class AutomatedThreatModeler:
         root = root_dir or os.path.dirname(os.path.abspath(symbols[0].file_path))
         # Entry points first: they are where untrusted input crosses the trust boundary
         ordered = sorted(symbols, key=lambda s: s.symbol_type != "route")
-        return f"Target source code:\n{render_symbols(ordered, root, max_chars=30000)}\n\n"
+        return f"Target source code:\n{render_symbols(ordered, root, max_tokens=CODE_CONTEXT_TOKENS)}\n\n"
 
     def model_system(
         self,

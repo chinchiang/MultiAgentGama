@@ -58,6 +58,9 @@ class ReviewFinding(BaseModel):
     suspected_vibe_flaw: str
     suggested_test_scenario: str
     is_simulated: bool = False  # True when produced by the offline simulation engine, not a real model
+    # Set when duplicate reports were merged into this finding: the other reviewers and their finding ids
+    corroborated_by: List[str] = Field(default_factory=list)
+    merged_finding_ids: List[str] = Field(default_factory=list)
 
 
 class MultiModelDebateResult(BaseModel):
@@ -135,7 +138,8 @@ class AgentCallRecord(BaseModel):
 class VibeHarnessSummary(BaseModel):
     """Top-level assessment summary produced by the Commander Harness."""
     overall_status: str  # "READY_TO_SHIP", "NEEDS_FIXES", "BLOCKED_CRITICAL_RISK", "INCONCLUSIVE"
-    total_whitebox_findings: int
+    total_whitebox_findings: int  # raw reviewer reports, before duplicates are merged
+    distinct_whitebox_findings: Optional[int] = None
     confirmed_whitebox_bugs: int
     whitebox_tests_passed: int
     whitebox_tests_failed: int

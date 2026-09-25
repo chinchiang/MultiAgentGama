@@ -24,7 +24,8 @@ class MultiModelDebater:
             )
 
         findings_summary = "\n".join([
-            f"[{idx}] Source: {f.reviewer_name} ({f.model_alias}) | Severity: {f.severity.value}\n"
+            f"[{idx}] Source: {f.reviewer_name} ({f.model_alias}) | Severity: {f.severity.value}"
+            + (f" | Also reported by: {', '.join(f.corroborated_by)}" if f.corroborated_by else "") + "\n"
             f"    Title: {f.title}\n"
             f"    Cause: {f.root_cause}\n"
             f"    Scenario: {f.suggested_test_scenario}"

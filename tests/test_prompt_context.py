@@ -41,7 +41,7 @@ def test_render_symbols_respects_budget_and_reports_omissions(tmp_path):
     f = tmp_path / "m.py"
     f.write_text("".join(f"def f{i}(x):\n    return x + {i}\n\n" for i in range(30)), encoding="utf-8")
     symbols = ASTExtractor().parse_file(str(f))
-    text = render_symbols(symbols, str(tmp_path), max_chars=500)
+    text = render_symbols(symbols, str(tmp_path), max_tokens=150)
     assert "def f0(x)" in text
     assert "more symbol(s) omitted" in text
 

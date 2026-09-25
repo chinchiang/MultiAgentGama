@@ -10,6 +10,9 @@ from core.codecontext import render_symbols, import_instructions
 
 logger = logging.getLogger("VibeHarness.ScenarioBuilder")
 
+# Estimated-token budget for the target code shown per threat
+CODE_CONTEXT_TOKENS = 4000
+
 
 class ThreatScenarioBuilder:
     """
@@ -44,7 +47,7 @@ class ThreatScenarioBuilder:
             relevant = sorted(symbols, key=lambda s: s.symbol_type != "route")
         files = sorted({s.file_path for s in relevant if s.file_path.endswith(".py")})
         imports = "\n".join(import_instructions(f, root) for f in files)
-        return f"How to import the target:\n{imports}\n\nRelevant target code:\n{render_symbols(relevant, root, max_chars=15000)}\n\n"
+        return f"How to import the target:\n{imports}\n\nRelevant target code:\n{render_symbols(relevant, root, max_tokens=CODE_CONTEXT_TOKENS)}\n\n"
 
     def build_test_cases_from_threats(
         self,
