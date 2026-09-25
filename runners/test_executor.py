@@ -1,19 +1,26 @@
 import re
 import os
 import logging
-from typing import List, Tuple, Optional
+import xml.etree.ElementTree as ET
+from typing import List, Tuple, Optional, Dict
 from core.models import GeneratedTest, TestExecutionResult, TestStatus
 from core.sandbox import LocalSubprocessSandbox
+from core.codecheck import check_test_code
 
 logger = logging.getLogger("VibeHarness.TestExecutor")
+
+# Exceptions that indicate a broken generated test / harness setup rather than a defect in the target
+HARNESS_ERROR_EXCEPTIONS = (
+    "ImportError", "ModuleNotFoundError", "NameError", "SyntaxError", "IndentationError"
+)
 
 
 class TestSuiteExecutor:
     __test__ = False
     """
-    Assembles generated test functions into an executable suite,
-    ensures unique test function names, runs them inside the sandbox,
-    and accurately parses test outcomes and code coverage.
+    Runs generated test functions inside the sandbox, one module per test so that a broken
+    test cannot poison the others, and maps per-test outcomes from pytest's JUnit XML report.
+    Only genuine assertion failures in black-box tests count as confirmed security exploits.
     """
 
     def __init__(self, sandbox: LocalSubprocessSandbox):
@@ -30,95 +37,189 @@ class TestSuiteExecutor:
 
         abs_target = os.path.abspath(working_dir)
         parent_dir = os.path.dirname(abs_target)
-
-        # Assemble full python script with imports and uniquely namespaced test functions
-        script_parts = [
+        header = "\n".join([
             "import pytest",
             "import sys",
             "import os",
             "from typing import Any, Dict",
             f"sys.path.insert(0, r'{abs_target}')",
             f"sys.path.insert(0, r'{parent_dir}')",
-            "# --- VibeHarness Auto-Generated Test Suite ---"
-        ]
+            "# --- VibeHarness Auto-Generated Test ---",
+        ])
 
-        test_fn_map = {}  # test_id -> unique_fn_name
+        unique_ids = self._unique_test_ids(tests)
+        results: Dict[int, TestExecutionResult] = {}
+        files: Dict[str, str] = {}
+        module_to_idx: Dict[str, int] = {}
 
         for idx, t in enumerate(tests):
-            clean_id = re.sub(r"[^a-zA-Z0-9_]", "_", t.test_id.lower())
-            # Find original function name
-            match_fn = re.search(r"def\s+([a-zA-Z0-9_]+)\s*\(", t.code)
-            orig_fn = match_fn.group(1) if match_fn else f"case_{idx+1}"
-            unique_fn = f"test_{clean_id}_{orig_fn}"
-            test_fn_map[t.test_id] = unique_fn
-
-            # Rename function definition in code snippet to guarantee uniqueness
-            modified_code = re.sub(r"def\s+[a-zA-Z0-9_]+\s*\(", f"def {unique_fn}(", t.code, count=1)
-
-            script_parts.append(f"\n# Target: {t.target_component} | Test: {t.title}")
-            script_parts.append(modified_code)
-
-        combined_script = "\n".join(script_parts)
-
-        logger.info(f"Executing test suite containing {len(tests)} test cases in sandbox (coverage={collect_coverage})...")
-        exit_code, stdout, stderr, duration, coverage_pct = self.sandbox.execute_python_code(
-            combined_script,
-            working_dir=working_dir,
-            collect_coverage=collect_coverage,
-            coverage_target=working_dir
-        )
-
-        results: List[TestExecutionResult] = []
-        overall_text = stdout + "\n" + stderr
-
-        for t in tests:
-            unique_fn = test_fn_map.get(t.test_id, t.test_id)
-
-            if f"::{unique_fn} PASSED" in overall_text:
-                status = TestStatus.PASSED
-                failure_reason = None
-                poc = None
-            elif f"::{unique_fn} FAILED" in overall_text:
-                status = TestStatus.FAILED
-                failure_reason = f"Assertion failed or defensive check violated during {t.title}"
-                poc = self._generate_poc(t, unique_fn, stdout, stderr)
-            elif f"::{unique_fn} ERROR" in overall_text:
-                status = TestStatus.ERROR
-                failure_reason = "Test raised unhandled runtime/collection error"
-                poc = self._generate_poc(t, unique_fn, stdout, stderr)
-            else:
-                # Fallback based on overall suite result
-                if exit_code == 0:
-                    status = TestStatus.PASSED
-                    failure_reason = None
-                    poc = None
-                else:
-                    status = TestStatus.FAILED
-                    failure_reason = "Test failed in suite execution"
-                    poc = self._generate_poc(t, unique_fn, stdout, stderr)
-
-            is_security_exploit = (
-                status == TestStatus.FAILED and t.test_type == "blackbox_security"
+            is_valid, problem = check_test_code(t.code)
+            if not is_valid:
+                results[idx] = self._result(
+                    t, unique_ids[idx], TestStatus.ERROR,
+                    failure_reason=f"Generated test is not executable ({problem}); not run"
+                )
+                continue
+            module = f"test_vh_{idx:03d}"
+            module_to_idx[module] = idx
+            files[f"{module}.py"] = (
+                f"{header}\n# Target: {t.target_component} | Test: {t.title}\n{t.code}\n"
             )
 
-            results.append(TestExecutionResult(
-                test_id=t.test_id,
-                test_type=t.test_type,
-                status=status,
-                duration_seconds=round(duration / max(1, len(tests)), 3),
-                stdout=stdout[:500],
-                stderr=stderr[:500],
-                failure_reason=failure_reason,
-                is_security_exploit_confirmed=is_security_exploit,
-                reproduction_poc=poc
-            ))
+        coverage_pct: Optional[float] = None
+        if files:
+            logger.info(f"Executing {len(files)} test module(s) in sandbox (coverage={collect_coverage})...")
+            exit_code, stdout, stderr, duration, coverage_pct, junit_xml = self.sandbox.execute_pytest_files(
+                files,
+                working_dir=working_dir,
+                collect_coverage=collect_coverage,
+                coverage_target=working_dir
+            )
+            cases = self._parse_junit(junit_xml)
 
-        return results, coverage_pct
+            for module, idx in module_to_idx.items():
+                t = tests[idx]
+                module_cases = cases.get(module)
+                if junit_xml is None:
+                    results[idx] = self._result(
+                        t, unique_ids[idx], TestStatus.ERROR,
+                        failure_reason=f"Sandbox run produced no report: {stderr.strip()[:200] or f'exit code {exit_code}'}",
+                        stdout=stdout, stderr=stderr
+                    )
+                elif not module_cases:
+                    results[idx] = self._result(
+                        t, unique_ids[idx], TestStatus.ERROR,
+                        failure_reason="No test was collected from the generated code",
+                        stdout=stdout, stderr=stderr
+                    )
+                else:
+                    results[idx] = self._aggregate(t, unique_ids[idx], module_cases, stdout, stderr)
 
-    def _generate_poc(self, test: GeneratedTest, fn_name: str, stdout: str, stderr: str) -> str:
-        """Constructs a minimal reproduction script for a confirmed failure."""
+        return [results[i] for i in range(len(tests))], coverage_pct
+
+    @staticmethod
+    def _unique_test_ids(tests: List[GeneratedTest]) -> List[str]:
+        """Disambiguates duplicate test_ids (e.g. from LLM output) so each result is traceable."""
+        seen: Dict[str, int] = {}
+        unique = []
+        for t in tests:
+            count = seen.get(t.test_id, 0) + 1
+            seen[t.test_id] = count
+            unique.append(t.test_id if count == 1 else f"{t.test_id}-{count}")
+        return unique
+
+    @staticmethod
+    def _parse_junit(junit_xml: Optional[str]) -> Dict[str, List[dict]]:
+        """Groups JUnit testcases by generated module name (test_vh_NNN)."""
+        grouped: Dict[str, List[dict]] = {}
+        if not junit_xml:
+            return grouped
+        try:
+            root = ET.fromstring(junit_xml)
+        except ET.ParseError as e:
+            logger.error(f"Unable to parse JUnit XML: {e}")
+            return grouped
+
+        for tc in root.iter("testcase"):
+            # Collection errors: classname="" and name=<module>; regular tests: classname=<module>
+            match = re.search(r"test_vh_\d{3}", tc.get("classname") or "") or re.search(r"test_vh_\d{3}", tc.get("name") or "")
+            if not match:
+                continue
+            outcome, message, details = "passed", None, None
+            for child in tc:
+                if child.tag in ("failure", "error", "skipped"):
+                    outcome = child.tag
+                    message = child.get("message") or ""
+                    details = child.text or ""
+                    break
+            grouped.setdefault(match.group(0), []).append({
+                "name": tc.get("name"),
+                "time": float(tc.get("time") or 0.0),
+                "outcome": outcome,
+                "message": message,
+                "details": details,
+            })
+        return grouped
+
+    def _aggregate(
+        self,
+        test: GeneratedTest,
+        test_id: str,
+        cases: List[dict],
+        stdout: str,
+        stderr: str
+    ) -> TestExecutionResult:
+        duration = round(sum(c["time"] for c in cases), 3)
+        errors = [c for c in cases if c["outcome"] == "error"]
+        failures = [c for c in cases if c["outcome"] == "failure"]
+        harness_failures = [c for c in failures if (c["message"] or "").startswith(HARNESS_ERROR_EXCEPTIONS)]
+        defect_failures = [c for c in failures if c not in harness_failures]
+
+        if defect_failures:
+            case = defect_failures[0]
+            return self._result(
+                test, test_id, TestStatus.FAILED,
+                failure_reason=self._first_line(case["message"]) or f"Assertion failed during {test.title}",
+                traceback=case["details"], duration=duration, stdout=stdout, stderr=stderr,
+                is_exploit=test.test_type == "blackbox_security" and self._is_assertion(case["message"]),
+                poc=self._generate_poc(test, case["name"])
+            )
+        if errors or harness_failures:
+            case = (errors or harness_failures)[0]
+            return self._result(
+                test, test_id, TestStatus.ERROR,
+                failure_reason=f"Test could not run correctly: {self._first_line(case['message'])}",
+                traceback=case["details"], duration=duration, stdout=stdout, stderr=stderr
+            )
+        if all(c["outcome"] == "skipped" for c in cases):
+            return self._result(
+                test, test_id, TestStatus.SKIPPED,
+                failure_reason=self._first_line(cases[0]["message"]) or "Skipped",
+                duration=duration, stdout=stdout, stderr=stderr
+            )
+        return self._result(test, test_id, TestStatus.PASSED, duration=duration, stdout=stdout, stderr=stderr)
+
+    @staticmethod
+    def _is_assertion(message: Optional[str]) -> bool:
+        """pytest reports explicit AssertionErrors and rewritten bare asserts ('assert x == y')."""
+        message = message or ""
+        return message.startswith("AssertionError") or message.startswith("assert ")
+
+    @staticmethod
+    def _first_line(text: Optional[str]) -> str:
+        return (text or "").strip().splitlines()[0][:300] if (text or "").strip() else ""
+
+    @staticmethod
+    def _result(
+        test: GeneratedTest,
+        test_id: str,
+        status: TestStatus,
+        failure_reason: Optional[str] = None,
+        traceback: Optional[str] = None,
+        duration: float = 0.0,
+        stdout: str = "",
+        stderr: str = "",
+        is_exploit: bool = False,
+        poc: Optional[str] = None
+    ) -> TestExecutionResult:
+        return TestExecutionResult(
+            test_id=test_id,
+            test_type=test.test_type,
+            status=status,
+            duration_seconds=duration,
+            stdout=stdout[:500],
+            stderr=stderr[:500],
+            traceback=traceback[:2000] if traceback else None,
+            failure_reason=failure_reason,
+            is_security_exploit_confirmed=is_exploit,
+            reproduction_poc=poc,
+            source_ref=test.source_ref
+        )
+
+    def _generate_poc(self, test: GeneratedTest, fn_name: str) -> str:
+        """Constructs a reproduction script for a confirmed failure."""
         return (
-            f"# === Minimal Reproduction PoC ===\n"
+            f"# === Reproduction PoC ===\n"
             f"# Target: {test.target_component}\n"
             f"# Failure Context: {test.title}\n"
             f"# Test Function: {fn_name}\n"

@@ -79,10 +79,11 @@ def test_self_healing_test_generator():
     code_valid = "def test_ok(): assert 1 == 1"
     assert gen._validate_and_heal(code_valid, 1) == code_valid
 
-    # Invalid syntax (syntax error should trigger healing/fallback safely)
+    # Unrepairable code is returned as-is (reported as ERROR later), never swapped for a passing no-op
     code_invalid = "def test_broken( invalid syntax here"
     healed = gen._validate_and_heal(code_invalid, 1)
-    assert healed.startswith("def test_")
+    assert healed == code_invalid
+    assert "pass" not in healed
 
 
 def test_threat_modeling_stride_and_owasp():

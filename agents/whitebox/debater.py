@@ -67,5 +67,6 @@ class MultiModelDebater:
             confirmed_findings=confirmed,
             disputed_findings=disputed,
             consensus_summary=summary,
-            model_agreement_ratio=agreement
+            model_agreement_ratio=agreement,
+            is_simulated=self.gateway.is_simulated(resp)
         )

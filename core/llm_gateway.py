@@ -5,6 +5,8 @@ import re
 from typing import Dict, Any, Optional, List
 import yaml
 
+from core.models import AgentCallRecord
+
 try:
     import litellm
 except ImportError:
@@ -12,18 +14,40 @@ except ImportError:
 
 logger = logging.getLogger("VibeHarness.LLMGateway")
 
+# Key added to every response so callers can tell simulated output from real model output
+PROVENANCE_KEY = "_provenance"
+
+
+class LLMGatewayError(RuntimeError):
+    """Raised in strict 'live' mode when a real model invocation is impossible or fails."""
+
 
 class LLMGateway:
     """
     Unified gateway for orchestrating calls to heterogeneous LLMs (Claude, Nemotron, ChatGPT).
-    Provides automatic fallback to offline mock responses when API keys are absent or when in mock mode.
+    Execution modes:
+    - live:   real API calls only; any missing key or failure raises LLMGatewayError.
+    - hybrid: real API calls when possible, otherwise the offline simulation engine (recorded as simulated).
+    - mock:   simulation engine only.
+    Every call is recorded in `call_log` so reports can disclose which results are simulated.
     """
 
-    def __init__(self, config_path: str = "config/agents_config.yaml"):
+    def __init__(self, config_path: str = "config/agents_config.yaml", execution_mode: Optional[str] = None):
         self.config = self._load_config(config_path)
-        self.execution_mode = self.config.get("global", {}).get("execution_mode", "hybrid")
+        self.execution_mode = execution_mode or self.config.get("global", {}).get("execution_mode", "hybrid")
+        if self.execution_mode not in ("live", "hybrid", "mock"):
+            raise ValueError(f"Unknown execution_mode '{self.execution_mode}' (expected live, hybrid or mock)")
         self.models_config = self.config.get("models", {})
         self.agents_config = self.config.get("agents", {})
+        self.call_log: List[AgentCallRecord] = []
+
+    @property
+    def used_simulation(self) -> bool:
+        return any(rec.mode == "simulated" for rec in self.call_log)
+
+    @staticmethod
+    def is_simulated(resp: Dict[str, Any]) -> bool:
+        return resp.get(PROVENANCE_KEY, {}).get("mode") == "simulated"
 
     def _load_config(self, path: str) -> Dict[str, Any]:
         if os.path.exists(path):
@@ -54,9 +78,16 @@ class LLMGateway:
         model_name = model_info.get("model", "gpt-4o")
 
         # Decide whether to invoke live API or mock engine
-        can_run_live = self.is_live_configured(model_alias) and self.execution_mode in ["live", "hybrid"]
+        fallback_reason: Optional[str] = None
+        if self.execution_mode == "mock":
+            fallback_reason = "execution_mode is 'mock'"
+        elif litellm is None:
+            fallback_reason = "litellm is not installed"
+        elif not self.is_live_configured(model_alias):
+            env_var = model_info.get("api_key_env") or "<no api_key_env configured>"
+            fallback_reason = f"API key env var {env_var} is not set"
 
-        if can_run_live and litellm is not None:
+        if fallback_reason is None:
             try:
                 logger.info(f"Dispatching [{agent_id}] to Live LLM: {model_name} (Alias: {model_alias})")
                 messages = [
@@ -74,15 +105,29 @@ class LLMGateway:
 
                 response = litellm.completion(**kwargs)
                 raw_text = response.choices[0].message.content
-                if json_output:
-                    return self._clean_and_parse_json(raw_text)
-                return {"raw": raw_text}
+                result = self._clean_and_parse_json(raw_text) if json_output else {"raw": raw_text}
+                self._record(agent_id, model_alias, model_name, "live")
+                result[PROVENANCE_KEY] = {"mode": "live", "model": model_name}
+                return result
             except Exception as e:
+                fallback_reason = f"live invocation failed: {e}"
+                if self.execution_mode == "live":
+                    raise LLMGatewayError(f"[{agent_id}] {model_name}: {fallback_reason}") from e
                 logger.warning(f"Live invocation failed for {agent_id} ({model_name}): {e}. Falling back to simulation logic.")
+        elif self.execution_mode == "live":
+            raise LLMGatewayError(f"[{agent_id}] cannot run live with {model_name}: {fallback_reason}")
 
         # Offline / Mock Fallback
-        logger.info(f"Dispatching [{agent_id}] to Simulation Engine (Model Alias: {model_alias})")
-        return self._generate_simulated_response(agent_id, model_alias, user_prompt)
+        logger.info(f"Dispatching [{agent_id}] to Simulation Engine (Model Alias: {model_alias}; reason: {fallback_reason})")
+        self._record(agent_id, model_alias, model_name, "simulated", fallback_reason)
+        result = self._generate_simulated_response(agent_id, model_alias, user_prompt)
+        result[PROVENANCE_KEY] = {"mode": "simulated", "model": model_name, "reason": fallback_reason}
+        return result
+
+    def _record(self, agent_id: str, model_alias: str, model_name: str, mode: str, reason: Optional[str] = None):
+        self.call_log.append(AgentCallRecord(
+            agent_id=agent_id, model_alias=model_alias, model_name=model_name, mode=mode, reason=reason
+        ))
 
     def _clean_and_parse_json(self, text: str) -> Dict[str, Any]:
         """Strips markdown code fences and parses JSON safely."""
@@ -102,6 +147,8 @@ class LLMGateway:
         - Claude: Excels at state transitions, missing null checks, edge-case logic.
         - Nemotron: Focuses on boundary limits, buffer/memory safety, defensive guards.
         - ChatGPT: Focuses on contract specifications, API compliance, parameter validation.
+        NOTE: responses are fixed templates independent of the target code; they exist so the
+        pipeline can be exercised offline and are always flagged as simulated in reports.
         """
         if "reviewer_claude" in agent_id:
             return {
@@ -203,28 +250,8 @@ class LLMGateway:
             }
 
         elif "test_synthesizer" in agent_id or "test_generator" in agent_id:
-            return {
-                "tests": [
-                    {
-                        "test_id": "WB-TEST-01",
-                        "test_type": "whitebox_unit",
-                        "title": "Test null entity traversal defensively",
-                        "rationale": "Verifies that handlers defensively check for None before accessing nested properties.",
-                        "expected_outcome": "Graceful handling without raising unhandled TypeError.",
-                        "code": (
-                            "def test_null_profile_edge_case():\n"
-                            "    try:\n"
-                            "        from vibe_sample_app import get_user_profile\n"
-                            "    except ImportError:\n"
-                            "        from examples.vibe_sample_app import get_user_profile\n"
-                            "    try:\n"
-                            "        res = get_user_profile('usr_002')\n"
-                            "        assert res is not None\n"
-                            "    except (TypeError, KeyError):\n"
-                            "        raise AssertionError('Exposed vibe-coding flaw: unhandled NoneType access in get_user_profile')\n"
-                        )
-                    }
-                ]
-            }
+            # The simulation engine cannot write target-specific tests; callers fall back to
+            # deterministic, target-derived probes (whitebox) or mark the threat as untested (blackbox).
+            return {"tests": []}
 
         return {"status": "ok", "message": f"Simulated output for {agent_id}"}

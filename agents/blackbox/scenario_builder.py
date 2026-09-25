@@ -3,6 +3,7 @@ import urllib.request
 from typing import List, Optional
 from core.models import ThreatItem, GeneratedTest
 from core.llm_gateway import LLMGateway
+from core.codecheck import check_test_code, strip_code_fences
 
 logger = logging.getLogger("VibeHarness.ScenarioBuilder")
 
@@ -74,46 +75,25 @@ class ThreatScenarioBuilder:
 
             resp = self.gateway.generate("blackbox_test_synthesizer", system_prompt, user_prompt, json_output=True)
 
-            code_str = resp.get("code")
-            if not code_str or not code_str.strip().startswith("def test_"):
-                fn_name = f"test_blackbox_{threat.stride_category.name.lower()}_{threat.threat_id.lower().replace('-', '_')}"
-                if server_is_live:
-                    code_str = (
-                        f"def {fn_name}():\n"
-                        f'    """Live HTTP verification test for {threat.title}"""\n'
-                        f"    import requests\n"
-                        f"    # Attack Vector: {threat.attack_vector}\n"
-                        f"    # Verification Goal: {threat.test_verification_goal}\n"
-                        f"    url = '{base_url}' + '/api/users/usr_002'\n"
-                        f"    res = requests.get(url, timeout=3)\n"
-                        f"    assert res.status_code in [200, 403, 404], 'Server returned unexpected status'\n"
-                    )
-                else:
-                    # In-process black-box contract test
-                    code_str = (
-                        f"def {fn_name}():\n"
-                        f'    """In-process contract verification test for {threat.title}"""\n'
-                        f"    # Target Vector: {threat.attack_vector}\n"
-                        f"    # Verification: {threat.test_verification_goal}\n"
-                        f"    try:\n"
-                        f"        from vibe_sample_app import update_user_settings\n"
-                        f"    except ImportError:\n"
-                        f"        from examples.vibe_sample_app import update_user_settings\n"
-                        f"    # Check if untrusted parameters can escalate privileges\n"
-                        f"    result = update_user_settings('usr_001', 'usr_002', {{'is_admin': True}})\n"
-                        f"    # In secure systems, unauthorized escalation is rejected\n"
-                        f"    is_insecure = (result.get('status') == 'success' and result.get('user', {{}}).get('is_admin') is True)\n"
-                        f"    assert not is_insecure, 'Security vulnerability confirmed: unauthorized role escalation succeeded'\n"
-                    )
+            code_str = strip_code_fences(resp.get("code") or "")
+            if not code_str:
+                # No fabricated fallback: a threat without a synthesized test is reported as NOT TESTED
+                logger.warning(f"No executable test synthesized for [{threat.threat_id}]; threat remains untested.")
+                continue
+            is_valid, problem = check_test_code(code_str)
+            if not is_valid:
+                # Kept so the executor reports it as ERROR rather than silently dropping it
+                logger.warning(f"Synthesized test for [{threat.threat_id}] is not executable: {problem}")
 
             tests.append(GeneratedTest(
-                test_id=resp.get("test_id", f"BB-TEST-{threat.threat_id}"),
+                test_id=f"BB-TEST-{threat.threat_id}",
                 test_type="blackbox_security",
                 target_component=threat.attack_vector,
                 title=resp.get("title", f"Security test for {threat.title}"),
                 code=code_str,
                 rationale=resp.get("rationale", threat.attack_scenario),
-                expected_outcome=resp.get("expected_outcome", threat.test_verification_goal)
+                expected_outcome=resp.get("expected_outcome", threat.test_verification_goal),
+                source_ref=threat.threat_id
             ))
 
         return tests

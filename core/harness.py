@@ -34,7 +34,7 @@ class VibeHarnessCommander:
     and synchronizes sub-agents across White-Box and Black-Box testing phases.
     """
 
-    def __init__(self, config_path: str = "config/agents_config.yaml"):
+    def __init__(self, config_path: str = "config/agents_config.yaml", execution_mode: Optional[str] = None):
         if sys.platform == "win32":
             try:
                 import io
@@ -43,7 +43,7 @@ class VibeHarnessCommander:
             except Exception:
                 pass
         self.console = Console(force_terminal=False)
-        self.gateway = LLMGateway(config_path)
+        self.gateway = LLMGateway(config_path, execution_mode=execution_mode)
         self.sandbox = LocalSubprocessSandbox(timeout_seconds=30)
         self.ast_extractor = ASTExtractor()
         self.multi_reviewer = HeterogeneousReviewerEnsemble(self.gateway)
@@ -73,7 +73,8 @@ class VibeHarnessCommander:
         self.console.print(Panel.fit(
             "[bold cyan][VibeHarness-MAS] Commander Harness Active[/bold cyan]\n"
             f"[yellow]Target Codebase:[/yellow] {os.path.abspath(target_dir)}\n"
-            "[green]Multi-Model Ensemble:[/green] Claude 3.7 | NVIDIA Nemotron | ChatGPT (GPT-4o)",
+            "[green]Multi-Model Ensemble:[/green] Claude 3.7 | NVIDIA Nemotron | ChatGPT (GPT-4o)\n"
+            f"[magenta]Execution Mode:[/magenta] {self.gateway.execution_mode}",
             title="AI Test Orchestration Engine",
             border_style="cyan"
         ))
@@ -116,9 +117,10 @@ class VibeHarnessCommander:
             collect_coverage=True
         )
         wb_passed = sum(1 for r in wb_results if r.status == TestStatus.PASSED)
-        wb_failed = sum(1 for r in wb_results if r.status != TestStatus.PASSED)
+        wb_failed = sum(1 for r in wb_results if r.status == TestStatus.FAILED)
+        wb_errored = sum(1 for r in wb_results if r.status in (TestStatus.ERROR, TestStatus.SKIPPED))
         cov_display = f"{cov_pct:.1f}%" if cov_pct is not None else "N/A"
-        self.console.print(f"[+] White-Box Execution Outcome: [green]{wb_passed} Passed[/green] | [red]{wb_failed} Failed/Exposed[/red] | Line Coverage: [bold cyan]{cov_display}[/bold cyan]")
+        self.console.print(f"[+] White-Box Execution Outcome: [green]{wb_passed} Passed[/green] | [red]{wb_failed} Failed/Exposed[/red] | [yellow]{wb_errored} Error/Not Run[/yellow] | Line Coverage: [bold cyan]{cov_display}[/bold cyan]")
 
         # -------------------------------------------------------------
         # Phase 4: Mandatory Black-Box Threat Modeling (STRIDE & OWASP)
@@ -148,7 +150,10 @@ class VibeHarnessCommander:
         )
         bb_passed = sum(1 for r in bb_results if r.status == TestStatus.PASSED)
         bb_breaches = sum(1 for r in bb_results if r.is_security_exploit_confirmed)
-        self.console.print(f"[+] Dynamic Black-Box Outcome: [green]{bb_passed} Defended[/green] | [red]{bb_breaches} Confirmed Breaches[/red]")
+        bb_errored = sum(1 for r in bb_results if r.status in (TestStatus.ERROR, TestStatus.SKIPPED))
+        tested_threat_ids = {t.source_ref for t in bb_tests}
+        untested_threats = [t.threat_id for t in threat_report.threats if t.threat_id not in tested_threat_ids]
+        self.console.print(f"[+] Dynamic Black-Box Outcome: [green]{bb_passed} Defended[/green] | [red]{bb_breaches} Confirmed Breaches[/red] | [yellow]{bb_errored} Error/Not Run[/yellow] | {len(untested_threats)} Threats Not Tested")
 
         # -------------------------------------------------------------
         # Phase 6: Quality Gate Synthesis & Reporting
@@ -156,12 +161,28 @@ class VibeHarnessCommander:
         self.console.print("\n[bold blue]=== Phase 6: Commander Quality Gate Synthesis ===[/bold blue]")
         critical_threats = sum(1 for t in threat_report.threats if t.severity == FindingSeverity.CRITICAL)
 
+        # Evidence gaps that forbid a READY_TO_SHIP verdict
+        inconclusive_reasons: List[str] = []
+        if self.gateway.used_simulation:
+            simulated_agents = sorted({rec.agent_id for rec in self.gateway.call_log if rec.mode == "simulated"})
+            inconclusive_reasons.append(f"Simulation engine (not real models) was used for: {', '.join(simulated_agents)}")
+        if wb_errored or bb_errored:
+            inconclusive_reasons.append(f"{wb_errored + bb_errored} generated test(s) errored or did not run")
+        if untested_threats:
+            inconclusive_reasons.append(f"{len(untested_threats)} modeled threat(s) have no executable test: {', '.join(untested_threats)}")
+        if not wb_results and not bb_results:
+            inconclusive_reasons.append("No tests were executed")
+
         if bb_breaches > 0 or critical_threats > 2:
             overall_status = "BLOCKED_CRITICAL_RISK"
         elif wb_failed > 0:
             overall_status = "NEEDS_FIXES"
+        elif inconclusive_reasons:
+            overall_status = "INCONCLUSIVE"
         else:
             overall_status = "READY_TO_SHIP"
+        for reason in inconclusive_reasons:
+            self.console.print(f"[yellow][!] Evidence gap: {reason}[/yellow]")
 
         recommendations = [
             "Implement server-side input length & type sanitization to prevent memory exhaustion / ReDoS.",
@@ -175,10 +196,15 @@ class VibeHarnessCommander:
             confirmed_whitebox_bugs=len(debate_result.confirmed_findings),
             whitebox_tests_passed=wb_passed,
             whitebox_tests_failed=wb_failed,
+            whitebox_tests_errored=wb_errored,
             total_threats_modeled=len(threat_report.threats),
             critical_threats_count=critical_threats,
             blackbox_tests_passed=bb_passed,
             blackbox_security_breaches=bb_breaches,
+            blackbox_tests_errored=bb_errored,
+            untested_threat_ids=untested_threats,
+            agent_calls=list(self.gateway.call_log),
+            inconclusive_reasons=inconclusive_reasons,
             line_coverage_pct=cov_pct,
             detected_language=lang_str,
             key_recommendations=recommendations
@@ -198,7 +224,7 @@ class VibeHarnessCommander:
             f.write(md_content)
 
         self.console.print(f"[+] Final audit report written to: [bold green]{output_report_path}[/bold green]")
-        verdict_color = "green" if overall_status == "READY_TO_SHIP" else "red"
+        verdict_color = {"READY_TO_SHIP": "green", "INCONCLUSIVE": "yellow"}.get(overall_status, "red")
         self.console.print(Panel.fit(
             f"[bold]Quality Gate Verdict:[/bold] [{verdict_color} bold]{overall_status}[/{verdict_color} bold]\n"
             f"White-Box Passed: {wb_passed} | Black-Box Breaches: {bb_breaches}\n"

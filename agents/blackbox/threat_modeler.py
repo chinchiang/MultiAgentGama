@@ -111,5 +111,6 @@ class AutomatedThreatModeler:
             entrypoints=resp.get("entrypoints", entrypoints),
             trust_boundaries=resp.get("trust_boundaries", ["Internet to Public Gateway", "Gateway to Database"]),
             assets=resp.get("assets", ["User Credentials", "Business Records"]),
-            threats=threat_items
+            threats=threat_items,
+            is_simulated=self.gateway.is_simulated(resp)
         )

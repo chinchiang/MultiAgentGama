@@ -82,6 +82,7 @@ class HeterogeneousReviewerEnsemble:
             logger.info(f"Running white-box audit with reviewer: {name}")
             resp = self.gateway.generate(agent_id, system_prompt, user_prompt, json_output=True)
 
+            simulated = self.gateway.is_simulated(resp)
             raw_findings = resp.get("findings", [])
             for idx, item in enumerate(raw_findings):
                 severity_str = item.get("severity", "MEDIUM").upper()
@@ -102,7 +103,8 @@ class HeterogeneousReviewerEnsemble:
                     description=item.get("description", ""),
                     root_cause=item.get("root_cause", ""),
                     suspected_vibe_flaw=item.get("suspected_vibe_flaw", ""),
-                    suggested_test_scenario=item.get("suggested_test_scenario", "")
+                    suggested_test_scenario=item.get("suggested_test_scenario", ""),
+                    is_simulated=simulated
                 )
                 all_findings.append(finding)
 

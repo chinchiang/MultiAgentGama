@@ -5,6 +5,7 @@ import sys
 import os
 
 from core.harness import VibeHarnessCommander
+from core.llm_gateway import LLMGatewayError
 
 
 if sys.platform == "win32":
@@ -54,6 +55,12 @@ def main():
         help="Path to agents and models configuration YAML"
     )
     parser.add_argument(
+        "--mode", "-m",
+        choices=["live", "hybrid", "mock"],
+        default=None,
+        help="Override execution_mode from config: live (real APIs only, fail otherwise), hybrid, or mock"
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable debug logging"
@@ -67,19 +74,25 @@ def main():
         print(f"Error: Target path '{target_path}' does not exist.", file=sys.stderr)
         sys.exit(1)
 
-    commander = VibeHarnessCommander(config_path=args.config)
-    summary = commander.run_full_pipeline(
-        target_dir=target_path,
-        system_description=args.desc,
-        base_url=args.base_url,
-        output_report_path=args.output
-    )
+    commander = VibeHarnessCommander(config_path=args.config, execution_mode=args.mode)
+    try:
+        summary = commander.run_full_pipeline(
+            target_dir=target_path,
+            system_description=args.desc,
+            base_url=args.base_url,
+            output_report_path=args.output
+        )
+    except LLMGatewayError as e:
+        print(f"Error: live model invocation failed in strict 'live' mode: {e}", file=sys.stderr)
+        sys.exit(4)
 
     # Return exit code based on Quality Gate
     if summary.overall_status == "BLOCKED_CRITICAL_RISK":
         sys.exit(2)
     elif summary.overall_status == "NEEDS_FIXES":
         sys.exit(1)
+    elif summary.overall_status == "INCONCLUSIVE":
+        sys.exit(3)
     else:
         sys.exit(0)
 

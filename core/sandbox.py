@@ -4,14 +4,17 @@ import os
 import sys
 import time
 import re
-from typing import Dict, Any, Optional, Tuple
+import shutil
+from typing import Dict, Any, Optional, Tuple, List
 
 
 class LocalSubprocessSandbox:
     """
     Subprocess sandbox for executing test scripts and dynamic payloads.
-    Provides process isolation, environment sanitization, execution timeout enforcement,
-    and automatic code coverage collection.
+    Provides process isolation, execution timeout enforcement,
+    per-test JUnit XML reporting, and automatic code coverage collection.
+    Generated test files and coverage data are kept in a throwaway temp directory,
+    never inside the target codebase.
     """
 
     def __init__(self, timeout_seconds: int = 30):
@@ -26,26 +29,43 @@ class LocalSubprocessSandbox:
         coverage_target: Optional[str] = None
     ) -> Tuple[int, str, str, float, Optional[float]]:
         """
-        Executes Python code in an isolated subprocess.
+        Executes a single Python test module in an isolated subprocess.
         Returns: (exit_code, stdout, stderr, execution_duration_seconds, line_coverage_percent)
+        """
+        exit_code, stdout, stderr, duration, coverage, _ = self.execute_pytest_files(
+            {"test_exec.py": code_content},
+            custom_env=custom_env,
+            working_dir=working_dir,
+            collect_coverage=collect_coverage,
+            coverage_target=coverage_target
+        )
+        return exit_code, stdout, stderr, duration, coverage
+
+    def execute_pytest_files(
+        self,
+        files: Dict[str, str],
+        custom_env: Optional[Dict[str, str]] = None,
+        working_dir: Optional[str] = None,
+        collect_coverage: bool = False,
+        coverage_target: Optional[str] = None
+    ) -> Tuple[int, str, str, float, Optional[float], Optional[str]]:
+        """
+        Writes each {filename: code} entry as a separate test module and runs them in one pytest process.
+        A collection error in one module does not abort the others.
+        Returns: (exit_code, stdout, stderr, duration_seconds, line_coverage_percent, junit_xml_text)
         """
         base_dir = os.path.abspath(working_dir or os.getcwd())
         project_root = os.path.abspath(os.getcwd())
         parent_dir = os.path.dirname(base_dir)
 
-        sandbox_dir = os.path.join(base_dir, ".vibe_sandbox")
-        os.makedirs(sandbox_dir, exist_ok=True)
-
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            prefix="test_exec_",
-            suffix=".py",
-            dir=sandbox_dir,
-            delete=False,
-            encoding="utf-8"
-        ) as temp_file:
-            temp_file.write(code_content)
-            temp_path = temp_file.name
+        run_dir = tempfile.mkdtemp(prefix="vibe_sandbox_")
+        test_paths: List[str] = []
+        for filename, code in files.items():
+            path = os.path.join(run_dir, filename)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(code)
+            test_paths.append(path)
+        junit_path = os.path.join(run_dir, "junit.xml")
 
         env = os.environ.copy()
         # Inject paths into PYTHONPATH to resolve target modules reliably
@@ -54,11 +74,19 @@ class LocalSubprocessSandbox:
         if existing_pythonpath:
             paths_to_inject.append(existing_pythonpath)
         env["PYTHONPATH"] = os.pathsep.join(paths_to_inject)
+        # Keep coverage data out of the target directory
+        env["COVERAGE_FILE"] = os.path.join(run_dir, ".coverage")
 
         if custom_env:
             env.update(custom_env)
 
-        cmd = [sys.executable, "-m", "pytest", temp_path, "-v"]
+        cmd = [
+            sys.executable, "-m", "pytest", *test_paths, "-v",
+            "--continue-on-collection-errors",
+            "-p", "no:cacheprovider",
+            f"--rootdir={run_dir}",
+            f"--junitxml={junit_path}",
+        ]
         if collect_coverage:
             cov_pkg = coverage_target or base_dir
             cmd.extend([f"--cov={cov_pkg}", "--cov-report=term-missing"])
@@ -82,19 +110,20 @@ class LocalSubprocessSandbox:
             if collect_coverage:
                 coverage_percent = self._extract_coverage_percent(stdout)
 
-            return process.returncode, stdout, stderr, duration, coverage_percent
+            junit_xml = None
+            if os.path.exists(junit_path):
+                with open(junit_path, "r", encoding="utf-8") as f:
+                    junit_xml = f.read()
+
+            return process.returncode, stdout, stderr, duration, coverage_percent, junit_xml
         except subprocess.TimeoutExpired:
             duration = time.time() - start_time
-            return -1, "", f"Execution timed out after {self.timeout_seconds} seconds.", duration, None
+            return -1, "", f"Execution timed out after {self.timeout_seconds} seconds.", duration, None, None
         except Exception as e:
             duration = time.time() - start_time
-            return -2, "", f"Execution failed: {str(e)}", duration, None
+            return -2, "", f"Execution failed: {str(e)}", duration, None, None
         finally:
-            if os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
+            shutil.rmtree(run_dir, ignore_errors=True)
 
     def _extract_coverage_percent(self, stdout: str) -> Optional[float]:
         """Extracts total coverage percentage from pytest-cov output table."""

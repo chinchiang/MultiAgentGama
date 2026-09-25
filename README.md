@@ -104,13 +104,23 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 export NVIDIA_API_KEY="nvapi-..."
 export OPENAI_API_KEY="sk-..."
 ```
-*註：若未配置 API 金鑰，工具包會自動啟用高保真模擬引擎（Simulation Engine），確保任何開發者皆可無痛體驗完整工作流。*
+*註：若未配置 API 金鑰，`hybrid` 模式會退回模擬引擎（Simulation Engine）以便離線體驗工作流。模擬引擎回傳的是**與目標程式碼無關的固定範本**，報告會以 `[SIMULATED]` 與「Execution Provenance」表明確標示，且品質閘門不會因此給出 `READY_TO_SHIP`。*
+
+| `--mode` | 行為 |
+| :--- | :--- |
+| `live` | 只呼叫真實模型；缺金鑰或呼叫失敗即中止（exit code 4） |
+| `hybrid`（預設） | 能呼叫就呼叫，否則退回模擬並在報告中標示 |
+| `mock` | 全部使用模擬引擎 |
+
+模擬模式下，白箱測試改用由目標函式自動推導的 None 輸入健壯性探針（`WB-PROBE-*`）；黑箱威脅若無可執行測試，會列為「Threats Not Tested」，不會捏造測試結果。
 
 ### 3. 對目標專案執行全流程檢驗
 
 ```bash
 python main.py --target examples --output vibe_harness_report.md
 ```
+
+Exit code：`0` READY_TO_SHIP、`1` NEEDS_FIXES、`2` BLOCKED_CRITICAL_RISK、`3` INCONCLUSIVE（有模擬結果、測試錯誤或未測試威脅等證據缺口）、`4` live 模式模型呼叫失敗。
 
 ### 4. 運行工具包本身單元測試
 
