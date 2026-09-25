@@ -247,13 +247,9 @@ class LLMGateway:
                 ]
             }
 
-        elif "debater" in agent_id:
-            return {
-                "consensus_summary": "All three heterogeneous models identified that the codebase prioritizes superficial functionality over defensive bounds, resource limits, and error handling.",
-                "model_agreement_ratio": 0.88,
-                "confirmed_findings_indices": [0, 1, 2],
-                "disputed_findings_indices": []
-            }
+        elif "verifier" in agent_id:
+            # A template cannot judge target-specific findings; the debater ignores simulated verdicts
+            return {"verdicts": []}
 
         elif "threat_modeler" in agent_id:
             return {

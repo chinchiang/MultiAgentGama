@@ -219,23 +219,6 @@ def test_missing_required_key_is_recorded_invalid(fake_live):
     assert gateway.invalid_calls and "threats" in gateway.invalid_calls[0].reason
 
 
-def test_debater_ignores_out_of_range_indices_and_bogus_ratio(fake_live):
-    from agents.whitebox.debater import MultiModelDebater
-    from core.models import ReviewFinding, FindingSeverity
-    fake_live(lambda s, u: '{"confirmed_findings_indices": [0, 7, "x"], "disputed_findings_indices": [1], "model_agreement_ratio": 3}')
-    findings = [
-        ReviewFinding(finding_id=f"F{i}", reviewer_name="r", model_alias="claude", file_path="f.py",
-                      severity=FindingSeverity.HIGH, title=f"t{i}", description="", root_cause="",
-                      suspected_vibe_flaw="", suggested_test_scenario="")
-        for i in range(3)
-    ]
-    result = MultiModelDebater(LLMGateway(CONFIG, execution_mode="live")).arbitrate(findings)
-    assert result.arbitration_applied
-    assert [f.finding_id for f in result.confirmed_findings] == ["F0", "F2"]  # F2 unruled -> kept
-    assert [f.finding_id for f in result.disputed_findings] == ["F1"]
-    assert result.model_agreement_ratio is None
-
-
 def test_unusable_threat_model_and_modeled_criticals_never_ship_or_block(fake_live, tmp_path):
     target = tmp_path / "app"
     target.mkdir()

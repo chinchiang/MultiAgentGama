@@ -104,14 +104,14 @@ class VibeHarnessCommander:
         if len(findings) < len(raw_findings):
             self.console.print(f"[+] Merged duplicates into [bold]{len(findings)}[/bold] distinct findings ({corroborated} reported by more than one model).")
 
-        self.console.print("[yellow]Dispatching to Multi-Model Debater to resolve bias and hallucinations...[/yellow]")
-        debate_result: MultiModelDebateResult = self.debater.arbitrate(findings)
+        self.console.print("[yellow]Cross-verifying findings: each is ruled on by the models that did not report it...[/yellow]")
+        debate_result: MultiModelDebateResult = self.debater.arbitrate(findings, symbols=symbols, root_dir=work_dir)
         if debate_result.arbitration_applied:
             ratio = debate_result.model_agreement_ratio
-            ratio_display = f"{ratio * 100:.1f}%" if ratio is not None else "N/A (not reported)"
-            self.console.print(f"[+] Arbiter-Reported Agreement Ratio: [bold green]{ratio_display}[/bold green]")
+            ratio_display = f"{ratio * 100:.1f}%" if ratio is not None else "N/A (no decisive votes)"
+            self.console.print(f"[+] Cross-Model Agreement: [bold green]{ratio_display}[/bold green] | {len(debate_result.disputed_findings)} disputed")
         else:
-            self.console.print("[yellow][!] Arbitration not applied; findings are unfiltered reviewer hypotheses.[/yellow]")
+            self.console.print("[yellow][!] Cross-model verification not applied; findings are unfiltered reviewer hypotheses.[/yellow]")
         self.console.print(f"[+] Confirmed Defect Hypotheses: [bold red]{len(debate_result.confirmed_findings)}[/bold red]")
 
         # -------------------------------------------------------------

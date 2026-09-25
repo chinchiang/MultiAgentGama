@@ -1,95 +1,189 @@
 import logging
-from typing import List
-from core.models import ReviewFinding, MultiModelDebateResult
+import os
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Optional, Tuple
+from core.models import ReviewFinding, MultiModelDebateResult, VerificationVote, CodeSymbol
 from core.llm_gateway import LLMGateway
+from core.codecontext import render_symbols
 
 logger = logging.getLogger("VibeHarness.Debater")
+
+VERIFIER_PREFIX = "whitebox_verifier_"
+_VERDICTS = {"confirm", "reject", "unsure"}
 
 
 class MultiModelDebater:
     """
-    Synthesizes findings from distinct LLM reviewers (Claude, Nemotron, ChatGPT),
-    resolves disputes, detects cross-model consensus, and filters out model-specific hallucinations.
+    Cross-model verification instead of a single arbiter model:
+    every finding is ruled on independently by each configured verifier model that did NOT report it
+    (the reporting model never judges its own finding). A model that reported the same defect
+    (merged as a duplicate) counts as a confirming vote without being asked.
+
+    Decision per finding: more confirms than rejects -> confirmed; more rejects -> disputed;
+    a tie (including no usable votes) -> kept, so the generated tests decide.
     """
+
+    FINDINGS_PER_CALL = 15
+    CODE_CONTEXT_TOKENS = 8000
+    MAX_WORKERS = 6
 
     def __init__(self, gateway: LLMGateway):
         self.gateway = gateway
+        # Verifier agents come from config, e.g. whitebox_verifier_claude -> model alias "claude"
+        self.verifiers: Dict[str, str] = {
+            agent_id: meta.get("model_alias", agent_id[len(VERIFIER_PREFIX):])
+            for agent_id, meta in gateway.agents_config.items()
+            if agent_id.startswith(VERIFIER_PREFIX)
+        }
 
-    def arbitrate(self, findings: List[ReviewFinding]) -> MultiModelDebateResult:
+    def arbitrate(
+        self,
+        findings: List[ReviewFinding],
+        symbols: Optional[List[CodeSymbol]] = None,
+        root_dir: Optional[str] = None
+    ) -> MultiModelDebateResult:
         if not findings:
             return MultiModelDebateResult(
                 confirmed_findings=[],
                 disputed_findings=[],
-                consensus_summary="No findings submitted for arbitration."
+                consensus_summary="No findings submitted for verification."
             )
 
-        findings_summary = "\n".join([
-            f"[{idx}] Source: {f.reviewer_name} ({f.model_alias}) | Severity: {f.severity.value}"
-            + (f" | Also reported by: {', '.join(f.corroborated_by)}" if f.corroborated_by else "") + "\n"
-            f"    Title: {f.title}\n"
-            f"    Cause: {f.root_cause}\n"
-            f"    Scenario: {f.suggested_test_scenario}"
-            for idx, f in enumerate(findings)
-        ])
+        # Which findings each verifier must rule on: never its own, never ones it already corroborated
+        assignments: Dict[str, List[int]] = {}
+        for agent_id, alias in self.verifiers.items():
+            idxs = [i for i, f in enumerate(findings) if alias != f.model_alias and alias not in f.corroborating_models]
+            if idxs:
+                assignments[agent_id] = idxs
+        jobs = [
+            (agent_id, idxs[i:i + self.FINDINGS_PER_CALL])
+            for agent_id, idxs in assignments.items()
+            for i in range(0, len(idxs), self.FINDINGS_PER_CALL)
+        ]
 
-        system_prompt = (
-            "You are the Chief Multi-Model Arbiter Agent.\n"
-            "Your duty is to critically evaluate code review findings submitted by different AI models "
-            "(Claude, Nemotron, ChatGPT) to eliminate false positives and identify genuine high-priority issues.\n\n"
-            "Output a JSON object with this schema:\n"
-            "{\n"
-            '  "consensus_summary": "High-level synthesis of verified vulnerabilities",\n'
-            '  "model_agreement_ratio": 0.85,\n'
-            '  "confirmed_findings_indices": [0, 1, 2],\n'
-            '  "disputed_findings_indices": []\n'
-            "}"
-        )
+        votes: Dict[int, List[VerificationVote]] = {
+            # Simulated reviewers agreeing with each other is not evidence
+            i: [] if f.is_simulated else [VerificationVote(model_alias=m, verdict="corroborated") for m in f.corroborating_models]
+            for i, f in enumerate(findings)
+        }
+        any_simulated = False
+        if jobs:
+            with ThreadPoolExecutor(max_workers=min(self.MAX_WORKERS, len(jobs))) as pool:
+                results = list(pool.map(lambda job: self._verify(job[0], findings, job[1], symbols, root_dir), jobs))
+            for job_votes, simulated in results:
+                any_simulated = any_simulated or simulated
+                for idx, vote in job_votes:
+                    votes[idx].append(vote)
 
-        user_prompt = f"Review Findings to Arbitrate:\n\n{findings_summary}"
-        resp = self.gateway.generate(
-            "whitebox_debater", system_prompt, user_prompt, json_output=True,
-            required_keys=["confirmed_findings_indices"]
-        )
-        simulated = self.gateway.is_simulated(resp)
-
-        if simulated or not self.gateway.is_usable(resp):
-            # A simulated arbiter returns a fixed template unrelated to these findings, and an unusable
-            # answer carries no decision: keep every finding (tests decide) and report no consensus figure.
-            reason = "simulated" if simulated else "unusable arbiter output"
-            logger.warning(f"Arbitration not applied ({reason}); all {len(findings)} findings kept unfiltered.")
+        # Only real, usable rulings (or real corroborations) count as verification
+        real_votes = sum(1 for vs in votes.values() for v in vs if v.verdict != "unsure")
+        if real_votes == 0:
+            reason = "simulated" if any_simulated or all(f.is_simulated for f in findings) else "no usable verifier output"
+            logger.warning(f"Verification not applied ({reason}); all {len(findings)} findings kept unfiltered.")
             return MultiModelDebateResult(
                 confirmed_findings=list(findings),
                 disputed_findings=[],
-                consensus_summary=f"Arbitration not applied ({reason}); findings are unfiltered reviewer hypotheses.",
+                consensus_summary=f"Cross-model verification not applied ({reason}); findings are unfiltered reviewer hypotheses.",
                 model_agreement_ratio=None,
                 arbitration_applied=False,
-                is_simulated=simulated
+                is_simulated=reason == "simulated"
             )
-
-        valid_idx = range(len(findings))
-        confirmed_indices = {i for i in resp.get("confirmed_findings_indices") or [] if isinstance(i, int) and i in valid_idx}
-        disputed_indices = {i for i in resp.get("disputed_findings_indices") or [] if isinstance(i, int) and i in valid_idx}
 
         confirmed: List[ReviewFinding] = []
         disputed: List[ReviewFinding] = []
-
+        agreeing = decisive = undecided = 0
         for idx, f in enumerate(findings):
-            # Findings the arbiter did not rule on are kept rather than silently dropped
-            if idx in confirmed_indices or idx not in disputed_indices:
-                confirmed.append(f)
+            vs = votes[idx]
+            yes = sum(1 for v in vs if v.verdict in ("confirm", "corroborated"))
+            no = sum(1 for v in vs if v.verdict == "reject")
+            ruled = f.model_copy(update={"verification_votes": vs})
+            if no > yes:
+                disputed.append(ruled)
+                agreeing += no
             else:
-                disputed.append(f)
+                confirmed.append(ruled)
+                if yes > no:
+                    agreeing += yes
+                else:
+                    undecided += 1
+            decisive += yes + no
 
-        agreement = resp.get("model_agreement_ratio")
-        if not isinstance(agreement, (int, float)) or not 0.0 <= agreement <= 1.0:
-            agreement = None
-        summary = resp.get("consensus_summary") or "Arbiter returned no summary."
-
+        # Agreement counts only findings that were actually decided; ties agree with nothing
+        ratio = agreeing / decisive if decisive else None
+        summary = (
+            f"{len(confirmed) - undecided} confirmed and {len(disputed)} disputed by cross-model majority; "
+            f"{undecided} undecided (kept for testing). Verifiers: {', '.join(sorted(set(self.verifiers.values())))}; "
+            f"no model ruled on its own finding."
+        )
         return MultiModelDebateResult(
             confirmed_findings=confirmed,
             disputed_findings=disputed,
             consensus_summary=summary,
-            model_agreement_ratio=float(agreement) if agreement is not None else None,
+            model_agreement_ratio=ratio,
             arbitration_applied=True,
             is_simulated=False
         )
+
+    def _verify(
+        self,
+        agent_id: str,
+        findings: List[ReviewFinding],
+        idxs: List[int],
+        symbols: Optional[List[CodeSymbol]],
+        root_dir: Optional[str]
+    ) -> Tuple[List[Tuple[int, VerificationVote]], bool]:
+        alias = self.verifiers[agent_id]
+        listing = "\n".join(
+            f"[{local}] {findings[i].severity.value} | {findings[i].file_path} :: {findings[i].symbol_name or '-'}\n"
+            f"    Title: {findings[i].title}\n"
+            f"    Description: {findings[i].description}\n"
+            f"    Cause: {findings[i].root_cause}\n"
+            f"    Scenario: {findings[i].suggested_test_scenario}"
+            for local, i in enumerate(idxs)
+        )
+        system_prompt = (
+            f"You are an independent code-review verifier (model: {alias}).\n"
+            "Other AI reviewers reported the findings below. You did not write them. For each one, decide from the "
+            "code whether the defect is real: 'confirm' (the code really has it), 'reject' (the code does not have it, "
+            "or the claim is not supported by the code shown), or 'unsure' (the code shown is insufficient).\n\n"
+            "Output a JSON object:\n"
+            "{\n"
+            '  "verdicts": [{"index": 0, "verdict": "confirm" | "reject" | "unsure", "reason": "one sentence"}]\n'
+            "}"
+        )
+        user_prompt = f"{self._code_context(findings, idxs, symbols, root_dir)}Findings to verify:\n\n{listing}"
+        resp = self.gateway.generate(agent_id, system_prompt, user_prompt, json_output=True, required_keys=["verdicts"])
+        simulated = self.gateway.is_simulated(resp)
+        if simulated or not self.gateway.is_usable(resp):
+            return [], simulated
+
+        votes: List[Tuple[int, VerificationVote]] = []
+        seen = set()
+        for item in resp.get("verdicts") or []:
+            if not isinstance(item, dict):
+                continue
+            local, verdict = item.get("index"), str(item.get("verdict", "")).lower()
+            # Out-of-range, duplicate or unknown rulings are ignored rather than guessed at
+            if not isinstance(local, int) or not 0 <= local < len(idxs) or local in seen or verdict not in _VERDICTS:
+                continue
+            seen.add(local)
+            votes.append((idxs[local], VerificationVote(
+                model_alias=alias, verdict=verdict, reason=str(item.get("reason") or "")
+            )))
+        return votes, False
+
+    def _code_context(
+        self,
+        findings: List[ReviewFinding],
+        idxs: List[int],
+        symbols: Optional[List[CodeSymbol]],
+        root_dir: Optional[str]
+    ) -> str:
+        if not symbols:
+            return ""
+        wanted = {(findings[i].file_path, findings[i].symbol_name) for i in idxs}
+        relevant = [s for s in symbols if (s.file_path, s.name) in wanted]
+        if not relevant:
+            return ""
+        root = root_dir or os.path.dirname(os.path.abspath(relevant[0].file_path))
+        return f"Code the findings refer to:\n{render_symbols(relevant, root, max_tokens=self.CODE_CONTEXT_TOKENS)}\n\n"

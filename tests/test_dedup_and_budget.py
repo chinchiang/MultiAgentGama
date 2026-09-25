@@ -67,15 +67,6 @@ def test_unattributed_findings_merge_only_on_identical_title():
     assert merged[0].corroborated_by == ["ChatGPT"]
 
 
-def test_arbiter_sees_corroboration(fake_live):
-    from agents.whitebox.debater import MultiModelDebater
-    prompts = []
-    fake_live(lambda s, u: prompts.append(u) or '{"confirmed_findings_indices": [0]}')
-    finding = _finding("A", "Claude", "t").model_copy(update={"corroborated_by": ["ChatGPT"]})
-    MultiModelDebater(LLMGateway(CONFIG, execution_mode="live")).arbitrate([finding])
-    assert "Also reported by: ChatGPT" in prompts[0]
-
-
 # --- Token budget --------------------------------------------------------------------
 
 def test_token_estimate_and_truncation():
