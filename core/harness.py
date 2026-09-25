@@ -63,7 +63,7 @@ class VibeHarnessCommander:
         Executes the complete dual-engine testing workflow:
         Phase 1: Code Ingestion & AST Extraction
         Phase 2: Heterogeneous Multi-Model White-Box Review & Debate
-        Phase 3: White-Box Unit & Property Test Execution in Sandbox
+        Phase 3: White-Box Unit Test Generation & Sandbox Execution
         Phase 4: Mandatory STRIDE/OWASP Threat Modeling
         Phase 5: Threat-Derived Black-Box Dynamic Test Execution
         Phase 6: Quality Gate Synthesis & Report Generation
