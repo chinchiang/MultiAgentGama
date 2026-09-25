@@ -1,7 +1,10 @@
 import logging
-from typing import List, Dict, Any
+import os
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Dict, Any, Optional
 from core.models import CodeSymbol, ReviewFinding, FindingSeverity
 from core.llm_gateway import LLMGateway
+from core.codecontext import render_symbols
 
 logger = logging.getLogger("VibeHarness.MultiReviewer")
 
@@ -14,13 +17,16 @@ class HeterogeneousReviewerEnsemble:
     - ChatGPT: Specification compliance & API contract adherence.
     """
 
+    BATCH_SIZE = 15  # symbols per prompt; every symbol is reviewed, in as many batches as needed
+    MAX_WORKERS = 6
+
     def __init__(self, gateway: LLMGateway):
         self.gateway = gateway
         self.reviewer_agents = [
             {
                 "agent_id": "whitebox_reviewer_claude",
                 "model_alias": "claude",
-                "name": "Claude 3.7 Logic Reviewer",
+                "name": "Claude Logic Reviewer",
                 "focus": "Logic state consistency, null-pointer assumptions, unhandled exception paths"
             },
             {
@@ -37,67 +43,39 @@ class HeterogeneousReviewerEnsemble:
             }
         ]
 
-    def review_symbols(self, symbols: List[CodeSymbol]) -> List[ReviewFinding]:
-        all_findings: List[ReviewFinding] = []
+    def review_symbols(self, symbols: List[CodeSymbol], root_dir: Optional[str] = None) -> List[ReviewFinding]:
         if not symbols:
-            return all_findings
+            return []
+        root = root_dir or os.path.dirname(os.path.abspath(symbols[0].file_path))
+        batches = [symbols[i:i + self.BATCH_SIZE] for i in range(0, len(symbols), self.BATCH_SIZE)]
+        jobs = [(reviewer, batch) for reviewer in self.reviewer_agents for batch in batches]
 
-        # Prepare code representation
-        code_overview = "\n\n".join([
-            f"File: {sym.file_path} (Lines {sym.line_start}-{sym.line_end})\n"
-            f"Symbol: {sym.name} [{sym.symbol_type}]\n"
-            f"Code:\n```python\n{sym.source_code}\n```"
-            for sym in symbols[:15]  # Limit batch per prompt
-        ])
+        # Reviewers are independent models, so their calls run concurrently
+        with ThreadPoolExecutor(max_workers=min(self.MAX_WORKERS, len(jobs))) as pool:
+            responses = list(pool.map(lambda job: self._review_batch(job[0], job[1], root), jobs))
 
-        for reviewer in self.reviewer_agents:
-            agent_id = reviewer["agent_id"]
-            name = reviewer["name"]
+        all_findings: List[ReviewFinding] = []
+        counters: Dict[str, int] = {}
+        for (reviewer, batch), (resp, simulated) in zip(jobs, responses):
             model_alias = reviewer["model_alias"]
-            focus = reviewer["focus"]
-
-            system_prompt = (
-                f"You are {name}, a specialized white-box AI code auditor.\n"
-                f"Your primary focus: {focus}.\n"
-                f"The target codebase was produced via 'vibe coding' (rapid conversational AI generation), "
-                f"which frequently passes superficial tests but hides critical logic gaps, lack of defensive boundaries, "
-                f"and unhandled exceptions.\n\n"
-                f"Analyze the provided code and return a JSON object with this schema:\n"
-                f"{{\n"
-                f'  "findings": [\n'
-                f'    {{\n'
-                f'      "severity": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW",\n'
-                f'      "title": "Brief title",\n'
-                f'      "description": "Detailed observation",\n'
-                f'      "root_cause": "Underlying mechanism",\n'
-                f'      "suspected_vibe_flaw": "Why vibe coding caused this",\n'
-                f'      "suggested_test_scenario": "Concrete test condition to expose this flaw"\n'
-                f'    }}\n'
-                f'  ]\n'
-                f"}}"
-            )
-
-            user_prompt = f"Target Codebase Extract:\n\n{code_overview}\n\nPlease audit against your specialty."
-
-            logger.info(f"Running white-box audit with reviewer: {name}")
-            resp = self.gateway.generate(agent_id, system_prompt, user_prompt, json_output=True, required_keys=["findings"])
-
-            simulated = self.gateway.is_simulated(resp)
-            raw_findings = resp.get("findings", [])
-            for idx, item in enumerate(raw_findings):
-                severity_str = item.get("severity", "MEDIUM").upper()
+            for item in resp.get("findings") or []:
+                if not isinstance(item, dict):
+                    continue
+                severity_str = str(item.get("severity", "MEDIUM")).upper()
                 try:
                     severity = FindingSeverity(severity_str)
                 except ValueError:
                     severity = FindingSeverity.MEDIUM
 
-                finding = ReviewFinding(
-                    finding_id=f"WB-{model_alias[:3].upper()}-{idx+1:02d}",
-                    reviewer_name=name,
+                symbol = self._match_symbol(item.get("symbol_name"), batch)
+                counters[model_alias] = counters.get(model_alias, 0) + 1
+                all_findings.append(ReviewFinding(
+                    finding_id=f"WB-{model_alias[:3].upper()}-{counters[model_alias]:02d}",
+                    reviewer_name=reviewer["name"],
                     model_alias=model_alias,
-                    file_path=symbols[0].file_path if symbols else "unknown",
-                    symbol_name=symbols[0].name if symbols else None,
-                    line_number=symbols[0].line_start if symbols else None,
+                    file_path=symbol.file_path if symbol else "unknown",
+                    symbol_name=symbol.name if symbol else item.get("symbol_name"),
+                    line_number=symbol.line_start if symbol else None,
                     severity=severity,
                     title=item.get("title", "Potential Defect"),
                     description=item.get("description", ""),
@@ -105,7 +83,50 @@ class HeterogeneousReviewerEnsemble:
                     suspected_vibe_flaw=item.get("suspected_vibe_flaw", ""),
                     suggested_test_scenario=item.get("suggested_test_scenario", ""),
                     is_simulated=simulated
-                )
-                all_findings.append(finding)
+                ))
 
         return all_findings
+
+    def _review_batch(self, reviewer: Dict[str, str], batch: List[CodeSymbol], root: str):
+        name = reviewer["name"]
+        system_prompt = (
+            f"You are {name}, a specialized white-box AI code auditor.\n"
+            f"Your primary focus: {reviewer['focus']}.\n"
+            f"The target codebase was produced via 'vibe coding' (rapid conversational AI generation), "
+            f"which frequently passes superficial tests but hides critical logic gaps, lack of defensive boundaries, "
+            f"and unhandled exceptions.\n\n"
+            f"Only report defects you can point to in the provided code. Return a JSON object with this schema:\n"
+            f"{{\n"
+            f'  "findings": [\n'
+            f'    {{\n'
+            f'      "symbol_name": "Exact Symbol name from the listing where the defect lives",\n'
+            f'      "severity": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW",\n'
+            f'      "title": "Brief title",\n'
+            f'      "description": "Detailed observation",\n'
+            f'      "root_cause": "Underlying mechanism",\n'
+            f'      "suspected_vibe_flaw": "Why vibe coding caused this",\n'
+            f'      "suggested_test_scenario": "Concrete test condition to expose this flaw"\n'
+            f'    }}\n'
+            f'  ]\n'
+            f"}}\n"
+            f'Return {{"findings": []}} if you find no defect.'
+        )
+        user_prompt = (
+            f"Target Codebase Extract:\n\n{render_symbols(batch, root, max_chars=40000)}\n\n"
+            f"Please audit against your specialty."
+        )
+        logger.info(f"Running white-box audit with reviewer: {name} ({len(batch)} symbols)")
+        resp = self.gateway.generate(
+            reviewer["agent_id"], system_prompt, user_prompt, json_output=True, required_keys=["findings"]
+        )
+        return resp, self.gateway.is_simulated(resp)
+
+    @staticmethod
+    def _match_symbol(name: Any, batch: List[CodeSymbol]) -> Optional[CodeSymbol]:
+        """Resolves the model-reported symbol name; findings that name no symbol fall back to the batch's first one."""
+        if isinstance(name, str) and name:
+            for sym in batch:
+                if sym.name == name or sym.name.split(".")[-1] == name:
+                    return sym
+            return None
+        return batch[0] if batch else None

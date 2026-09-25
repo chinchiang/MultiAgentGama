@@ -5,7 +5,7 @@ import sys
 import os
 
 from core.harness import VibeHarnessCommander
-from core.llm_gateway import LLMGatewayError
+from core.llm_gateway import LLMGatewayError, DEFAULT_CONFIG_PATH
 
 
 if sys.platform == "win32":
@@ -51,8 +51,8 @@ def main():
     )
     parser.add_argument(
         "--config", "-c",
-        default="config/agents_config.yaml",
-        help="Path to agents and models configuration YAML"
+        default=DEFAULT_CONFIG_PATH,
+        help="Path to agents and models configuration YAML (default: the repo's config/agents_config.yaml)"
     )
     parser.add_argument(
         "--mode", "-m",

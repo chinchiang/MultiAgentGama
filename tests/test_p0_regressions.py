@@ -190,29 +190,6 @@ def test_clean_target_in_mock_mode_is_inconclusive(tmp_path):
 
 # --- Gate honesty: vacuous tests, unusable model output, arbitration ---------
 
-class _FakeLiteLLM:
-    """Stands in for litellm; `responder(system_prompt, user_prompt)` returns the raw model text."""
-
-    def __init__(self, responder):
-        self.responder = responder
-
-    def completion(self, **kwargs):
-        from types import SimpleNamespace
-        msgs = kwargs["messages"]
-        text = self.responder(msgs[0]["content"], msgs[1]["content"])
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))])
-
-
-@pytest.fixture
-def fake_live(monkeypatch):
-    for var in ("ANTHROPIC_API_KEY", "NVIDIA_API_KEY", "OPENAI_API_KEY"):
-        monkeypatch.setenv(var, "test-key")
-
-    def install(responder):
-        monkeypatch.setattr("core.llm_gateway.litellm", _FakeLiteLLM(responder))
-    return install
-
-
 def test_vacuous_test_is_error_not_defended(executor, tmp_path):
     results, _ = executor.execute_test_suite([_test("A", "def test_a():\n    pass")], working_dir=str(tmp_path))
     assert results[0].status == TestStatus.ERROR

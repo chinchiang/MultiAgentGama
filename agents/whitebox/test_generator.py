@@ -5,6 +5,7 @@ from typing import List, Optional, Set
 from core.models import ReviewFinding, GeneratedTest, CodeSymbol
 from core.llm_gateway import LLMGateway
 from core.codecheck import check_test_code, strip_code_fences
+from core.codecontext import file_source, fence_language, import_instructions
 
 logger = logging.getLogger("VibeHarness.TestGenerator")
 
@@ -26,33 +27,39 @@ class WhiteboxTestGenerator:
     def generate_tests_for_findings(
         self,
         findings: List[ReviewFinding],
-        symbols: List[CodeSymbol]
+        symbols: List[CodeSymbol],
+        root_dir: Optional[str] = None
     ) -> List[GeneratedTest]:
         if not findings:
             return []
 
         generated_tests: List[GeneratedTest] = []
         target_file = symbols[0].file_path if symbols else "main.py"
+        root = root_dir or os.path.dirname(os.path.abspath(target_file))
         needs_probes = False
 
         for idx, finding in enumerate(findings):
             system_prompt = (
                 "You are an expert Python QA Engineer and Test Automation Specialist.\n"
-                "Your job is to generate a robust, executable pytest test function that asserts "
-                "correct behavior under the specified edge-case scenario.\n\n"
+                "Your job is to generate a robust, executable pytest test module that imports the real "
+                "code under test and asserts correct behavior under the specified edge-case scenario.\n"
+                "Rules: import the target exactly as instructed; every test_ function must assert on the "
+                "target's behavior (assert / pytest.raises); a failing assertion must mean the target is defective; "
+                "do not use the network, do not write files outside tmp_path, do not mock the function under test.\n\n"
                 "Respond in JSON format:\n"
                 "{\n"
                 f'  "test_id": "WB-TEST-{idx+1:02d}",\n'
                 '  "title": "Clear description of test purpose",\n'
                 '  "rationale": "Why this test exposes vibe-coding flaws",\n'
                 '  "expected_outcome": "Expected assertion or exception handling",\n'
-                '  "code": "def test_something():\\n    # python code\\n    pass"\n'
+                '  "code": "import pytest\\nfrom module import func\\n\\ndef test_something():\\n    with pytest.raises(ValueError):\\n        func(None)"\n'
                 "}"
             )
 
             user_prompt = (
-                f"Target File: {finding.file_path}\n"
+                f"{self._code_context(finding, symbols, root, target_file)}\n\n"
                 f"Finding Title: {finding.title}\n"
+                f"Description: {finding.description}\n"
                 f"Root Cause: {finding.root_cause}\n"
                 f"Suggested Test Scenario: {finding.suggested_test_scenario}\n"
                 f"Produce an executable Pytest unit test."
@@ -110,7 +117,8 @@ class WhiteboxTestGenerator:
                 break
             heal_prompt = (
                 f"The following Python pytest code is invalid: {problem}.\n"
-                f"Fix it so it parses and defines at least one module-level test_ function. "
+                f"Fix it so it parses and defines at least one module-level test_ function, "
+                f"and every test_ function asserts on the target's behavior. "
                 f"Output the corrected Python code only:\n\n{code_to_check}"
             )
             resp = self.gateway.generate("whitebox_test_generator", "Fix Python Test Code", heal_prompt, json_output=False)
@@ -120,6 +128,22 @@ class WhiteboxTestGenerator:
             code_to_check = fixed
 
         return code_to_check
+
+    @staticmethod
+    def _code_context(finding: ReviewFinding, symbols: List[CodeSymbol], root: str, default_file: str) -> str:
+        """Import instructions plus the source the finding refers to (its symbol, else its whole file)."""
+        file_path = finding.file_path if finding.file_path not in ("", "unknown") else default_file
+        symbol = next((s for s in symbols if s.name == finding.symbol_name and s.file_path == file_path), None)
+        if symbol:
+            source = symbol.source_code
+            label = f"Source of `{symbol.name}` (lines {symbol.line_start}-{symbol.line_end})"
+        else:
+            source = file_source(file_path)
+            label = "Source of the target file"
+        return (
+            f"{import_instructions(file_path, root, symbol.name if symbol else None)}\n"
+            f"{label}:\n```{fence_language(file_path)}\n{source}\n```"
+        )
 
     @staticmethod
     def _is_async_def(source: str) -> bool:

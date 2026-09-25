@@ -13,7 +13,7 @@ from core.models import (
     ThreatModelReport,
     TestExecutionResult
 )
-from core.llm_gateway import LLMGateway
+from core.llm_gateway import LLMGateway, DEFAULT_CONFIG_PATH
 from core.sandbox import LocalSubprocessSandbox
 from agents.whitebox.ast_extractor import ASTExtractor
 from agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
@@ -33,7 +33,7 @@ class VibeHarnessCommander:
     and synchronizes sub-agents across White-Box and Black-Box testing phases.
     """
 
-    def __init__(self, config_path: str = "config/agents_config.yaml", execution_mode: Optional[str] = None):
+    def __init__(self, config_path: str = DEFAULT_CONFIG_PATH, execution_mode: Optional[str] = None):
         self.console = Console(force_terminal=False)
         self.gateway = LLMGateway(config_path, execution_mode=execution_mode)
         global_cfg = self.gateway.config.get("global", {})
@@ -71,7 +71,7 @@ class VibeHarnessCommander:
         self.console.print(Panel.fit(
             "[bold cyan][VibeHarness-MAS] Commander Harness Active[/bold cyan]\n"
             f"[yellow]Target Codebase:[/yellow] {os.path.abspath(target_dir)}\n"
-            "[green]Multi-Model Ensemble:[/green] Claude 3.7 | NVIDIA Nemotron | ChatGPT (GPT-4o)\n"
+            "[green]Multi-Model Ensemble:[/green] Claude | NVIDIA Nemotron | ChatGPT\n"
             f"[magenta]Execution Mode:[/magenta] {self.gateway.execution_mode}",
             title="AI Test Orchestration Engine",
             border_style="cyan"
@@ -96,7 +96,7 @@ class VibeHarnessCommander:
         # Phase 2: Heterogeneous White-Box Review & Multi-Model Debate
         # -------------------------------------------------------------
         self.console.print("\n[bold blue]=== Phase 2: Heterogeneous Multi-Model White-Box Review ===[/bold blue]")
-        raw_findings = self.multi_reviewer.review_symbols(symbols)
+        raw_findings = self.multi_reviewer.review_symbols(symbols, root_dir=work_dir)
         self.console.print(f"[+] Received [bold]{len(raw_findings)}[/bold] raw review findings from Claude, Nemotron, and ChatGPT.")
 
         self.console.print("[yellow]Dispatching to Multi-Model Debater to resolve bias and hallucinations...[/yellow]")
@@ -113,7 +113,9 @@ class VibeHarnessCommander:
         # Phase 3: White-Box Test Generation & Sandbox Execution
         # -------------------------------------------------------------
         self.console.print("\n[bold blue]=== Phase 3: White-Box Test Generation & Sandbox Execution ===[/bold blue]")
-        wb_tests = self.whitebox_test_gen.generate_tests_for_findings(debate_result.confirmed_findings, symbols)
+        wb_tests = self.whitebox_test_gen.generate_tests_for_findings(
+            debate_result.confirmed_findings, symbols, root_dir=work_dir
+        )
         self.console.print(f"[+] Generated [bold]{len(wb_tests)}[/bold] targeted Pytest unit/boundary tests (with self-healing validation).")
 
         wb_results, cov_pct = self.executor.execute_test_suite(
@@ -135,7 +137,9 @@ class VibeHarnessCommander:
         threat_report: ThreatModelReport = self.threat_modeler.model_system(
             system_description=sys_desc,
             entrypoints=routes or ["HTTP/REST Endpoints"],
-            detected_routes=routes
+            detected_routes=routes,
+            symbols=symbols,
+            root_dir=work_dir
         )
         self.console.print(f"[+] STRIDE Matrix Constructed: [bold yellow]{len(threat_report.threats)}[/bold yellow] attack scenarios identified.")
         for t in threat_report.threats:
@@ -145,7 +149,9 @@ class VibeHarnessCommander:
         # Phase 5: Threat-Derived Black-Box Dynamic Test Execution
         # -------------------------------------------------------------
         self.console.print("\n[bold blue]=== Phase 5: Threat-Derived Black-Box Test Execution ===[/bold blue]")
-        bb_tests = self.scenario_builder.build_test_cases_from_threats(threat_report.threats, base_url=base_url)
+        bb_tests = self.scenario_builder.build_test_cases_from_threats(
+            threat_report.threats, base_url=base_url, symbols=symbols, root_dir=work_dir
+        )
         self.console.print(f"[+] Synthesized [bold]{len(bb_tests)}[/bold] black-box attack scripts targeting identified threats.")
 
         bb_results, _ = self.executor.execute_test_suite(
@@ -179,6 +185,14 @@ class VibeHarnessCommander:
             )
         if not symbols:
             inconclusive_reasons.append("No analyzable source symbols were found in the target")
+        if self.ast_extractor.parse_failures:
+            inconclusive_reasons.append(
+                f"{len(self.ast_extractor.parse_failures)} source file(s) could not be parsed and were not analyzed"
+            )
+        if self.ast_extractor.skipped_files:
+            inconclusive_reasons.append(
+                f"{len(self.ast_extractor.skipped_files)} source file(s) were skipped by the max_files limit"
+            )
         if wb_errored or bb_errored:
             inconclusive_reasons.append(f"{wb_errored + bb_errored} generated test(s) errored, were skipped, or did not run")
         if not wb_results:

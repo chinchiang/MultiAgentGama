@@ -14,6 +14,10 @@ except ImportError:
 
 logger = logging.getLogger("VibeHarness.LLMGateway")
 
+DEFAULT_CONFIG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "agents_config.yaml"
+)
+
 # Key added to every response so callers can tell simulated output from real model output
 PROVENANCE_KEY = "_provenance"
 
@@ -32,7 +36,7 @@ class LLMGateway:
     Every call is recorded in `call_log` so reports can disclose which results are simulated.
     """
 
-    def __init__(self, config_path: str = "config/agents_config.yaml", execution_mode: Optional[str] = None):
+    def __init__(self, config_path: str = DEFAULT_CONFIG_PATH, execution_mode: Optional[str] = None):
         self.config = self._load_config(config_path)
         self.execution_mode = execution_mode or self.config.get("global", {}).get("execution_mode", "hybrid")
         if self.execution_mode not in ("live", "hybrid", "mock"):
@@ -59,10 +63,11 @@ class LLMGateway:
         return resp.get(PROVENANCE_KEY, {}).get("mode") != "invalid"
 
     def _load_config(self, path: str) -> Dict[str, Any]:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                return yaml.safe_load(f) or {}
-        return {}
+        # A missing config would silently drop every model/agent mapping, so fail loudly instead
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Agent config not found: {path}")
+        with open(path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
 
     def is_live_configured(self, model_alias: str) -> bool:
         """Checks whether the requested model has its API key configured."""
@@ -107,17 +112,7 @@ class LLMGateway:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ]
-                api_base = model_info.get("api_base")
-                kwargs = {
-                    "model": model_name,
-                    "messages": messages,
-                    "temperature": temperature,
-                }
-                if api_base:
-                    kwargs["api_base"] = api_base
-
-                response = litellm.completion(**kwargs)
-                raw_text = response.choices[0].message.content
+                raw_text, model_name = self._complete(model_info, model_name, messages, temperature)
                 result = self._clean_and_parse_json(raw_text) if json_output else {"raw": raw_text}
                 problem = self._validate_output(result, json_output, required_keys)
                 if problem:
@@ -141,6 +136,35 @@ class LLMGateway:
         result = self._generate_simulated_response(agent_id, model_alias, user_prompt)
         result[PROVENANCE_KEY] = {"mode": "simulated", "model": model_name, "reason": fallback_reason}
         return result
+
+    def _complete(self, model_info: Dict[str, Any], model_name: str, messages: List[Dict[str, str]], temperature: float):
+        """
+        Calls the primary model (with litellm's own retries), then `fallback_model` once if the primary fails.
+        The API key is passed explicitly, so providers whose litellm default env var differs from
+        `api_key_env` (e.g. NVIDIA NIM) still authenticate. Returns (text, model_actually_used).
+        """
+        global_cfg = self.config.get("global", {})
+        kwargs: Dict[str, Any] = {
+            "messages": messages,
+            "temperature": temperature,
+            "api_key": os.getenv(model_info["api_key_env"]),
+            "timeout": global_cfg.get("timeout_seconds", 60),
+            "num_retries": global_cfg.get("max_retries", 2),
+            "max_tokens": global_cfg.get("max_output_tokens", 4096),
+        }
+        if model_info.get("api_base"):
+            kwargs["api_base"] = model_info["api_base"]
+
+        candidates = [model_name] + ([model_info["fallback_model"]] if model_info.get("fallback_model") else [])
+        last_error: Optional[Exception] = None
+        for candidate in candidates:
+            try:
+                response = litellm.completion(model=candidate, **kwargs)
+                return response.choices[0].message.content or "", candidate
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Model {candidate} failed: {e}")
+        raise last_error
 
     @staticmethod
     def _validate_output(result: Any, json_output: bool, required_keys: Optional[List[str]]) -> Optional[str]:
