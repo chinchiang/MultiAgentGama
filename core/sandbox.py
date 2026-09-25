@@ -76,6 +76,8 @@ class LocalSubprocessSandbox:
         env["PYTHONPATH"] = os.pathsep.join(paths_to_inject)
         # Keep coverage data out of the target directory
         env["COVERAGE_FILE"] = os.path.join(run_dir, ".coverage")
+        # Importing the target must not leave __pycache__ behind in it
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
 
         if custom_env:
             env.update(custom_env)

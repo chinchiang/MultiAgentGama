@@ -1,6 +1,5 @@
 import logging
 import os
-import sys
 from typing import Optional, List
 from rich.console import Console
 from rich.panel import Panel
@@ -35,13 +34,6 @@ class VibeHarnessCommander:
     """
 
     def __init__(self, config_path: str = "config/agents_config.yaml", execution_mode: Optional[str] = None):
-        if sys.platform == "win32":
-            try:
-                import io
-                sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-                sys.stderr.reconfigure(encoding='utf-8', errors='replace')
-            except Exception:
-                pass
         self.console = Console(force_terminal=False)
         self.gateway = LLMGateway(config_path, execution_mode=execution_mode)
         self.sandbox = LocalSubprocessSandbox(timeout_seconds=30)
@@ -83,6 +75,8 @@ class VibeHarnessCommander:
         # Phase 1: AST Extraction
         # -------------------------------------------------------------
         self.console.print("\n[bold blue]=== Phase 1: AST Ingestion & Semantic Extraction ===[/bold blue]")
+        # A single-file target runs its tests from the containing directory
+        work_dir = target_dir if os.path.isdir(target_dir) else os.path.dirname(os.path.abspath(target_dir))
         symbols = self.ast_extractor.parse_directory(target_dir)
         routes = [s.name for s in symbols if s.symbol_type == "route"]
         detected_langs = list(self.ast_extractor.detected_languages) or ["Python"]
@@ -101,7 +95,12 @@ class VibeHarnessCommander:
 
         self.console.print("[yellow]Dispatching to Multi-Model Debater to resolve bias and hallucinations...[/yellow]")
         debate_result: MultiModelDebateResult = self.debater.arbitrate(raw_findings)
-        self.console.print(f"[+] Consensus Agreement Ratio: [bold green]{debate_result.model_agreement_ratio * 100:.1f}%[/bold green]")
+        if debate_result.arbitration_applied:
+            ratio = debate_result.model_agreement_ratio
+            ratio_display = f"{ratio * 100:.1f}%" if ratio is not None else "N/A (not reported)"
+            self.console.print(f"[+] Arbiter-Reported Agreement Ratio: [bold green]{ratio_display}[/bold green]")
+        else:
+            self.console.print("[yellow][!] Arbitration not applied; findings are unfiltered reviewer hypotheses.[/yellow]")
         self.console.print(f"[+] Confirmed Defect Hypotheses: [bold red]{len(debate_result.confirmed_findings)}[/bold red]")
 
         # -------------------------------------------------------------
@@ -113,7 +112,7 @@ class VibeHarnessCommander:
 
         wb_results, cov_pct = self.executor.execute_test_suite(
             wb_tests,
-            working_dir=target_dir,
+            working_dir=work_dir,
             collect_coverage=True
         )
         wb_passed = sum(1 for r in wb_results if r.status == TestStatus.PASSED)
@@ -145,7 +144,7 @@ class VibeHarnessCommander:
 
         bb_results, _ = self.executor.execute_test_suite(
             bb_tests,
-            working_dir=target_dir,
+            working_dir=work_dir,
             collect_coverage=False
         )
         bb_passed = sum(1 for r in bb_results if r.status == TestStatus.PASSED)
@@ -166,14 +165,25 @@ class VibeHarnessCommander:
         if self.gateway.used_simulation:
             simulated_agents = sorted({rec.agent_id for rec in self.gateway.call_log if rec.mode == "simulated"})
             inconclusive_reasons.append(f"Simulation engine (not real models) was used for: {', '.join(simulated_agents)}")
+        invalid_calls = self.gateway.invalid_calls
+        if invalid_calls:
+            invalid_agents = sorted({rec.agent_id for rec in invalid_calls})
+            inconclusive_reasons.append(
+                f"{len(invalid_calls)} model call(s) returned unusable output (invalid JSON / missing fields): {', '.join(invalid_agents)}"
+            )
+        if not symbols:
+            inconclusive_reasons.append("No analyzable source symbols were found in the target")
         if wb_errored or bb_errored:
-            inconclusive_reasons.append(f"{wb_errored + bb_errored} generated test(s) errored or did not run")
+            inconclusive_reasons.append(f"{wb_errored + bb_errored} generated test(s) errored, were skipped, or did not run")
+        if not wb_results:
+            inconclusive_reasons.append("No white-box tests were executed")
+        if not threat_report.threats:
+            inconclusive_reasons.append("Threat modeling produced no threats, so black-box coverage is unknown")
         if untested_threats:
             inconclusive_reasons.append(f"{len(untested_threats)} modeled threat(s) have no executable test: {', '.join(untested_threats)}")
-        if not wb_results and not bb_results:
-            inconclusive_reasons.append("No tests were executed")
 
-        if bb_breaches > 0 or critical_threats > 2:
+        # Only executed evidence can block or fail the gate; modeled threats are hypotheses until tested
+        if bb_breaches > 0:
             overall_status = "BLOCKED_CRITICAL_RISK"
         elif wb_failed > 0:
             overall_status = "NEEDS_FIXES"
@@ -184,11 +194,9 @@ class VibeHarnessCommander:
         for reason in inconclusive_reasons:
             self.console.print(f"[yellow][!] Evidence gap: {reason}[/yellow]")
 
-        recommendations = [
-            "Implement server-side input length & type sanitization to prevent memory exhaustion / ReDoS.",
-            "Enforce strict Object Level Authorization (BOLA/IDOR checks) verifying user_id against token claims.",
-            "Sanitize internal error responses to suppress stack traces, SQL syntax, and internal paths."
-        ]
+        recommendations = self._build_recommendations(
+            wb_results, bb_results, threat_report, untested_threats, inconclusive_reasons
+        )
 
         summary = VibeHarnessSummary(
             overall_status=overall_status,
@@ -234,3 +242,33 @@ class VibeHarnessCommander:
         ))
 
         return summary
+
+    @staticmethod
+    def _build_recommendations(
+        wb_results: List[TestExecutionResult],
+        bb_results: List[TestExecutionResult],
+        threat_report: ThreatModelReport,
+        untested_threats: List[str],
+        inconclusive_reasons: List[str]
+    ) -> List[str]:
+        """Recommendations derived from this run's evidence, most urgent first."""
+        recs: List[str] = []
+        threats_by_id = {t.threat_id: t for t in threat_report.threats}
+        for r in bb_results:
+            if r.is_security_exploit_confirmed:
+                threat = threats_by_id.get(r.source_ref or "")
+                label = f"{threat.threat_id} {threat.title}" if threat else r.test_id
+                recs.append(f"Fix confirmed security breach `{r.test_id}` ({label}): {r.failure_reason}")
+        for r in wb_results:
+            if r.status == TestStatus.FAILED:
+                recs.append(f"Fix defect exposed by `{r.test_id}` (from `{r.source_ref or '-'}`): {r.failure_reason}")
+        for r in bb_results:
+            if r.status == TestStatus.FAILED and not r.is_security_exploit_confirmed:
+                recs.append(f"Investigate black-box crash in `{r.test_id}`: {r.failure_reason}")
+        if untested_threats:
+            recs.append(f"Write or synthesize tests for untested threats: {', '.join(untested_threats)}")
+        if inconclusive_reasons:
+            recs.append("Close the evidence gaps listed above (e.g. run with `--mode live` and valid API keys) before trusting a pass verdict.")
+        if not recs:
+            recs.append("No defects were exposed by the executed tests; keep these tests in CI as regression guards.")
+        return recs

@@ -28,6 +28,9 @@ class ASTExtractor:
         return []
 
     def parse_directory(self, dir_path: str, max_files: int = 50) -> List[CodeSymbol]:
+        """Parses a directory tree (up to max_files source files) or a single source file."""
+        if os.path.isfile(dir_path):
+            return self.parse_file(dir_path)
         all_symbols: List[CodeSymbol] = []
         count = 0
         for root, dirs, files in os.walk(dir_path):

@@ -68,8 +68,11 @@ def test_debater_consensus_resolution():
     assert len(raw_findings) >= 3
 
     debate_result = debater.arbitrate(raw_findings)
-    assert debate_result.model_agreement_ratio > 0.5
-    assert len(debate_result.confirmed_findings) > 0
+    # A simulated arbiter is a fixed template, so it must not filter real findings or invent a consensus figure
+    assert debate_result.is_simulated
+    assert not debate_result.arbitration_applied
+    assert debate_result.model_agreement_ratio is None
+    assert debate_result.confirmed_findings == raw_findings
 
 
 def test_self_healing_test_generator():

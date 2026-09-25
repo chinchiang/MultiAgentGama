@@ -65,7 +65,8 @@ class MultiModelDebateResult(BaseModel):
     confirmed_findings: List[ReviewFinding] = Field(default_factory=list)
     disputed_findings: List[ReviewFinding] = Field(default_factory=list)
     consensus_summary: str
-    model_agreement_ratio: float = 1.0  # 0.0 to 1.0
+    model_agreement_ratio: Optional[float] = None  # arbiter-reported, 0.0 to 1.0; None when arbitration unavailable
+    arbitration_applied: bool = False  # False: findings were not filtered by a real arbiter
     is_simulated: bool = False
 
 
@@ -127,8 +128,8 @@ class AgentCallRecord(BaseModel):
     agent_id: str
     model_alias: str
     model_name: str
-    mode: str  # "live" or "simulated"
-    reason: Optional[str] = None  # why simulation was used
+    mode: str  # "live", "simulated", or "invalid" (live call whose output was unusable)
+    reason: Optional[str] = None  # why simulation was used / why the output was rejected
 
 
 class VibeHarnessSummary(BaseModel):

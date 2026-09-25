@@ -73,7 +73,9 @@ class AutomatedThreatModeler:
         )
 
         logger.info("Initiating STRIDE & OWASP threat modeling...")
-        resp = self.gateway.generate("blackbox_threat_modeler", system_prompt, user_prompt, json_output=True)
+        resp = self.gateway.generate(
+            "blackbox_threat_modeler", system_prompt, user_prompt, json_output=True, required_keys=["threats"]
+        )
 
         raw_threats = resp.get("threats", [])
         threat_items: List[ThreatItem] = []

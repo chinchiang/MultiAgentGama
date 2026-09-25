@@ -62,7 +62,12 @@ class ReportGenerator:
         md.append("| Metric | Value | Target |")
         md.append("| :--- | :--- | :--- |")
         md.append(f"| **Primary Target Language** | `{summary.detected_language}` | Supported Stack |")
-        md.append(f"| **Heterogeneous Model Consensus Ratio** | `{debate_result.model_agreement_ratio * 100:.1f}%`{sim_tag} | ≥ 70% Agreement |")
+        ratio = debate_result.model_agreement_ratio
+        if not debate_result.arbitration_applied:
+            ratio_str = "N/A (arbitration not applied)"
+        else:
+            ratio_str = f"{ratio * 100:.1f}%" if ratio is not None else "N/A (not reported)"
+        md.append(f"| **Arbiter-Reported Model Agreement** | `{ratio_str}`{sim_tag} | ≥ 70% Agreement |")
         cov_str = f"{summary.line_coverage_pct:.1f}%" if summary.line_coverage_pct is not None else "N/A"
         md.append(f"| **Code Line Coverage** | `{cov_str}` | ≥ 80% Baseline |")
         md.append(f"| **Confirmed White-Box Logic Flaws** | `{summary.confirmed_whitebox_bugs}` | 0 Critical |")
@@ -82,7 +87,7 @@ class ReportGenerator:
                 key = (c.agent_id, c.model_name, c.mode, c.reason or "")
                 grouped[key] = grouped.get(key, 0) + 1
             for (agent_id, model_name, mode, reason), count in grouped.items():
-                mode_label = "🟢 live" if mode == "live" else "🟡 simulated"
+                mode_label = {"live": "🟢 live", "simulated": "🟡 simulated"}.get(mode, "🔴 invalid output")
                 md.append(f"| `{agent_id}` | `{model_name}` | {mode_label} | {count} | {self._cell(reason) or '-'} |")
         else:
             md.append("No agent invocations were recorded.")
@@ -106,6 +111,11 @@ class ReportGenerator:
                 md.append(f"  - **Suggested Scenario**: `{f.suggested_test_scenario}`")
         else:
             md.append("✅ No critical white-box defects identified.")
+
+        if debate_result.disputed_findings:
+            md.append("\n### Disputed Findings (rejected by the arbiter, not tested):")
+            for f in debate_result.disputed_findings:
+                md.append(f"- [{f.severity.value}] {f.title} (Identified by {f.reviewer_name})")
 
         md.append("\n### White-Box Test Execution Results")
         if whitebox_results:

@@ -1,4 +1,5 @@
 import logging
+import urllib.error
 import urllib.request
 from typing import List, Optional
 from core.models import ThreatItem, GeneratedTest
@@ -22,8 +23,10 @@ class ThreatScenarioBuilder:
         """Probes whether the target HTTP server is reachable."""
         try:
             req = urllib.request.Request(base_url, headers={"User-Agent": "VibeHarness-HealthCheck"})
-            with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
-                return resp.status < 500
+            with urllib.request.urlopen(req, timeout=timeout_sec):
+                return True
+        except urllib.error.HTTPError:
+            return True  # Any HTTP status (404 on '/', 500, ...) means the server answered
         except Exception:
             return False
 
@@ -73,7 +76,9 @@ class ThreatScenarioBuilder:
                 f"Generate the executable Python test function."
             )
 
-            resp = self.gateway.generate("blackbox_test_synthesizer", system_prompt, user_prompt, json_output=True)
+            resp = self.gateway.generate(
+                "blackbox_test_synthesizer", system_prompt, user_prompt, json_output=True, required_keys=["code"]
+            )
 
             code_str = strip_code_fences(resp.get("code") or "")
             if not code_str:

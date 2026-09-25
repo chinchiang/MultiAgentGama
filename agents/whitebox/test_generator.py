@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 from typing import List, Optional, Set
 from core.models import ReviewFinding, GeneratedTest, CodeSymbol
@@ -120,6 +121,12 @@ class WhiteboxTestGenerator:
 
         return code_to_check
 
+    @staticmethod
+    def _is_async_def(source: str) -> bool:
+        """Checks the symbol's own def line (decorators may precede it)."""
+        match = re.search(r"^\s*(async\s+)?def\s", source, re.MULTILINE)
+        return bool(match and match.group(1))
+
     def build_offline_probes(self, symbols: List[CodeSymbol]) -> List[GeneratedTest]:
         """
         Deterministic None-input robustness probes for module-level synchronous Python functions.
@@ -133,7 +140,7 @@ class WhiteboxTestGenerator:
                 break
             if sym.symbol_type != "function" or not sym.file_path.endswith(".py"):
                 continue
-            if sym.name.startswith("__") or sym.source_code.lstrip().startswith("async "):
+            if sym.name.startswith("__") or self._is_async_def(sym.source_code):
                 continue
             key = f"{sym.file_path}::{sym.name}"
             if key in seen:
@@ -145,15 +152,16 @@ class WhiteboxTestGenerator:
             code = (
                 "import importlib.util\n"
                 "import inspect\n\n"
-                f"_spec = importlib.util.spec_from_file_location('vh_probe_target_{probe_no}', {sym.file_path!r})\n"
+                f"_spec = importlib.util.spec_from_file_location('vh_probe_target_{probe_no}', {os.path.abspath(sym.file_path)!r})\n"
                 "_target = importlib.util.module_from_spec(_spec)\n"
                 "_spec.loader.exec_module(_target)\n\n\n"
                 f"def test_probe_{safe_name}_none_inputs():\n"
                 f"    fn = getattr(_target, {sym.name!r})\n"
-                "    required = [p for p in inspect.signature(fn).parameters.values()\n"
-                "                if p.default is p.empty and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]\n"
+                "    params = [p for p in inspect.signature(fn).parameters.values() if p.default is p.empty]\n"
+                "    positional = [p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]\n"
+                "    keyword = {p.name: None for p in params if p.kind is p.KEYWORD_ONLY}\n"
                 "    try:\n"
-                "        fn(*[None] * len(required))\n"
+                "        fn(*[None] * len(positional), **keyword)\n"
                 "    except (TypeError, KeyError, AttributeError, IndexError) as exc:\n"
                 f"        raise AssertionError(f'{sym.name}() crashed with unhandled {{type(exc).__name__}} on None inputs: {{exc}}')\n"
                 "    except Exception:\n"

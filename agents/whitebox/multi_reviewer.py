@@ -80,7 +80,7 @@ class HeterogeneousReviewerEnsemble:
             user_prompt = f"Target Codebase Extract:\n\n{code_overview}\n\nPlease audit against your specialty."
 
             logger.info(f"Running white-box audit with reviewer: {name}")
-            resp = self.gateway.generate(agent_id, system_prompt, user_prompt, json_output=True)
+            resp = self.gateway.generate(agent_id, system_prompt, user_prompt, json_output=True, required_keys=["findings"])
 
             simulated = self.gateway.is_simulated(resp)
             raw_findings = resp.get("findings", [])

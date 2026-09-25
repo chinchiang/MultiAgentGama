@@ -45,9 +45,18 @@ class LLMGateway:
     def used_simulation(self) -> bool:
         return any(rec.mode == "simulated" for rec in self.call_log)
 
+    @property
+    def invalid_calls(self) -> List[AgentCallRecord]:
+        return [rec for rec in self.call_log if rec.mode == "invalid"]
+
     @staticmethod
     def is_simulated(resp: Dict[str, Any]) -> bool:
         return resp.get(PROVENANCE_KEY, {}).get("mode") == "simulated"
+
+    @staticmethod
+    def is_usable(resp: Dict[str, Any]) -> bool:
+        """False when the model answered but its output could not be used."""
+        return resp.get(PROVENANCE_KEY, {}).get("mode") != "invalid"
 
     def _load_config(self, path: str) -> Dict[str, Any]:
         if os.path.exists(path):
@@ -66,10 +75,14 @@ class LLMGateway:
         agent_id: str,
         system_prompt: str,
         user_prompt: str,
-        json_output: bool = True
+        json_output: bool = True,
+        required_keys: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Executes a prompt targeting the designated agent's configured LLM.
+        A live response that is not valid JSON or lacks any of `required_keys` is recorded with
+        mode "invalid" (and returned as {}), so callers and the quality gate never mistake an
+        unusable answer for a genuine empty result.
         """
         agent_meta = self.agents_config.get(agent_id, {})
         model_alias = agent_meta.get("model_alias", "chatgpt")
@@ -106,6 +119,11 @@ class LLMGateway:
                 response = litellm.completion(**kwargs)
                 raw_text = response.choices[0].message.content
                 result = self._clean_and_parse_json(raw_text) if json_output else {"raw": raw_text}
+                problem = self._validate_output(result, json_output, required_keys)
+                if problem:
+                    logger.error(f"[{agent_id}] {model_name} returned unusable output: {problem}")
+                    self._record(agent_id, model_alias, model_name, "invalid", problem)
+                    return {PROVENANCE_KEY: {"mode": "invalid", "model": model_name, "reason": problem}}
                 self._record(agent_id, model_alias, model_name, "live")
                 result[PROVENANCE_KEY] = {"mode": "live", "model": model_name}
                 return result
@@ -123,6 +141,19 @@ class LLMGateway:
         result = self._generate_simulated_response(agent_id, model_alias, user_prompt)
         result[PROVENANCE_KEY] = {"mode": "simulated", "model": model_name, "reason": fallback_reason}
         return result
+
+    @staticmethod
+    def _validate_output(result: Any, json_output: bool, required_keys: Optional[List[str]]) -> Optional[str]:
+        if not json_output:
+            return None
+        if not isinstance(result, dict):
+            return f"expected a JSON object, got {type(result).__name__}"
+        if result.get("error") == "JSONDecodeError":
+            return "response is not valid JSON"
+        missing = [k for k in (required_keys or []) if k not in result]
+        if missing:
+            return f"response is missing required key(s): {', '.join(missing)}"
+        return None
 
     def _record(self, agent_id: str, model_alias: str, model_name: str, mode: str, reason: Optional[str] = None):
         self.call_log.append(AgentCallRecord(

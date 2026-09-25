@@ -56,7 +56,7 @@ def test_module_level_import_error_is_isolated(executor, tmp_path):
 
 def test_import_error_inside_test_is_error_not_exploit(executor, tmp_path):
     results, _ = executor.execute_test_suite([
-        _test("A", "def test_a():\n    import definitely_missing_mod"),
+        _test("A", "def test_a():\n    import definitely_missing_mod\n    assert definitely_missing_mod"),
     ], working_dir=str(tmp_path))
     assert results[0].status == TestStatus.ERROR
     assert not results[0].is_security_exploit_confirmed
@@ -78,7 +78,7 @@ def test_code_without_test_function_is_error(executor, tmp_path):
 
 def test_non_assertion_crash_in_blackbox_is_failure_but_not_exploit(executor, tmp_path):
     results, _ = executor.execute_test_suite([
-        _test("A", "def test_a():\n    {}['missing']"),
+        _test("A", "def test_a():\n    assert {}['missing']"),
     ], working_dir=str(tmp_path))
     assert results[0].status == TestStatus.FAILED
     assert not results[0].is_security_exploit_confirmed
@@ -105,7 +105,7 @@ def test_heal_strips_markdown_fences():
 
 def test_check_test_code_requires_test_function():
     assert check_test_code("def helper():\n    pass") == (False, "no top-level test_ function defined")
-    assert check_test_code("def test_a():\n    pass")[0] is True
+    assert check_test_code("def test_a():\n    assert 1")[0] is True
     assert strip_code_fences("no fences") == "no fences"
 
 
@@ -186,3 +186,140 @@ def test_clean_target_in_mock_mode_is_inconclusive(tmp_path):
     assert summary.whitebox_tests_failed == 0
     assert summary.overall_status == "INCONCLUSIVE"
     assert summary.inconclusive_reasons
+
+
+# --- Gate honesty: vacuous tests, unusable model output, arbitration ---------
+
+class _FakeLiteLLM:
+    """Stands in for litellm; `responder(system_prompt, user_prompt)` returns the raw model text."""
+
+    def __init__(self, responder):
+        self.responder = responder
+
+    def completion(self, **kwargs):
+        from types import SimpleNamespace
+        msgs = kwargs["messages"]
+        text = self.responder(msgs[0]["content"], msgs[1]["content"])
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))])
+
+
+@pytest.fixture
+def fake_live(monkeypatch):
+    for var in ("ANTHROPIC_API_KEY", "NVIDIA_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.setenv(var, "test-key")
+
+    def install(responder):
+        monkeypatch.setattr("core.llm_gateway.litellm", _FakeLiteLLM(responder))
+    return install
+
+
+def test_vacuous_test_is_error_not_defended(executor, tmp_path):
+    results, _ = executor.execute_test_suite([_test("A", "def test_a():\n    pass")], working_dir=str(tmp_path))
+    assert results[0].status == TestStatus.ERROR
+    assert "without any assertion" in results[0].failure_reason
+
+
+def test_check_test_code_accepts_assertion_forms():
+    assert check_test_code("import pytest\ndef test_a():\n    with pytest.raises(ValueError):\n        int('x')")[0]
+    assert check_test_code("def test_a():\n    raise AssertionError('boom')")[0]
+    assert check_test_code("def test_a():\n    pytest.fail('x')")[0]
+    assert not check_test_code("def test_a():\n    x = 1\ndef test_b():\n    assert x")[0]
+
+
+def test_unparseable_live_output_is_recorded_invalid(fake_live):
+    fake_live(lambda s, u: "Sorry, I cannot help with that.")
+    gateway = LLMGateway(CONFIG, execution_mode="live")
+    resp = gateway.generate("whitebox_reviewer_claude", "sys", "prompt", required_keys=["findings"])
+    assert not gateway.is_usable(resp)
+    assert "findings" not in resp
+    assert [c.mode for c in gateway.call_log] == ["invalid"]
+
+
+def test_missing_required_key_is_recorded_invalid(fake_live):
+    fake_live(lambda s, u: '{"something_else": []}')
+    gateway = LLMGateway(CONFIG, execution_mode="hybrid")
+    gateway.generate("blackbox_threat_modeler", "sys", "prompt", required_keys=["threats"])
+    assert gateway.invalid_calls and "threats" in gateway.invalid_calls[0].reason
+
+
+def test_debater_ignores_out_of_range_indices_and_bogus_ratio(fake_live):
+    from agents.whitebox.debater import MultiModelDebater
+    from core.models import ReviewFinding, FindingSeverity
+    fake_live(lambda s, u: '{"confirmed_findings_indices": [0, 7, "x"], "disputed_findings_indices": [1], "model_agreement_ratio": 3}')
+    findings = [
+        ReviewFinding(finding_id=f"F{i}", reviewer_name="r", model_alias="claude", file_path="f.py",
+                      severity=FindingSeverity.HIGH, title=f"t{i}", description="", root_cause="",
+                      suspected_vibe_flaw="", suggested_test_scenario="")
+        for i in range(3)
+    ]
+    result = MultiModelDebater(LLMGateway(CONFIG, execution_mode="live")).arbitrate(findings)
+    assert result.arbitration_applied
+    assert [f.finding_id for f in result.confirmed_findings] == ["F0", "F2"]  # F2 unruled -> kept
+    assert [f.finding_id for f in result.disputed_findings] == ["F1"]
+    assert result.model_agreement_ratio is None
+
+
+def test_unusable_threat_model_and_modeled_criticals_never_ship_or_block(fake_live, tmp_path):
+    target = tmp_path / "app"
+    target.mkdir()
+    (target / "ok.py").write_text("def greet(name):\n    return 'hi'\n", encoding="utf-8")
+    critical = ('{"threat_id": "T%d", "stride_category": "Spoofing", "title": "t", "severity": "CRITICAL"}')
+    threats = '{"threats": [%s]}' % ", ".join(critical % i for i in range(4))
+
+    def responder(system, user):
+        if "Threat Modeling Specialist" in system:
+            return threats
+        return "not json"
+    fake_live(responder)
+    summary = VibeHarnessCommander(config_path=CONFIG, execution_mode="live").run_full_pipeline(
+        target_dir=str(target), base_url="http://localhost:59999", output_report_path=str(tmp_path / "r.md")
+    )
+    # 4 modeled CRITICAL threats are hypotheses, not evidence; unusable outputs make the run inconclusive
+    assert summary.overall_status == "INCONCLUSIVE"
+    assert any("unusable output" in r for r in summary.inconclusive_reasons)
+    assert "invalid output" in (tmp_path / "r.md").read_text(encoding="utf-8")
+
+
+def test_single_file_target_is_analyzed(tmp_path):
+    target = tmp_path / "one.py"
+    target.write_text("def crashy(order):\n    return order['id']\n", encoding="utf-8")
+    summary = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock").run_full_pipeline(
+        target_dir=str(target), base_url="http://localhost:59999", output_report_path=str(tmp_path / "r.md")
+    )
+    assert summary.whitebox_tests_failed == 1
+    assert os.listdir(tmp_path) == ["one.py", "r.md"]
+
+
+def test_server_returning_404_counts_as_live():
+    import threading
+    import http.server
+
+    class NotFound(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), NotFound)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        assert ThreatScenarioBuilder(None).check_server_live(f"http://127.0.0.1:{server.server_port}")
+    finally:
+        server.shutdown()
+
+
+def test_probe_handles_keyword_only_and_skips_decorated_async(executor, tmp_path):
+    target = tmp_path / "kw.py"
+    target.write_text(
+        "import functools\n\n"
+        "def guarded(*, x):\n    if x is None:\n        raise ValueError('x required')\n    return x\n\n"
+        "@functools.lru_cache\nasync def fetch(x):\n    return x['id']\n",
+        encoding="utf-8"
+    )
+    symbols = ASTExtractor().parse_file(str(target))
+    probes = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="mock")).build_offline_probes(symbols)
+    assert [p.target_component for p in probes] == ["guarded"]
+    results, _ = executor.execute_test_suite(probes, working_dir=str(tmp_path))
+    assert results[0].status == TestStatus.PASSED
