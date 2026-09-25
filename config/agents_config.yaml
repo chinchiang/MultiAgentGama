@@ -3,9 +3,11 @@
 
 global:
   execution_mode: "hybrid"  # "live" (calls APIs), "mock" (offline/dry-run for testing), or "hybrid"
-  timeout_seconds: 60
-  max_retries: 2
-  sandbox_provider: "local_subprocess" # Options: "local_subprocess", "docker", "e2b"
+  timeout_seconds: 60             # per LLM request
+  max_retries: 2                  # LLM request retries before falling back to fallback_model
+  sandbox_provider: "local_subprocess"  # Only "local_subprocess" is implemented (docker / e2b are planned)
+  sandbox_timeout_seconds: 120    # budget for one batched pytest run
+  per_test_timeout_seconds: 30    # budget per test when a timed-out batch is re-run test by test
 
 models:
   # Provider definitions with environment variable fallbacks

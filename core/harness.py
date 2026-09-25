@@ -36,14 +36,20 @@ class VibeHarnessCommander:
     def __init__(self, config_path: str = "config/agents_config.yaml", execution_mode: Optional[str] = None):
         self.console = Console(force_terminal=False)
         self.gateway = LLMGateway(config_path, execution_mode=execution_mode)
-        self.sandbox = LocalSubprocessSandbox(timeout_seconds=30)
+        global_cfg = self.gateway.config.get("global", {})
+        provider = global_cfg.get("sandbox_provider", "local_subprocess")
+        if provider != "local_subprocess":
+            raise ValueError(f"sandbox_provider '{provider}' is not implemented; only 'local_subprocess' is supported")
+        self.sandbox = LocalSubprocessSandbox(timeout_seconds=int(global_cfg.get("sandbox_timeout_seconds", 120)))
         self.ast_extractor = ASTExtractor()
         self.multi_reviewer = HeterogeneousReviewerEnsemble(self.gateway)
         self.debater = MultiModelDebater(self.gateway)
         self.whitebox_test_gen = WhiteboxTestGenerator(self.gateway)
         self.threat_modeler = AutomatedThreatModeler(self.gateway)
         self.scenario_builder = ThreatScenarioBuilder(self.gateway)
-        self.executor = TestSuiteExecutor(self.sandbox)
+        self.executor = TestSuiteExecutor(
+            self.sandbox, per_test_timeout_seconds=int(global_cfg.get("per_test_timeout_seconds", 30))
+        )
         self.reporter = ReportGenerator()
 
     def run_full_pipeline(

@@ -2,9 +2,9 @@ import re
 import os
 import logging
 import xml.etree.ElementTree as ET
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Set
 from core.models import GeneratedTest, TestExecutionResult, TestStatus
-from core.sandbox import LocalSubprocessSandbox
+from core.sandbox import LocalSubprocessSandbox, TIMEOUT_EXIT_CODE
 from core.codecheck import check_test_code
 
 logger = logging.getLogger("VibeHarness.TestExecutor")
@@ -23,8 +23,9 @@ class TestSuiteExecutor:
     Only genuine assertion failures in black-box tests count as confirmed security exploits.
     """
 
-    def __init__(self, sandbox: LocalSubprocessSandbox):
+    def __init__(self, sandbox: LocalSubprocessSandbox, per_test_timeout_seconds: int = 30):
         self.sandbox = sandbox
+        self.per_test_timeout_seconds = per_test_timeout_seconds
 
     def execute_test_suite(
         self,
@@ -42,8 +43,8 @@ class TestSuiteExecutor:
             "import sys",
             "import os",
             "from typing import Any, Dict",
-            f"sys.path.insert(0, r'{abs_target}')",
-            f"sys.path.insert(0, r'{parent_dir}')",
+            f"sys.path.insert(0, {abs_target!r})",
+            f"sys.path.insert(0, {parent_dir!r})",
             "# --- VibeHarness Auto-Generated Test ---",
         ])
 
@@ -76,6 +77,13 @@ class TestSuiteExecutor:
                 coverage_target=working_dir
             )
             cases = self._parse_junit(junit_xml)
+            timed_out: Set[str] = set()
+            if exit_code == TIMEOUT_EXIT_CODE and len(files) > 1:
+                # One hanging test must not void the whole batch: rerun each module on its own budget
+                logger.warning("Batch run timed out; re-running each test module individually to isolate the hang.")
+                coverage_pct = None
+                cases, timed_out = self._run_individually(files, working_dir)
+                junit_xml = ""  # per-module outcomes are now in `cases` / `timed_out`
 
             for module, idx in module_to_idx.items():
                 t = tests[idx]
@@ -86,6 +94,11 @@ class TestSuiteExecutor:
                         failure_reason=f"Sandbox run produced no report: {stderr.strip()[:200] or f'exit code {exit_code}'}",
                         stdout=stdout, stderr=stderr
                     )
+                elif not module_cases and module in timed_out:
+                    results[idx] = self._result(
+                        t, unique_ids[idx], TestStatus.ERROR,
+                        failure_reason=f"Test timed out after {self.per_test_timeout_seconds}s; not run to completion"
+                    )
                 elif not module_cases:
                     results[idx] = self._result(
                         t, unique_ids[idx], TestStatus.ERROR,
@@ -93,9 +106,24 @@ class TestSuiteExecutor:
                         stdout=stdout, stderr=stderr
                     )
                 else:
-                    results[idx] = self._aggregate(t, unique_ids[idx], module_cases, stdout, stderr)
+                    results[idx] = self._aggregate(t, unique_ids[idx], module_cases)
 
         return [results[i] for i in range(len(tests))], coverage_pct
+
+    def _run_individually(self, files: Dict[str, str], working_dir: str) -> Tuple[Dict[str, List[dict]], Set[str]]:
+        """Runs each module in its own process; returns (junit cases by module, modules that timed out)."""
+        cases: Dict[str, List[dict]] = {}
+        timed_out: Set[str] = set()
+        for filename, code in files.items():
+            module = filename[:-3]
+            exit_code, _, _, _, _, junit_xml = self.sandbox.execute_pytest_files(
+                {filename: code}, working_dir=working_dir, timeout_seconds=self.per_test_timeout_seconds
+            )
+            if exit_code == TIMEOUT_EXIT_CODE:
+                timed_out.add(module)
+                continue
+            cases.update(self._parse_junit(junit_xml))
+        return cases, timed_out
 
     @staticmethod
     def _unique_test_ids(tests: List[GeneratedTest]) -> List[str]:
@@ -126,18 +154,24 @@ class TestSuiteExecutor:
             if not match:
                 continue
             outcome, message, details = "passed", None, None
+            out, err = "", ""
             for child in tc:
-                if child.tag in ("failure", "error", "skipped"):
+                if child.tag in ("failure", "error", "skipped") and outcome == "passed":
                     outcome = child.tag
                     message = child.get("message") or ""
                     details = child.text or ""
-                    break
+                elif child.tag == "system-out":
+                    out += child.text or ""
+                elif child.tag == "system-err":
+                    err += child.text or ""
             grouped.setdefault(match.group(0), []).append({
                 "name": tc.get("name"),
                 "time": float(tc.get("time") or 0.0),
                 "outcome": outcome,
                 "message": message,
                 "details": details,
+                "stdout": out,
+                "stderr": err,
             })
         return grouped
 
@@ -145,11 +179,12 @@ class TestSuiteExecutor:
         self,
         test: GeneratedTest,
         test_id: str,
-        cases: List[dict],
-        stdout: str,
-        stderr: str
+        cases: List[dict]
     ) -> TestExecutionResult:
         duration = round(sum(c["time"] for c in cases), 3)
+        # Report this test's own captured output rather than the whole batch's
+        stdout = "".join(c["stdout"] for c in cases)
+        stderr = "".join(c["stderr"] for c in cases)
         errors = [c for c in cases if c["outcome"] == "error"]
         failures = [c for c in cases if c["outcome"] == "failure"]
         harness_failures = [c for c in failures if (c["message"] or "").startswith(HARNESS_ERROR_EXCEPTIONS)]

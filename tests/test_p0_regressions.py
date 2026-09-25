@@ -323,3 +323,44 @@ def test_probe_handles_keyword_only_and_skips_decorated_async(executor, tmp_path
     assert [p.target_component for p in probes] == ["guarded"]
     results, _ = executor.execute_test_suite(probes, working_dir=str(tmp_path))
     assert results[0].status == TestStatus.PASSED
+
+
+# --- Sandbox hardening -------------------------------------------------------
+
+def test_sandbox_withholds_secrets_from_generated_code(executor, tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-not-leak")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "should-not-leak")
+    results, _ = executor.execute_test_suite([_test("A", (
+        "import os\n"
+        "def test_env():\n"
+        "    leaked = [k for k in os.environ if 'KEY' in k or 'SECRET' in k]\n"
+        "    assert not leaked, leaked\n"
+    ))], working_dir=str(tmp_path))
+    assert results[0].status == TestStatus.PASSED, results[0].failure_reason
+
+
+def test_hanging_test_does_not_void_the_batch(tmp_path):
+    executor = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=8), per_test_timeout_seconds=4)
+    results, _ = executor.execute_test_suite([
+        _test("OK", "def test_ok():\n    assert True"),
+        _test("HANG", "import time\ndef test_hang():\n    time.sleep(60)\n    assert True"),
+        _test("BAD", "def test_bad():\n    assert 1 == 2"),
+    ], working_dir=str(tmp_path))
+    assert [r.status for r in results] == [TestStatus.PASSED, TestStatus.ERROR, TestStatus.FAILED]
+    assert "timed out" in results[1].failure_reason
+
+
+def test_results_carry_their_own_output(executor, tmp_path):
+    results, _ = executor.execute_test_suite([
+        _test("A", "def test_a():\n    print('from-a')\n    assert True"),
+        _test("B", "def test_b():\n    print('from-b')\n    assert True"),
+    ], working_dir=str(tmp_path))
+    assert "from-a" in results[0].stdout and "from-b" not in results[0].stdout
+    assert "from-b" in results[1].stdout
+
+
+def test_unimplemented_sandbox_provider_is_rejected(tmp_path):
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text("global:\n  sandbox_provider: docker\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="not implemented"):
+        VibeHarnessCommander(config_path=str(cfg), execution_mode="mock")

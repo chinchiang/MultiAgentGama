@@ -5,16 +5,43 @@ import sys
 import time
 import re
 import shutil
-from typing import Dict, Any, Optional, Tuple, List
+import signal
+from typing import Dict, Optional, Tuple, List
+
+# Exit code returned when the pytest run exceeds its time budget
+TIMEOUT_EXIT_CODE = -1
+
+# Environment variables forwarded to generated test code. Everything else (API keys, cloud
+# credentials, tokens) is withheld, because generated tests are untrusted model output.
+_SAFE_ENV_VARS = {
+    "PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "OS",
+    "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+    "TEMP", "TMP", "TMPDIR", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+    "APPDATA", "LOCALAPPDATA", "PROGRAMDATA",  # Windows user site-packages live under APPDATA
+    "LANG", "LANGUAGE", "TZ", "TERM",
+    "VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONHOME", "PYTHONPATH", "PYTHONIOENCODING", "PYTHONUTF8",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+}
+
+
+def build_safe_env(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Allowlisted copy of the current environment, plus `extra` overrides."""
+    env = {k: v for k, v in os.environ.items() if k.upper() in _SAFE_ENV_VARS or k.upper().startswith("LC_")}
+    if extra:
+        env.update(extra)
+    return env
 
 
 class LocalSubprocessSandbox:
     """
     Subprocess sandbox for executing test scripts and dynamic payloads.
-    Provides process isolation, execution timeout enforcement,
-    per-test JUnit XML reporting, and automatic code coverage collection.
+    Provides process isolation, an allowlisted environment (no API keys or credentials),
+    timeout enforcement that kills the whole process tree, per-test JUnit XML reporting,
+    and automatic code coverage collection.
     Generated test files and coverage data are kept in a throwaway temp directory,
     never inside the target codebase.
+    NOTE: this is NOT a security boundary. Generated code still runs as the current user with
+    filesystem and network access; use a container/VM for untrusted targets.
     """
 
     def __init__(self, timeout_seconds: int = 30):
@@ -47,15 +74,16 @@ class LocalSubprocessSandbox:
         custom_env: Optional[Dict[str, str]] = None,
         working_dir: Optional[str] = None,
         collect_coverage: bool = False,
-        coverage_target: Optional[str] = None
+        coverage_target: Optional[str] = None,
+        timeout_seconds: Optional[int] = None
     ) -> Tuple[int, str, str, float, Optional[float], Optional[str]]:
         """
         Writes each {filename: code} entry as a separate test module and runs them in one pytest process.
         A collection error in one module does not abort the others.
         Returns: (exit_code, stdout, stderr, duration_seconds, line_coverage_percent, junit_xml_text)
         """
+        timeout = timeout_seconds or self.timeout_seconds
         base_dir = os.path.abspath(working_dir or os.getcwd())
-        project_root = os.path.abspath(os.getcwd())
         parent_dir = os.path.dirname(base_dir)
 
         run_dir = tempfile.mkdtemp(prefix="vibe_sandbox_")
@@ -67,18 +95,18 @@ class LocalSubprocessSandbox:
             test_paths.append(path)
         junit_path = os.path.join(run_dir, "junit.xml")
 
-        env = os.environ.copy()
         # Inject paths into PYTHONPATH to resolve target modules reliably
-        paths_to_inject = [base_dir, project_root, parent_dir]
-        existing_pythonpath = env.get("PYTHONPATH", "")
+        paths_to_inject = [base_dir, parent_dir]
+        existing_pythonpath = os.environ.get("PYTHONPATH", "")
         if existing_pythonpath:
             paths_to_inject.append(existing_pythonpath)
-        env["PYTHONPATH"] = os.pathsep.join(paths_to_inject)
-        # Keep coverage data out of the target directory
-        env["COVERAGE_FILE"] = os.path.join(run_dir, ".coverage")
-        # Importing the target must not leave __pycache__ behind in it
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-
+        env = build_safe_env({
+            "PYTHONPATH": os.pathsep.join(paths_to_inject),
+            # Keep coverage data out of the target directory
+            "COVERAGE_FILE": os.path.join(run_dir, ".coverage"),
+            # Importing the target must not leave __pycache__ behind in it
+            "PYTHONDONTWRITEBYTECODE": "1",
+        })
         if custom_env:
             env.update(custom_env)
 
@@ -86,6 +114,7 @@ class LocalSubprocessSandbox:
             sys.executable, "-m", "pytest", *test_paths, "-v",
             "--continue-on-collection-errors",
             "-p", "no:cacheprovider",
+            "-o", "junit_logging=all",
             f"--rootdir={run_dir}",
             f"--junitxml={junit_path}",
         ]
@@ -97,17 +126,10 @@ class LocalSubprocessSandbox:
         coverage_percent: Optional[float] = None
 
         try:
-            process = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_seconds,
-                cwd=base_dir,
-                env=env
-            )
+            returncode, stdout, stderr = self._run(cmd, cwd=base_dir, env=env, timeout=timeout)
             duration = time.time() - start_time
-            stdout = process.stdout
-            stderr = process.stderr
+            if returncode is None:
+                return TIMEOUT_EXIT_CODE, stdout, f"Execution timed out after {timeout} seconds.", duration, None, None
 
             if collect_coverage:
                 coverage_percent = self._extract_coverage_percent(stdout)
@@ -117,19 +139,48 @@ class LocalSubprocessSandbox:
                 with open(junit_path, "r", encoding="utf-8") as f:
                     junit_xml = f.read()
 
-            return process.returncode, stdout, stderr, duration, coverage_percent, junit_xml
-        except subprocess.TimeoutExpired:
-            duration = time.time() - start_time
-            return -1, "", f"Execution timed out after {self.timeout_seconds} seconds.", duration, None, None
+            return returncode, stdout, stderr, duration, coverage_percent, junit_xml
         except Exception as e:
             duration = time.time() - start_time
             return -2, "", f"Execution failed: {str(e)}", duration, None, None
         finally:
             shutil.rmtree(run_dir, ignore_errors=True)
 
+    @staticmethod
+    def _run(cmd: List[str], cwd: str, env: Dict[str, str], timeout: int) -> Tuple[Optional[int], str, str]:
+        """Runs cmd in its own process group; on timeout kills the whole tree and returns returncode None."""
+        popen_kwargs = {}
+        if sys.platform == "win32":
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kwargs["start_new_session"] = True
+        proc = subprocess.Popen(
+            cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace", **popen_kwargs
+        )
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+            return proc.returncode, stdout, stderr
+        except subprocess.TimeoutExpired:
+            LocalSubprocessSandbox._kill_tree(proc)
+            stdout, stderr = proc.communicate()
+            return None, stdout or "", stderr or ""
+
+    @staticmethod
+    def _kill_tree(proc: subprocess.Popen):
+        """Kills the process and any children it spawned (e.g. servers started by a test)."""
+        try:
+            if sys.platform == "win32":
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+            else:
+                os.killpg(proc.pid, signal.SIGKILL)
+            proc.kill()
+        except Exception:
+            pass
+
     def _extract_coverage_percent(self, stdout: str) -> Optional[float]:
-        """Extracts total coverage percentage from pytest-cov output table."""
-        match = re.search(r"TOTAL\s+\d+\s+\d+\s+(\d+)%", stdout)
+        """Extracts total coverage percentage from pytest-cov output table (statement or branch layout)."""
+        match = re.search(r"^TOTAL\s+(?:\d+\s+)+(\d+(?:\.\d+)?)%", stdout, re.MULTILINE)
         if match:
             try:
                 return float(match.group(1))
