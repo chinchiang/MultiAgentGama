@@ -11,13 +11,13 @@
 ### Verdict: 🟠 **FAIL: NEEDS FIXES**
 
 **Evidence gaps:**
-- Simulation engine (not real models) was used for: blackbox_test_synthesizer, blackbox_threat_modeler, whitebox_debater, whitebox_reviewer_chatgpt, whitebox_reviewer_claude, whitebox_reviewer_nemotron, whitebox_test_generator
+- Simulation engine (not real models) was used for: blackbox_test_synthesizer, blackbox_threat_modeler, whitebox_reviewer_chatgpt, whitebox_reviewer_claude, whitebox_reviewer_nemotron, whitebox_test_generator, whitebox_verifier_chatgpt, whitebox_verifier_claude, whitebox_verifier_nemotron
 - 3 modeled threat(s) have no executable test: THREAT-01, THREAT-02, THREAT-03
 
 | Metric | Value | Target |
 | :--- | :--- | :--- |
 | **Primary Target Language** | `Python` | Supported Stack |
-| **Arbiter-Reported Model Agreement** | `N/A (arbitration not applied)` `[SIMULATED]` | ≥ 70% Agreement |
+| **Cross-Model Agreement** | `N/A (verification not applied)` `[SIMULATED]` | ≥ 70% Agreement |
 | **Code Line Coverage** | `63.0%` | ≥ 80% Baseline |
 | **Reviewer Findings (raw → distinct)** | `3 → 3` | - |
 | **Confirmed White-Box Logic Flaws** | `3` | 0 Critical |
@@ -33,16 +33,18 @@
 | `whitebox_reviewer_claude` | `claude-sonnet-5` | 🟡 simulated | 1 | execution_mode is 'mock' |
 | `whitebox_reviewer_nemotron` | `nvidia_nim/nvidia/nemotron-4-340b-instruct` | 🟡 simulated | 1 | execution_mode is 'mock' |
 | `whitebox_reviewer_chatgpt` | `gpt-4o` | 🟡 simulated | 1 | execution_mode is 'mock' |
-| `whitebox_debater` | `claude-sonnet-5` | 🟡 simulated | 1 | execution_mode is 'mock' |
+| `whitebox_verifier_claude` | `claude-sonnet-5` | 🟡 simulated | 1 | execution_mode is 'mock' |
+| `whitebox_verifier_nemotron` | `nvidia_nim/nvidia/nemotron-4-340b-instruct` | 🟡 simulated | 1 | execution_mode is 'mock' |
+| `whitebox_verifier_chatgpt` | `gpt-4o` | 🟡 simulated | 1 | execution_mode is 'mock' |
 | `whitebox_test_generator` | `gpt-4o` | 🟡 simulated | 3 | execution_mode is 'mock' |
 | `blackbox_threat_modeler` | `claude-sonnet-5` | 🟡 simulated | 1 | execution_mode is 'mock' |
 | `blackbox_test_synthesizer` | `gpt-4o` | 🟡 simulated | 3 | execution_mode is 'mock' |
 
 
 ## 2. 🔬 Phase 1: Heterogeneous White-Box Code Review & Debate
-> **De-biasing Architecture (SIMULATED)**: Reviewer and arbiter outputs below are simulation templates, not real Claude / Nemotron / ChatGPT audits.
+> **De-biasing Architecture (SIMULATED)**: Reviewer and verifier outputs below are simulation templates, not real Claude / Nemotron / ChatGPT audits.
 
-**Debate Consensus Summary** `[SIMULATED]`: Arbitration not applied (simulated); findings are unfiltered reviewer hypotheses.
+**Debate Consensus Summary** `[SIMULATED]`: Cross-model verification not applied (simulated); findings are unfiltered reviewer hypotheses.
 
 ### Confirmed Logic & Defensive Blindspots:
 - **[HIGH] Unchecked Null / Implicit State Assumption in Handler** `[SIMULATED]` (Identified by Claude Logic Reviewer)
@@ -61,7 +63,7 @@
 ### White-Box Test Execution Results
 | Test ID | Type | Derived From | Status | Duration | Outcome |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `WB-PROBE-01` | whitebox_probe | `get_user_profile` | ❌ FAILED | `0.012s` | AssertionError: get_user_profile() crashed with unhandled KeyError on None inputs: None |
+| `WB-PROBE-01` | whitebox_probe | `get_user_profile` | ❌ FAILED | `0.005s` | AssertionError: get_user_profile() crashed with unhandled KeyError on None inputs: None |
 | `WB-PROBE-02` | whitebox_probe | `update_user_settings` | ✅ PASSED | `0.001s` | Passed |
 | `WB-PROBE-03` | whitebox_probe | `process_payment_transfer` | ❌ FAILED | `0.001s` | AssertionError: process_payment_transfer() crashed with unhandled TypeError on None inputs: 'NoneType' object is not subscriptable |
 

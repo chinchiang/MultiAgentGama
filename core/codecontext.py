@@ -44,7 +44,10 @@ def module_import_name(file_path: str, root_dir: str) -> Optional[str]:
     """
     if not file_path.endswith(".py"):
         return None
-    rel = os.path.relpath(os.path.abspath(file_path), os.path.abspath(root_dir))
+    try:
+        rel = os.path.relpath(os.path.abspath(file_path), os.path.abspath(root_dir))
+    except ValueError:  # Windows: file and root on different drives
+        return None
     if rel.startswith(".."):
         return None
     parts = rel[:-3].split(os.sep)

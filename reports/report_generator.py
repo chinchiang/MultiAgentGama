@@ -2,6 +2,7 @@ import os
 from typing import List, Optional
 from core.models import (
     MultiModelDebateResult,
+    ReviewFinding,
     ThreatModelReport,
     TestExecutionResult,
     VibeHarnessSummary,
@@ -64,10 +65,10 @@ class ReportGenerator:
         md.append(f"| **Primary Target Language** | `{summary.detected_language}` | Supported Stack |")
         ratio = debate_result.model_agreement_ratio
         if not debate_result.arbitration_applied:
-            ratio_str = "N/A (arbitration not applied)"
+            ratio_str = "N/A (verification not applied)"
         else:
-            ratio_str = f"{ratio * 100:.1f}%" if ratio is not None else "N/A (not reported)"
-        md.append(f"| **Arbiter-Reported Model Agreement** | `{ratio_str}`{sim_tag} | ≥ 70% Agreement |")
+            ratio_str = f"{ratio * 100:.1f}%" if ratio is not None else "N/A (no decisive votes)"
+        md.append(f"| **Cross-Model Agreement** | `{ratio_str}`{sim_tag} | ≥ 70% Agreement |")
         cov_str = f"{summary.line_coverage_pct:.1f}%" if summary.line_coverage_pct is not None else "N/A"
         md.append(f"| **Code Line Coverage** | `{cov_str}` | ≥ 80% Baseline |")
         if summary.distinct_whitebox_findings is not None:
@@ -98,7 +99,7 @@ class ReportGenerator:
         # 2. White-Box Multi-Model Review Findings
         md.append("## 2. 🔬 Phase 1: Heterogeneous White-Box Code Review & Debate")
         if debate_result.is_simulated or any(f.is_simulated for f in debate_result.confirmed_findings):
-            md.append("> **De-biasing Architecture (SIMULATED)**: Reviewer and arbiter outputs below are simulation templates, not real Claude / Nemotron / ChatGPT audits.\n")
+            md.append("> **De-biasing Architecture (SIMULATED)**: Reviewer and verifier outputs below are simulation templates, not real Claude / Nemotron / ChatGPT audits.\n")
         else:
             md.append("> **De-biasing Architecture**: Findings cross-audited across Claude (Logic/Edge-cases), Nemotron (Defensive/Guardrails), and ChatGPT (Spec/Contracts).\n")
         md.append(f"**Debate Consensus Summary**{sim_tag}: {debate_result.consensus_summary}\n")
@@ -112,13 +113,15 @@ class ReportGenerator:
                 md.append(f"  - **Root Cause**: {f.root_cause}")
                 md.append(f"  - **Vibe-Coding Flaw**: {f.suspected_vibe_flaw}")
                 md.append(f"  - **Suggested Scenario**: `{f.suggested_test_scenario}`")
+                if f.verification_votes:
+                    md.append(f"  - **Verification**: {self._votes(f)}")
         else:
             md.append("✅ No critical white-box defects identified.")
 
         if debate_result.disputed_findings:
-            md.append("\n### Disputed Findings (rejected by the arbiter, not tested):")
+            md.append("\n### Disputed Findings (rejected by a cross-model majority, not tested):")
             for f in debate_result.disputed_findings:
-                md.append(f"- [{f.severity.value}] {f.title} (Identified by {f.reviewer_name})")
+                md.append(f"- [{f.severity.value}] {f.title} (Identified by {f.reviewer_name}) — {self._votes(f)}")
 
         md.append("\n### White-Box Test Execution Results")
         if whitebox_results:
@@ -188,6 +191,16 @@ class ReportGenerator:
             TestStatus.ERROR: "⚠️ ERROR (not a finding)",
             TestStatus.SKIPPED: "⏭️ SKIPPED",
         }[status]
+
+    @staticmethod
+    def _votes(finding: ReviewFinding) -> str:
+        """e.g. `nemotron: reject (checked before use); chatgpt: corroborated`"""
+        if not finding.verification_votes:
+            return "no usable verifier votes"
+        return "; ".join(
+            f"{v.model_alias}: {v.verdict}" + (f" ({v.reason})" if v.reason else "")
+            for v in finding.verification_votes
+        )
 
     @staticmethod
     def _cell(text: str) -> str:

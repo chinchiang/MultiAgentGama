@@ -63,11 +63,15 @@ def deduplicate_findings(findings: List[ReviewFinding]) -> List[ReviewFinding]:
             merged.append(primary)
             continue
         corroborators: List[str] = []
+        corroborating_models: List[str] = []
         for f in others:
             if f.reviewer_name != primary.reviewer_name and f.reviewer_name not in corroborators:
                 corroborators.append(f.reviewer_name)
+            if f.model_alias != primary.model_alias and f.model_alias not in corroborating_models:
+                corroborating_models.append(f.model_alias)
         merged.append(primary.model_copy(update={
             "corroborated_by": corroborators,
+            "corroborating_models": corroborating_models,
             "merged_finding_ids": [f.finding_id for f in others],
         }))
 

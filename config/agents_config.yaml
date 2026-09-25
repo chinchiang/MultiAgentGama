@@ -52,11 +52,22 @@ agents:
     temperature: 0.2
     focus: "API signature compliance, business specification adherence, contract violations, standard test coverage"
 
-  whitebox_debater:
-    name: "Multi-Model Debate & Arbiter Agent"
+  # Cross-model verification: each finding is ruled on by every verifier whose model did NOT report it,
+  # so no model judges its own finding. Every whitebox_verifier_* entry is used; remove one to drop that model.
+  whitebox_verifier_claude:
+    name: "Finding Verifier (Claude)"
     model_alias: "claude"
-    temperature: 0.1
-    role: "Synthesizes multi-model reviews, resolves disputes, eliminates hallucinations and false positives"
+    temperature: 0.0
+
+  whitebox_verifier_nemotron:
+    name: "Finding Verifier (Nemotron)"
+    model_alias: "nemotron"
+    temperature: 0.0
+
+  whitebox_verifier_chatgpt:
+    name: "Finding Verifier (ChatGPT)"
+    model_alias: "chatgpt"
+    temperature: 0.0
 
   whitebox_test_generator:
     name: "Property & Unit Test Generator"

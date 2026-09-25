@@ -43,6 +43,13 @@ class CodeSymbol(BaseModel):
     return_type: Optional[str] = None
 
 
+class VerificationVote(BaseModel):
+    """One model's independent ruling on a finding it did not report."""
+    model_alias: str
+    verdict: str  # "confirm", "reject", "unsure", or "corroborated" (the model reported the same defect itself)
+    reason: str = ""
+
+
 class ReviewFinding(BaseModel):
     """An observation or potential bug identified by a specific LLM reviewer."""
     finding_id: str
@@ -60,16 +67,19 @@ class ReviewFinding(BaseModel):
     is_simulated: bool = False  # True when produced by the offline simulation engine, not a real model
     # Set when duplicate reports were merged into this finding: the other reviewers and their finding ids
     corroborated_by: List[str] = Field(default_factory=list)
+    corroborating_models: List[str] = Field(default_factory=list)  # model aliases of corroborated_by
     merged_finding_ids: List[str] = Field(default_factory=list)
+    verification_votes: List[VerificationVote] = Field(default_factory=list)
 
 
 class MultiModelDebateResult(BaseModel):
-    """Outcome of multi-model arbitration to resolve bias and hallucinations."""
+    """Outcome of cross-model verification: every finding is ruled on by models that did not report it."""
     confirmed_findings: List[ReviewFinding] = Field(default_factory=list)
     disputed_findings: List[ReviewFinding] = Field(default_factory=list)
     consensus_summary: str
-    model_agreement_ratio: Optional[float] = None  # arbiter-reported, 0.0 to 1.0; None when arbitration unavailable
-    arbitration_applied: bool = False  # False: findings were not filtered by a real arbiter
+    # Share of decisive votes (confirm / reject / corroborated) that match the final decision; None without votes
+    model_agreement_ratio: Optional[float] = None
+    arbitration_applied: bool = False  # False: no real verifier vote was cast, findings are unfiltered
     is_simulated: bool = False
 
 
