@@ -14,7 +14,7 @@ from core.models import (
     TestExecutionResult
 )
 from core.llm_gateway import LLMGateway, DEFAULT_CONFIG_PATH
-from core.sandbox import LocalSubprocessSandbox
+from core.sandbox import LocalSubprocessSandbox, DockerSandbox, DEFAULT_DOCKER_IMAGE
 from agents.whitebox.ast_extractor import ASTExtractor
 from agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
 from agents.whitebox.debater import MultiModelDebater
@@ -38,10 +38,7 @@ class VibeHarnessCommander:
         self.console = Console(force_terminal=False)
         self.gateway = LLMGateway(config_path, execution_mode=execution_mode)
         global_cfg = self.gateway.config.get("global", {})
-        provider = global_cfg.get("sandbox_provider", "local_subprocess")
-        if provider != "local_subprocess":
-            raise ValueError(f"sandbox_provider '{provider}' is not implemented; only 'local_subprocess' is supported")
-        self.sandbox = LocalSubprocessSandbox(timeout_seconds=int(global_cfg.get("sandbox_timeout_seconds", 120)))
+        self.sandbox = self._build_sandbox(global_cfg)
         self.ast_extractor = ASTExtractor()
         self.multi_reviewer = HeterogeneousReviewerEnsemble(self.gateway)
         self.debater = MultiModelDebater(self.gateway)
@@ -52,6 +49,25 @@ class VibeHarnessCommander:
             self.sandbox, per_test_timeout_seconds=int(global_cfg.get("per_test_timeout_seconds", 30))
         )
         self.reporter = ReportGenerator()
+
+    @staticmethod
+    def _build_sandbox(global_cfg: dict) -> LocalSubprocessSandbox:
+        provider = global_cfg.get("sandbox_provider", "local_subprocess")
+        timeout = int(global_cfg.get("sandbox_timeout_seconds", 120))
+        if provider == "local_subprocess":
+            return LocalSubprocessSandbox(timeout_seconds=timeout)
+        if provider == "docker":
+            return DockerSandbox(
+                timeout_seconds=timeout,
+                image=global_cfg.get("docker_image", DEFAULT_DOCKER_IMAGE),
+                network=global_cfg.get("docker_network", "none"),
+                memory=str(global_cfg.get("docker_memory", "1g")),
+                cpus=str(global_cfg.get("docker_cpus", "2")),
+                pids_limit=int(global_cfg.get("docker_pids_limit", 256)),
+            )
+        raise ValueError(
+            f"sandbox_provider '{provider}' is not implemented; supported: 'local_subprocess', 'docker'"
+        )
 
     def run_full_pipeline(
         self,

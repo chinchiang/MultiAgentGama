@@ -321,6 +321,6 @@ def test_results_carry_their_own_output(executor, tmp_path):
 
 def test_unimplemented_sandbox_provider_is_rejected(tmp_path):
     cfg = tmp_path / "cfg.yaml"
-    cfg.write_text("global:\n  sandbox_provider: docker\n", encoding="utf-8")
+    cfg.write_text("global:\n  sandbox_provider: e2b\n", encoding="utf-8")
     with pytest.raises(ValueError, match="not implemented"):
         VibeHarnessCommander(config_path=str(cfg), execution_mode="mock")

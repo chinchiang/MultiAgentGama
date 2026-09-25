@@ -6,7 +6,13 @@ global:
   timeout_seconds: 60             # per LLM request
   max_retries: 2                  # LLM request retries before falling back to fallback_model
   max_output_tokens: 4096         # per LLM response
-  sandbox_provider: "local_subprocess"  # Only "local_subprocess" is implemented (docker / e2b are planned)
+  sandbox_provider: "local_subprocess"  # "local_subprocess" (NOT a security boundary) or "docker" (isolated container); e2b is planned
+  # docker provider only; build the image first: docker build -t vibeharness-sandbox:latest -f docker/sandbox.Dockerfile .
+  docker_image: "vibeharness-sandbox:latest"  # must contain pytest, pytest-cov and the target's dependencies
+  docker_network: "none"          # "none" blocks all network; black-box tests against a running service need e.g. "host" (Linux)
+  docker_memory: "1g"
+  docker_cpus: "2"
+  docker_pids_limit: 256
   sandbox_timeout_seconds: 120    # budget for one batched pytest run
   per_test_timeout_seconds: 30    # budget per test when a timed-out batch is re-run test by test
 
