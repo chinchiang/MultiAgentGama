@@ -6,6 +6,7 @@ import os
 
 from core.harness import VibeHarnessCommander
 from core.llm_gateway import LLMGatewayError, DEFAULT_CONFIG_PATH
+from core.sandbox import SandboxUnavailableError
 
 
 if sys.platform == "win32":
@@ -74,7 +75,11 @@ def main():
         print(f"Error: Target path '{target_path}' does not exist.", file=sys.stderr)
         sys.exit(1)
 
-    commander = VibeHarnessCommander(config_path=args.config, execution_mode=args.mode)
+    try:
+        commander = VibeHarnessCommander(config_path=args.config, execution_mode=args.mode)
+    except (ValueError, SandboxUnavailableError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
     try:
         summary = commander.run_full_pipeline(
             target_dir=target_path,
