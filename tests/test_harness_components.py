@@ -11,10 +11,13 @@ from agents.blackbox.threat_modeler import AutomatedThreatModeler
 from agents.blackbox.scenario_builder import ThreatScenarioBuilder
 from runners.test_executor import TestSuiteExecutor
 
+# Mock mode keeps these tests hermetic even when real API keys are set in the environment
+SAMPLE_APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples", "vibe_sample_app.py")
+
 
 def test_ast_extractor_on_sample_app():
     extractor = ASTExtractor()
-    symbols = extractor.parse_file("examples/vibe_sample_app.py")
+    symbols = extractor.parse_file(SAMPLE_APP)
     assert len(symbols) >= 3
     names = [s.name for s in symbols]
     assert "get_user_profile" in names
@@ -40,7 +43,7 @@ def test_ast_extractor_js_ts_heuristic(tmp_path):
 
 
 def test_llm_gateway_heterogeneous_personas():
-    gateway = LLMGateway()
+    gateway = LLMGateway(execution_mode="mock")
     # Test Claude logic persona
     claude_resp = gateway.generate("whitebox_reviewer_claude", "sys", "prompt")
     assert "findings" in claude_resp
@@ -58,12 +61,12 @@ def test_llm_gateway_heterogeneous_personas():
 
 
 def test_debater_consensus_resolution():
-    gateway = LLMGateway()
+    gateway = LLMGateway(execution_mode="mock")
     extractor = ASTExtractor()
     reviewer = HeterogeneousReviewerEnsemble(gateway)
     debater = MultiModelDebater(gateway)
 
-    symbols = extractor.parse_file("examples/vibe_sample_app.py")
+    symbols = extractor.parse_file(SAMPLE_APP)
     raw_findings = reviewer.review_symbols(symbols)
     assert len(raw_findings) >= 3
 
@@ -76,7 +79,7 @@ def test_debater_consensus_resolution():
 
 
 def test_self_healing_test_generator():
-    gateway = LLMGateway()
+    gateway = LLMGateway(execution_mode="mock")
     gen = WhiteboxTestGenerator(gateway)
     # Valid syntax
     code_valid = "def test_ok(): assert 1 == 1"
@@ -90,7 +93,7 @@ def test_self_healing_test_generator():
 
 
 def test_threat_modeling_stride_and_owasp():
-    gateway = LLMGateway()
+    gateway = LLMGateway(execution_mode="mock")
     threat_modeler = AutomatedThreatModeler(gateway)
     report = threat_modeler.model_system(
         system_description="User Profile & Payment API",
@@ -103,7 +106,7 @@ def test_threat_modeling_stride_and_owasp():
 
 
 def test_scenario_builder_server_health_check():
-    gateway = LLMGateway()
+    gateway = LLMGateway(execution_mode="mock")
     builder = ThreatScenarioBuilder(gateway)
     # Non-existent port should return False safely without throwing an uncaught exception
     assert builder.check_server_live("http://localhost:59999", timeout_sec=0.2) is False

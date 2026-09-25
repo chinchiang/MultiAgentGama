@@ -1,5 +1,5 @@
 # 🛡️ VibeHarness-MAS Multi-Agent Quality & Security Report
-**Target System Path**: `D:\LocalGithub\MultiAgentGama\examples`  
+**Target System Path**: `examples`  
 **Orchestrator**: Commander Harness Agent  
 **Overall Status**: `NEEDS_FIXES`  
 
@@ -17,7 +17,7 @@
 | Metric | Value | Target |
 | :--- | :--- | :--- |
 | **Primary Target Language** | `Python` | Supported Stack |
-| **Heterogeneous Model Consensus Ratio** | `88.0%` `[SIMULATED]` | ≥ 70% Agreement |
+| **Arbiter-Reported Model Agreement** | `N/A (arbitration not applied)` `[SIMULATED]` | ≥ 70% Agreement |
 | **Code Line Coverage** | `63.0%` | ≥ 80% Baseline |
 | **Confirmed White-Box Logic Flaws** | `3` | 0 Critical |
 | **White-Box Tests Passed** | `1 / 3` (0 errored / not run) | 100% Pass Rate |
@@ -29,22 +29,22 @@
 ### Execution Provenance
 | Agent | Model | Mode | Calls | Reason |
 | :--- | :--- | :--- | :--- | :--- |
-| `whitebox_reviewer_claude` | `claude-3-7-sonnet-20250219` | 🟡 simulated | 1 | litellm is not installed |
-| `whitebox_reviewer_nemotron` | `nvidia/nemotron-4-340b-instruct` | 🟡 simulated | 1 | litellm is not installed |
-| `whitebox_reviewer_chatgpt` | `gpt-4o` | 🟡 simulated | 1 | litellm is not installed |
-| `whitebox_debater` | `claude-3-7-sonnet-20250219` | 🟡 simulated | 1 | litellm is not installed |
-| `whitebox_test_generator` | `gpt-4o` | 🟡 simulated | 3 | litellm is not installed |
-| `blackbox_threat_modeler` | `claude-3-7-sonnet-20250219` | 🟡 simulated | 1 | litellm is not installed |
-| `blackbox_test_synthesizer` | `gpt-4o` | 🟡 simulated | 3 | litellm is not installed |
+| `whitebox_reviewer_claude` | `claude-sonnet-5` | 🟡 simulated | 1 | execution_mode is 'mock' |
+| `whitebox_reviewer_nemotron` | `nvidia_nim/nvidia/nemotron-4-340b-instruct` | 🟡 simulated | 1 | execution_mode is 'mock' |
+| `whitebox_reviewer_chatgpt` | `gpt-4o` | 🟡 simulated | 1 | execution_mode is 'mock' |
+| `whitebox_debater` | `claude-sonnet-5` | 🟡 simulated | 1 | execution_mode is 'mock' |
+| `whitebox_test_generator` | `gpt-4o` | 🟡 simulated | 3 | execution_mode is 'mock' |
+| `blackbox_threat_modeler` | `claude-sonnet-5` | 🟡 simulated | 1 | execution_mode is 'mock' |
+| `blackbox_test_synthesizer` | `gpt-4o` | 🟡 simulated | 3 | execution_mode is 'mock' |
 
 
 ## 2. 🔬 Phase 1: Heterogeneous White-Box Code Review & Debate
 > **De-biasing Architecture (SIMULATED)**: Reviewer and arbiter outputs below are simulation templates, not real Claude / Nemotron / ChatGPT audits.
 
-**Debate Consensus Summary** `[SIMULATED]`: All three heterogeneous models identified that the codebase prioritizes superficial functionality over defensive bounds, resource limits, and error handling.
+**Debate Consensus Summary** `[SIMULATED]`: Arbitration not applied (simulated); findings are unfiltered reviewer hypotheses.
 
 ### Confirmed Logic & Defensive Blindspots:
-- **[HIGH] Unchecked Null / Implicit State Assumption in Handler** `[SIMULATED]` (Identified by Claude 3.7 Logic Reviewer)
+- **[HIGH] Unchecked Null / Implicit State Assumption in Handler** `[SIMULATED]` (Identified by Claude Logic Reviewer)
   - **Root Cause**: Absence of defensive null-check before property traversal.
   - **Vibe-Coding Flaw**: Vibe coding commonly assumes the 'happy path' where records are always found.
   - **Suggested Scenario**: `Invoke the endpoint/function with a non-existent ID or empty payload and assert proper error status (404/400) instead of a 500 crash.`
@@ -60,9 +60,9 @@
 ### White-Box Test Execution Results
 | Test ID | Type | Derived From | Status | Duration | Outcome |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `WB-PROBE-01` | whitebox_probe | `get_user_profile` | ❌ FAILED | `0.056s` | AssertionError: get_user_profile() crashed with unhandled KeyError on None inputs: None |
-| `WB-PROBE-02` | whitebox_probe | `update_user_settings` | ✅ PASSED | `0.008s` | Passed |
-| `WB-PROBE-03` | whitebox_probe | `process_payment_transfer` | ❌ FAILED | `0.005s` | AssertionError: process_payment_transfer() crashed with unhandled TypeError on None inputs: 'NoneType' object is not subscriptable |
+| `WB-PROBE-01` | whitebox_probe | `get_user_profile` | ❌ FAILED | `0.011s` | AssertionError: get_user_profile() crashed with unhandled KeyError on None inputs: None |
+| `WB-PROBE-02` | whitebox_probe | `update_user_settings` | ✅ PASSED | `0.003s` | Passed |
+| `WB-PROBE-03` | whitebox_probe | `process_payment_transfer` | ❌ FAILED | `0.002s` | AssertionError: process_payment_transfer() crashed with unhandled TypeError on None inputs: 'NoneType' object is not subscriptable |
 
 
 ## 3. 🎯 Phase 2: Black-Box Threat Modeling (STRIDE & OWASP) `[SIMULATED]`
@@ -88,9 +88,10 @@ No executable test was synthesized for these threats; they are neither confirmed
 
 
 ## 5. 💡 Actionable Next Steps for Vibe Coder
-- Implement server-side input length & type sanitization to prevent memory exhaustion / ReDoS.
-- Enforce strict Object Level Authorization (BOLA/IDOR checks) verifying user_id against token claims.
-- Sanitize internal error responses to suppress stack traces, SQL syntax, and internal paths.
+- Fix defect exposed by `WB-PROBE-01` (from `get_user_profile`): AssertionError: get_user_profile() crashed with unhandled KeyError on None inputs: None
+- Fix defect exposed by `WB-PROBE-03` (from `process_payment_transfer`): AssertionError: process_payment_transfer() crashed with unhandled TypeError on None inputs: 'NoneType' object is not subscriptable
+- Write or synthesize tests for untested threats: THREAT-01, THREAT-02, THREAT-03
+- Close the evidence gaps listed above (e.g. run with `--mode live` and valid API keys) before trusting a pass verdict.
 
 ---
 *Generated automatically by VibeHarness-MAS Harness Commander.*
