@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any, Optional
 from core.models import CodeSymbol, ReviewFinding, FindingSeverity
 from core.llm_gateway import LLMGateway
-from core.codecontext import render_symbols
+from core.codecontext import render_symbols, batch_symbols
 
 logger = logging.getLogger("VibeHarness.MultiReviewer")
 
@@ -17,7 +17,9 @@ class HeterogeneousReviewerEnsemble:
     - ChatGPT: Specification compliance & API contract adherence.
     """
 
-    BATCH_SIZE = 15  # symbols per prompt; every symbol is reviewed, in as many batches as needed
+    # Every symbol is reviewed, in as many batches as needed; a batch's code listing fits the token budget
+    BATCH_MAX_TOKENS = 10000
+    BATCH_MAX_SYMBOLS = 15
     MAX_WORKERS = 6
 
     def __init__(self, gateway: LLMGateway):
@@ -47,7 +49,7 @@ class HeterogeneousReviewerEnsemble:
         if not symbols:
             return []
         root = root_dir or os.path.dirname(os.path.abspath(symbols[0].file_path))
-        batches = [symbols[i:i + self.BATCH_SIZE] for i in range(0, len(symbols), self.BATCH_SIZE)]
+        batches = batch_symbols(symbols, root, self.BATCH_MAX_TOKENS, self.BATCH_MAX_SYMBOLS)
         jobs = [(reviewer, batch) for reviewer in self.reviewer_agents for batch in batches]
 
         # Reviewers are independent models, so their calls run concurrently
@@ -112,7 +114,7 @@ class HeterogeneousReviewerEnsemble:
             f'Return {{"findings": []}} if you find no defect.'
         )
         user_prompt = (
-            f"Target Codebase Extract:\n\n{render_symbols(batch, root, max_chars=40000)}\n\n"
+            f"Target Codebase Extract:\n\n{render_symbols(batch, root, max_tokens=self.BATCH_MAX_TOKENS)}\n\n"
             f"Please audit against your specialty."
         )
         logger.info(f"Running white-box audit with reviewer: {name} ({len(batch)} symbols)")

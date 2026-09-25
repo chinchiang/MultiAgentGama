@@ -70,6 +70,8 @@ class ReportGenerator:
         md.append(f"| **Arbiter-Reported Model Agreement** | `{ratio_str}`{sim_tag} | ≥ 70% Agreement |")
         cov_str = f"{summary.line_coverage_pct:.1f}%" if summary.line_coverage_pct is not None else "N/A"
         md.append(f"| **Code Line Coverage** | `{cov_str}` | ≥ 80% Baseline |")
+        if summary.distinct_whitebox_findings is not None:
+            md.append(f"| **Reviewer Findings (raw → distinct)** | `{summary.total_whitebox_findings} → {summary.distinct_whitebox_findings}` | - |")
         md.append(f"| **Confirmed White-Box Logic Flaws** | `{summary.confirmed_whitebox_bugs}` | 0 Critical |")
         md.append(f"| **White-Box Tests Passed** | `{summary.whitebox_tests_passed} / {len(whitebox_results)}` ({summary.whitebox_tests_errored} errored / not run) | 100% Pass Rate |")
         md.append(f"| **STRIDE Threat Scenarios Modeled** | `{summary.total_threats_modeled}` | Full Asset Coverage |")
@@ -105,7 +107,8 @@ class ReportGenerator:
             md.append("### Confirmed Logic & Defensive Blindspots:")
             for f in debate_result.confirmed_findings:
                 tag = " `[SIMULATED]`" if f.is_simulated else ""
-                md.append(f"- **[{f.severity.value}] {f.title}**{tag} (Identified by {f.reviewer_name})")
+                also = f"; also reported by {', '.join(f.corroborated_by)}" if f.corroborated_by else ""
+                md.append(f"- **[{f.severity.value}] {f.title}**{tag} (Identified by {f.reviewer_name}{also})")
                 md.append(f"  - **Root Cause**: {f.root_cause}")
                 md.append(f"  - **Vibe-Coding Flaw**: {f.suspected_vibe_flaw}")
                 md.append(f"  - **Suggested Scenario**: `{f.suggested_test_scenario}`")

@@ -18,6 +18,7 @@ from core.sandbox import LocalSubprocessSandbox
 from agents.whitebox.ast_extractor import ASTExtractor
 from agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
 from agents.whitebox.debater import MultiModelDebater
+from agents.whitebox.deduplicator import deduplicate_findings
 from agents.whitebox.test_generator import WhiteboxTestGenerator
 from agents.blackbox.threat_modeler import AutomatedThreatModeler
 from agents.blackbox.scenario_builder import ThreatScenarioBuilder
@@ -98,9 +99,13 @@ class VibeHarnessCommander:
         self.console.print("\n[bold blue]=== Phase 2: Heterogeneous Multi-Model White-Box Review ===[/bold blue]")
         raw_findings = self.multi_reviewer.review_symbols(symbols, root_dir=work_dir)
         self.console.print(f"[+] Received [bold]{len(raw_findings)}[/bold] raw review findings from Claude, Nemotron, and ChatGPT.")
+        findings = deduplicate_findings(raw_findings)
+        corroborated = sum(1 for f in findings if f.corroborated_by)
+        if len(findings) < len(raw_findings):
+            self.console.print(f"[+] Merged duplicates into [bold]{len(findings)}[/bold] distinct findings ({corroborated} reported by more than one model).")
 
         self.console.print("[yellow]Dispatching to Multi-Model Debater to resolve bias and hallucinations...[/yellow]")
-        debate_result: MultiModelDebateResult = self.debater.arbitrate(raw_findings)
+        debate_result: MultiModelDebateResult = self.debater.arbitrate(findings)
         if debate_result.arbitration_applied:
             ratio = debate_result.model_agreement_ratio
             ratio_display = f"{ratio * 100:.1f}%" if ratio is not None else "N/A (not reported)"
@@ -221,6 +226,7 @@ class VibeHarnessCommander:
         summary = VibeHarnessSummary(
             overall_status=overall_status,
             total_whitebox_findings=len(raw_findings),
+            distinct_whitebox_findings=len(findings),
             confirmed_whitebox_bugs=len(debate_result.confirmed_findings),
             whitebox_tests_passed=wb_passed,
             whitebox_tests_failed=wb_failed,

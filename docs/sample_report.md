@@ -19,6 +19,7 @@
 | **Primary Target Language** | `Python` | Supported Stack |
 | **Arbiter-Reported Model Agreement** | `N/A (arbitration not applied)` `[SIMULATED]` | ≥ 70% Agreement |
 | **Code Line Coverage** | `63.0%` | ≥ 80% Baseline |
+| **Reviewer Findings (raw → distinct)** | `3 → 3` | - |
 | **Confirmed White-Box Logic Flaws** | `3` | 0 Critical |
 | **White-Box Tests Passed** | `1 / 3` (0 errored / not run) | 100% Pass Rate |
 | **STRIDE Threat Scenarios Modeled** | `3` | Full Asset Coverage |
@@ -60,9 +61,9 @@
 ### White-Box Test Execution Results
 | Test ID | Type | Derived From | Status | Duration | Outcome |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `WB-PROBE-01` | whitebox_probe | `get_user_profile` | ❌ FAILED | `0.011s` | AssertionError: get_user_profile() crashed with unhandled KeyError on None inputs: None |
-| `WB-PROBE-02` | whitebox_probe | `update_user_settings` | ✅ PASSED | `0.003s` | Passed |
-| `WB-PROBE-03` | whitebox_probe | `process_payment_transfer` | ❌ FAILED | `0.002s` | AssertionError: process_payment_transfer() crashed with unhandled TypeError on None inputs: 'NoneType' object is not subscriptable |
+| `WB-PROBE-01` | whitebox_probe | `get_user_profile` | ❌ FAILED | `0.012s` | AssertionError: get_user_profile() crashed with unhandled KeyError on None inputs: None |
+| `WB-PROBE-02` | whitebox_probe | `update_user_settings` | ✅ PASSED | `0.001s` | Passed |
+| `WB-PROBE-03` | whitebox_probe | `process_payment_transfer` | ❌ FAILED | `0.001s` | AssertionError: process_payment_transfer() crashed with unhandled TypeError on None inputs: 'NoneType' object is not subscriptable |
 
 
 ## 3. 🎯 Phase 2: Black-Box Threat Modeling (STRIDE & OWASP) `[SIMULATED]`

@@ -5,9 +5,12 @@ from typing import List, Optional, Set
 from core.models import ReviewFinding, GeneratedTest, CodeSymbol
 from core.llm_gateway import LLMGateway
 from core.codecheck import check_test_code, strip_code_fences
-from core.codecontext import file_source, fence_language, import_instructions
+from core.codecontext import file_source, fence_language, import_instructions, truncate_to_tokens
 
 logger = logging.getLogger("VibeHarness.TestGenerator")
+
+# Estimated-token budget for the target source shown per finding
+CODE_CONTEXT_TOKENS = 4000
 
 
 class WhiteboxTestGenerator:
@@ -135,10 +138,10 @@ class WhiteboxTestGenerator:
         file_path = finding.file_path if finding.file_path not in ("", "unknown") else default_file
         symbol = next((s for s in symbols if s.name == finding.symbol_name and s.file_path == file_path), None)
         if symbol:
-            source = symbol.source_code
+            source = truncate_to_tokens(symbol.source_code, CODE_CONTEXT_TOKENS)
             label = f"Source of `{symbol.name}` (lines {symbol.line_start}-{symbol.line_end})"
         else:
-            source = file_source(file_path)
+            source = file_source(file_path, max_tokens=CODE_CONTEXT_TOKENS)
             label = "Source of the target file"
         return (
             f"{import_instructions(file_path, root, symbol.name if symbol else None)}\n"
