@@ -12,6 +12,9 @@ _FENCE_LANG = {".py": "python", ".js": "javascript", ".jsx": "jsx", ".ts": "type
 # Deliberately conservative so budgets are not overshot on real tokenizers.
 _ASCII_CHARS_PER_TOKEN = 3.5
 
+# Below this many tokens a partial block is not worth keeping; the symbol is omitted instead
+_MIN_TRUNCATED_BLOCK_TOKENS = 80
+
 
 def estimate_tokens(text: str) -> int:
     non_ascii = sum(1 for ch in text if ord(ch) > 127)
@@ -121,7 +124,11 @@ def render_symbol(sym: CodeSymbol, root_dir: str, max_tokens: Optional[int] = No
 
 
 def render_symbols(symbols: Iterable[CodeSymbol], root_dir: str, max_tokens: int = 3000) -> str:
-    """Source listing of symbols (with import paths), within an estimated token budget."""
+    """Source listing of symbols (with import paths), within an estimated token budget.
+
+    A block that exceeds the remaining budget is truncated to fit rather than omitted
+    (partial code is still context); only blocks too small to truncate meaningfully are dropped.
+    """
     blocks: List[str] = []
     used = 0
     omitted = 0
@@ -130,6 +137,14 @@ def render_symbols(symbols: Iterable[CodeSymbol], root_dir: str, max_tokens: int
         block = render_symbol(sym, root_dir, max_tokens if not blocks else None)
         cost = estimate_tokens(block)
         if blocks and used + cost > max_tokens:
+            remaining = max_tokens - used - 2  # blank-line separator
+            if remaining >= _MIN_TRUNCATED_BLOCK_TOKENS:
+                block = render_symbol(sym, root_dir, remaining)
+                cost = estimate_tokens(block)
+                if used + cost <= max_tokens:
+                    blocks.append(block)
+                    used += cost
+                    continue
             omitted += 1
             continue
         blocks.append(block)
