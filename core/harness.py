@@ -3,7 +3,6 @@ import os
 from typing import Optional, List
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from core.models import (
     VibeHarnessSummary,
@@ -203,6 +202,12 @@ class VibeHarnessCommander:
             invalid_agents = sorted({rec.agent_id for rec in invalid_calls})
             inconclusive_reasons.append(
                 f"{len(invalid_calls)} model call(s) returned unusable output (invalid JSON / missing fields): {', '.join(invalid_agents)}"
+            )
+        unmodeled_findings = self.whitebox_test_gen.findings_without_model_tests
+        if unmodeled_findings:
+            inconclusive_reasons.append(
+                f"{len(unmodeled_findings)} confirmed finding(s) had no usable model-generated test and were only "
+                f"covered by deterministic probes, not by a test targeting the defect: {', '.join(unmodeled_findings)}"
             )
         if not symbols:
             inconclusive_reasons.append("No analyzable source symbols were found in the target")

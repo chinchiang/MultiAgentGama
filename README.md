@@ -168,8 +168,10 @@ Exit code（依序判定）：
 | `0` | READY_TO_SHIP | 以上皆無 |
 | `4` | — | live 模式模型呼叫失敗 |
 
-### 5. 運行工具包本身單元測試
+### 5. 運行工具包本身單元測試與靜態檢查
 
 ```bash
+pip install -r requirements-dev.txt
 python -m pytest
+python -m ruff check .
 ```

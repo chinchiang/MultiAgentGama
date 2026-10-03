@@ -2,6 +2,7 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any, Optional
+from pydantic import ValidationError
 from core.models import CodeSymbol, ReviewFinding, FindingSeverity
 from core.llm_gateway import LLMGateway
 from core.codecontext import render_symbols, batch_symbols
@@ -58,9 +59,13 @@ class HeterogeneousReviewerEnsemble:
 
         all_findings: List[ReviewFinding] = []
         counters: Dict[str, int] = {}
-        for (reviewer, batch), (resp, simulated) in zip(jobs, responses):
+        for (reviewer, batch), (resp, simulated) in zip(jobs, responses, strict=True):
             model_alias = reviewer["model_alias"]
-            for item in resp.get("findings") or []:
+            raw_findings = resp.get("findings")
+            if not isinstance(raw_findings, list):
+                logger.warning(f"Ignoring unusable findings list from {reviewer['name']} (got {type(raw_findings).__name__})")
+                raw_findings = []
+            for item in raw_findings:
                 if not isinstance(item, dict):
                     continue
                 severity_str = str(item.get("severity", "MEDIUM")).upper()
@@ -71,21 +76,24 @@ class HeterogeneousReviewerEnsemble:
 
                 symbol = self._match_symbol(item.get("symbol_name"), batch)
                 counters[model_alias] = counters.get(model_alias, 0) + 1
-                all_findings.append(ReviewFinding(
-                    finding_id=f"WB-{model_alias[:3].upper()}-{counters[model_alias]:02d}",
-                    reviewer_name=reviewer["name"],
-                    model_alias=model_alias,
-                    file_path=symbol.file_path if symbol else "unknown",
-                    symbol_name=symbol.name if symbol else item.get("symbol_name"),
-                    line_number=symbol.line_start if symbol else None,
-                    severity=severity,
-                    title=item.get("title", "Potential Defect"),
-                    description=item.get("description", ""),
-                    root_cause=item.get("root_cause", ""),
-                    suspected_vibe_flaw=item.get("suspected_vibe_flaw", ""),
-                    suggested_test_scenario=item.get("suggested_test_scenario", ""),
-                    is_simulated=simulated
-                ))
+                try:
+                    all_findings.append(ReviewFinding(
+                        finding_id=f"WB-{model_alias[:3].upper()}-{counters[model_alias]:02d}",
+                        reviewer_name=reviewer["name"],
+                        model_alias=model_alias,
+                        file_path=symbol.file_path if symbol else "unknown",
+                        symbol_name=symbol.name if symbol else item.get("symbol_name"),
+                        line_number=symbol.line_start if symbol else None,
+                        severity=severity,
+                        title=item.get("title", "Potential Defect"),
+                        description=item.get("description", ""),
+                        root_cause=item.get("root_cause", ""),
+                        suspected_vibe_flaw=item.get("suspected_vibe_flaw", ""),
+                        suggested_test_scenario=item.get("suggested_test_scenario", ""),
+                        is_simulated=simulated
+                    ))
+                except ValidationError as e:
+                    logger.warning(f"Skipping unusable finding from {reviewer['name']}: {e}")
 
         return all_findings
 

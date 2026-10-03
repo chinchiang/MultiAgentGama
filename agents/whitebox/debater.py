@@ -159,7 +159,11 @@ class MultiModelDebater:
 
         votes: List[Tuple[int, VerificationVote]] = []
         seen = set()
-        for item in resp.get("verdicts") or []:
+        raw_verdicts = resp.get("verdicts")
+        if not isinstance(raw_verdicts, list):
+            logger.warning(f"Ignoring unusable verdict list from {alias} (got {type(raw_verdicts).__name__})")
+            raw_verdicts = []
+        for item in raw_verdicts:
             if not isinstance(item, dict):
                 continue
             local, verdict = item.get("index"), str(item.get("verdict", "")).lower()
