@@ -47,9 +47,13 @@ def test_rewrite_posix_host_paths():
     )
 
 
-def test_filesystem_root_parent_is_never_mapped():
-    mapping = DockerSandbox._path_mapping(os.path.abspath(os.sep + "proj"))
-    assert len(mapping) == 1
+def test_only_the_target_is_mapped_and_sibling_paths_are_left_alone():
+    mapping = DockerSandbox._path_mapping("/home/u/proj")
+    assert mapping == [("/home/u/proj", "/work/proj")]
+    # A sibling is not mounted; rewriting it to /work/<sibling> would point at a nonexistent
+    # container path. Keeping the host path makes the failure obvious.
+    code = "p = '/home/u/other/x.py'"
+    assert rewrite_host_paths(code, mapping, windows=False) == code
 
 
 def _sandbox(**kwargs):
@@ -68,14 +72,49 @@ def test_run_command_is_isolated(tmp_path, monkeypatch):
     for flag in ("--rm", "--read-only", "--network none", "--cap-drop ALL", "--security-opt no-new-privileges",
                  "--memory 512m", "--pids-limit 256", "--user"):
         assert flag in joined
-    assert f"type=bind,source={target},target=/work/app,readonly" in cmd
-    assert f"type=bind,source={run_dir},target=/sandbox" in cmd
+    # defense in depth: /tmp tmpfs and the writable run dir must not allow executing binaries
+    assert "/tmp:rw,nosuid,noexec,size=256m" in cmd
+    assert ",nosuid,noexec" in " ".join(cmd)
+    assert f"type=bind,source={target},target=/work/app,readonly" in joined
+    assert f"type=bind,source={run_dir},target=/sandbox,nosuid,noexec" in joined
     assert "PYTHONPATH=/work/app:/work" in cmd and "TARGET_URL=http://svc" in cmd
     assert "sk-secret" not in joined  # host secrets never reach the container
     image_at = cmd.index(DEFAULT_DOCKER_IMAGE)
-    assert cmd[image_at + 1:image_at + 5] == ["python", "-m", "pytest", "/sandbox/test_vh_000.py"]
+    # in-container timeout backstop: pytest dies even if host-side cleanup fails
+    assert cmd[image_at + 1:image_at + 8] == [
+        "timeout", "--kill-after=5", "30", "python", "-m", "pytest", "/sandbox/test_vh_000.py"
+    ]
     assert "--junitxml=/sandbox/junit.xml" in cmd and "--cov=/work/app" in cmd
     assert cwd == str(run_dir) and "OPENAI_API_KEY" not in cli_env
+
+
+def test_custom_env_cannot_carry_credentials_or_injection_vectors(tmp_path):
+    target = tmp_path / "app"
+    target.mkdir()
+    env = {
+        "TARGET_URL": "http://svc",           # benign, kept
+        "OPENAI_API_KEY": "sk-secret",        # credential, dropped
+        "MY_SERVICE_SECRET": "x",             # credential, dropped
+        "AWS_SESSION_TOKEN": "x",             # credential, dropped
+        "DB_PASSWORD": "x",                   # credential, dropped
+        "BASH_ENV": "/tmp/evil.sh",           # injection vector, dropped
+        "LD_PRELOAD": "/tmp/evil.so",         # injection vector, dropped
+    }
+    cmd, _, _ = _sandbox()._build_command(str(tmp_path / "run"), ["test_x.py"], str(target), False, None, env)
+    joined = " ".join(cmd)
+    assert "TARGET_URL=http://svc" in joined
+    for forbidden in ("sk-secret", "MY_SERVICE_SECRET", "AWS_SESSION_TOKEN", "DB_PASSWORD",
+                      "BASH_ENV=", "LD_PRELOAD="):
+        assert forbidden not in joined
+
+
+def test_root_harness_runs_the_container_as_nobody(tmp_path, monkeypatch):
+    if not hasattr(os, "getuid"):
+        pytest.skip("POSIX only")
+    monkeypatch.setattr(sandbox_mod.os, "getuid", lambda: 0, raising=False)
+    assert DockerSandbox._user() == "65534:65534"
+    monkeypatch.setattr(sandbox_mod.os, "getuid", lambda: 1000, raising=False)
+    assert DockerSandbox._user() == "1000:1000"
 
 
 def test_bind_quotes_paths_with_commas():

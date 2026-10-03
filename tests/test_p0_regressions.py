@@ -4,7 +4,7 @@ import sys
 import pytest
 from core.models import GeneratedTest, TestStatus, AgentCallRecord
 from core.llm_gateway import LLMGateway, LLMGatewayError
-from core.sandbox import LocalSubprocessSandbox
+from core.sandbox import LocalSubprocessSandbox, TIMEOUT_EXIT_CODE
 from core.codecheck import check_test_code, strip_code_fences
 from agents.whitebox.ast_extractor import ASTExtractor
 from agents.whitebox.test_generator import WhiteboxTestGenerator
@@ -94,6 +94,74 @@ def test_metadata_newlines_cannot_inject_code(executor, tmp_path):
     assert results[0].is_security_exploit_confirmed is False
 
 
+# --- JUnit parsing / rerun budget ---------------------------------------------
+
+def test_junit_modules_beyond_999_are_not_merged():
+    xml = (
+        "<testsuite name='pytest'>"
+        "<testcase classname='test_vh_1000' name='test_a' time='0.1'/>"
+        "<testcase classname='test_vh_1001' name='test_b' time='0.1'/>"
+        "</testsuite>"
+    )
+    cases = TestSuiteExecutor._parse_junit(xml)
+    assert sorted(cases) == ["test_vh_1000", "test_vh_1001"]
+
+
+def test_junit_garbage_time_does_not_crash():
+    cases = TestSuiteExecutor._parse_junit(
+        "<testsuite><testcase classname='test_vh_000' name='test_a' time='not-a-float'/></testsuite>"
+    )
+    assert cases["test_vh_000"][0]["time"] == 0.0
+
+
+class _FakeSandbox:
+    """Stands in for the sandbox so timeout/rerun paths run without spawning processes."""
+
+    def __init__(self, batch_exit=TIMEOUT_EXIT_CODE, individual_junit=None, timeout_seconds=60):
+        self.timeout_seconds = timeout_seconds
+        self.batch_exit = batch_exit
+        self.individual_junit = individual_junit
+        self.individual_calls = 0
+
+    def execute_pytest_files(self, files, **kwargs):
+        if len(files) == 1 and self.individual_junit is not None:
+            self.individual_calls += 1
+            return (0, "", "", 0.1, None, self.individual_junit)
+        return (self.batch_exit, "", "Execution timed out after 60 seconds.", 60.0, None, None)
+
+
+def test_partially_skipped_module_is_flagged(tmp_path):
+    junit = (
+        "<testsuite>"
+        "<testcase classname='test_vh_000' name='test_a' time='0.1'/>"
+        "<testcase classname='test_vh_000' name='test_b' time='0.1'><skipped message='cond'/></testcase>"
+        "</testsuite>"
+    )
+    executor = TestSuiteExecutor(_FakeSandbox(batch_exit=0, individual_junit=junit))
+    results, _ = executor.execute_test_suite([_test("A", "def test_a():\n    assert True")], working_dir=str(tmp_path))
+    assert results[0].status == TestStatus.PASSED
+    assert "skipped" in results[0].failure_reason
+
+
+def test_single_module_timeout_says_so_instead_of_no_report(tmp_path):
+    executor = TestSuiteExecutor(_FakeSandbox(timeout_seconds=60))
+    results, _ = executor.execute_test_suite([_test("A", "def test_a():\n    assert True")], working_dir=str(tmp_path))
+    assert results[0].status == TestStatus.ERROR
+    assert "timed out" in results[0].failure_reason and "no per-test report" in results[0].failure_reason
+
+
+def test_rerun_budget_is_capped_by_the_batch_budget(tmp_path):
+    sandbox = _FakeSandbox(timeout_seconds=0)
+    executor = TestSuiteExecutor(sandbox, per_test_timeout_seconds=30)
+    results, _ = executor.execute_test_suite([
+        _test("A", "def test_a():\n    assert True"),
+        _test("B", "def test_b():\n    assert True"),
+    ], working_dir=str(tmp_path))
+    # The batch timed out and the (zero) rerun budget is exhausted immediately: no module is re-run
+    assert sandbox.individual_calls == 0
+    assert all(r.status == TestStatus.ERROR and "Rerun budget" in r.failure_reason for r in results)
+
+
 def test_non_assertion_crash_in_blackbox_is_failure_but_not_exploit(executor, tmp_path):
     results, _ = executor.execute_test_suite([
         _test("A", "def test_a():\n    assert {}['missing']"),
@@ -125,6 +193,25 @@ def test_check_test_code_requires_test_function():
     assert check_test_code("def helper():\n    pass") == (False, "no top-level test_ function defined")
     assert check_test_code("def test_a():\n    assert 1")[0] is True
     assert strip_code_fences("no fences") == "no fences"
+
+
+def test_check_test_code_accepts_class_based_tests():
+    valid = (
+        "class TestRepo:\n"
+        "    def test_add(self):\n"
+        "        assert 1 + 1 == 2\n"
+    )
+    assert check_test_code(valid)[0] is True
+    # A Test* class without any test_ method is not collected by pytest either
+    helper_class = "class TestConfig:\n    def settings(self):\n        return {}\n"
+    assert check_test_code(helper_class)[0] is False
+
+
+def test_check_test_code_survives_null_bytes_and_deep_nesting():
+    is_valid, problem = check_test_code("def test_a():\n    assert 1\x00")
+    assert not is_valid and "syntax error" in problem
+    is_valid, problem = check_test_code("def test_a():\n" + "    if True:\n" * 2000 + "        assert 1\n")
+    assert not is_valid and "syntax error" in problem
 
 
 def test_strip_code_fences_never_leaks_the_language_tag():
