@@ -12,4 +12,6 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-RUN pip install --no-cache-dir "pytest>=8.0.0" "pytest-cov>=5.0.0" "requests>=2.31.0"
+# Pinned to the same versions as requirements.lock so the container behaves like CI.
+# Re-run `uv pip compile --universal requirements.txt -o requirements.lock` and update here.
+RUN pip install --no-cache-dir "pytest==9.1.1" "pytest-cov==7.1.0" "requests==2.34.2"

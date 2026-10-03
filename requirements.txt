@@ -1,6 +1,7 @@
-pydantic>=2.5.0
+pydantic>=2.5.0,<3.0
 pyyaml>=6.0
-litellm>=1.40.0
+# litellm is fast-moving with breaking changes between majors: cap it
+litellm>=1.40.0,<2.0
 # litellm does not pull this in itself; live mode with retries fails without it
 tenacity>=8.2.0
 pytest>=8.0.0

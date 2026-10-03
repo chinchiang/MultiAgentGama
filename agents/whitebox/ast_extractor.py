@@ -2,7 +2,7 @@ import ast
 import logging
 import os
 import re
-from typing import List, Optional
+from typing import List, Optional, Union
 from core.models import CodeSymbol
 
 logger = logging.getLogger("VibeHarness.ASTExtractor")
@@ -138,7 +138,7 @@ class ASTExtractor:
 
     def _extract_python_function(
         self,
-        node: ast.FunctionDef,
+        node: Union[ast.FunctionDef, ast.AsyncFunctionDef],
         file_path: str,
         source_lines: List[str],
         class_name: Optional[str] = None

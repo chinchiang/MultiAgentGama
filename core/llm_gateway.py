@@ -9,8 +9,8 @@ from core.models import AgentCallRecord
 
 try:
     import litellm
-except ImportError:
-    litellm = None
+except ImportError:  # pragma: no cover - litellm is an optional runtime dependency
+    litellm = None  # type: ignore[assignment]
 
 logger = logging.getLogger("VibeHarness.LLMGateway")
 
@@ -184,6 +184,9 @@ class LLMGateway:
             except Exception as e:
                 last_error = e
                 logger.warning(f"Model {candidate} failed: {e}")
+        if last_error is None:
+            # Unreachable in practice: candidates is never empty, but never raise an Optional
+            raise LLMGatewayError(f"Model {model_name}: no candidate model could be attempted")
         raise last_error
 
     @staticmethod

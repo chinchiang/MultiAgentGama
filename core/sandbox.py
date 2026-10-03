@@ -8,7 +8,7 @@ import shutil
 import signal
 import uuid
 import logging
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional, Tuple, List, Any
 
 logger = logging.getLogger("VibeHarness.Sandbox")
 
@@ -208,7 +208,7 @@ class LocalSubprocessSandbox:
     @staticmethod
     def _run(cmd: List[str], cwd: str, env: Dict[str, str], timeout: int) -> Tuple[Optional[int], str, str]:
         """Runs cmd in its own process group; on timeout kills the whole tree and returns returncode None."""
-        popen_kwargs = {}
+        popen_kwargs: Dict[str, Any] = {}
         if sys.platform == "win32":
             popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
@@ -229,6 +229,8 @@ class LocalSubprocessSandbox:
                 # session can survive and keep the pipes open. Close our ends and give up
                 # on further output instead of hanging forever.
                 for stream in (proc.stdout, proc.stderr):
+                    if stream is None:
+                        continue
                     try:
                         stream.close()
                     except Exception:
