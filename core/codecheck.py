@@ -2,7 +2,9 @@ import ast
 import re
 from typing import List, Optional, Tuple
 
-_FENCE_RE = re.compile(r"```(?:python|py)?\s*\n?([\s\S]*?)```")
+# Any ```<lang> tag (python, python3, Python, js, ...) followed by a newline opens the block;
+# the language tag itself must never leak into the extracted code
+_FENCE_RE = re.compile(r"```[\w-]*[ \t]*\r?\n([\s\S]*?)```")
 
 # pytest helpers whose use counts as an explicit check of target behaviour
 _ASSERTING_CALLS = {"raises", "fail", "warns", "deprecated_call", "approx"}
@@ -40,7 +42,10 @@ def _has_assertion(fn: ast.AST) -> bool:
         if isinstance(node, ast.Call):
             func = node.func
             name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-            if name in _ASSERTING_CALLS or name.startswith("assert"):
+            # Only known asserting helpers count. A bare startswith("assert") rule is not used:
+            # mock.assert_called_once() and similar bookkeeping methods would otherwise satisfy
+            # the gate without checking any target behaviour.
+            if name in _ASSERTING_CALLS:
                 return True
     return False
 

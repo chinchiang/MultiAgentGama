@@ -64,7 +64,7 @@ class TestSuiteExecutor:
             module = f"test_vh_{idx:03d}"
             module_to_idx[module] = idx
             files[f"{module}.py"] = (
-                f"{header}\n# Target: {t.target_component} | Test: {t.title}\n{t.code}\n"
+                f"{header}\n# Target: {self._header_field(t.target_component)} | Test: {self._header_field(t.title)}\n{t.code}\n"
             )
 
         coverage_pct: Optional[float] = None
@@ -124,6 +124,15 @@ class TestSuiteExecutor:
                 continue
             cases.update(self._parse_junit(junit_xml))
         return cases, timed_out
+
+    @staticmethod
+    def _header_field(text: Optional[str]) -> str:
+        """Metadata interpolated into a '#' comment in generated source.
+
+        CR/LF (and other line separators) would escape the comment and inject code that
+        check_test_code() never validated, so every line separator becomes a space.
+        """
+        return " ".join(str(text or "").splitlines()) or "-"
 
     @staticmethod
     def _unique_test_ids(tests: List[GeneratedTest]) -> List[str]:
@@ -255,8 +264,8 @@ class TestSuiteExecutor:
         """Constructs a reproduction script for a confirmed failure."""
         return (
             f"# === Reproduction PoC ===\n"
-            f"# Target: {test.target_component}\n"
-            f"# Failure Context: {test.title}\n"
+            f"# Target: {self._header_field(test.target_component)}\n"
+            f"# Failure Context: {self._header_field(test.title)}\n"
             f"# Test Function: {fn_name}\n"
             f"# Test Code:\n{test.code}\n"
         )
