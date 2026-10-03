@@ -4,6 +4,7 @@ import logging
 import sys
 import os
 
+from core import __version__
 from core.harness import VibeHarnessCommander, force_utf8_stdio
 from core.llm_gateway import LLMGatewayError, DEFAULT_CONFIG_PATH
 from core.sandbox import SandboxUnavailableError
@@ -61,6 +62,17 @@ def main():
         action="store_true",
         help="Enable debug logging"
     )
+    parser.add_argument(
+        "--format", "-f",
+        choices=["md", "json"],
+        default="md",
+        help="Report format written to --output: Markdown (default) or machine-readable JSON"
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}"
+    )
 
     args = parser.parse_args()
     setup_logging(args.verbose)
@@ -80,7 +92,8 @@ def main():
             target_dir=target_path,
             system_description=args.desc,
             base_url=args.base_url,
-            output_report_path=args.output
+            output_report_path=args.output,
+            output_format=args.format
         )
     except LLMGatewayError as e:
         print(f"Error: live model invocation failed in strict 'live' mode: {e}", file=sys.stderr)

@@ -4,6 +4,7 @@ import os
 
 from core.llm_gateway import LLMGateway
 from core.models import (
+    AgentCallRecord,
     FindingSeverity,
     MultiModelDebateResult,
     ReviewFinding,
@@ -227,3 +228,28 @@ def test_report_table_cells_escape_pipes():
     assert "API1 \\| BOLA" in md
     assert "`BB\\|TEST`" in md
     assert "a \\| b" in md
+
+
+def test_json_report_is_valid_and_complete():
+    threat = _threat()
+    summary = VibeHarnessSummary(
+        overall_status="INCONCLUSIVE", total_whitebox_findings=1, confirmed_whitebox_bugs=0,
+        whitebox_tests_passed=1, whitebox_tests_failed=0, total_threats_modeled=1,
+        critical_threats_count=1, blackbox_tests_passed=1, blackbox_security_breaches=0,
+        agent_calls=[AgentCallRecord(agent_id="claude", model_alias="claude", model_name="claude-x", mode="simulated", reason="no key")],
+    )
+    result = MultiModelDebateResult(consensus_summary="ok", confirmed_findings=[_finding()])
+    wb = [TestExecutionResult(test_id="WB-1", test_type="whitebox_unit", status=TestStatus.PASSED)]
+    bb = [TestExecutionResult(test_id="BB-1", test_type="blackbox_security", status=TestStatus.PASSED)]
+    payload = json.loads(ReportGenerator().generate_json_report(
+        summary, result, ThreatModelReport(
+            system_description="s", entrypoints=[], trust_boundaries=[], assets=[], threats=[threat]
+        ), wb, bb, "app"
+    ))
+    assert payload["tool"] == "vibeharness-mas"
+    assert payload["summary"]["overall_status"] == "INCONCLUSIVE"
+    assert payload["whitebox"]["debate"]["confirmed_findings"][0]["title"] == "title A"
+    assert payload["whitebox"]["test_results"][0]["test_id"] == "WB-1"
+    assert payload["threat_model"]["threats"][0]["stride_category"] == "Tampering"
+    assert payload["blackbox_test_results"][0]["test_id"] == "BB-1"
+    assert payload["summary"]["agent_calls"][0]["agent_id"] == "claude"

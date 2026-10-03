@@ -34,4 +34,4 @@ jobs:
           docker build -t vibeharness-sandbox:latest -f docker/sandbox.Dockerfile .
           echo "VIBEHARNESS_REQUIRE_DOCKER=1" >> "$GITHUB_ENV"
       # Hermetic: the suite uses mock mode and a fake litellm, so no API keys are needed
-      - run: python -m pytest -q
+      - run: python -m pytest -q --cov=core --cov=agents --cov=runners --cov=reports --cov-report=term-missing

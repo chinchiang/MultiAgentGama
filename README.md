@@ -1,5 +1,7 @@
 # 🛡️ VibeHarness-MAS: Multi-Agent Testing Harness for Vibe Coding
 
+[![tests](https://github.com/chinchiang/MultiAgentGama/actions/workflows/tests.yml/badge.svg)](https://github.com/chinchiang/MultiAgentGama/actions/workflows/tests.yml)
+
 > **先白箱（異構模型交叉評議 + 可執行測試驗證）後黑箱（STRIDE/OWASP 威脅建模驅動的攻擊測試）的 AI 軟體品質保證工具包。**
 
 針對當前 **Vibe Coding（自然語言提示驅動編程）** 容易產生「表面看似可行（Happy Path 通過），內部缺乏防禦邊界、存在 BOLA/IDOR 與未捕獲異常」的特點設計。
@@ -115,6 +117,13 @@ MultiAgentGama/
 pip install -r requirements.txt
 ```
 
+或安裝為套件（會一併註冊 `vibeharness` 指令）：
+
+```bash
+pip install .
+vibeharness --version
+```
+
 ### 2. 設定 API 金鑰（可選）
 
 工具包支援真實 API 調用與本機模擬模式（Hybrid Mode）：
@@ -158,6 +167,12 @@ python main.py --target examples --output vibe_harness_report.md
 
 `--target` 可為目錄或單一檔案。若目標服務正在 `--base-url` 上執行，黑箱測試會發送真實 HTTP 請求；否則以 in-process 方式直接 import 目標呼叫。範例輸出見 [`docs/sample_report.md`](docs/sample_report.md)。
 
+報告格式可用 `--format md`（預設）或 `--format json`（機器可讀，含完整的 findings、威脅模型與測試結果，適合接 CI/CD）：
+
+```bash
+python main.py --target examples --output report.json --format json
+```
+
 Exit code（依序判定）：
 
 | Code | Verdict | 條件 |
@@ -174,4 +189,11 @@ Exit code（依序判定）：
 pip install -r requirements-dev.txt
 python -m pytest
 python -m ruff check .
+```
+
+可選：安裝 [pre-commit](https://pre-commit.com/) 讓每次 `git commit` 前自動執行 ruff 檢查：
+
+```bash
+pip install pre-commit
+pre-commit install
 ```

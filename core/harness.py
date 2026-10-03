@@ -94,7 +94,8 @@ class VibeHarnessCommander:
         target_dir: str,
         system_description: Optional[str] = None,
         base_url: str = "http://localhost:8000",
-        output_report_path: str = "vibe_harness_report.md"
+        output_report_path: str = "vibe_harness_report.md",
+        output_format: str = "md"
     ) -> VibeHarnessSummary:
         """
         Executes the complete dual-engine testing workflow:
@@ -105,6 +106,8 @@ class VibeHarnessCommander:
         Phase 5: Threat-Derived Black-Box Dynamic Test Execution
         Phase 6: Quality Gate Synthesis & Report Generation
         """
+        if output_format not in ("md", "json"):
+            raise ValueError(f"Unknown output_format '{output_format}' (expected 'md' or 'json')")
         self.console.print(Panel.fit(
             "[bold cyan][VibeHarness-MAS] Commander Harness Active[/bold cyan]\n"
             f"[yellow]Target Codebase:[/yellow] {os.path.abspath(target_dir)}\n"
@@ -286,8 +289,8 @@ class VibeHarnessCommander:
             key_recommendations=recommendations
         )
 
-        # Output Markdown report
-        md_content = self.reporter.generate_markdown_report(
+        # Output report
+        report_args = dict(
             summary=summary,
             debate_result=debate_result,
             threat_model=threat_report,
@@ -295,6 +298,10 @@ class VibeHarnessCommander:
             blackbox_results=bb_results,
             target_path=target_dir
         )
+        if output_format == "json":
+            md_content = self.reporter.generate_json_report(**report_args)
+        else:
+            md_content = self.reporter.generate_markdown_report(**report_args)
 
         with open(output_report_path, "w", encoding="utf-8") as f:
             f.write(md_content)

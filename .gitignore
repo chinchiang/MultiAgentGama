@@ -5,5 +5,9 @@ __pycache__/
 .env
 .coverage
 .coverage.*
+# Packaging artifacts
+build/
+dist/
+*.egg-info/
 # Generated audit reports (a sample lives in docs/sample_report.md)
 vibe_harness_report.md

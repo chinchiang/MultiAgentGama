@@ -1,3 +1,4 @@
+import json
 import os
 from typing import List
 from core.models import (
@@ -182,6 +183,29 @@ class ReportGenerator:
         md.append("\n---\n*Generated automatically by VibeHarness-MAS Harness Commander.*")
 
         return "\n".join(md)
+
+    def generate_json_report(
+        self,
+        summary: VibeHarnessSummary,
+        debate_result: MultiModelDebateResult,
+        threat_model: ThreatModelReport,
+        whitebox_results: List[TestExecutionResult],
+        blackbox_results: List[TestExecutionResult],
+        target_path: str
+    ) -> str:
+        """Machine-readable report with the same content as the Markdown one (provenance included)."""
+        payload = {
+            "tool": "vibeharness-mas",
+            "target_path": os.path.abspath(target_path),
+            "summary": summary.model_dump(),
+            "whitebox": {
+                "debate": debate_result.model_dump(),
+                "test_results": [r.model_dump() for r in whitebox_results],
+            },
+            "threat_model": threat_model.model_dump(),
+            "blackbox_test_results": [r.model_dump() for r in blackbox_results],
+        }
+        return json.dumps(payload, indent=2, ensure_ascii=False, default=str)
 
     @staticmethod
     def _status_label(status: TestStatus, failed_label: str) -> str:

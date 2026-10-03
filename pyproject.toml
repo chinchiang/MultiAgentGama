@@ -1,8 +1,47 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "vibeharness-mas"
-version = "0.1.0"
+# Single source of truth for the version: core/__init__.py
+dynamic = ["version"]
 description = "Multi-agent white-box and threat-modeled black-box testing harness for vibe-coded projects"
+readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+]
+# pytest / pytest-cov are runtime dependencies: the sandbox executes generated tests with them
+dependencies = [
+    "pydantic>=2.5.0",
+    "pyyaml>=6.0",
+    "litellm>=1.40.0",
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "rich>=13.0.0",
+    "requests>=2.31.0",
+    "typing-extensions>=4.9.0",
+]
+
+[project.scripts]
+vibeharness = "main:main"
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.dynamic]
+version = { attr = "core.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["core*", "agents*", "runners*", "reports*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
