@@ -1,5 +1,7 @@
 # 🛡️ VibeHarness-MAS: Multi-Agent Testing Harness for Vibe Coding
 
+正體中文（臺灣）｜ [English (US)](README.en.md)
+
 [![tests](https://github.com/chinchiang/MultiAgentGama/actions/workflows/tests.yml/badge.svg)](https://github.com/chinchiang/MultiAgentGama/actions/workflows/tests.yml)
 
 > **先白箱（異構模型交叉評議 + 可執行測試驗證）後黑箱（STRIDE/OWASP 威脅建模驅動的攻擊測試）的 AI 軟體品質保證工具包。**
@@ -8,36 +10,57 @@
 
 ---
 
-## 🏛️ 系統架構圖 (Architecture Overview)
+## 🏛️ 系統架構與流程 (Architecture Overview)
 
+```mermaid
+flowchart TD
+    CLI["main.py CLI<br/>(--target / --mode / --format / --sarif)"] --> CMD["🧠 總指揮官 Commander Harness<br/>core/harness.py"]
+    CMD --> AST["階段 1・AST 符號擷取<br/>ast_extractor.py"]
+
+    subgraph WB ["階段 2–3・白箱：多模型評議 → 交叉驗證 → 沙盒實測"]
+        R1["邏輯與狀態審查<br/>Claude"]
+        R2["防禦與資源審查<br/>Nemotron"]
+        R3["規格與合約審查<br/>ChatGPT"]
+        DEDUP["去重合併<br/>deduplicator.py"]
+        DEB["交叉驗證：非作者模型投票<br/>confirm / reject / unsure"]
+        GEN["白箱測試生成<br/>test_generator.py"]
+        SBX["沙盒執行<br/>local_subprocess / docker"]
+        R1 --> DEDUP
+        R2 --> DEDUP
+        R3 --> DEDUP
+        DEDUP --> DEB --> GEN --> SBX
+    end
+
+    AST --> R1
+    AST --> R2
+    AST --> R3
+
+    subgraph BB ["階段 4–5・黑箱：威脅建模驅動的攻擊測試"]
+        TM["STRIDE / OWASP 威脅建模<br/>threat_modeler.py"]
+        ATK["攻擊腳本生成<br/>scenario_builder.py"]
+        BEX["黑箱測試執行<br/>HTTP / in-process"]
+        TM --> ATK --> BEX
+    end
+
+    SBX --> TM
+    SBX --> GATE
+    BEX --> GATE["階段 6・品質門禁<br/>READY_TO_SHIP / NEEDS_FIXES /<br/>INCONCLUSIVE / BLOCKED_CRITICAL_RISK"]
+    GATE --> OUT["審計報告<br/>md / json / SARIF"]
 ```
-                       ┌──────────────────────────────────────────────┐
-                       │      總指揮官 Harness (Commander Agent)       │
-                       └──────────────────────┬───────────────────────┘
-                                              │
-                     ┌────────────────────────┴────────────────────────┐
-                     ▼                                                 ▼
-      ┌─────────────────────────────┐                   ┌─────────────────────────────┐
-      │  階段一：白箱異構多模型審查  │                   │  階段二：黑箱威脅建模與穿透  │
-      ├─────────────────────────────┤                   ├─────────────────────────────┤
-      │ • Claude: 深度邏輯與狀態     │                   │ • 資產邊界與數據流解析     │
-      │ • Nemotron: 防禦護欄與記憶體 │                   │ • STRIDE 矩陣與 OWASP Top 10│
-      │ • ChatGPT: API規格與合約    │                   │ • 威脅轉化為自動化攻擊腳本  │
-      │ • 交叉驗證: 非作者模型投票  │                   │ • 執行攻擊測試驗證防禦      │
-      └──────────────┬──────────────┘                   └──────────────┬──────────────┘
-                     │                                                 │
-                     └────────────────────────┬────────────────────────┘
-                                              ▼
-                               ┌─────────────────────────────┐
-                               │  沙盒：本機子程序 / Docker   │
-                               │  (Pytest / 暫存目錄 / 逾時)  │
-                               └──────────────┬──────────────┘
-                                              ▼
-                               ┌─────────────────────────────┐
-                               │   品管門禁與最終審計報告     │
-                               │  (vibe_harness_report.md)   │
-                               └─────────────────────────────┘
-```
+
+### 🤖 各 Agent 分工
+
+每個 Agent 的模型與提示詞都定義在 [`config/agents_config.yaml`](config/agents_config.yaml)，可自由改派模型（欄位細節見 [docs/configuration.md](docs/configuration.md)）：
+
+| 子 Agent（agent_id） | 預設模型 | 職責 | temperature |
+| :--- | :--- | :--- | :--- |
+| 邏輯與狀態審查（`whitebox_reviewer_claude`） | claude | 深度邏輯邊界、未處理例外、狀態不一致、空指標／型別缺陷 | 0.2 |
+| 防禦與資源審查（`whitebox_reviewer_nemotron`） | nemotron | 輸入清洗、防禦護欄、資源耗盡、記憶體／緩衝／並行安全 | 0.1 |
+| 規格與合約審查（`whitebox_reviewer_chatgpt`） | chatgpt | API 簽章合規、業務規格、契約違反、標準測試覆蓋 | 0.2 |
+| 交叉驗證投票（`whitebox_verifier_*` ×3） | claude／nemotron／chatgpt | 只對「別的模型」回報的發現投票：confirm／reject／unsure | 0.0 |
+| 白箱測試生成器（`whitebox_test_generator`） | chatgpt | 針對確認缺陷生成可執行的 pytest 測試 | 0.3 |
+| STRIDE 威脅建模師（`blackbox_threat_modeler`） | claude | 擷取信任邊界與資產、建立 STRIDE＋OWASP 攻擊矩陣 | 0.2 |
+| 攻擊場景合成器（`blackbox_test_synthesizer`） | chatgpt | 把威脅場景轉成黑箱攻擊腳本（BOLA、注入、限流） | 0.2 |
 
 ---
 
@@ -102,7 +125,9 @@ MultiAgentGama/
 ├── examples/
 │   └── vibe_sample_app.py       # 具代表性的 Vibe-Coding 典型缺陷範例
 ├── docs/
-│   └── sample_report.md         # mock 模式產生的範例報告
+│   ├── sample_report.md          # mock 模式產生的範例報告
+│   ├── configuration.md          # 設定檔欄位完整參考（正體中文）
+│   └── configuration.en.md       # Configuration reference (English)
 ├── tests/                       # 工具包本身之測試（離線、不需 API 金鑰）
 └── main.py                      # CLI 執行入口
 ```
@@ -127,6 +152,8 @@ vibeharness --version
 ### 2. 設定 API 金鑰（可選）
 
 工具包支援真實 API 調用與本機模擬模式（Hybrid Mode）：
+
+> 設定檔（`config/agents_config.yaml`）每個欄位的完整說明——含預設值、改派模型與 Docker 沙盒範例——見 **[docs/configuration.md](docs/configuration.md)**（[English](docs/configuration.en.md)）。
 
 ```bash
 # 若要使用即時模型：

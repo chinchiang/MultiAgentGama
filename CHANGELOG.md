@@ -1,11 +1,14 @@
 # Changelog
 
+正體中文（臺灣）｜ [English](CHANGELOG.en.md)
+
 本專案所有重要變更都會記錄在本檔案。格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)，版本遵循[語意化版本](https://semver.org/lang/zh-TW/)。
 
 ## [Unreleased]
 
 ### 新增
 - `--sarif <路徑>`：輸出 SARIF 2.1.0 報告供 GitHub Code Scanning 使用——白箱確認 findings 帶檔案/行號位置（依 `line_number` 或符號表解析），黑箱確認的資安突破列為 error 級結果
+- 文件雙語化與 README 改版：新增 Mermaid 流程架構圖、各 Agent 分工表、`docs/configuration.md` 設定檔欄位完整參考（正體中文與英文對照：README.en.md、CHANGELOG.en.md、docs/configuration.en.md）
 
 ## [0.1.0] - 2026-10-03
 

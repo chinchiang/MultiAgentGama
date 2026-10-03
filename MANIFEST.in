@@ -1,0 +1,3 @@
+include README.md README.en.md CHANGELOG.md CHANGELOG.en.md
+recursive-include docs *.md
+recursive-include config *.yaml
