@@ -133,8 +133,11 @@ vibeharness --version
 export ANTHROPIC_API_KEY="sk-ant-..."
 export NVIDIA_API_KEY="nvapi-..."
 export OPENAI_API_KEY="sk-..."
+export GEMINI_API_KEY="AIza..."
 ```
-預設模型見 `config/agents_config.yaml`（Claude `claude-sonnet-5`、Nemotron 經 NVIDIA NIM、ChatGPT `gpt-4o`），每個模型可設定 `fallback_model`，主模型重試失敗後會改用它，報告會記錄實際使用的模型。
+預設模型見 `config/agents_config.yaml`（Claude `claude-sonnet-5`、Nemotron 經 NVIDIA NIM、ChatGPT `gpt-4o`、Gemini `gemini/gemini-3.8-flash`），每個模型可設定 `fallback_model`，主模型重試失敗後會改用它，報告會記錄實際使用的模型。
+
+任何 agent 都可透過 `model_alias` 指向任一已定義的模型。手上只有一組金鑰也能跑 live 模式——例如只有 Gemini key 時，把 `agents` 區段中所有 `model_alias` 改成 `gemini` 即可（註：`gemini-2.5-flash` 已不再供新申請的 Google API 金鑰使用，請使用 3.x 版本）。
 
 *註：若未配置 API 金鑰，`hybrid` 模式會退回模擬引擎（Simulation Engine）以便離線體驗工作流。模擬引擎回傳的是**與目標程式碼無關的固定範本**，報告會以 `[SIMULATED]` 與「Execution Provenance」表明確標示，且品質閘門不會因此給出 `READY_TO_SHIP`。*
 
