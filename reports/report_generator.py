@@ -86,6 +86,7 @@ class ReportGenerator:
         md.append(f"| **STRIDE Threat Scenarios Modeled** | `{summary.total_threats_modeled}` | Full Asset Coverage |")
         md.append(f"| **Threats Without Executable Test** | `{len(summary.untested_threat_ids)}` | 0 Untested |")
         md.append(f"| **Confirmed Black-Box Security Breaches** | `{summary.blackbox_security_breaches}` | 0 Breaches Tolerated |")
+        md.append(f"| **Black-Box Tests Failed (unclassified)** | `{summary.blackbox_tests_failed}` | 0 — failing attack scripts need manual review |")
         md.append("\n")
 
         # Provenance

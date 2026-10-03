@@ -5,14 +5,17 @@ from pydantic import ValidationError
 from typing import List, Dict, Any, Optional
 from core.models import ThreatItem, ThreatModelReport, STRIDECategory, FindingSeverity, CodeSymbol
 from core.llm_gateway import LLMGateway
-from core.codecontext import render_symbols
+from core.codecontext import render_symbols, batch_symbols
 
 DEFAULT_RULES_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config", "threat_rules.yaml")
 
 logger = logging.getLogger("VibeHarness.ThreatModeler")
 
-# Estimated-token budget for the target code shown to the threat modeler (entry points first)
-CODE_CONTEXT_TOKENS = 8000
+# The threat model drives all black-box testing, so every symbol must be visible to it: like the
+# white-box reviewers, symbols are split into batches whose code listing fits the token budget,
+# instead of rendering everything into one prompt and silently dropping the overflow.
+BATCH_MAX_TOKENS = 8000
+BATCH_MAX_SYMBOLS = 15
 
 DEFAULT_TRUST_BOUNDARIES = ["Internet to Public Gateway", "Gateway to Database"]
 DEFAULT_ASSETS = ["User Credentials", "Business Records"]
@@ -68,9 +71,7 @@ class AutomatedThreatModeler:
         if not symbols:
             return ""
         root = root_dir or os.path.dirname(os.path.abspath(symbols[0].file_path))
-        # Entry points first: they are where untrusted input crosses the trust boundary
-        ordered = sorted(symbols, key=lambda s: s.symbol_type != "route")
-        return f"Target source code:\n{render_symbols(ordered, root, max_tokens=CODE_CONTEXT_TOKENS)}\n\n"
+        return f"Target source code:\n{render_symbols(symbols, root, max_tokens=BATCH_MAX_TOKENS)}\n\n"
 
     def model_system(
         self,
@@ -82,6 +83,8 @@ class AutomatedThreatModeler:
     ) -> ThreatModelReport:
         """
         Executes STRIDE threat modeling against the target system.
+        Symbols are verified in batches so the model sees all of them; the threats of every
+        batch are merged into one report (duplicate threat_ids are renumbered).
         """
         routes_summary = ", ".join(detected_routes) if detected_routes else "General RESTful APIs"
         entrypoints_summary = ", ".join(entrypoints) if entrypoints else "HTTP/REST Endpoints"
@@ -114,27 +117,56 @@ class AutomatedThreatModeler:
             "}"
         )
 
-        user_prompt = (
-            f"System Description: {system_description}\n"
-            f"Entrypoints: {entrypoints_summary}\n"
-            f"Detected Routes: {routes_summary}\n\n"
-            f"{self._rules_guidance()}"
-            f"{self._code_guidance(symbols, root_dir)}"
-            f"Perform comprehensive threat modeling identifying vibe-coding vulnerabilities. "
-            f"Only include threats that are plausible for the code shown, and name the concrete function/route in attack_vector."
-        )
+        ordered = sorted(symbols or [], key=lambda s: s.symbol_type != "route")
+        # An empty symbol list keeps one (code-less) batch so a report-level response is still produced
+        batches = batch_symbols(ordered, root_dir or os.getcwd(), BATCH_MAX_TOKENS, BATCH_MAX_SYMBOLS) or [[]]
 
         logger.info("Initiating STRIDE & OWASP threat modeling...")
-        resp = self.gateway.generate(
-            "blackbox_threat_modeler", system_prompt, user_prompt, json_output=True, required_keys=["threats"]
+        report_fields: Optional[Dict[str, Any]] = None
+        threats: List[ThreatItem] = []
+        used_ids: set = set()
+        any_simulated = False
+
+        for batch in batches:
+            user_prompt = (
+                f"System Description: {system_description}\n"
+                f"Entrypoints: {entrypoints_summary}\n"
+                f"Detected Routes: {routes_summary}\n\n"
+                f"{self._rules_guidance()}"
+                f"{self._code_guidance(batch, root_dir)}"
+                f"Perform comprehensive threat modeling identifying vibe-coding vulnerabilities. "
+                f"Only include threats that are plausible for the code shown, and name the concrete function/route in attack_vector."
+            )
+            resp = self.gateway.generate(
+                "blackbox_threat_modeler", system_prompt, user_prompt, json_output=True, required_keys=["threats"]
+            )
+            any_simulated = any_simulated or self.gateway.is_simulated(resp)
+            if report_fields is None and self.gateway.is_usable(resp):
+                # Report-level fields come from the first batch that produced a usable answer
+                report_fields = resp
+            threats.extend(self._parse_threats(resp, used_ids))
+
+        if report_fields is None:  # every batch returned unusable output
+            report_fields = {}
+
+        return ThreatModelReport(
+            system_description=_text(report_fields.get("system_description"), system_description) or system_description,
+            entrypoints=_string_list(report_fields.get("entrypoints"), entrypoints),
+            trust_boundaries=_string_list(report_fields.get("trust_boundaries"), DEFAULT_TRUST_BOUNDARIES),
+            assets=_string_list(report_fields.get("assets"), DEFAULT_ASSETS),
+            threats=threats,
+            is_simulated=any_simulated
         )
 
+    def _parse_threats(self, resp: Dict[str, Any], used_ids: set) -> List[ThreatItem]:
+        """Validated ThreatItems from one model response; ids that collide with earlier batches are renumbered."""
         raw_threats = resp.get("threats")
         if not isinstance(raw_threats, list):
             logger.warning(f"Ignoring unusable threat list from model (got {type(raw_threats).__name__})")
             raw_threats = []
 
         threat_items: List[ThreatItem] = []
+        next_fallback = 1
         for position, item in enumerate(raw_threats, start=1):
             if not isinstance(item, dict):
                 logger.warning(f"Skipping malformed threat entry #{position} (not a JSON object)")
@@ -151,8 +183,12 @@ class AutomatedThreatModeler:
                 severity = FindingSeverity.HIGH
 
             threat_id = item.get("threat_id")
-            if not isinstance(threat_id, str) or not threat_id.strip():
-                threat_id = f"THREAT-{position:02d}"
+            if not isinstance(threat_id, str) or not threat_id.strip() or threat_id in used_ids:
+                while f"THREAT-{next_fallback:02d}" in used_ids:
+                    next_fallback += 1
+                threat_id = f"THREAT-{next_fallback:02d}"
+            used_ids.add(threat_id)
+            next_fallback += 1
 
             owasp_mapping = item.get("owasp_mapping")
             try:
@@ -172,11 +208,4 @@ class AutomatedThreatModeler:
             except ValidationError as e:
                 logger.warning(f"Skipping unusable threat entry #{position}: {e}")
 
-        return ThreatModelReport(
-            system_description=_text(resp.get("system_description"), system_description) or system_description,
-            entrypoints=_string_list(resp.get("entrypoints"), entrypoints),
-            trust_boundaries=_string_list(resp.get("trust_boundaries"), DEFAULT_TRUST_BOUNDARIES),
-            assets=_string_list(resp.get("assets"), DEFAULT_ASSETS),
-            threats=threat_items,
-            is_simulated=self.gateway.is_simulated(resp)
-        )
+        return threat_items

@@ -77,6 +77,23 @@ def test_code_without_test_function_is_error(executor, tmp_path):
     assert results[0].status == TestStatus.ERROR
 
 
+def test_metadata_newlines_cannot_inject_code(executor, tmp_path):
+    """The generated-module header interpolates LLM-controlled metadata into a comment;
+    a newline in title/target_component would escape it and add unvalidated code."""
+    injected = _test(
+        "INJ",
+        "def test_ok():\n    assert True",
+    )
+    injected = injected.model_copy(update={
+        "title": "nice\ndef test_evicted():\n    assert False",
+        "target_component": "x\nimport os\nassert os is None or True",
+    })
+    results, _ = executor.execute_test_suite([injected], working_dir=str(tmp_path))
+    # Only the validated test function runs; the injected lines are inert comment text
+    assert results[0].status == TestStatus.PASSED
+    assert results[0].is_security_exploit_confirmed is False
+
+
 def test_non_assertion_crash_in_blackbox_is_failure_but_not_exploit(executor, tmp_path):
     results, _ = executor.execute_test_suite([
         _test("A", "def test_a():\n    assert {}['missing']"),
@@ -108,6 +125,33 @@ def test_check_test_code_requires_test_function():
     assert check_test_code("def helper():\n    pass") == (False, "no top-level test_ function defined")
     assert check_test_code("def test_a():\n    assert 1")[0] is True
     assert strip_code_fences("no fences") == "no fences"
+
+
+def test_strip_code_fences_never_leaks_the_language_tag():
+    assert strip_code_fences("```python3\nx = 1\n```") == "x = 1"
+    assert strip_code_fences("```Python\nx = 1\n```") == "x = 1"
+    assert strip_code_fences("```js\nlet x = 1;\n```") == "let x = 1;"
+    assert strip_code_fences("```\nx = 1\n```") == "x = 1"
+    assert strip_code_fences("```python\nx = 1\n```\n```python\ny = 2\n```") == "x = 1"
+
+
+def test_mock_assertion_calls_do_not_satisfy_the_assertion_gate():
+    # A test that only pokes bookkeeping methods checks nothing about the target
+    is_valid, problem = check_test_code(
+        "def test_a():\n"
+        "    mock = FakeRepo()\n"
+        "    mock.save({'id': 1})\n"
+        "    mock.assert_called_once()\n"
+    )
+    assert not is_valid
+    assert "without any assertion" in problem
+    # A helper that merely *looks* like an assertion is not one either
+    is_valid, problem = check_test_code(
+        "def test_b():\n"
+        "    assert_equal(1, 2)\n"
+    )
+    assert not is_valid
+    assert "without any assertion" in problem
 
 
 # --- Gateway provenance -----------------------------------------------------
@@ -270,6 +314,36 @@ def test_single_file_target_is_analyzed(tmp_path):
     )
     assert summary.whitebox_tests_failed == 1
     assert sorted(os.listdir(tmp_path)) == ["one.py", "r.md"]
+
+
+def test_failed_unclassified_blackbox_test_is_an_evidence_gap(tmp_path, monkeypatch):
+    """A black-box attack test that fails without matching the exploit predicate must count
+    as ambiguous evidence — the gate may no longer pass the run as READY_TO_SHIP."""
+    from core.models import TestExecutionResult
+
+    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
+
+    def fake_execute(tests, working_dir=".", collect_coverage=False):
+        if collect_coverage:
+            wb = [TestExecutionResult(
+                test_id="WB-T", test_type="whitebox_unit", status=TestStatus.PASSED, source_ref="WB-CLA-01"
+            )]
+            return wb, 42.0
+        bb = [TestExecutionResult(
+            test_id="BB-T", test_type="blackbox_security", status=TestStatus.FAILED,
+            failure_reason="TypeError: 'NoneType' object is not subscriptable", source_ref="THREAT-01"
+        )]
+        return bb, None
+
+    monkeypatch.setattr(commander.executor, "execute_test_suite", fake_execute)
+    summary = commander.run_full_pipeline(
+        target_dir=EXAMPLES, base_url="http://localhost:59999", output_report_path=str(tmp_path / "r.md")
+    )
+    assert summary.blackbox_tests_failed == 1
+    assert summary.blackbox_security_breaches == 0
+    assert any("failed without a confirmed exploit" in r for r in summary.inconclusive_reasons)
+    assert summary.overall_status == "INCONCLUSIVE"
+    assert "unclassified" in (tmp_path / "r.md").read_text(encoding="utf-8")
 
 
 def test_server_returning_404_counts_as_live():

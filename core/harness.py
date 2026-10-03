@@ -208,10 +208,21 @@ class VibeHarnessCommander:
         )
         bb_passed = sum(1 for r in bb_results if r.status == TestStatus.PASSED)
         bb_breaches = sum(1 for r in bb_results if r.is_security_exploit_confirmed)
+        # A FAILED attack test that does not match the strict exploit predicate is ambiguous
+        # evidence: it must not silently disappear from the gate (it used to, letting the run
+        # pass as READY_TO_SHIP while an attack script was actually failing against the target)
+        bb_failed_unclassified = [
+            r for r in bb_results if r.status == TestStatus.FAILED and not r.is_security_exploit_confirmed
+        ]
         bb_errored = sum(1 for r in bb_results if r.status in (TestStatus.ERROR, TestStatus.SKIPPED))
         tested_threat_ids = {t.source_ref for t in bb_tests}
         untested_threats = [t.threat_id for t in threat_report.threats if t.threat_id not in tested_threat_ids]
-        self.console.print(f"[+] Dynamic Black-Box Outcome: [green]{bb_passed} Defended[/green] | [red]{bb_breaches} Confirmed Breaches[/red] | [yellow]{bb_errored} Error/Not Run[/yellow] | {len(untested_threats)} Threats Not Tested")
+        self.console.print(
+            f"[+] Dynamic Black-Box Outcome: [green]{bb_passed} Defended[/green] | "
+            f"[red]{bb_breaches} Confirmed Breaches[/red] | "
+            f"[yellow]{len(bb_failed_unclassified)} Failed (unclassified)[/yellow] | "
+            f"[yellow]{bb_errored} Error/Not Run[/yellow] | {len(untested_threats)} Threats Not Tested"
+        )
 
         # -------------------------------------------------------------
         # Phase 6: Quality Gate Synthesis & Reporting
@@ -248,6 +259,12 @@ class VibeHarnessCommander:
             )
         if wb_errored or bb_errored:
             inconclusive_reasons.append(f"{wb_errored + bb_errored} generated test(s) errored, were skipped, or did not run")
+        if bb_failed_unclassified:
+            inconclusive_reasons.append(
+                f"{len(bb_failed_unclassified)} black-box attack test(s) failed without a confirmed exploit "
+                f"classification; the evidence is ambiguous and needs manual investigation: "
+                f"{', '.join(r.test_id for r in bb_failed_unclassified)}"
+            )
         if not wb_results:
             inconclusive_reasons.append("No white-box tests were executed")
         if not threat_report.threats:
@@ -283,6 +300,7 @@ class VibeHarnessCommander:
             critical_threats_count=critical_threats,
             blackbox_tests_passed=bb_passed,
             blackbox_security_breaches=bb_breaches,
+            blackbox_tests_failed=len(bb_failed_unclassified),
             blackbox_tests_errored=bb_errored,
             untested_threat_ids=untested_threats,
             agent_calls=list(self.gateway.call_log),

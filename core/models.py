@@ -161,6 +161,9 @@ class VibeHarnessSummary(BaseModel):
     critical_threats_count: int
     blackbox_tests_passed: int
     blackbox_security_breaches: int
+    # Attack tests that FAILED without matching the exploit predicate: ambiguous evidence that
+    # must be investigated manually; counts as an evidence gap (never a silent pass)
+    blackbox_tests_failed: int = 0
     blackbox_tests_errored: int = 0
     untested_threat_ids: List[str] = Field(default_factory=list)
     agent_calls: List[AgentCallRecord] = Field(default_factory=list)

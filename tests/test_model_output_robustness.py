@@ -71,6 +71,61 @@ def test_non_list_threats_and_string_list_fields_fall_back():
     assert report.assets == DEFAULT_ASSETS
 
 
+def _big_symbol(name, lines=500):
+    return CodeSymbol(
+        name=name, symbol_type="function", file_path="app.py", line_start=1, line_end=lines,
+        signature=f"{name}()", source_code=f"def {name}():\n" + "    value = 'payload token filler line'\n" * lines
+    )
+
+
+def test_large_targets_are_threat_modeled_in_batches():
+    """Every symbol must be visible to the threat modeler: like the reviewers, symbols are
+    batched so a single-prompt token cap can no longer silently drop most of the target."""
+    gw = LLMGateway(CONFIG, execution_mode="mock")
+    prompts = []
+    state = {"n": 0}
+
+    def responder(agent_id, system_prompt, user_prompt, **k):
+        state["n"] += 1
+        prompts.append(user_prompt)
+        # every batch reports the same colliding threat_id to prove renumbering works
+        return {
+            "threats": [{"threat_id": "THREAT-01", "stride_category": "Tampering", "title": f"t{state['n']}"}],
+            "entrypoints": ["/api/batch"],
+        }
+
+    gw.generate = responder
+    symbols = [_big_symbol(f"f{i}") for i in range(30)]
+    report = AutomatedThreatModeler(gw).model_system("desc", ["/api/users"], symbols=symbols, root_dir=".")
+    assert state["n"] > 1  # batching actually happened
+    # every symbol is shown in exactly one batch prompt: nothing omitted, nothing duplicated
+    shown = [sym for p in prompts for sym in symbols if f"Symbol: {sym.name} " in p]
+    assert sorted(s.name for s in shown) == sorted(s.name for s in symbols)
+    # colliding model threat ids are renumbered into a unique, deterministic sequence
+    assert [t.threat_id for t in report.threats] == [f"THREAT-{i:02d}" for i in range(1, state["n"] + 1)]
+    # report-level fields come from the first usable batch, not the last
+    assert report.entrypoints == ["/api/batch"]
+
+
+def test_invalid_batch_does_not_kill_threat_modeling():
+    from core.llm_gateway import PROVENANCE_KEY
+    gw = LLMGateway(CONFIG, execution_mode="mock")
+    responses = [
+        {PROVENANCE_KEY: {"mode": "invalid", "model": "m", "reason": "bad json"}},
+        {"threats": [{"threat_id": "THREAT-01", "stride_category": "Tampering", "title": "later"}],
+         "entrypoints": ["/api/valid"]},
+    ]
+
+    def responder(*a, **k):
+        return responses.pop(0)
+
+    gw.generate = responder
+    report = AutomatedThreatModeler(gw).model_system("desc", ["/api/users"], symbols=[_big_symbol("a"), _big_symbol("b")], root_dir=".")
+    # batch 1 was unusable, batch 2 still contributed its threat and the report-level fields
+    assert [t.threat_id for t in report.threats] == ["THREAT-01"]
+    assert report.entrypoints == ["/api/valid"]
+
+
 def test_wrong_typed_threat_fields_are_coerced_not_fatal():
     gw = LLMGateway(CONFIG, execution_mode="mock")
     gw.generate = lambda *a, **k: {"threats": [{
