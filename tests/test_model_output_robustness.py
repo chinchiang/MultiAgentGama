@@ -5,6 +5,7 @@ import os
 from core.llm_gateway import LLMGateway
 from core.models import (
     AgentCallRecord,
+    CodeSymbol,
     FindingSeverity,
     MultiModelDebateResult,
     ReviewFinding,
@@ -191,7 +192,8 @@ def test_probe_fallback_is_disclosed_and_blocks_ready_to_ship(fake_live, tmp_pat
 
     fake_live(responder)
     summary = VibeHarnessCommander(config_path=CONFIG, execution_mode="live").run_full_pipeline(
-        target_dir=str(target), base_url="http://localhost:59999", output_report_path=str(tmp_path / "r.md")
+        target_dir=str(target), base_url="http://localhost:59999", output_report_path=str(tmp_path / "r.md"),
+        output_sarif_path=str(tmp_path / "r.sarif")
     )
     # Every executed test passes (probe and black-box defense) and nothing else is missing;
     # only the undisclosed probe fallback would have allowed READY_TO_SHIP before this fix.
@@ -202,6 +204,15 @@ def test_probe_fallback_is_disclosed_and_blocks_ready_to_ship(fake_live, tmp_pat
         "no usable model-generated test" in r and "WB-CLA-01" in r for r in summary.inconclusive_reasons
     )
     assert "deterministic probes" in (tmp_path / "r.md").read_text(encoding="utf-8")
+
+    sarif = json.loads((tmp_path / "r.sarif").read_text(encoding="utf-8"))
+    assert sarif["version"] == "2.1.0"
+    wb_rules = {r["id"] for r in sarif["runs"][0]["tool"]["driver"]["rules"]}
+    assert "WB-CLA-01" in wb_rules
+    # The confirmed finding resolves its line from the extracted symbol table
+    wb_result = next(r for r in sarif["runs"][0]["results"] if r["ruleId"] == "WB-CLA-01")
+    assert wb_result["locations"][0]["physicalLocation"]["region"]["startLine"] == 1
+    assert wb_result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"].endswith("app.py")
 
 
 # --- Report: model-provided text cannot break Markdown tables --------------------------------------
@@ -253,3 +264,75 @@ def test_json_report_is_valid_and_complete():
     assert payload["threat_model"]["threats"][0]["stride_category"] == "Tampering"
     assert payload["blackbox_test_results"][0]["test_id"] == "BB-1"
     assert payload["summary"]["agent_calls"][0]["agent_id"] == "claude"
+
+
+def test_sarif_report_structure_levels_and_locations(tmp_path):
+    target = tmp_path / "tgt"
+    target.mkdir()
+    abs_file = target / "app.py"
+    abs_file.write_text("x = 1\n", encoding="utf-8")
+    critical = _finding("WB-CLA-01", "claude").model_copy(update={
+        "severity": FindingSeverity.CRITICAL, "title": "None crash", "file_path": str(abs_file), "line_number": 7,
+    })
+    medium = _finding("WB-NEM-01", "nemotron").model_copy(update={
+        "severity": FindingSeverity.MEDIUM, "title": "Weak guard", "file_path": "app.py", "symbol_name": "greet",
+    })
+    symbols = [CodeSymbol(
+        name="greet", symbol_type="function", file_path="app.py", line_start=42, line_end=50,
+        signature="def greet():", source_code="",
+    )]
+    breach = TestExecutionResult(
+        test_id="BB-T1-01", test_type="blackbox_security", status=TestStatus.FAILED,
+        failure_reason="defense bypassed", is_security_exploit_confirmed=True, source_ref="T1",
+    )
+    defended = TestExecutionResult(
+        test_id="BB-T1-02", test_type="blackbox_security", status=TestStatus.PASSED,
+    )
+    payload = json.loads(ReportGenerator().generate_sarif_report(
+        VibeHarnessSummary(overall_status="BLOCKED_CRITICAL_RISK", total_whitebox_findings=2,
+                           confirmed_whitebox_bugs=2, whitebox_tests_passed=0, whitebox_tests_failed=2,
+                           total_threats_modeled=1, critical_threats_count=1, blackbox_tests_passed=1,
+                           blackbox_security_breaches=1),
+        MultiModelDebateResult(consensus_summary="ok", confirmed_findings=[critical, medium],
+                               disputed_findings=[_finding("WB-CHA-99", "chatgpt")]),
+        ThreatModelReport(system_description="s", entrypoints=[], trust_boundaries=[], assets=[], threats=[]),
+        [], [breach, defended], str(target), symbols=symbols
+    ))
+    run = payload["runs"][0]
+    assert payload["version"] == "2.1.0"
+    assert run["tool"]["driver"]["name"] == "VibeHarness-MAS"
+    # Disputed finding and the defended black-box result are not reported
+    assert [r["ruleId"] for r in run["results"]] == ["WB-CLA-01", "WB-NEM-01", "BB-T1-01"]
+    by_id = {r["ruleId"]: r for r in run["results"]}
+    assert by_id["WB-CLA-01"]["level"] == "error"          # CRITICAL
+    assert by_id["WB-NEM-01"]["level"] == "warning"        # MEDIUM
+    assert by_id["BB-T1-01"]["level"] == "error"
+    # Line from finding.line_number and from the symbol table; URI relative to the target, forward slashes
+    loc1 = by_id["WB-CLA-01"]["locations"][0]["physicalLocation"]
+    assert loc1["region"]["startLine"] == 7
+    assert loc1["artifactLocation"]["uri"] == "app.py"
+    assert loc1["artifactLocation"]["uriBaseId"] == "%SRCROOT%"
+    loc2 = by_id["WB-NEM-01"]["locations"][0]["physicalLocation"]
+    assert loc2["region"]["startLine"] == 42
+    # Breaches are system-level: no file location, failure reason in the message
+    assert "locations" not in by_id["BB-T1-01"]
+    assert "defense bypassed" in by_id["BB-T1-01"]["message"]["text"]
+    # Rules array indices line up with ruleIndex on results
+    rules = run["tool"]["driver"]["rules"]
+    for r in run["results"]:
+        assert rules[r["ruleIndex"]]["id"] == r["ruleId"]
+        assert r["partialFingerprints"]["vibeharness/v1"]
+
+
+def test_sarif_uri_relativization(tmp_path):
+    (tmp_path / "a").mkdir()
+    uri = ReportGenerator._sarif_uri
+    assert uri(str(tmp_path / "a" / "app.py"), str(tmp_path / "a")) == "app.py"
+    assert uri("app.py", str(tmp_path)) == "app.py"
+    assert uri("./pkg/mod.py", str(tmp_path)) == "pkg/mod.py"
+    assert uri(str(tmp_path / "elsewhere" / "x.py"), str(tmp_path / "a")) == "x.py"
+    assert uri("", str(tmp_path)) is None
+    # A different drive cannot be made relative on Windows: fall back to the file name
+    assert uri("E:\\other\\x.py", r"D:\work\proj") == "x.py"
+    # Same drive relativizes consistently on Windows and on POSIX hosts
+    assert uri(r"D:\proj\app.py", r"D:\proj") == "app.py"

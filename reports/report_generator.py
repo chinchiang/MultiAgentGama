@@ -1,14 +1,22 @@
+import hashlib
 import json
 import os
-from typing import List
+import re
+from typing import List, Optional
 from core.models import (
+    CodeSymbol,
     MultiModelDebateResult,
     ReviewFinding,
     ThreatModelReport,
     TestExecutionResult,
     VibeHarnessSummary,
-    TestStatus
+    TestStatus,
+    FindingSeverity
 )
+
+# Windows drive paths ("C:\...") count as absolute even on POSIX hosts, so a SARIF produced
+# on Windows relativizes identically when re-processed by a Linux CI runner.
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
 class ReportGenerator:
@@ -206,6 +214,176 @@ class ReportGenerator:
             "blackbox_test_results": [r.model_dump() for r in blackbox_results],
         }
         return json.dumps(payload, indent=2, ensure_ascii=False, default=str)
+
+    def generate_sarif_report(
+        self,
+        summary: VibeHarnessSummary,
+        debate_result: MultiModelDebateResult,
+        threat_model: ThreatModelReport,
+        whitebox_results: List[TestExecutionResult],
+        blackbox_results: List[TestExecutionResult],
+        target_path: str,
+        symbols: Optional[List[CodeSymbol]] = None
+    ) -> str:
+        """
+        SARIF 2.1.0 output for GitHub Code Scanning: confirmed white-box findings with
+        best-effort file/line locations, plus confirmed black-box breaches.
+        """
+        from core import __version__
+
+        rules = []
+        rule_index = {}
+        results = []
+
+        def add_rule(rule_id: str, short: str, full: str, level: str) -> int:
+            if rule_id not in rule_index:
+                rule_index[rule_id] = len(rules)
+                rules.append({
+                    "id": rule_id,
+                    "name": rule_id,
+                    "shortDescription": {"text": short},
+                    "fullDescription": {"text": full},
+                    "defaultConfiguration": {"level": level},
+                })
+            return rule_index[rule_id]
+
+        # 1. Confirmed white-box findings (file locations resolved from line_number or the symbol table)
+        for f in debate_result.confirmed_findings:
+            level = self._sarif_level(f.severity)
+            desc = f.title
+            if f.description:
+                desc += f"\n\n{f.description}"
+            if f.root_cause:
+                desc += f"\n\nRoot cause: {f.root_cause}"
+            if f.suggested_test_scenario:
+                desc += f"\n\nSuggested test: {f.suggested_test_scenario}"
+            uri = self._sarif_uri(f.file_path, target_path)
+            line = self._resolve_line(f, symbols)
+            location = None
+            if uri:
+                location = [{
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": uri, "uriBaseId": "%SRCROOT%"},
+                        "region": {"startLine": line},
+                    }
+                }]
+            results.append({
+                "ruleId": f.finding_id,
+                "ruleIndex": add_rule(
+                    f.finding_id,
+                    f"[{f.severity.value}] {f.title}",
+                    desc.split("\n\n")[0],
+                    level
+                ),
+                "level": level,
+                "message": {"text": desc},
+                "locations": location,
+                "partialFingerprints": {"vibeharness/v1": self._fingerprint(
+                    uri or "", f.symbol_name or "", f.title
+                )},
+                "properties": {
+                    "severity": f.severity.value,
+                    "reviewer": f.reviewer_name,
+                    "symbol": f.symbol_name or "",
+                    "corroboratedBy": f.corroborated_by,
+                    "simulated": f.is_simulated,
+                },
+            })
+
+        # 2. Confirmed black-box security breaches (no file location: threats are system-level)
+        for r in blackbox_results:
+            if not r.is_security_exploit_confirmed:
+                continue
+            derived = f" (derived from {r.source_ref})" if r.source_ref else ""
+            text = f"Confirmed security breach {r.test_id}{derived}: {r.failure_reason or 'the attack test succeeded'}"
+            results.append({
+                "ruleId": r.test_id,
+                "ruleIndex": add_rule(
+                    r.test_id,
+                    f"Black-box breach: {r.test_id}",
+                    text,
+                    "error"
+                ),
+                "level": "error",
+                "message": {"text": text},
+                "partialFingerprints": {"vibeharness/v1": self._fingerprint(
+                    r.test_id, r.source_ref or "", r.failure_reason or ""
+                )},
+                "properties": {"security_breach": True, "simulated": False},
+            })
+
+        payload = {
+            "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+            "version": "2.1.0",
+            "runs": [{
+                "tool": {
+                    "driver": {
+                        "name": "VibeHarness-MAS",
+                        "version": __version__,
+                        "informationUri": "https://github.com/chinchiang/MultiAgentGama",
+                        "rules": rules,
+                    }
+                },
+                "results": results,
+                "properties": {
+                    "overall_status": summary.overall_status,
+                    "target": os.path.abspath(target_path),
+                },
+            }],
+        }
+        return json.dumps(payload, indent=2, ensure_ascii=False)
+
+    @staticmethod
+    def _sarif_level(severity: FindingSeverity) -> str:
+        return {
+            FindingSeverity.CRITICAL: "error",
+            FindingSeverity.HIGH: "error",
+            FindingSeverity.MEDIUM: "warning",
+            FindingSeverity.LOW: "note",
+            FindingSeverity.INFO: "note",
+        }[severity]
+
+    @staticmethod
+    def _sarif_uri(file_path: str, target_path: str) -> Optional[str]:
+        """Best-effort repo-root-relative URI with forward slashes; None when unknown."""
+        if not file_path or not file_path.strip():
+            return None
+        p = file_path.strip().replace("\\", "/").removeprefix("./")
+        drive = _WINDOWS_DRIVE_RE.match(file_path)
+        if os.path.isabs(file_path) or drive:
+            if os.path.isdir(target_path) or os.path.isabs(target_path) or _WINDOWS_DRIVE_RE.match(target_path or ""):
+                base = target_path
+            else:
+                base = os.path.dirname(os.path.abspath(target_path))
+            base_drive = _WINDOWS_DRIVE_RE.match(base or "")
+            if drive and (base_drive is None or file_path[:2].lower() != base[:2].lower()):
+                return os.path.basename(p)
+            try:
+                rel = os.path.relpath(file_path, base).replace("\\", "/")
+            except ValueError:  # different drive on Windows
+                return os.path.basename(p)
+            if rel.startswith(".."):
+                return os.path.basename(p)
+            return rel
+        return p
+
+    @staticmethod
+    def _resolve_line(finding: ReviewFinding, symbols: Optional[List[CodeSymbol]]) -> int:
+        if finding.line_number:
+            return max(1, int(finding.line_number))
+        if finding.symbol_name:
+            candidates = [s for s in (symbols or []) if s.name == finding.symbol_name]
+            if candidates:
+                if finding.file_path:
+                    stem = os.path.basename(finding.file_path)
+                    same_file = [s for s in candidates if os.path.basename(s.file_path) == stem]
+                    candidates = same_file or candidates
+                return max(1, candidates[0].line_start)
+        return 1
+
+    @staticmethod
+    def _fingerprint(*parts: str) -> str:
+        return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
 
     @staticmethod
     def _status_label(status: TestStatus, failed_label: str) -> str:

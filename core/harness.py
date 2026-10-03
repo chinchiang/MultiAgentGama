@@ -95,7 +95,8 @@ class VibeHarnessCommander:
         system_description: Optional[str] = None,
         base_url: str = "http://localhost:8000",
         output_report_path: str = "vibe_harness_report.md",
-        output_format: str = "md"
+        output_format: str = "md",
+        output_sarif_path: Optional[str] = None
     ) -> VibeHarnessSummary:
         """
         Executes the complete dual-engine testing workflow:
@@ -307,6 +308,12 @@ class VibeHarnessCommander:
             f.write(md_content)
 
         self.console.print(f"[+] Final audit report written to: [bold green]{output_report_path}[/bold green]")
+
+        if output_sarif_path:
+            sarif_content = self.reporter.generate_sarif_report(symbols=symbols, **report_args)
+            with open(output_sarif_path, "w", encoding="utf-8") as f:
+                f.write(sarif_content)
+            self.console.print(f"[+] SARIF report written to: [bold green]{output_sarif_path}[/bold green] (for GitHub Code Scanning)")
         verdict_color = {"READY_TO_SHIP": "green", "INCONCLUSIVE": "yellow"}.get(overall_status, "red")
         self.console.print(Panel.fit(
             f"[bold]Quality Gate Verdict:[/bold] [{verdict_color} bold]{overall_status}[/{verdict_color} bold]\n"
