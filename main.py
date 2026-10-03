@@ -69,6 +69,12 @@ def main():
         help="Report format written to --output: Markdown (default) or machine-readable JSON"
     )
     parser.add_argument(
+        "--sarif",
+        metavar="PATH",
+        default=None,
+        help="Also write a SARIF 2.1.0 report to PATH for GitHub Code Scanning (upload via github/codeql-action)"
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {__version__}"
@@ -93,7 +99,8 @@ def main():
             system_description=args.desc,
             base_url=args.base_url,
             output_report_path=args.output,
-            output_format=args.format
+            output_format=args.format,
+            output_sarif_path=args.sarif
         )
     except LLMGatewayError as e:
         print(f"Error: live model invocation failed in strict 'live' mode: {e}", file=sys.stderr)
