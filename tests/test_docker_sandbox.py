@@ -74,9 +74,8 @@ def test_run_command_is_isolated(tmp_path, monkeypatch):
         assert flag in joined
     # defense in depth: /tmp tmpfs and the writable run dir must not allow executing binaries
     assert "/tmp:rw,nosuid,noexec,size=256m" in cmd
-    assert ",nosuid,noexec" in " ".join(cmd)
+    assert f"{run_dir}:/sandbox:nosuid,noexec" in cmd
     assert f"type=bind,source={target},target=/work/app,readonly" in joined
-    assert f"type=bind,source={run_dir},target=/sandbox,nosuid,noexec" in joined
     assert "PYTHONPATH=/work/app:/work" in cmd and "TARGET_URL=http://svc" in cmd
     assert "sk-secret" not in joined  # host secrets never reach the container
     image_at = cmd.index(DEFAULT_DOCKER_IMAGE)
@@ -112,9 +111,11 @@ def test_root_harness_runs_the_container_as_nobody(tmp_path, monkeypatch):
     if not hasattr(os, "getuid"):
         pytest.skip("POSIX only")
     monkeypatch.setattr(sandbox_mod.os, "getuid", lambda: 0, raising=False)
+    monkeypatch.setattr(sandbox_mod.os, "getgid", lambda: 0, raising=False)
     assert DockerSandbox._user() == "65534:65534"
     monkeypatch.setattr(sandbox_mod.os, "getuid", lambda: 1000, raising=False)
-    assert DockerSandbox._user() == "1000:1000"
+    monkeypatch.setattr(sandbox_mod.os, "getgid", lambda: 1001, raising=False)
+    assert DockerSandbox._user() == "1000:1001"  # uid and gid need not match (e.g. GH runners)
 
 
 def test_bind_quotes_paths_with_commas():

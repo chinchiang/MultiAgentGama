@@ -379,10 +379,10 @@ class DockerSandbox(LocalSubprocessSandbox):
         return rewrite_host_paths(code, self._path_mapping(base_dir))
 
     @staticmethod
-    def _bind(source: str, target: str, readonly: bool, extra_options: str = "") -> str:
+    def _bind(source: str, target: str, readonly: bool) -> str:
         # --mount is parsed as CSV: a comma in a host path needs the field quoted
         src = f'"source={source}"' if "," in source else f"source={source}"
-        return f"type=bind,{src},target={target}" + (",readonly" if readonly else "") + extra_options
+        return f"type=bind,{src},target={target}" + (",readonly" if readonly else "")
 
     @staticmethod
     def _user() -> str:
@@ -430,7 +430,10 @@ class DockerSandbox(LocalSubprocessSandbox):
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "--user", self._user(),
             "--mount", self._bind(base_dir, target, readonly=True),
-            "--mount", self._bind(run_dir, CONTAINER_RUN_DIR, readonly=False, extra_options=",nosuid,noexec"),
+            # The writable run dir uses -v syntax because --mount type=bind does not accept
+            # the nosuid/noexec mount flags; run_dir comes from mkdtemp so it never contains
+            # the option separator (comma).
+            "-v", f"{run_dir}:{CONTAINER_RUN_DIR}:nosuid,noexec",
             "-w", target,
         ]
         for key, value in env.items():
