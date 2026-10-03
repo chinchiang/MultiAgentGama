@@ -4,7 +4,7 @@ import sys
 import pytest
 from core.models import GeneratedTest, TestStatus, AgentCallRecord
 from core.llm_gateway import LLMGateway, LLMGatewayError
-from core.sandbox import LocalSubprocessSandbox
+from core.sandbox import LocalSubprocessSandbox, TIMEOUT_EXIT_CODE
 from core.codecheck import check_test_code, strip_code_fences
 from agents.whitebox.ast_extractor import ASTExtractor
 from agents.whitebox.test_generator import WhiteboxTestGenerator
@@ -94,6 +94,74 @@ def test_metadata_newlines_cannot_inject_code(executor, tmp_path):
     assert results[0].is_security_exploit_confirmed is False
 
 
+# --- JUnit parsing / rerun budget ---------------------------------------------
+
+def test_junit_modules_beyond_999_are_not_merged():
+    xml = (
+        "<testsuite name='pytest'>"
+        "<testcase classname='test_vh_1000' name='test_a' time='0.1'/>"
+        "<testcase classname='test_vh_1001' name='test_b' time='0.1'/>"
+        "</testsuite>"
+    )
+    cases = TestSuiteExecutor._parse_junit(xml)
+    assert sorted(cases) == ["test_vh_1000", "test_vh_1001"]
+
+
+def test_junit_garbage_time_does_not_crash():
+    cases = TestSuiteExecutor._parse_junit(
+        "<testsuite><testcase classname='test_vh_000' name='test_a' time='not-a-float'/></testsuite>"
+    )
+    assert cases["test_vh_000"][0]["time"] == 0.0
+
+
+class _FakeSandbox:
+    """Stands in for the sandbox so timeout/rerun paths run without spawning processes."""
+
+    def __init__(self, batch_exit=TIMEOUT_EXIT_CODE, individual_junit=None, timeout_seconds=60):
+        self.timeout_seconds = timeout_seconds
+        self.batch_exit = batch_exit
+        self.individual_junit = individual_junit
+        self.individual_calls = 0
+
+    def execute_pytest_files(self, files, **kwargs):
+        if len(files) == 1 and self.individual_junit is not None:
+            self.individual_calls += 1
+            return (0, "", "", 0.1, None, self.individual_junit)
+        return (self.batch_exit, "", "Execution timed out after 60 seconds.", 60.0, None, None)
+
+
+def test_partially_skipped_module_is_flagged(tmp_path):
+    junit = (
+        "<testsuite>"
+        "<testcase classname='test_vh_000' name='test_a' time='0.1'/>"
+        "<testcase classname='test_vh_000' name='test_b' time='0.1'><skipped message='cond'/></testcase>"
+        "</testsuite>"
+    )
+    executor = TestSuiteExecutor(_FakeSandbox(batch_exit=0, individual_junit=junit))
+    results, _ = executor.execute_test_suite([_test("A", "def test_a():\n    assert True")], working_dir=str(tmp_path))
+    assert results[0].status == TestStatus.PASSED
+    assert "skipped" in results[0].failure_reason
+
+
+def test_single_module_timeout_says_so_instead_of_no_report(tmp_path):
+    executor = TestSuiteExecutor(_FakeSandbox(timeout_seconds=60))
+    results, _ = executor.execute_test_suite([_test("A", "def test_a():\n    assert True")], working_dir=str(tmp_path))
+    assert results[0].status == TestStatus.ERROR
+    assert "timed out" in results[0].failure_reason and "no per-test report" in results[0].failure_reason
+
+
+def test_rerun_budget_is_capped_by_the_batch_budget(tmp_path):
+    sandbox = _FakeSandbox(timeout_seconds=0)
+    executor = TestSuiteExecutor(sandbox, per_test_timeout_seconds=30)
+    results, _ = executor.execute_test_suite([
+        _test("A", "def test_a():\n    assert True"),
+        _test("B", "def test_b():\n    assert True"),
+    ], working_dir=str(tmp_path))
+    # The batch timed out and the (zero) rerun budget is exhausted immediately: no module is re-run
+    assert sandbox.individual_calls == 0
+    assert all(r.status == TestStatus.ERROR and "Rerun budget" in r.failure_reason for r in results)
+
+
 def test_non_assertion_crash_in_blackbox_is_failure_but_not_exploit(executor, tmp_path):
     results, _ = executor.execute_test_suite([
         _test("A", "def test_a():\n    assert {}['missing']"),
@@ -125,6 +193,25 @@ def test_check_test_code_requires_test_function():
     assert check_test_code("def helper():\n    pass") == (False, "no top-level test_ function defined")
     assert check_test_code("def test_a():\n    assert 1")[0] is True
     assert strip_code_fences("no fences") == "no fences"
+
+
+def test_check_test_code_accepts_class_based_tests():
+    valid = (
+        "class TestRepo:\n"
+        "    def test_add(self):\n"
+        "        assert 1 + 1 == 2\n"
+    )
+    assert check_test_code(valid)[0] is True
+    # A Test* class without any test_ method is not collected by pytest either
+    helper_class = "class TestConfig:\n    def settings(self):\n        return {}\n"
+    assert check_test_code(helper_class)[0] is False
+
+
+def test_check_test_code_survives_null_bytes_and_deep_nesting():
+    is_valid, problem = check_test_code("def test_a():\n    assert 1\x00")
+    assert not is_valid and "syntax error" in problem
+    is_valid, problem = check_test_code("def test_a():\n" + "    if True:\n" * 2000 + "        assert 1\n")
+    assert not is_valid and "syntax error" in problem
 
 
 def test_strip_code_fences_never_leaks_the_language_tag():
@@ -364,6 +451,75 @@ def test_server_returning_404_counts_as_live():
         assert ThreatScenarioBuilder(None).check_server_live(f"http://127.0.0.1:{server.server_port}")
     finally:
         server.shutdown()
+
+
+def test_server_probe_retries_before_giving_up(monkeypatch):
+    """A slow-starting server gets a few attempts before the harness falls back to in-process mode."""
+    import agents.blackbox.scenario_builder as sb_mod
+    from agents.blackbox.scenario_builder import ThreatScenarioBuilder
+
+    builder = ThreatScenarioBuilder(None)
+
+    class FlakyUrlopen:
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self, *a, **k):
+            self.calls += 1
+            if self.calls == 1:
+                raise OSError("connection refused")
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    fake = FlakyUrlopen()
+    monkeypatch.setattr(sb_mod.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(sb_mod.time, "sleep", lambda s: None)
+    assert builder.check_server_live("http://localhost:59998", timeout_sec=0.1) is True
+    assert fake.calls == 2  # failed once, succeeded on the retry
+
+
+def test_report_poc_fence_widens_when_code_contains_fences(tmp_path):
+    from core.models import (
+        ThreatModelReport, VibeHarnessSummary, TestExecutionResult, TestStatus,
+        ThreatItem, STRIDECategory, FindingSeverity, MultiModelDebateResult,
+    )
+    from reports.report_generator import ReportGenerator
+    poc = "# PoC\ntext = ```\nwith fence markers\n```\n"
+    threat = ThreatItem(
+        threat_id="THREAT-01", stride_category=STRIDECategory.TAMPERING, title="t", description="",
+        asset_at_risk="a", attack_vector="v", trust_boundary_crossed="b", severity=FindingSeverity.HIGH,
+        attack_scenario="", test_verification_goal=""
+    )
+    summary = VibeHarnessSummary(
+        overall_status="BLOCKED_CRITICAL_RISK", total_whitebox_findings=0, confirmed_whitebox_bugs=0,
+        whitebox_tests_passed=0, whitebox_tests_failed=0, total_threats_modeled=1,
+        critical_threats_count=0, blackbox_tests_passed=0, blackbox_security_breaches=1
+    )
+    bb = [TestExecutionResult(
+        test_id="BB-1", test_type="blackbox_security", status=TestStatus.FAILED,
+        is_security_exploit_confirmed=True, reproduction_poc=poc
+    )]
+    debate = MultiModelDebateResult(consensus_summary="")
+    threat_model = ThreatModelReport(system_description="", entrypoints=[], trust_boundaries=[],
+                                     assets=[], threats=[threat])
+    md = ReportGenerator().generate_markdown_report(summary, debate, threat_model, [], bb, "app")
+    assert "````python" in md
+
+
+def test_ast_extractor_includes_decorated_class_and_star_args(tmp_path):
+    target = tmp_path / "deco.py"
+    target.write_text("@functools.lru_cache\nclass Repo:\n    def load(self, *args, **kwargs):\n        return None\n", encoding="utf-8")
+    symbols = ASTExtractor().parse_file(str(target))
+    repo = next(s for s in symbols if s.name == "Repo")
+    load = next(s for s in symbols if s.name == "Repo.load")
+    assert repo.source_code.startswith("@functools.lru_cache")
+    assert "*args, **kwargs" in load.signature
+    assert load.parameters == ["self", "*args"]
 
 
 def test_probe_handles_keyword_only_and_skips_decorated_async(executor, tmp_path):

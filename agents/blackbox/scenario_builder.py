@@ -1,4 +1,5 @@
 import logging
+import time
 import urllib.error
 import urllib.request
 from typing import List, Optional
@@ -24,16 +25,24 @@ class ThreatScenarioBuilder:
     def __init__(self, gateway: LLMGateway):
         self.gateway = gateway
 
+    # A server that is still booting must not be mistaken for a dead one: probe a few times
+    # before falling back to in-process mode, which would change every test's strategy.
+    PROBE_ATTEMPTS = 3
+    PROBE_RETRY_DELAY_SEC = 0.5
+
     def check_server_live(self, base_url: str, timeout_sec: float = 1.0) -> bool:
-        """Probes whether the target HTTP server is reachable."""
-        try:
-            req = urllib.request.Request(base_url, headers={"User-Agent": "VibeHarness-HealthCheck"})
-            with urllib.request.urlopen(req, timeout=timeout_sec):
-                return True
-        except urllib.error.HTTPError:
-            return True  # Any HTTP status (404 on '/', 500, ...) means the server answered
-        except Exception:
-            return False
+        """Probes whether the target HTTP server is reachable (with short retries for slow starts)."""
+        for attempt in range(self.PROBE_ATTEMPTS):
+            try:
+                req = urllib.request.Request(base_url, headers={"User-Agent": "VibeHarness-HealthCheck"})
+                with urllib.request.urlopen(req, timeout=timeout_sec):
+                    return True
+            except urllib.error.HTTPError:
+                return True  # Any HTTP status (404 on '/', 500, ...) means the server answered
+            except Exception:
+                if attempt < self.PROBE_ATTEMPTS - 1:
+                    time.sleep(self.PROBE_RETRY_DELAY_SEC)
+        return False
 
     @staticmethod
     def _code_context(threat: ThreatItem, symbols: Optional[List[CodeSymbol]], root_dir: Optional[str]) -> str:

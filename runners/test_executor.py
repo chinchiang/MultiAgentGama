@@ -1,5 +1,6 @@
 import re
 import os
+import time
 import logging
 import xml.etree.ElementTree as ET
 from typing import List, Tuple, Optional, Dict, Set
@@ -78,22 +79,35 @@ class TestSuiteExecutor:
             )
             cases = self._parse_junit(junit_xml)
             timed_out: Set[str] = set()
+            not_rerun: Set[str] = set()
             if exit_code == TIMEOUT_EXIT_CODE and len(files) > 1:
                 # One hanging test must not void the whole batch: rerun each module on its own budget
                 logger.warning("Batch run timed out; re-running each test module individually to isolate the hang.")
                 coverage_pct = None
-                cases, timed_out = self._run_individually(files, working_dir)
+                cases, timed_out, not_rerun = self._run_individually(files, working_dir)
                 junit_xml = ""  # per-module outcomes are now in `cases` / `timed_out`
 
             for module, idx in module_to_idx.items():
                 t = tests[idx]
                 module_cases = cases.get(module)
-                if junit_xml is None:
+                if module in not_rerun:
                     results[idx] = self._result(
                         t, unique_ids[idx], TestStatus.ERROR,
-                        failure_reason=f"Sandbox run produced no report: {stderr.strip()[:200] or f'exit code {exit_code}'}",
-                        stdout=stdout, stderr=stderr
+                        failure_reason="Rerun budget exhausted after the batch timeout; module was not re-run"
                     )
+                elif junit_xml is None:
+                    if exit_code == TIMEOUT_EXIT_CODE:
+                        results[idx] = self._result(
+                            t, unique_ids[idx], TestStatus.ERROR,
+                            failure_reason=(f"Test batch timed out after {getattr(self.sandbox, 'timeout_seconds', '?')}s "
+                                            "and no per-test report was produced")
+                        )
+                    else:
+                        results[idx] = self._result(
+                            t, unique_ids[idx], TestStatus.ERROR,
+                            failure_reason=f"Sandbox run produced no report: {stderr.strip()[:200] or f'exit code {exit_code}'}",
+                            stdout=stdout, stderr=stderr
+                        )
                 elif not module_cases and module in timed_out:
                     results[idx] = self._result(
                         t, unique_ids[idx], TestStatus.ERROR,
@@ -110,12 +124,23 @@ class TestSuiteExecutor:
 
         return [results[i] for i in range(len(tests))], coverage_pct
 
-    def _run_individually(self, files: Dict[str, str], working_dir: str) -> Tuple[Dict[str, List[dict]], Set[str]]:
-        """Runs each module in its own process; returns (junit cases by module, modules that timed out)."""
+    def _run_individually(
+        self, files: Dict[str, str], working_dir: str
+    ) -> Tuple[Dict[str, List[dict]], Set[str], Set[str]]:
+        """Runs each module in its own process.
+
+        Returns (junit cases by module, modules that timed out, modules skipped because the
+        rerun budget (the sandbox's own batch budget) was exhausted).
+        """
         cases: Dict[str, List[dict]] = {}
         timed_out: Set[str] = set()
+        not_rerun: Set[str] = set()
+        deadline = time.monotonic() + float(getattr(self.sandbox, "timeout_seconds", 0) or 0)
         for filename, code in files.items():
             module = filename[:-3]
+            if time.monotonic() >= deadline:
+                not_rerun.add(module)
+                continue
             exit_code, _, _, _, _, junit_xml = self.sandbox.execute_pytest_files(
                 {filename: code}, working_dir=working_dir, timeout_seconds=self.per_test_timeout_seconds
             )
@@ -123,7 +148,7 @@ class TestSuiteExecutor:
                 timed_out.add(module)
                 continue
             cases.update(self._parse_junit(junit_xml))
-        return cases, timed_out
+        return cases, timed_out, not_rerun
 
     @staticmethod
     def _header_field(text: Optional[str]) -> str:
@@ -159,7 +184,7 @@ class TestSuiteExecutor:
 
         for tc in root.iter("testcase"):
             # Collection errors: classname="" and name=<module>; regular tests: classname=<module>
-            match = re.search(r"test_vh_\d{3}", tc.get("classname") or "") or re.search(r"test_vh_\d{3}", tc.get("name") or "")
+            match = re.search(r"test_vh_\d+", tc.get("classname") or "") or re.search(r"test_vh_\d+", tc.get("name") or "")
             if not match:
                 continue
             outcome, message, details = "passed", None, None
@@ -173,9 +198,13 @@ class TestSuiteExecutor:
                     out += child.text or ""
                 elif child.tag == "system-err":
                     err += child.text or ""
+            try:
+                case_time = float(tc.get("time") or 0.0)
+            except (TypeError, ValueError):
+                case_time = 0.0  # the XML came from a container running untrusted code; never crash on it
             grouped.setdefault(match.group(0), []).append({
                 "name": tc.get("name"),
-                "time": float(tc.get("time") or 0.0),
+                "time": case_time,
                 "outcome": outcome,
                 "message": message,
                 "details": details,
@@ -221,7 +250,16 @@ class TestSuiteExecutor:
                 failure_reason=self._first_line(cases[0]["message"]) or "Skipped",
                 duration=duration, stdout=stdout, stderr=stderr
             )
-        return self._result(test, test_id, TestStatus.PASSED, duration=duration, stdout=stdout, stderr=stderr)
+        passed = self._result(test, test_id, TestStatus.PASSED, duration=duration, stdout=stdout, stderr=stderr)
+        skipped_count = sum(1 for c in cases if c["outcome"] == "skipped")
+        if skipped_count:
+            # A partially skipped module is weaker evidence than a clean pass; say so explicitly
+            # instead of counting unverified boundaries as defended.
+            passed.failure_reason = (
+                f"{skipped_count} of {len(cases)} case(s) were skipped inside this module; "
+                "only the executed cases verify the boundary"
+            )
+        return passed
 
     @staticmethod
     def _is_assertion(message: Optional[str]) -> bool:

@@ -7,7 +7,10 @@ import re
 import shutil
 import signal
 import uuid
+import logging
 from typing import Dict, Optional, Tuple, List
+
+logger = logging.getLogger("VibeHarness.Sandbox")
 
 # Exit code returned when the pytest run exceeds its time budget.
 # 124 follows GNU timeout convention; values outside the 1..-31 signal range can never be
@@ -36,6 +39,27 @@ _SAFE_ENV_VARS = {
 
 class SandboxUnavailableError(RuntimeError):
     """The configured sandbox cannot run on this machine (e.g. Docker or its image is missing)."""
+
+
+# Keys in custom_env that are never forwarded, however they are spelled (uppercase or not):
+# credentials (the allowlist already keeps host secrets out, but callers could pass their own)
+# and injection vectors a generated test could abuse to escape into a shell on import.
+_CUSTOM_ENV_DENY_RE = re.compile(r"(API_?KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|^BASH_ENV$|^ENV$|^LD_PRELOAD$|^LD_LIBRARY_PATH$|^PYTHONINSPECT$|^PYTHONSTARTUP$)", re.IGNORECASE)
+
+
+def filter_custom_env(custom_env: Optional[Dict[str, str]]) -> Dict[str, str]:
+    """Drops credential-looking and interpreter-injection keys from caller-supplied env additions."""
+    if not custom_env:
+        return {}
+    kept, dropped = {}, []
+    for key, value in custom_env.items():
+        if _CUSTOM_ENV_DENY_RE.search(key):
+            dropped.append(key)
+        else:
+            kept[key] = value
+    if dropped:
+        logger.warning(f"Refused to forward credential/injection env vars into the sandbox: {', '.join(sorted(dropped))}")
+    return kept
 
 
 def build_safe_env(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
@@ -158,7 +182,7 @@ class LocalSubprocessSandbox:
             "PYTHONDONTWRITEBYTECODE": "1",
         })
         if custom_env:
-            env.update(custom_env)
+            env.update(filter_custom_env(custom_env))
         cmd = [sys.executable, "-m", "pytest", *[os.path.join(run_dir, f) for f in filenames]]
         cmd += self._pytest_options(run_dir, os.path.join(run_dir, "junit.xml"))
         if collect_coverage:
@@ -345,13 +369,11 @@ class DockerSandbox(LocalSubprocessSandbox):
 
     @staticmethod
     def _path_mapping(base_dir: str) -> List[Tuple[str, str]]:
-        mapping = [(base_dir, container_target_dir(base_dir))]
-        parent = os.path.dirname(base_dir)
-        # The parent is also on sys.path locally; map it to /work, where only the target is visible.
-        # Never map a filesystem root: that would rewrite every absolute path.
-        if os.path.dirname(parent) != parent:
-            mapping.append((parent, CONTAINER_WORK_ROOT))
-        return mapping
+        # Only the target is mounted, so only the target's own paths can be rewritten to the
+        # container. The parent directory is deliberately NOT mapped: rewriting a sibling path
+        # to /work/<sibling> would point at a file that does not exist in the container, while
+        # leaving the host path intact makes the failure (and its cause) obvious.
+        return [(base_dir, container_target_dir(base_dir))]
 
     def _prepare_code(self, code: str, base_dir: str) -> str:
         return rewrite_host_paths(code, self._path_mapping(base_dir))
@@ -364,8 +386,12 @@ class DockerSandbox(LocalSubprocessSandbox):
 
     @staticmethod
     def _user() -> str:
-        # The host user on POSIX, so files written to the run directory stay removable; otherwise nobody
+        # The host user on POSIX, so files written to the run directory stay removable; otherwise nobody.
+        # A root harness (common in CI) would otherwise silently run a root container, contradicting
+        # the documented non-root isolation; nobody is used instead and the run dir is opened up.
         if hasattr(os, "getuid"):
+            if os.getuid() == 0:
+                return "65534:65534"
             return f"{os.getuid()}:{os.getgid()}"
         return "65534:65534"
 
@@ -387,23 +413,34 @@ class DockerSandbox(LocalSubprocessSandbox):
             "HOME": "/tmp",
         }
         if custom_env:
-            env.update(custom_env)
+            env.update(filter_custom_env(custom_env))
+        if hasattr(os, "getuid") and os.getuid() == 0:
+            # The container writes junit.xml/coverage into the run dir as nobody (see _user);
+            # a root-owned 0755 dir would make every run fail with no report.
+            os.chmod(run_dir, 0o777)
 
+        # `timeout` is the in-container backstop: if the host-side cleanup (docker rm -f) ever
+        # fails, pytest still dies instead of running forever. Its 124 exit matches TIMEOUT_EXIT_CODE.
         cmd = [
             self.docker, "run", "--rm",
             "--name", f"vibeharness-{uuid.uuid4().hex[:12]}",
             "--network", self.network,
-            "--read-only", "--tmpfs", "/tmp:rw,nosuid,size=256m",
+            "--read-only", "--tmpfs", "/tmp:rw,nosuid,noexec,size=256m",
             "--memory", self.memory, "--cpus", self.cpus, "--pids-limit", str(self.pids_limit),
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "--user", self._user(),
             "--mount", self._bind(base_dir, target, readonly=True),
+            # NOTE: noexec/nosuid cannot be applied to this writable bind: --mount type=bind
+            # rejects bare mount flags and the -v mode field only accepts ro/propagation/selinux.
+            # The writable area stays bounded by non-root user, no-new-privileges, resource
+            # limits and the read-only root filesystem.
             "--mount", self._bind(run_dir, CONTAINER_RUN_DIR, readonly=False),
             "-w", target,
         ]
         for key, value in env.items():
             cmd += ["-e", f"{key}={value}"]
-        cmd += [self.image, "python", "-m", "pytest", *[f"{CONTAINER_RUN_DIR}/{f}" for f in filenames]]
+        cmd += [self.image, "timeout", "--kill-after=5", str(self.timeout_seconds),
+                "python", "-m", "pytest", *[f"{CONTAINER_RUN_DIR}/{f}" for f in filenames]]
         cmd += self._pytest_options(CONTAINER_RUN_DIR, f"{CONTAINER_RUN_DIR}/junit.xml")
         if collect_coverage:
             cov = target
@@ -416,6 +453,9 @@ class DockerSandbox(LocalSubprocessSandbox):
         # Killing the docker CLI does not stop the container; remove it explicitly
         name = cmd[cmd.index("--name") + 1]
         try:
-            subprocess.run([self.docker, "rm", "-f", name], capture_output=True, env=self._cli_env(), timeout=60)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+            result = subprocess.run([self.docker, "rm", "-f", name], capture_output=True, env=self._cli_env(), timeout=60)
+            if getattr(result, "returncode", 0) != 0:
+                logger.warning(f"'{self.docker} rm -f {name}' failed (rc={result.returncode}); "
+                               "the container is bounded by its in-container timeout but may linger.")
+        except (OSError, subprocess.TimeoutExpired) as e:
+            logger.warning(f"Could not remove container {name} after timeout: {e}")

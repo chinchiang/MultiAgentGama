@@ -19,14 +19,20 @@ def strip_code_fences(text: str) -> str:
 
 
 def _top_level_test_nodes(tree: ast.Module) -> List[ast.AST]:
-    return [
-        node for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_")
-    ]
+    """Module-level pytest tests: `test_*` functions and `Test*` classes that contain test methods."""
+    nodes: List[ast.AST] = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
+            nodes.append(node)
+        elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+            if any(isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and m.name.startswith("test_")
+                   for m in node.body):
+                nodes.append(node)
+    return nodes
 
 
 def top_level_test_functions(code: str) -> List[str]:
-    """Names of module-level pytest test functions; raises SyntaxError on invalid code."""
+    """Names of module-level pytest test functions; raises SyntaxError/ValueError on invalid code."""
     return [node.name for node in _top_level_test_nodes(ast.parse(code))]
 
 
@@ -60,7 +66,8 @@ def check_test_code(code: str) -> Tuple[bool, Optional[str]]:
         return False, "empty test code"
     try:
         tree = ast.parse(code)
-    except SyntaxError as e:
+    except (SyntaxError, ValueError, RecursionError) as e:
+        # ValueError: source with null bytes; RecursionError: absurdly deep nesting
         return False, f"syntax error: {e}"
     tests = _top_level_test_nodes(tree)
     if not tests:
