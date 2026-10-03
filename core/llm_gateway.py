@@ -41,8 +41,8 @@ class LLMGateway:
         self.execution_mode = execution_mode or self.config.get("global", {}).get("execution_mode", "hybrid")
         if self.execution_mode not in ("live", "hybrid", "mock"):
             raise ValueError(f"Unknown execution_mode '{self.execution_mode}' (expected live, hybrid or mock)")
-        self.models_config = self.config.get("models", {})
-        self.agents_config = self.config.get("agents", {})
+        self.models_config = self.config.get("models") or {}
+        self.agents_config = self.config.get("agents") or {}
         self.call_log: List[AgentCallRecord] = []
 
     @property
@@ -143,11 +143,18 @@ class LLMGateway:
         The API key is passed explicitly, so providers whose litellm default env var differs from
         `api_key_env` (e.g. NVIDIA NIM) still authenticate. Returns (text, model_actually_used).
         """
-        global_cfg = self.config.get("global", {})
+        global_cfg = self.config.get("global") or {}
+        env_var = model_info.get("api_key_env")
+        if not env_var:
+            # Fail with an actionable message instead of a KeyError from the config lookup below
+            raise LLMGatewayError(
+                f"Model '{model_name}' has no 'api_key_env' configured; set it in the models section "
+                "of the agents config to make live calls."
+            )
         kwargs: Dict[str, Any] = {
             "messages": messages,
             "temperature": temperature,
-            "api_key": os.getenv(model_info["api_key_env"]),
+            "api_key": os.getenv(env_var),
             "timeout": global_cfg.get("timeout_seconds", 60),
             "num_retries": global_cfg.get("max_retries", 2),
             "max_tokens": global_cfg.get("max_output_tokens", 4096),

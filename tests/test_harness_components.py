@@ -123,3 +123,5 @@ def test_sandbox_process_isolation_and_timeout():
     exit_code_timeout, _, err, _, _ = quick_sandbox.execute_python_code(code_hang)
     assert exit_code_timeout == -1
     assert "timed out" in err.lower()
+    # The message must name the module that was attempted
+    assert "test_exec.py" in err

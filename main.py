@@ -4,17 +4,12 @@ import logging
 import sys
 import os
 
-from core.harness import VibeHarnessCommander
+from core.harness import VibeHarnessCommander, force_utf8_stdio
 from core.llm_gateway import LLMGatewayError, DEFAULT_CONFIG_PATH
 from core.sandbox import SandboxUnavailableError
 
 
-if sys.platform == "win32":
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+force_utf8_stdio()
 
 
 def setup_logging(verbose: bool = False):
