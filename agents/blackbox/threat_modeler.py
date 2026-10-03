@@ -175,11 +175,13 @@ class AutomatedThreatModeler:
             try:
                 category = STRIDECategory(str(item.get("stride_category") or "Tampering"))
             except ValueError:
+                logger.warning(f"Unknown STRIDE category '{item.get('stride_category')}' on '{item.get('threat_id')}'; using Tampering")
                 category = STRIDECategory.TAMPERING
 
             try:
                 severity = FindingSeverity(str(item.get("severity") or "HIGH").upper())
             except ValueError:
+                logger.warning(f"Unknown severity '{item.get('severity')}' on '{item.get('threat_id')}'; using HIGH")
                 severity = FindingSeverity.HIGH
 
             threat_id = item.get("threat_id")

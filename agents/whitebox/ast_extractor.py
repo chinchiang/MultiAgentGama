@@ -149,6 +149,10 @@ class ASTExtractor:
         source_snippet = "\n".join(source_lines[start - 1 : end])
 
         args = [arg.arg for arg in node.args.posonlyargs + node.args.args + node.args.kwonlyargs]
+        # *args / **kwargs are part of the function's contract; reviewers and probes need them
+        if node.args.vararg:
+            args.append(f"*{node.args.vararg.arg}")
+        kw_vararg = [f"**{node.args.kwarg.arg}"] if node.args.kwarg else []
         symbol_type = "method" if class_name else "function"
         full_name = f"{class_name}.{node.name}" if class_name else node.name
 
@@ -165,7 +169,7 @@ class ASTExtractor:
             file_path=file_path,
             line_start=start,
             line_end=end,
-            signature=f"{node.name}({', '.join(args)})",
+            signature=f"{node.name}({', '.join(args + kw_vararg)})",
             docstring=docstring,
             source_code=source_snippet,
             parameters=args
@@ -177,7 +181,8 @@ class ASTExtractor:
         file_path: str,
         source_lines: List[str]
     ) -> Optional[CodeSymbol]:
-        start = node.lineno
+        # Include decorators, consistent with functions: they carry registration/behavior context
+        start = min([d.lineno for d in node.decorator_list] + [node.lineno])
         end = getattr(node, "end_lineno", start + 1)
         source_snippet = "\n".join(source_lines[start - 1 : end])
 

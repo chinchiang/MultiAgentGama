@@ -453,6 +453,75 @@ def test_server_returning_404_counts_as_live():
         server.shutdown()
 
 
+def test_server_probe_retries_before_giving_up(monkeypatch):
+    """A slow-starting server gets a few attempts before the harness falls back to in-process mode."""
+    import agents.blackbox.scenario_builder as sb_mod
+    from agents.blackbox.scenario_builder import ThreatScenarioBuilder
+
+    builder = ThreatScenarioBuilder(None)
+
+    class FlakyUrlopen:
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self, *a, **k):
+            self.calls += 1
+            if self.calls == 1:
+                raise OSError("connection refused")
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    fake = FlakyUrlopen()
+    monkeypatch.setattr(sb_mod.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(sb_mod.time, "sleep", lambda s: None)
+    assert builder.check_server_live("http://localhost:59998", timeout_sec=0.1) is True
+    assert fake.calls == 2  # failed once, succeeded on the retry
+
+
+def test_report_poc_fence_widens_when_code_contains_fences(tmp_path):
+    from core.models import (
+        ThreatModelReport, VibeHarnessSummary, TestExecutionResult, TestStatus,
+        ThreatItem, STRIDECategory, FindingSeverity, MultiModelDebateResult,
+    )
+    from reports.report_generator import ReportGenerator
+    poc = "# PoC\ntext = ```\nwith fence markers\n```\n"
+    threat = ThreatItem(
+        threat_id="THREAT-01", stride_category=STRIDECategory.TAMPERING, title="t", description="",
+        asset_at_risk="a", attack_vector="v", trust_boundary_crossed="b", severity=FindingSeverity.HIGH,
+        attack_scenario="", test_verification_goal=""
+    )
+    summary = VibeHarnessSummary(
+        overall_status="BLOCKED_CRITICAL_RISK", total_whitebox_findings=0, confirmed_whitebox_bugs=0,
+        whitebox_tests_passed=0, whitebox_tests_failed=0, total_threats_modeled=1,
+        critical_threats_count=0, blackbox_tests_passed=0, blackbox_security_breaches=1
+    )
+    bb = [TestExecutionResult(
+        test_id="BB-1", test_type="blackbox_security", status=TestStatus.FAILED,
+        is_security_exploit_confirmed=True, reproduction_poc=poc
+    )]
+    debate = MultiModelDebateResult(consensus_summary="")
+    threat_model = ThreatModelReport(system_description="", entrypoints=[], trust_boundaries=[],
+                                     assets=[], threats=[threat])
+    md = ReportGenerator().generate_markdown_report(summary, debate, threat_model, [], bb, "app")
+    assert "````python" in md
+
+
+def test_ast_extractor_includes_decorated_class_and_star_args(tmp_path):
+    target = tmp_path / "deco.py"
+    target.write_text("@functools.lru_cache\nclass Repo:\n    def load(self, *args, **kwargs):\n        return None\n", encoding="utf-8")
+    symbols = ASTExtractor().parse_file(str(target))
+    repo = next(s for s in symbols if s.name == "Repo")
+    load = next(s for s in symbols if s.name == "Repo.load")
+    assert repo.source_code.startswith("@functools.lru_cache")
+    assert "*args, **kwargs" in load.signature
+    assert load.parameters == ["self", "*args"]
+
+
 def test_probe_handles_keyword_only_and_skips_decorated_async(executor, tmp_path):
     target = tmp_path / "kw.py"
     target.write_text(

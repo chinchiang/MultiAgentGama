@@ -4,10 +4,13 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any, Optional
 from pydantic import ValidationError
 from core.models import CodeSymbol, ReviewFinding, FindingSeverity
-from core.llm_gateway import LLMGateway
+from core.llm_gateway import LLMGateway, LLMGatewayError
 from core.codecontext import render_symbols, batch_symbols
 
 logger = logging.getLogger("VibeHarness.MultiReviewer")
+
+# Model-emitted severity strings that do not match the enum (odd casing, typos) land here
+_DEFAULT_SEVERITY = FindingSeverity.MEDIUM
 
 
 class HeterogeneousReviewerEnsemble:
@@ -53,9 +56,20 @@ class HeterogeneousReviewerEnsemble:
         batches = batch_symbols(symbols, root, self.BATCH_MAX_TOKENS, self.BATCH_MAX_SYMBOLS)
         jobs = [(reviewer, batch) for reviewer in self.reviewer_agents for batch in batches]
 
-        # Reviewers are independent models, so their calls run concurrently
+        # Reviewers are independent models, so their calls run concurrently. A crashed batch
+        # must not discard every other batch's (already paid-for) results; live-mode failures
+        # still propagate so the run fails loudly.
         with ThreadPoolExecutor(max_workers=min(self.MAX_WORKERS, len(jobs))) as pool:
-            responses = list(pool.map(lambda job: self._review_batch(job[0], job[1], root), jobs))
+            futures = [pool.submit(self._review_batch, job[0], job[1], root) for job in jobs]
+            responses = []
+            for job, future in zip(jobs, futures, strict=True):
+                try:
+                    responses.append(future.result())
+                except LLMGatewayError:
+                    raise
+                except Exception as e:
+                    logger.error(f"Reviewer batch for {job[0]['name']} failed: {type(e).__name__}: {e}")
+                    responses.append(({}, False))
 
         all_findings: List[ReviewFinding] = []
         counters: Dict[str, int] = {}
@@ -72,7 +86,8 @@ class HeterogeneousReviewerEnsemble:
                 try:
                     severity = FindingSeverity(severity_str)
                 except ValueError:
-                    severity = FindingSeverity.MEDIUM
+                    logger.warning(f"Unknown severity '{severity_str.strip()}' from {reviewer['name']}; using MEDIUM")
+                    severity = _DEFAULT_SEVERITY
 
                 symbol = self._match_symbol(item.get("symbol_name"), batch)
                 counters[model_alias] = counters.get(model_alias, 0) + 1

@@ -48,7 +48,7 @@ include = ["core*", "agents*", "runners*", "reports*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Keep generated-test runs from picking up the harness's own tests or sample targets
-norecursedirs = [".vibe_sandbox", "examples", "docs"]
+norecursedirs = ["examples", "docs"]
 
 [tool.ruff]
 line-length = 120

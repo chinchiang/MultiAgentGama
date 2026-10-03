@@ -173,7 +173,9 @@ class ReportGenerator:
                 md.append("\n### 🚨 Confirmed Vulnerability Proof of Concepts (PoCs):")
                 for p in pocs:
                     md.append(f"#### PoC for `{p.test_id}`")
-                    md.append(f"```python\n{p.reproduction_poc}\n```")
+                    # A PoC containing triple backticks would break a ``` fence
+                    fence = "````" if "```" in p.reproduction_poc else "```"
+                    md.append(f"{fence}python\n{p.reproduction_poc}\n{fence}")
         else:
             md.append("No black-box tests executed.")
 

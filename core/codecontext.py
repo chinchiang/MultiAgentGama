@@ -165,6 +165,8 @@ def file_source(file_path: str, max_tokens: int = 3000) -> str:
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             text = f.read()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # Undecodable (non-UTF-8 or binary) targets must degrade to an empty listing,
+        # not crash the pipeline.
         return ""
     return truncate_to_tokens(text, max_tokens)
