@@ -6,8 +6,21 @@ import os
 
 from core import __version__
 from core.harness import VibeHarnessCommander, force_utf8_stdio
-from core.llm_gateway import LLMGatewayError, DEFAULT_CONFIG_PATH
+from core.llm_gateway import LLMGatewayError, ConfigError, DEFAULT_CONFIG_PATH
 from core.sandbox import SandboxUnavailableError
+
+# Exit codes reserved for harness/usage problems. Verdict codes (0/1/2/3/4) are documented in
+# the README; these must never collide with them, or CI would misread a crashed run as a verdict.
+USAGE_ERROR_EXIT_CODE = 5
+
+
+class _UsageErrorParser(argparse.ArgumentParser):
+    """argparse exits 2 on usage errors by default, which collides with BLOCKED_CRITICAL_RISK."""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        print(f"{self.prog}: error: {message}", file=sys.stderr)
+        sys.exit(USAGE_ERROR_EXIT_CODE)
 
 
 force_utf8_stdio()
@@ -22,8 +35,27 @@ def setup_logging(verbose: bool = False):
     )
 
 
+_VERDICT_STATUSES = ("BLOCKED_CRITICAL_RISK", "NEEDS_FIXES", "INCONCLUSIVE", "READY_TO_SHIP")
+
+
+def verdict_exit_code(overall_status: str) -> int:
+    """Maps a quality-gate verdict to its CLI exit code.
+
+    Unknown verdict strings fail closed with the INCONCLUSIVE code (3), never with
+    READY_TO_SHIP (0) — an unrecognized verdict must not read as a clean bill of health.
+    """
+    if overall_status == "BLOCKED_CRITICAL_RISK":
+        return 2
+    if overall_status == "NEEDS_FIXES":
+        return 1
+    if overall_status == "READY_TO_SHIP":
+        return 0
+    # INCONCLUSIVE and any unrecognized status
+    return 3
+
+
 def main():
-    parser = argparse.ArgumentParser(
+    parser = _UsageErrorParser(
         description="[VibeHarness-MAS] Multi-Agent White-Box & Black-Box Testing Harness for Vibe Coding"
     )
     parser.add_argument(
@@ -86,13 +118,13 @@ def main():
     target_path = os.path.abspath(args.target)
     if not os.path.exists(target_path):
         print(f"Error: Target path '{target_path}' does not exist.", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(USAGE_ERROR_EXIT_CODE)
 
     try:
         commander = VibeHarnessCommander(config_path=args.config, execution_mode=args.mode)
-    except (ValueError, SandboxUnavailableError) as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
+    except (ConfigError, ValueError, SandboxUnavailableError) as e:
+        print(f"Error: harness configuration problem: {e}", file=sys.stderr)
+        sys.exit(USAGE_ERROR_EXIT_CODE)
     try:
         summary = commander.run_full_pipeline(
             target_dir=target_path,
@@ -105,16 +137,15 @@ def main():
     except LLMGatewayError as e:
         print(f"Error: live model invocation failed in strict 'live' mode: {e}", file=sys.stderr)
         sys.exit(4)
+    except Exception as e:
+        # A crashed run must never fall through to exit code 1, which CI reads as NEEDS_FIXES
+        print(f"Error: harness crashed unexpectedly: {type(e).__name__}: {e}", file=sys.stderr)
+        sys.exit(USAGE_ERROR_EXIT_CODE)
 
     # Return exit code based on Quality Gate
-    if summary.overall_status == "BLOCKED_CRITICAL_RISK":
-        sys.exit(2)
-    elif summary.overall_status == "NEEDS_FIXES":
-        sys.exit(1)
-    elif summary.overall_status == "INCONCLUSIVE":
-        sys.exit(3)
-    else:
-        sys.exit(0)
+    if summary.overall_status not in _VERDICT_STATUSES:
+        print(f"Error: unknown overall status '{summary.overall_status}'; failing closed.", file=sys.stderr)
+    sys.exit(verdict_exit_code(summary.overall_status))
 
 
 if __name__ == "__main__":

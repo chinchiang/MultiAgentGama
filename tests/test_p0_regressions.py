@@ -269,7 +269,7 @@ def test_single_file_target_is_analyzed(tmp_path):
         target_dir=str(target), base_url="http://localhost:59999", output_report_path=str(tmp_path / "r.md")
     )
     assert summary.whitebox_tests_failed == 1
-    assert os.listdir(tmp_path) == ["one.py", "r.md"]
+    assert sorted(os.listdir(tmp_path)) == ["one.py", "r.md"]
 
 
 def test_server_returning_404_counts_as_live():
@@ -332,6 +332,38 @@ def test_hanging_test_does_not_void_the_batch(tmp_path):
     assert "timed out" in results[1].failure_reason
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group kill semantics")
+def test_daemonized_grandchild_cannot_hang_the_sandbox(tmp_path):
+    """A grandchild in a new session survives the process-group kill; the sandbox must
+    drain its pipes with a short timeout instead of blocking on communicate() forever."""
+    import subprocess
+    import time
+    from core.sandbox import TIMEOUT_EXIT_CODE
+
+    code = (
+        "import subprocess, sys, time\n"
+        "def test_daemon():\n"
+        "    subprocess.Popen(\n"
+        "        [sys.executable, '-c', 'import time; time.sleep(120)'],\n"
+        "        start_new_session=True,\n"
+        "    )\n"
+        "    time.sleep(60)\n"
+    )
+    sandbox = LocalSubprocessSandbox(timeout_seconds=60)
+    start = time.monotonic()
+    try:
+        exit_code, _, stderr, *_ = sandbox.execute_pytest_files(
+            {"test_daemon_test.py": code}, working_dir=str(tmp_path), timeout_seconds=2
+        )
+        elapsed = time.monotonic() - start
+        assert exit_code == TIMEOUT_EXIT_CODE
+        # kill + ~5s pipe drain; a hang would run until the 120s grandchild exits
+        assert elapsed < 20, f"sandbox blocked for {elapsed:.1f}s on a daemonized grandchild"
+        assert "timed out" in stderr.lower()
+    finally:
+        subprocess.run(["pkill", "-f", "time.sleep(120)"], capture_output=True)
+
+
 def test_results_carry_their_own_output(executor, tmp_path):
     results, _ = executor.execute_test_suite([
         _test("A", "def test_a():\n    print('from-a')\n    assert True"),
@@ -374,5 +406,49 @@ def test_cli_rejects_unknown_report_format():
         [sys.executable, "main.py", "--target", EXAMPLES, "--format", "xml"],
         cwd=REPO_ROOT, capture_output=True, text=True, timeout=60
     )
-    assert proc.returncode != 0
+    assert proc.returncode == 5  # usage errors must not collide with verdict code 2
     assert "invalid choice" in (proc.stderr + proc.stdout)
+
+
+def test_cli_exit_code_semantics_are_disjoint():
+    from main import verdict_exit_code
+    assert verdict_exit_code("BLOCKED_CRITICAL_RISK") == 2
+    assert verdict_exit_code("NEEDS_FIXES") == 1
+    assert verdict_exit_code("INCONCLUSIVE") == 3
+    assert verdict_exit_code("READY_TO_SHIP") == 0
+    # An unknown verdict must fail closed, never as a clean pass
+    assert verdict_exit_code("SOMETHING_ELSE") == 3
+
+
+def test_cli_missing_config_is_usage_error_not_needs_fixes():
+    import subprocess
+    proc = subprocess.run(
+        [sys.executable, "main.py", "--target", EXAMPLES, "--config", "/nonexistent/agents_config.yaml"],
+        cwd=REPO_ROOT, capture_output=True, text=True, timeout=60
+    )
+    assert proc.returncode == 5
+    assert "Agent config not found" in proc.stderr
+
+
+def test_cli_malformed_config_yaml_is_usage_error():
+    import subprocess
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        bad = os.path.join(td, "bad.yaml")
+        with open(bad, "w", encoding="utf-8") as f:
+            f.write("global: [unclosed\n")
+        proc = subprocess.run(
+            [sys.executable, "main.py", "--target", EXAMPLES, "--config", bad],
+            cwd=REPO_ROOT, capture_output=True, text=True, timeout=60
+        )
+    assert proc.returncode == 5
+    assert "not valid YAML" in proc.stderr
+
+
+def test_cli_missing_target_is_usage_error():
+    import subprocess
+    proc = subprocess.run(
+        [sys.executable, "main.py", "--target", "/nonexistent/target/dir"],
+        cwd=REPO_ROOT, capture_output=True, text=True, timeout=60
+    )
+    assert proc.returncode == 5

@@ -122,6 +122,7 @@ class MultiModelDebater:
             confirmed_findings=confirmed,
             disputed_findings=disputed,
             consensus_summary=summary,
+            undecided_count=undecided,
             model_agreement_ratio=ratio,
             arbitration_applied=True,
             is_simulated=False
