@@ -1,33 +1,48 @@
 name: tests
 
+# push fires only for master; pull_request covers feature branches, so a PR no longer runs twice
 on:
   push:
+    branches: [master]
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install ruff
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - run: python -m pip install ruff mypy
       - run: ruff check .
+      - run: mypy core/ agents/ runners/ reports/ main.py
 
   test:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.10", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
     runs-on: ${{ matrix.os }}
+    # The Linux job builds the sandbox image and runs the real-container tests; budget generously
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: python -m pip install -r requirements.txt
+          cache: pip
+          cache-dependency-path: requirements.lock
+      # Reproducible CI installs: exact pins from the uv-generated universal lock
+      # (regenerate with: uv pip compile --universal requirements.txt -o requirements.lock)
+      - run: python -m pip install -r requirements.lock
       # Linux runners have Docker: build the sandbox image so the real-container tests run instead of skipping
       - if: runner.os == 'Linux'
         run: |

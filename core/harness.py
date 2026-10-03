@@ -1,7 +1,7 @@
 import logging
 import os
 import sys
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 from rich.console import Console
 from rich.panel import Panel
 
@@ -311,7 +311,7 @@ class VibeHarnessCommander:
         )
 
         # Output report
-        report_args = dict(
+        report_args: Dict[str, Any] = dict(
             summary=summary,
             debate_result=debate_result,
             threat_model=threat_report,

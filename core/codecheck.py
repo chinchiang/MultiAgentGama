@@ -1,6 +1,8 @@
 import ast
 import re
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
+
+_TestNode = Union[ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef]
 
 # Any ```<lang> tag (python, python3, Python, js, ...) followed by a newline opens the block;
 # the language tag itself must never leak into the extracted code
@@ -18,9 +20,9 @@ def strip_code_fences(text: str) -> str:
     return (match.group(1) if match else text).strip()
 
 
-def _top_level_test_nodes(tree: ast.Module) -> List[ast.AST]:
+def _top_level_test_nodes(tree: ast.Module) -> List[_TestNode]:
     """Module-level pytest tests: `test_*` functions and `Test*` classes that contain test methods."""
-    nodes: List[ast.AST] = []
+    nodes: List[_TestNode] = []
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
             nodes.append(node)

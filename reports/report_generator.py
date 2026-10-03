@@ -2,7 +2,7 @@ import hashlib
 import json
 import os
 import re
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 from core.models import (
     CodeSymbol,
     MultiModelDebateResult,
@@ -94,7 +94,7 @@ class ReportGenerator:
         if summary.agent_calls:
             md.append("| Agent | Model | Mode | Calls | Reason |")
             md.append("| :--- | :--- | :--- | :--- | :--- |")
-            grouped = {}
+            grouped: Dict[Tuple[str, str, str, str], int] = {}
             for c in summary.agent_calls:
                 key = (c.agent_id, c.model_name, c.mode, c.reason or "")
                 grouped[key] = grouped.get(key, 0) + 1
@@ -173,9 +173,10 @@ class ReportGenerator:
                 md.append("\n### 🚨 Confirmed Vulnerability Proof of Concepts (PoCs):")
                 for p in pocs:
                     md.append(f"#### PoC for `{p.test_id}`")
+                    poc_text = p.reproduction_poc or ""
                     # A PoC containing triple backticks would break a ``` fence
-                    fence = "````" if "```" in p.reproduction_poc else "```"
-                    md.append(f"{fence}python\n{p.reproduction_poc}\n{fence}")
+                    fence = "````" if "```" in poc_text else "```"
+                    md.append(f"{fence}python\n{poc_text}\n{fence}")
         else:
             md.append("No black-box tests executed.")
 
@@ -235,9 +236,9 @@ class ReportGenerator:
         """
         from core import __version__
 
-        rules = []
-        rule_index = {}
-        results = []
+        rules: List[Dict[str, object]] = []
+        rule_index: Dict[str, int] = {}
+        results: List[Dict[str, object]] = []
 
         def add_rule(rule_id: str, short: str, full: str, level: str) -> int:
             if rule_id not in rule_index:
@@ -409,6 +410,6 @@ class ReportGenerator:
         )
 
     @staticmethod
-    def _cell(text: str) -> str:
+    def _cell(text: Optional[str]) -> str:
         """Makes free text safe for a single Markdown table cell."""
         return (text or "").replace("|", "\\|").replace("\n", " ")
