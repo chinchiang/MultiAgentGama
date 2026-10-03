@@ -359,12 +359,13 @@ def test_litellm_retry_dependency_is_installed():
 
 def test_cli_reports_the_package_version():
     import subprocess
+    from core import __version__
     proc = subprocess.run(
         [sys.executable, "main.py", "--version"],
         cwd=REPO_ROOT, capture_output=True, text=True, timeout=60
     )
     assert proc.returncode == 0, proc.stderr
-    assert "0.1.0" in proc.stdout
+    assert __version__ in proc.stdout
 
 
 def test_cli_rejects_unknown_report_format():
