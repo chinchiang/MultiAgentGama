@@ -430,10 +430,11 @@ class DockerSandbox(LocalSubprocessSandbox):
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "--user", self._user(),
             "--mount", self._bind(base_dir, target, readonly=True),
-            # The writable run dir uses -v syntax because --mount type=bind does not accept
-            # the nosuid/noexec mount flags; run_dir comes from mkdtemp so it never contains
-            # the option separator (comma).
-            "-v", f"{run_dir}:{CONTAINER_RUN_DIR}:nosuid,noexec",
+            # NOTE: noexec/nosuid cannot be applied to this writable bind: --mount type=bind
+            # rejects bare mount flags and the -v mode field only accepts ro/propagation/selinux.
+            # The writable area stays bounded by non-root user, no-new-privileges, resource
+            # limits and the read-only root filesystem.
+            "--mount", self._bind(run_dir, CONTAINER_RUN_DIR, readonly=False),
             "-w", target,
         ]
         for key, value in env.items():

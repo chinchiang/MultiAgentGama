@@ -72,10 +72,12 @@ def test_run_command_is_isolated(tmp_path, monkeypatch):
     for flag in ("--rm", "--read-only", "--network none", "--cap-drop ALL", "--security-opt no-new-privileges",
                  "--memory 512m", "--pids-limit 256", "--user"):
         assert flag in joined
-    # defense in depth: /tmp tmpfs and the writable run dir must not allow executing binaries
+    # defense in depth: the /tmp tmpfs must not allow executing binaries; the writable run
+    # dir bind cannot take nosuid/noexec (docker rejects mount flags for type=bind), so the
+    # assertion documents the supported hardening exactly.
     assert "/tmp:rw,nosuid,noexec,size=256m" in cmd
-    assert f"{run_dir}:/sandbox:nosuid,noexec" in cmd
     assert f"type=bind,source={target},target=/work/app,readonly" in joined
+    assert f"type=bind,source={run_dir},target=/sandbox" in joined
     assert "PYTHONPATH=/work/app:/work" in cmd and "TARGET_URL=http://svc" in cmd
     assert "sk-secret" not in joined  # host secrets never reach the container
     image_at = cmd.index(DEFAULT_DOCKER_IMAGE)
