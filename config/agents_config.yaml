@@ -19,6 +19,8 @@ global:
 models:
   # Provider definitions. `model` / `fallback_model` are litellm model strings; the key is read from api_key_env.
   # fallback_model is tried once when the primary model still fails after max_retries.
+  # Any agent can point at any model below via its `model_alias` — e.g. with only a Gemini key,
+  # set every agent's model_alias to "gemini" (that is how the Gemini live smoke test runs).
   claude:
     model: "claude-sonnet-5"
     api_key_env: "ANTHROPIC_API_KEY"
@@ -37,6 +39,13 @@ models:
     api_key_env: "OPENAI_API_KEY"
     fallback_model: "gpt-4o-mini"
     provider: "openai"
+
+  gemini:
+    # gemini-2.5-flash is no longer available to new Google API users; use 3.x instead
+    model: "gemini/gemini-3.8-flash"
+    api_key_env: "GEMINI_API_KEY"
+    fallback_model: "gemini/gemini-3.5-flash"
+    provider: "google"
 
 agents:
   # 1. White-Box Agents (Multi-Model Ensemble to eliminate bias)

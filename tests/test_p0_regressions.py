@@ -350,6 +350,13 @@ def test_unimplemented_sandbox_provider_is_rejected(tmp_path):
 
 # --- CLI surface ---------------------------------------------------------------
 
+def test_litellm_retry_dependency_is_installed():
+    # litellm needs tenacity for num_retries > 0 (live mode) but does not install it itself;
+    # if requirements.txt ever drops it, this fails in CI instead of at the user's first live call.
+    pytest.importorskip("litellm")
+    import tenacity  # noqa: F401
+
+
 def test_cli_reports_the_package_version():
     import subprocess
     proc = subprocess.run(
