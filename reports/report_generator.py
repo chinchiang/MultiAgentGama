@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 from typing import List, Optional
 from core.models import (
     CodeSymbol,
@@ -12,6 +13,10 @@ from core.models import (
     TestStatus,
     FindingSeverity
 )
+
+# Windows drive paths ("C:\...") count as absolute even on POSIX hosts, so a SARIF produced
+# on Windows relativizes identically when re-processed by a Linux CI runner.
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
 class ReportGenerator:
@@ -344,8 +349,15 @@ class ReportGenerator:
         if not file_path or not file_path.strip():
             return None
         p = file_path.strip().replace("\\", "/").removeprefix("./")
-        if os.path.isabs(file_path):
-            base = target_path if os.path.isdir(target_path) else os.path.dirname(os.path.abspath(target_path))
+        drive = _WINDOWS_DRIVE_RE.match(file_path)
+        if os.path.isabs(file_path) or drive:
+            if os.path.isdir(target_path) or os.path.isabs(target_path) or _WINDOWS_DRIVE_RE.match(target_path or ""):
+                base = target_path
+            else:
+                base = os.path.dirname(os.path.abspath(target_path))
+            base_drive = _WINDOWS_DRIVE_RE.match(base or "")
+            if drive and (base_drive is None or file_path[:2].lower() != base[:2].lower()):
+                return os.path.basename(p)
             try:
                 rel = os.path.relpath(file_path, base).replace("\\", "/")
             except ValueError:  # different drive on Windows

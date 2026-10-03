@@ -334,3 +334,5 @@ def test_sarif_uri_relativization(tmp_path):
     assert uri("", str(tmp_path)) is None
     # A different drive cannot be made relative on Windows: fall back to the file name
     assert uri("E:\\other\\x.py", r"D:\work\proj") == "x.py"
+    # Same drive relativizes consistently on Windows and on POSIX hosts
+    assert uri(r"D:\proj\app.py", r"D:\proj") == "app.py"
