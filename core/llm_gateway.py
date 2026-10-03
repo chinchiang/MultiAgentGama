@@ -26,6 +26,15 @@ class LLMGatewayError(RuntimeError):
     """Raised in strict 'live' mode when a real model invocation is impossible or fails."""
 
 
+class ConfigError(ValueError):
+    """Raised when the agent configuration file is missing or unparseable.
+
+    Subclasses ValueError so code (and tests) that guard against bad config values keeps working.
+    main.py maps this to a dedicated 'harness misconfigured' exit code so it can never be
+    mistaken for a NEEDS_FIXES verdict about the audited target.
+    """
+
+
 class LLMGateway:
     """
     Unified gateway for orchestrating calls to heterogeneous LLMs (Claude, Nemotron, ChatGPT).
@@ -63,11 +72,15 @@ class LLMGateway:
         return resp.get(PROVENANCE_KEY, {}).get("mode") != "invalid"
 
     def _load_config(self, path: str) -> Dict[str, Any]:
-        # A missing config would silently drop every model/agent mapping, so fail loudly instead
+        # A missing or unparseable config would silently drop every model/agent mapping, so
+        # fail loudly with ConfigError instead of leaking raw FileNotFoundError/YAMLError
         if not os.path.exists(path):
-            raise FileNotFoundError(f"Agent config not found: {path}")
-        with open(path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+            raise ConfigError(f"Agent config not found: {path}")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}
+        except yaml.YAMLError as e:
+            raise ConfigError(f"Agent config is not valid YAML ({path}): {e}") from e
 
     def is_live_configured(self, model_alias: str) -> bool:
         """Checks whether the requested model has its API key configured."""

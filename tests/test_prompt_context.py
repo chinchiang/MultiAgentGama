@@ -174,7 +174,8 @@ def test_gateway_passes_call_options_and_uses_fallback_model(fake_live, monkeypa
 
 
 def test_missing_config_fails_loudly(tmp_path):
-    with pytest.raises(FileNotFoundError):
+    from core.llm_gateway import ConfigError
+    with pytest.raises(ConfigError):
         LLMGateway(str(tmp_path / "nope.yaml"))
 
 

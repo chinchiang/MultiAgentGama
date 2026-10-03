@@ -77,6 +77,9 @@ class MultiModelDebateResult(BaseModel):
     confirmed_findings: List[ReviewFinding] = Field(default_factory=list)
     disputed_findings: List[ReviewFinding] = Field(default_factory=list)
     consensus_summary: str
+    # Findings kept for testing despite a tie vote (they are in confirmed_findings but are NOT
+    # majority-confirmed; "confirmed" statistics must subtract this, matching consensus_summary)
+    undecided_count: int = 0
     # Share of decisive votes (confirm / reject / corroborated) that match the final decision; None without votes
     model_agreement_ratio: Optional[float] = None
     arbitration_applied: bool = False  # False: no real verifier vote was cast, findings are unfiltered
