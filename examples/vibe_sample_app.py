@@ -7,7 +7,7 @@ Demonstrates common AI-generated shortcuts:
 4. Error leakage: exposing raw internal exceptions to callers.
 """
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 # In-memory database simulation
 DATABASE: Dict[str, Dict[str, Any]] = {

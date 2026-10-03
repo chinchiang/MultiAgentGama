@@ -1,6 +1,5 @@
 import os
-import pytest
-from core.models import STRIDECategory, FindingSeverity, TestStatus, GeneratedTest
+from core.models import STRIDECategory
 from core.llm_gateway import LLMGateway
 from core.sandbox import LocalSubprocessSandbox
 from agents.whitebox.ast_extractor import ASTExtractor
@@ -9,7 +8,6 @@ from agents.whitebox.debater import MultiModelDebater
 from agents.whitebox.test_generator import WhiteboxTestGenerator
 from agents.blackbox.threat_modeler import AutomatedThreatModeler
 from agents.blackbox.scenario_builder import ThreatScenarioBuilder
-from runners.test_executor import TestSuiteExecutor
 
 # Mock mode keeps these tests hermetic even when real API keys are set in the environment
 SAMPLE_APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples", "vibe_sample_app.py")

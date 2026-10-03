@@ -1,7 +1,7 @@
 """Regression tests for executor correctness, self-healing, and result-provenance honesty."""
 import os
 import pytest
-from core.models import GeneratedTest, TestStatus, CodeSymbol, AgentCallRecord
+from core.models import GeneratedTest, TestStatus, AgentCallRecord
 from core.llm_gateway import LLMGateway, LLMGatewayError
 from core.sandbox import LocalSubprocessSandbox
 from core.codecheck import check_test_code, strip_code_fences

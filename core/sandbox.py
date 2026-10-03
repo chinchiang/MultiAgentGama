@@ -308,7 +308,7 @@ class DockerSandbox(LocalSubprocessSandbox):
                 capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._cli_env(), timeout=60
             )
         except (OSError, subprocess.TimeoutExpired) as e:
-            raise SandboxUnavailableError(f"Docker is not usable: {e}")
+            raise SandboxUnavailableError(f"Docker is not usable: {e}") from e
         if result.returncode != 0:
             raise SandboxUnavailableError(
                 f"Docker image '{self.image}' is not available (or the Docker daemon is not running): "

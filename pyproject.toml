@@ -8,3 +8,11 @@ requires-python = ">=3.10"
 testpaths = ["tests"]
 # Keep generated-test runs from picking up the harness's own tests or sample targets
 norecursedirs = [".vibe_sandbox", "examples", "docs"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+# Conservative: real errors and likely bugs only, no style enforcement
+select = ["E4", "E7", "E9", "F", "B"]
