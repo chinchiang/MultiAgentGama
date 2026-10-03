@@ -220,13 +220,14 @@ python main.py --target examples --output report.json --format json
 
 Exit code（依序判定）：
 
-| Code | Verdict | 條件 |
+| Code | 意義 | 條件 |
 | :--- | :--- | :--- |
 | `2` | BLOCKED_CRITICAL_RISK | 至少一個黑箱攻擊測試確認防禦被突破 |
-| `1` | NEEDS_FIXES | 至少一個白箱測試失敗（暴露缺陷） |
-| `3` | INCONCLUSIVE | 無失敗，但有證據缺口：使用模擬引擎、模型輸出無效、測試錯誤／未執行、威脅未測試、檔案解析失敗等 |
+| `1` | NEEDS_FIXES | 至少一個白箱測試失敗（暴露缺陷）；此碼專屬於此判定，harness 自身的錯誤不會使用它 |
+| `3` | INCONCLUSIVE | 無失敗，但有證據缺口：使用模擬引擎、模型輸出無效、測試錯誤／未執行、威脅未測試、檔案解析失敗等；未知的判定字串也以此碼 fail closed |
 | `0` | READY_TO_SHIP | 以上皆無 |
 | `4` | — | live 模式模型呼叫失敗 |
+| `5` | — | harness 設定或使用錯誤：`--target` 不存在、config 檔缺失或 YAML 損壞、沙盒不可用、CLI 用法錯誤、或未預期的內部錯誤（崩潰不會誤報成 verdict） |
 
 ### 5. 運行工具包本身單元測試與靜態檢查
 

@@ -67,6 +67,9 @@ def test_majority_decides_and_ties_are_kept(fake_live):
     assert result.arbitration_applied
     assert [f.finding_id for f in result.confirmed_findings] == ["B", "D"]
     assert [f.finding_id for f in result.disputed_findings] == ["A", "C"]
+    # B and D are ties: kept for testing, but not majority-confirmed
+    assert result.undecided_count == 2
+    assert len(result.confirmed_findings) - result.undecided_count == 0
     # Agreeing decisive votes: A 2 + C 1 = 3 of 7 decisive votes (A 2, B 2, C 1, D 2)
     assert abs(result.model_agreement_ratio - 3 / 7) < 1e-9
     votes_a = {v.model_alias: v.verdict for v in result.disputed_findings[0].verification_votes}

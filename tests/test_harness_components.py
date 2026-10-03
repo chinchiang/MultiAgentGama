@@ -1,7 +1,7 @@
 import os
 from core.models import STRIDECategory
 from core.llm_gateway import LLMGateway
-from core.sandbox import LocalSubprocessSandbox
+from core.sandbox import LocalSubprocessSandbox, TIMEOUT_EXIT_CODE
 from agents.whitebox.ast_extractor import ASTExtractor
 from agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
 from agents.whitebox.debater import MultiModelDebater
@@ -121,7 +121,7 @@ def test_sandbox_process_isolation_and_timeout():
     quick_sandbox = LocalSubprocessSandbox(timeout_seconds=1)
     code_hang = "import time\ndef test_slow(): time.sleep(3)"
     exit_code_timeout, _, err, _, _ = quick_sandbox.execute_python_code(code_hang)
-    assert exit_code_timeout == -1
+    assert exit_code_timeout == TIMEOUT_EXIT_CODE
     assert "timed out" in err.lower()
     # The message must name the module that was attempted
     assert "test_exec.py" in err

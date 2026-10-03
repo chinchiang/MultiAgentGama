@@ -152,7 +152,9 @@ class VibeHarnessCommander:
             self.console.print(f"[+] Cross-Model Agreement: [bold green]{ratio_display}[/bold green] | {len(debate_result.disputed_findings)} disputed")
         else:
             self.console.print("[yellow][!] Cross-model verification not applied; findings are unfiltered reviewer hypotheses.[/yellow]")
-        self.console.print(f"[+] Confirmed Defect Hypotheses: [bold red]{len(debate_result.confirmed_findings)}[/bold red]")
+        confirmed_majority = len(debate_result.confirmed_findings) - debate_result.undecided_count
+        tie_note = f" (+{debate_result.undecided_count} undecided tie(s) kept for testing)" if debate_result.undecided_count else ""
+        self.console.print(f"[+] Confirmed Defect Hypotheses: [bold red]{confirmed_majority}[/bold red]{tie_note}")
 
         # -------------------------------------------------------------
         # Phase 3: White-Box Test Generation & Sandbox Execution
@@ -290,7 +292,7 @@ class VibeHarnessCommander:
             overall_status=overall_status,
             total_whitebox_findings=len(raw_findings),
             distinct_whitebox_findings=len(findings),
-            confirmed_whitebox_bugs=len(debate_result.confirmed_findings),
+            confirmed_whitebox_bugs=len(debate_result.confirmed_findings) - debate_result.undecided_count,
             whitebox_tests_passed=wb_passed,
             whitebox_tests_failed=wb_failed,
             whitebox_tests_errored=wb_errored,

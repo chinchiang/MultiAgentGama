@@ -221,13 +221,14 @@ You can also pass `--sarif <path>` to emit a [SARIF 2.1.0](https://docs.oasis-op
 
 Exit codes (evaluated in order):
 
-| Code | Verdict | Condition |
+| Code | Meaning | Condition |
 | :--- | :--- | :--- |
 | `2` | BLOCKED_CRITICAL_RISK | At least one black-box attack test confirmed a defense was breached |
-| `1` | NEEDS_FIXES | At least one white-box test failed (exposed a defect) |
-| `3` | INCONCLUSIVE | No failures, but evidence gaps exist: simulation engine used, unusable model output, test errors / not run, untested threats, file parse failures, etc. |
+| `1` | NEEDS_FIXES | At least one white-box test failed (exposed a defect); this code is exclusive to that verdict — harness errors never use it |
+| `3` | INCONCLUSIVE | No failures, but evidence gaps exist: simulation engine used, unusable model output, test errors / not run, untested threats, file parse failures, etc.; an unknown verdict string also fails closed with this code |
 | `0` | READY_TO_SHIP | None of the above |
 | `4` | — | Live-mode model invocation failed |
+| `5` | — | Harness configuration or usage error: `--target` missing, config file absent or invalid YAML, sandbox unavailable, CLI usage error, or an unexpected internal error (a crash is never misreported as a verdict) |
 
 ### 5. Run the toolkit's own tests and linters
 

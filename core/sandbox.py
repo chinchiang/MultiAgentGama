@@ -9,8 +9,17 @@ import signal
 import uuid
 from typing import Dict, Optional, Tuple, List
 
-# Exit code returned when the pytest run exceeds its time budget
-TIMEOUT_EXIT_CODE = -1
+# Exit code returned when the pytest run exceeds its time budget.
+# 124 follows GNU timeout convention; values outside the 1..-31 signal range can never be
+# confused with a test process that died from a signal (e.g. SIGHUP maps to returncode -1).
+TIMEOUT_EXIT_CODE = 124
+# Exit code returned when the sandbox itself failed to run the tests (e.g. broken pipe, OSError)
+EXECUTION_FAILURE_EXIT_CODE = 125
+
+# How long to wait for the killed process's pipes to drain before giving up. A grandchild that
+# daemonized into a new session can survive the kill and hold the pipes open; without this cap
+# the harness would hang forever on proc.communicate().
+_POST_KILL_DRAIN_SECONDS = 5.0
 
 # Environment variables forwarded to generated test code. Everything else (API keys, cloud
 # credentials, tokens) is withheld, because generated tests are untrusted model output.
@@ -117,7 +126,7 @@ class LocalSubprocessSandbox:
             return returncode, stdout, stderr, duration, coverage_percent, junit_xml
         except Exception as e:
             duration = time.time() - start_time
-            return -2, "", f"Execution failed: {str(e)}", duration, None, None
+            return EXECUTION_FAILURE_EXIT_CODE, "", f"Execution failed: {str(e)}", duration, None, None
         finally:
             shutil.rmtree(run_dir, ignore_errors=True)
 
@@ -189,7 +198,18 @@ class LocalSubprocessSandbox:
             return proc.returncode, stdout, stderr
         except subprocess.TimeoutExpired:
             LocalSubprocessSandbox._kill_tree(proc)
-            stdout, stderr = proc.communicate()
+            try:
+                stdout, stderr = proc.communicate(timeout=_POST_KILL_DRAIN_SECONDS)
+            except subprocess.TimeoutExpired as e:
+                # The kill only reaches the process group; a grandchild that started a new
+                # session can survive and keep the pipes open. Close our ends and give up
+                # on further output instead of hanging forever.
+                for stream in (proc.stdout, proc.stderr):
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+                stdout, stderr = e.stdout or "", e.stderr or ""
             return None, stdout or "", stderr or ""
 
     @staticmethod

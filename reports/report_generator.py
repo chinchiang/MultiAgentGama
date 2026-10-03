@@ -114,7 +114,8 @@ class ReportGenerator:
         md.append(f"**Debate Consensus Summary**{sim_tag}: {debate_result.consensus_summary}\n")
 
         if debate_result.confirmed_findings:
-            md.append("### Confirmed Logic & Defensive Blindspots:")
+            kept = f" ({debate_result.undecided_count} undecided tie(s) kept for testing)" if debate_result.undecided_count else ""
+            md.append(f"### Confirmed Logic & Defensive Blindspots{kept}:")
             for f in debate_result.confirmed_findings:
                 tag = " `[SIMULATED]`" if f.is_simulated else ""
                 also = f"; also reported by {', '.join(f.corroborated_by)}" if f.corroborated_by else ""
