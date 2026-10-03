@@ -346,3 +346,25 @@ def test_unimplemented_sandbox_provider_is_rejected(tmp_path):
     cfg.write_text("global:\n  sandbox_provider: e2b\n", encoding="utf-8")
     with pytest.raises(ValueError, match="not implemented"):
         VibeHarnessCommander(config_path=str(cfg), execution_mode="mock")
+
+
+# --- CLI surface ---------------------------------------------------------------
+
+def test_cli_reports_the_package_version():
+    import subprocess
+    proc = subprocess.run(
+        [sys.executable, "main.py", "--version"],
+        cwd=REPO_ROOT, capture_output=True, text=True, timeout=60
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "0.1.0" in proc.stdout
+
+
+def test_cli_rejects_unknown_report_format():
+    import subprocess
+    proc = subprocess.run(
+        [sys.executable, "main.py", "--target", EXAMPLES, "--format", "xml"],
+        cwd=REPO_ROOT, capture_output=True, text=True, timeout=60
+    )
+    assert proc.returncode != 0
+    assert "invalid choice" in (proc.stderr + proc.stdout)
