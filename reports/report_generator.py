@@ -1,12 +1,11 @@
 import os
-from typing import List, Optional
+from typing import List
 from core.models import (
     MultiModelDebateResult,
     ReviewFinding,
     ThreatModelReport,
     TestExecutionResult,
     VibeHarnessSummary,
-    FindingSeverity,
     TestStatus
 )
 
@@ -31,7 +30,7 @@ class ReportGenerator:
         # Header
         md.append("# 🛡️ VibeHarness-MAS Multi-Agent Quality & Security Report")
         md.append(f"**Target System Path**: `{os.path.abspath(target_path)}`  ")
-        md.append(f"**Orchestrator**: Commander Harness Agent  ")
+        md.append("**Orchestrator**: Commander Harness Agent  ")
         md.append(f"**Overall Status**: `{summary.overall_status}`  ")
         md.append("\n---\n")
 
@@ -91,7 +90,7 @@ class ReportGenerator:
                 grouped[key] = grouped.get(key, 0) + 1
             for (agent_id, model_name, mode, reason), count in grouped.items():
                 mode_label = {"live": "🟢 live", "simulated": "🟡 simulated"}.get(mode, "🔴 invalid output")
-                md.append(f"| `{agent_id}` | `{model_name}` | {mode_label} | {count} | {self._cell(reason) or '-'} |")
+                md.append(f"| `{self._cell(agent_id)}` | `{self._cell(model_name)}` | {mode_label} | {count} | {self._cell(reason) or '-'} |")
         else:
             md.append("No agent invocations were recorded.")
         md.append("\n")
@@ -128,7 +127,7 @@ class ReportGenerator:
             md.append("| Test ID | Type | Derived From | Status | Duration | Outcome |")
             md.append("| :--- | :--- | :--- | :--- | :--- | :--- |")
             for r in whitebox_results:
-                md.append(f"| `{r.test_id}` | {r.test_type} | `{r.source_ref or '-'}` | {self._status_label(r.status, 'FAILED')} | `{r.duration_seconds}s` | {self._cell(r.failure_reason) or 'Passed'} |")
+                md.append(f"| `{self._cell(r.test_id)}` | {r.test_type} | `{self._cell(r.source_ref) or '-'}` | {self._status_label(r.status, 'FAILED')} | `{r.duration_seconds}s` | {self._cell(r.failure_reason) or 'Passed'} |")
         else:
             md.append("No white-box tests executed.")
 
@@ -143,7 +142,8 @@ class ReportGenerator:
         md.append("| Threat ID | STRIDE Category | OWASP Mapping | Severity | Threat Title & Attack Vector |")
         md.append("| :--- | :--- | :--- | :--- | :--- |")
         for t in threat_model.threats:
-            md.append(f"| `{t.threat_id}` | **{t.stride_category.value}** | {t.owasp_mapping or 'N/A'} | `{t.severity.value}` | **{t.title}**<br>*{t.attack_vector}* |")
+            owasp = self._cell(t.owasp_mapping) or "N/A"
+            md.append(f"| `{self._cell(t.threat_id)}` | **{t.stride_category.value}** | {owasp} | `{t.severity.value}` | **{self._cell(t.title)}**<br>*{self._cell(t.attack_vector)}* |")
 
         md.append("\n")
 
@@ -154,7 +154,7 @@ class ReportGenerator:
             md.append("| :--- | :--- | :--- | :--- | :--- |")
             for r in blackbox_results:
                 status_icon = "❌ VULNERABLE" if r.is_security_exploit_confirmed else self._status_label(r.status, "FAILED")
-                md.append(f"| `{r.test_id}` | {r.test_type} | {status_icon} | `{r.duration_seconds}s` | {self._cell(r.failure_reason) or 'Boundary defended'} |")
+                md.append(f"| `{self._cell(r.test_id)}` | {r.test_type} | {status_icon} | `{r.duration_seconds}s` | {self._cell(r.failure_reason) or 'Boundary defended'} |")
 
             # Check for reproduction PoCs
             pocs = [r for r in blackbox_results if r.reproduction_poc and r.is_security_exploit_confirmed]

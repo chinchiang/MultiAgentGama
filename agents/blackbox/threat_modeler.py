@@ -1,6 +1,7 @@
 import logging
 import os
 import yaml
+from pydantic import ValidationError
 from typing import List, Dict, Any, Optional
 from core.models import ThreatItem, ThreatModelReport, STRIDECategory, FindingSeverity, CodeSymbol
 from core.llm_gateway import LLMGateway
@@ -12,6 +13,23 @@ logger = logging.getLogger("VibeHarness.ThreatModeler")
 
 # Estimated-token budget for the target code shown to the threat modeler (entry points first)
 CODE_CONTEXT_TOKENS = 8000
+
+DEFAULT_TRUST_BOUNDARIES = ["Internet to Public Gateway", "Gateway to Database"]
+DEFAULT_ASSETS = ["User Credentials", "Business Records"]
+
+
+def _text(value: Any, default: str) -> str:
+    """A string field from the model; anything else (None, number, object) falls back to the default."""
+    return value if isinstance(value, str) else default
+
+
+def _string_list(value: Any, fallback: List[str]) -> List[str]:
+    """A list-of-strings field from the model; anything else falls back to the harness's own value."""
+    if isinstance(value, list):
+        cleaned = [v for v in value if isinstance(v, str) and v.strip()]
+        if cleaned:
+            return cleaned
+    return fallback
 
 
 class AutomatedThreatModeler:
@@ -111,42 +129,54 @@ class AutomatedThreatModeler:
             "blackbox_threat_modeler", system_prompt, user_prompt, json_output=True, required_keys=["threats"]
         )
 
-        raw_threats = resp.get("threats", [])
-        threat_items: List[ThreatItem] = []
+        raw_threats = resp.get("threats")
+        if not isinstance(raw_threats, list):
+            logger.warning(f"Ignoring unusable threat list from model (got {type(raw_threats).__name__})")
+            raw_threats = []
 
-        for item in raw_threats:
-            category_str = item.get("stride_category", "Tampering")
-            severity_str = item.get("severity", "HIGH").upper()
+        threat_items: List[ThreatItem] = []
+        for position, item in enumerate(raw_threats, start=1):
+            if not isinstance(item, dict):
+                logger.warning(f"Skipping malformed threat entry #{position} (not a JSON object)")
+                continue
 
             try:
-                category = STRIDECategory(category_str)
+                category = STRIDECategory(str(item.get("stride_category") or "Tampering"))
             except ValueError:
                 category = STRIDECategory.TAMPERING
 
             try:
-                severity = FindingSeverity(severity_str)
+                severity = FindingSeverity(str(item.get("severity") or "HIGH").upper())
             except ValueError:
                 severity = FindingSeverity.HIGH
 
-            threat_items.append(ThreatItem(
-                threat_id=item.get("threat_id", f"THREAT-{len(threat_items)+1:02d}"),
-                stride_category=category,
-                owasp_mapping=item.get("owasp_mapping"),
-                title=item.get("title", "Unclassified Threat"),
-                description=item.get("description", ""),
-                asset_at_risk=item.get("asset_at_risk", "Application Data"),
-                attack_vector=item.get("attack_vector", "REST API"),
-                trust_boundary_crossed=item.get("trust_boundary_crossed", "Internet to Server"),
-                severity=severity,
-                attack_scenario=item.get("attack_scenario", ""),
-                test_verification_goal=item.get("test_verification_goal", "")
-            ))
+            threat_id = item.get("threat_id")
+            if not isinstance(threat_id, str) or not threat_id.strip():
+                threat_id = f"THREAT-{position:02d}"
+
+            owasp_mapping = item.get("owasp_mapping")
+            try:
+                threat_items.append(ThreatItem(
+                    threat_id=threat_id,
+                    stride_category=category,
+                    owasp_mapping=owasp_mapping if isinstance(owasp_mapping, str) and owasp_mapping.strip() else None,
+                    title=_text(item.get("title"), "Unclassified Threat"),
+                    description=_text(item.get("description"), ""),
+                    asset_at_risk=_text(item.get("asset_at_risk"), "Application Data"),
+                    attack_vector=_text(item.get("attack_vector"), "REST API"),
+                    trust_boundary_crossed=_text(item.get("trust_boundary_crossed"), "Internet to Server"),
+                    severity=severity,
+                    attack_scenario=_text(item.get("attack_scenario"), ""),
+                    test_verification_goal=_text(item.get("test_verification_goal"), ""),
+                ))
+            except ValidationError as e:
+                logger.warning(f"Skipping unusable threat entry #{position}: {e}")
 
         return ThreatModelReport(
-            system_description=resp.get("system_description", system_description),
-            entrypoints=resp.get("entrypoints", entrypoints),
-            trust_boundaries=resp.get("trust_boundaries", ["Internet to Public Gateway", "Gateway to Database"]),
-            assets=resp.get("assets", ["User Credentials", "Business Records"]),
+            system_description=_text(resp.get("system_description"), system_description) or system_description,
+            entrypoints=_string_list(resp.get("entrypoints"), entrypoints),
+            trust_boundaries=_string_list(resp.get("trust_boundaries"), DEFAULT_TRUST_BOUNDARIES),
+            assets=_string_list(resp.get("assets"), DEFAULT_ASSETS),
             threats=threat_items,
             is_simulated=self.gateway.is_simulated(resp)
         )

@@ -114,7 +114,8 @@ class ThreatScenarioBuilder:
                 "blackbox_test_synthesizer", system_prompt, user_prompt, json_output=True, required_keys=["code"]
             )
 
-            code_str = strip_code_fences(resp.get("code") or "")
+            raw_code = resp.get("code")
+            code_str = strip_code_fences(raw_code if isinstance(raw_code, str) else "")
             if not code_str:
                 # No fabricated fallback: a threat without a synthesized test is reported as NOT TESTED
                 logger.warning(f"No executable test synthesized for [{threat.threat_id}]; threat remains untested.")

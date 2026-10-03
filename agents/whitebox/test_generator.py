@@ -26,6 +26,8 @@ class WhiteboxTestGenerator:
 
     def __init__(self, gateway: LLMGateway):
         self.gateway = gateway
+        # Findings from the last run for which no usable model-generated test was produced
+        self.findings_without_model_tests: List[str] = []
 
     def generate_tests_for_findings(
         self,
@@ -33,6 +35,7 @@ class WhiteboxTestGenerator:
         symbols: List[CodeSymbol],
         root_dir: Optional[str] = None
     ) -> List[GeneratedTest]:
+        self.findings_without_model_tests = []
         if not findings:
             return []
 
@@ -70,10 +73,11 @@ class WhiteboxTestGenerator:
 
             resp = self.gateway.generate("whitebox_test_generator", system_prompt, user_prompt, json_output=True)
 
-            tests_data = resp.get("tests", [])
-            if not tests_data and "code" in resp:
+            raw_tests = resp.get("tests")
+            tests_data = raw_tests if isinstance(raw_tests, list) else []
+            if not tests_data and isinstance(resp.get("code"), str) and resp["code"].strip():
                 tests_data = [resp]
-            tests_data = [t for t in tests_data if (t.get("code") or "").strip()]
+            tests_data = [t for t in tests_data if isinstance(t, dict) and (t.get("code") or "").strip()]
 
             has_valid_test = False
             for t_idx, t_item in enumerate(tests_data):
@@ -96,6 +100,7 @@ class WhiteboxTestGenerator:
             if not has_valid_test:
                 logger.warning(f"No executable model-generated test for finding {finding.finding_id}; will use target-derived probes.")
                 needs_probes = True
+                self.findings_without_model_tests.append(finding.finding_id)
 
         if needs_probes:
             generated_tests.extend(self.build_offline_probes(symbols))
