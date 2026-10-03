@@ -1,6 +1,8 @@
 import logging
+import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import List, Optional
 import os
@@ -51,12 +53,40 @@ class ThreatScenarioBuilder:
             return ""
         root = root_dir or os.path.dirname(os.path.abspath(symbols[0].file_path))
         text = f"{threat.attack_vector} {threat.attack_scenario}"
-        relevant = [s for s in symbols if s.name.split(".")[-1] in text]
+        # Whole-word matching: a substring test would tie every threat mentioning "user" to a
+        # get_user() symbol and hide the actually relevant code behind it.
+        relevant = [
+            s for s in symbols
+            if re.search(rf"\b{re.escape(s.name.split('.')[-1])}\b", text)
+        ]
         if not relevant:
             relevant = sorted(symbols, key=lambda s: s.symbol_type != "route")
         files = sorted({s.file_path for s in relevant if s.file_path.endswith(".py")})
         imports = "\n".join(import_instructions(f, root) for f in files)
         return f"How to import the target:\n{imports}\n\nRelevant target code:\n{render_symbols(relevant, root, max_tokens=CODE_CONTEXT_TOKENS)}\n\n"
+
+    # Loopback names are the same machine; targeting them is allowed when the target itself is local
+    _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+
+    @staticmethod
+    def _hosts_outside_base_url(code: str, base_url: str) -> List[str]:
+        """URL literals in generated attack code whose host is not the declared target.
+
+        The prompt tells the model to attack only the base URL; this static check is the
+        best-effort net behind that instruction (dynamically built URLs are not caught).
+        """
+        base_host = (urllib.parse.urlparse(base_url).hostname or "").lower()
+        offenders: List[str] = []
+        for match in re.finditer(r"https?://([^/'\"\s<>())\\]+)", code, re.IGNORECASE):
+            netloc = match.group(1).split("@")[-1]
+            host = netloc.rsplit("@", 1)[-1].split("/")[0].split(":")[0].lower()
+            if not host or host == base_host:
+                continue
+            if base_host in ThreatScenarioBuilder._LOOPBACK_HOSTS and host in ThreatScenarioBuilder._LOOPBACK_HOSTS:
+                continue
+            if match.group(0) not in offenders:
+                offenders.append(match.group(0))
+        return offenders
 
     def build_test_cases_from_threats(
         self,
@@ -129,6 +159,14 @@ class ThreatScenarioBuilder:
                 # No fabricated fallback: a threat without a synthesized test is reported as NOT TESTED
                 logger.warning(f"No executable test synthesized for [{threat.threat_id}]; threat remains untested.")
                 continue
+            if server_is_live:
+                offenders = self._hosts_outside_base_url(code_str, base_url)
+                if offenders:
+                    logger.warning(
+                        f"Synthesized test for [{threat.threat_id}] targets non-target host(s) "
+                        f"{', '.join(offenders)}; rejected and the threat remains untested."
+                    )
+                    continue
             is_valid, problem = check_test_code(code_str)
             if not is_valid:
                 # Kept so the executor reports it as ERROR rather than silently dropping it

@@ -59,7 +59,8 @@ class ReportGenerator:
             "READY_TO_SHIP": "🟢 **PASS: READY TO SHIP**",
             "NEEDS_FIXES": "🟠 **FAIL: NEEDS FIXES**",
             "INCONCLUSIVE": "🟡 **INCONCLUSIVE: INSUFFICIENT EVIDENCE**",
-        }.get(summary.overall_status, "🔴 **FAIL: BLOCKED BY CRITICAL RISKS**")
+            "BLOCKED_CRITICAL_RISK": "🔴 **FAIL: BLOCKED BY CRITICAL RISKS**",
+        }.get(summary.overall_status, f"⚠️ **UNKNOWN STATUS: `{summary.overall_status}`**")
         md.append(f"### Verdict: {status_badge}\n")
         if summary.inconclusive_reasons:
             md.append("**Evidence gaps:**")
@@ -147,8 +148,8 @@ class ReportGenerator:
         # 3. Black-Box Threat Modeling Matrix
         md.append("## 3. 🎯 Phase 2: Black-Box Threat Modeling (STRIDE & OWASP)" + (" `[SIMULATED]`" if threat_model.is_simulated else ""))
         md.append(f"**System Description**: {threat_model.system_description}  ")
-        md.append(f"**Entrypoints Audited**: `{', '.join(threat_model.entrypoints)}`  ")
-        md.append(f"**Trust Boundaries**: `{', '.join(threat_model.trust_boundaries)}`\n")
+        md.append(f"**Entrypoints Audited**: `{self._join_list(threat_model.entrypoints)}`  ")
+        md.append(f"**Trust Boundaries**: `{self._join_list(threat_model.trust_boundaries)}`\n")
 
         md.append("| Threat ID | STRIDE Category | OWASP Mapping | Severity | Threat Title & Attack Vector |")
         md.append("| :--- | :--- | :--- | :--- | :--- |")
@@ -408,6 +409,13 @@ class ReportGenerator:
             f"{v.model_alias}: {v.verdict}" + (f" ({v.reason})" if v.reason else "")
             for v in finding.verification_votes
         )
+
+    @staticmethod
+    def _join_list(value: object) -> str:
+        """Joins a list field for display; a stray string from a model response renders as one item
+        instead of being exploded character by character by ', '.join."""
+        items = value if isinstance(value, list) else [value]
+        return ", ".join(str(v) for v in items if str(v).strip())
 
     @staticmethod
     def _cell(text: Optional[str]) -> str:

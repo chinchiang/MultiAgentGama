@@ -483,6 +483,81 @@ def test_server_probe_retries_before_giving_up(monkeypatch):
     assert fake.calls == 2  # failed once, succeeded on the retry
 
 
+def test_generated_attack_code_targeting_another_host_is_rejected():
+    """'Never target any other host' is enforced by a static check, not only by prompt instruction."""
+    import threading
+    import http.server
+    from agents.blackbox.scenario_builder import ThreatScenarioBuilder
+    from core.models import ThreatItem, STRIDECategory, FindingSeverity
+    from core.llm_gateway import LLMGateway
+
+    class NotFound(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), NotFound)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        threat = ThreatItem(
+            threat_id="THREAT-01", stride_category=STRIDECategory.ELEVATION_OF_PRIVILEGE, title="BOLA",
+            description="", asset_at_risk="a", attack_vector="GET /api/orders",
+            trust_boundary_crossed="b", severity=FindingSeverity.CRITICAL,
+            attack_scenario="fetch other users' orders", test_verification_goal="403"
+        )
+        codes = [
+            "import requests\n"
+            "def test_steal():\n"
+            "    r = requests.get('http://evil.example.com/api/orders?id=2')\n"
+            "    assert r.status_code == 403\n",       # foreign host -> rejected
+            "def test_ok():\n"
+            "    import requests\n"
+            f"    r = requests.get('{base_url}/api/orders?id=2')\n"
+            "    assert r.status_code == 403\n",       # declared target -> kept
+        ]
+
+        def responder(agent_id, system, user, **k):
+            return {"code": codes.pop(0)}
+
+        gw = LLMGateway(CONFIG, execution_mode="mock")
+        gw.generate = responder
+        builder = ThreatScenarioBuilder(gw)
+        tests = builder.build_test_cases_from_threats(
+            [threat, threat.model_copy(update={"threat_id": "THREAT-02"})],
+            base_url=base_url
+        )
+        assert [t.test_id for t in tests] == ["BB-TEST-THREAT-02"]
+        assert "evil.example.com" not in "".join(t.code for t in tests)
+    finally:
+        server.shutdown()
+
+
+def test_symbol_relevance_uses_word_boundaries():
+    from agents.blackbox.scenario_builder import ThreatScenarioBuilder
+    from core.models import ThreatItem, STRIDECategory, FindingSeverity, CodeSymbol
+
+    def sym(name):
+        return CodeSymbol(name=name, symbol_type="function", file_path="app.py",
+                          line_start=1, line_end=2, signature=name, source_code="pass")
+    threat = ThreatItem(
+        threat_id="T", stride_category=STRIDECategory.TAMPERING, title="t", description="",
+        asset_at_risk="a", attack_vector="tamper the input of validate_username",
+        trust_boundary_crossed="b", severity=FindingSeverity.HIGH,
+        attack_scenario="no other symbol is named in the scenario", test_verification_goal=""
+    )
+    # Whole-word matching: only validate_username is named; "user" inside "username" must not
+    # drag in get_user, and unnamed symbols stay out.
+    symbols = [sym("get_user"), sym("validate_username"), sym("process_payment")]
+    context = ThreatScenarioBuilder._code_context(threat, symbols, root_dir=".")
+    assert "Symbol: validate_username" in context
+    assert "Symbol: get_user" not in context
+    assert "Symbol: process_payment" not in context
+
+
 def test_report_poc_fence_widens_when_code_contains_fences(tmp_path):
     from core.models import (
         ThreatModelReport, VibeHarnessSummary, TestExecutionResult, TestStatus,
@@ -509,6 +584,28 @@ def test_report_poc_fence_widens_when_code_contains_fences(tmp_path):
                                      assets=[], threats=[threat])
     md = ReportGenerator().generate_markdown_report(summary, debate, threat_model, [], bb, "app")
     assert "````python" in md
+
+
+def test_report_flags_unknown_status_and_coerces_list_fields():
+    from core.models import (
+        ThreatModelReport, VibeHarnessSummary, MultiModelDebateResult,
+    )
+    from reports.report_generator import ReportGenerator
+    summary = VibeHarnessSummary(
+        overall_status="MYSTERY_STATUS", total_whitebox_findings=0, confirmed_whitebox_bugs=0,
+        whitebox_tests_passed=0, whitebox_tests_failed=0, total_threats_modeled=0,
+        critical_threats_count=0, blackbox_tests_passed=0, blackbox_security_breaches=0
+    )
+    threat_model = ThreatModelReport(
+        system_description="", entrypoints=[], trust_boundaries=[], assets=[], threats=[]
+    ).model_copy(update={"entrypoints": "/api/users"})  # bypass validation: stray string from a model
+    md = ReportGenerator().generate_markdown_report(summary, MultiModelDebateResult(consensus_summary=""),
+                                                    threat_model, [], [], "app")
+    # An unrecognized verdict must be flagged as unknown, not shown as BLOCKED
+    assert "UNKNOWN STATUS: `MYSTERY_STATUS`" in md
+    # A stray string renders as one item, not character by character
+    assert "`/api/users`" in md
+    assert "`/, /a/p/i//u/s/e/r/s`" not in md
 
 
 def test_ast_extractor_includes_decorated_class_and_star_args(tmp_path):

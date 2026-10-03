@@ -90,10 +90,12 @@ class HeterogeneousReviewerEnsemble:
                     severity = _DEFAULT_SEVERITY
 
                 symbol = self._match_symbol(item.get("symbol_name"), batch)
-                counters[model_alias] = counters.get(model_alias, 0) + 1
+                # Counters are keyed per reviewer agent, so two agents sharing a model_alias
+                # still generate distinct finding ids
+                counters[reviewer["agent_id"]] = counters.get(reviewer["agent_id"], 0) + 1
                 try:
                     all_findings.append(ReviewFinding(
-                        finding_id=f"WB-{model_alias[:3].upper()}-{counters[model_alias]:02d}",
+                        finding_id=f"WB-{model_alias[:3].upper()}-{counters[reviewer['agent_id']]:02d}",
                         reviewer_name=reviewer["name"],
                         model_alias=model_alias,
                         file_path=symbol.file_path if symbol else "unknown",
@@ -110,7 +112,18 @@ class HeterogeneousReviewerEnsemble:
                 except ValidationError as e:
                     logger.warning(f"Skipping unusable finding from {reviewer['name']}: {e}")
 
-        return all_findings
+        return self._unique_finding_ids(all_findings)
+
+    @staticmethod
+    def _unique_finding_ids(findings: List[ReviewFinding]) -> List[ReviewFinding]:
+        """Disambiguates duplicate ids (e.g. two reviewer agents configured with the same model_alias)."""
+        seen: Dict[str, int] = {}
+        unique = []
+        for f in findings:
+            count = seen.get(f.finding_id, 0) + 1
+            seen[f.finding_id] = count
+            unique.append(f if count == 1 else f.model_copy(update={"finding_id": f"{f.finding_id}-{count}"}))
+        return unique
 
     def _review_batch(self, reviewer: Dict[str, str], batch: List[CodeSymbol], root: str):
         name = reviewer["name"]
@@ -148,10 +161,17 @@ class HeterogeneousReviewerEnsemble:
 
     @staticmethod
     def _match_symbol(name: Any, batch: List[CodeSymbol]) -> Optional[CodeSymbol]:
-        """Resolves the model-reported symbol name; findings that name no symbol fall back to the batch's first one."""
+        """Resolves the model-reported symbol name: exact matches win over short-name suffix matches.
+
+        A finding that names no symbol is deliberately left unresolved (None) — silently attaching
+        it to the batch's first symbol gave generic findings a concrete file/symbol that then drove
+        targeted test generation at the wrong place.
+        """
         if isinstance(name, str) and name:
             for sym in batch:
-                if sym.name == name or sym.name.split(".")[-1] == name:
+                if sym.name == name:
                     return sym
-            return None
-        return batch[0] if batch else None
+            for sym in batch:
+                if sym.name.split(".")[-1] == name:
+                    return sym
+        return None

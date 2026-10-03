@@ -36,8 +36,9 @@ def test_same_defect_from_three_models_is_merged_keeping_highest_severity():
     assert len(merged) == 1
     assert merged[0].finding_id == "WB-NEM-01"
     assert merged[0].severity == FindingSeverity.CRITICAL
-    assert merged[0].corroborated_by == ["Claude", "ChatGPT"]
-    assert merged[0].merged_finding_ids == ["WB-CLA-01", "WB-CHA-01"]
+    # Sorted lists: the merged record is independent of reporting order
+    assert merged[0].corroborated_by == ["ChatGPT", "Claude"]
+    assert merged[0].merged_finding_ids == ["WB-CHA-01", "WB-CLA-01"]
 
 
 def test_distinct_defects_on_the_same_symbol_are_kept():
@@ -65,6 +66,30 @@ def test_unattributed_findings_merge_only_on_identical_title():
     merged = deduplicate_findings(findings)
     assert [f.finding_id for f in merged] == ["A", "C"]
     assert merged[0].corroborated_by == ["ChatGPT"]
+
+
+def test_plural_stems_are_handled_without_mangling():
+    from agents.whitebox.deduplicator import _stem
+    assert _stem("classes") == "class"
+    assert _stem("labels") == "label"
+    assert _stem("address") == "address"   # ends in 'ss' — no strip
+    assert _stem("virus") == "virus"       # ends in 'us'
+    assert _stem("analysis") == "analysis" # ends in 'is'
+    assert _stem("vulnerabilities") == "vulnerability"
+    # words of four characters or fewer are left alone (matches the historical len > 4 rule)
+    assert _stem("keys") == "keys"
+
+
+def test_clustering_is_transitive_and_order_independent():
+    """A~B, B~C must land in one cluster whichever order the models report in."""
+    def make(fid, reviewer):
+        return _finding(fid, reviewer, "Unhandled KeyError when order id is absent", "dict access order['id']")
+    forward = deduplicate_findings([make("A", "Claude"), make("B", "Nemotron"), make("C", "ChatGPT")])
+    reversed_ = deduplicate_findings([make("C", "ChatGPT"), make("B", "Nemotron"), make("A", "Claude")])
+    assert len(forward) == 1 and len(reversed_) == 1
+    # Tie on severity: the finding_id decides, not arrival order
+    assert forward[0].finding_id == reversed_[0].finding_id == "A"
+    assert forward[0].corroborated_by == reversed_[0].corroborated_by
 
 
 # --- Token budget --------------------------------------------------------------------
@@ -171,3 +196,62 @@ def test_debater_listing_keeps_short_fields_intact():
     listing = debater._build_listing(findings, [0, 1, 2])
     assert "(truncated)" not in listing
     assert "defect 2" in listing
+
+
+# --- Symbol matching and finding ids ---------------------------------------------------
+
+def test_match_symbol_prefers_exact_and_never_guesses_for_unnamed_findings(tmp_path):
+    from core.models import CodeSymbol
+
+    def sym(name):
+        return CodeSymbol(name=name, symbol_type="function", file_path="app.py",
+                          line_start=1, line_end=2, signature=name, source_code="pass")
+    batch = [sym("Cart.total"), sym("Payment.total")]
+    match = HeterogeneousReviewerEnsemble._match_symbol
+    # Exact name beats short-name suffix: "Cart.total" must not match the wrong .total
+    assert match("Cart.total", batch).name == "Cart.total"
+    assert match("total", batch).name == "Cart.total"  # first suffix match, documented behaviour
+    # An unnamed finding is left unresolved instead of being pinned to the batch's first symbol
+    assert match(None, batch) is None
+    assert match("", batch) is None
+
+
+def test_finding_ids_stay_unique_when_two_agents_share_a_model_alias(fake_live):
+    from core.models import CodeSymbol
+    import json as jsonlib
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        sym = CodeSymbol(
+            name="handler", symbol_type="function", file_path="app.py",
+            line_start=1, line_end=2, signature="handler()", source_code="def handler():\n    return 1\n"
+        )
+        fake_live(lambda s, u: jsonlib.dumps({"findings": [
+            {"symbol_name": "handler", "severity": "HIGH", "title": "x"},
+            {"symbol_name": "handler", "severity": "HIGH", "title": "y"},
+        ]}))
+        ensemble = HeterogeneousReviewerEnsemble(LLMGateway(CONFIG, execution_mode="live"))
+        # Both reviewers point at the same model alias; ids must not collide
+        ensemble.reviewer_agents = [
+            {"agent_id": "whitebox_reviewer_claude", "model_alias": "claude", "name": "R1", "focus": "f"},
+            {"agent_id": "whitebox_reviewer_nemotron", "model_alias": "claude", "name": "R2", "focus": "f"},
+        ]
+        findings = ensemble.review_symbols([sym], root_dir=td)
+        ids = [f.finding_id for f in findings]
+        assert len(ids) == len(set(ids)) == 4
+
+
+def test_render_symbols_truncates_instead_of_omitting_when_it_fits(tmp_path):
+    f = tmp_path / "mod.py"
+    f.write_text(
+        "def small():\n    return 1\n\ndef medium():\n" + "    x = 'filler'\n" * 60 + "    return x\n",
+        encoding="utf-8"
+    )
+    symbols = ASTExtractor().parse_file(str(f))
+    small, medium = symbols
+    budget = estimate_tokens(render_symbols([small], str(tmp_path), max_tokens=10_000)) + 100
+    rendered = render_symbols([small, medium], str(tmp_path), max_tokens=budget)
+    assert "def medium" in rendered            # truncated in, not omitted
+    assert "(truncated)" in rendered
+    assert "omitted" not in rendered
+    assert estimate_tokens(rendered) <= budget
