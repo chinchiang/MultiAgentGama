@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 from typing import Optional, List
 from rich.console import Console
 from rich.panel import Panel
@@ -27,6 +28,24 @@ from reports.report_generator import ReportGenerator
 logger = logging.getLogger("VibeHarness.Commander")
 
 
+def force_utf8_stdio() -> None:
+    """
+    Makes stdout/stderr UTF-8 (replacing unrenderable characters) so emoji, box-drawing and
+    CJK output never crashes or garbles when redirected on Windows (e.g. a cp950 codepage).
+    Idempotent, and a no-op where streams already handle Unicode or cannot be reconfigured.
+    """
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
 class VibeHarnessCommander:
     """
     Commander Harness: Primary AI Orchestrator that directs, schedules,
@@ -34,9 +53,11 @@ class VibeHarnessCommander:
     """
 
     def __init__(self, config_path: str = DEFAULT_CONFIG_PATH, execution_mode: Optional[str] = None):
+        # Protect console output even when the harness is used as a library (main.py does this too)
+        force_utf8_stdio()
         self.console = Console(force_terminal=False)
         self.gateway = LLMGateway(config_path, execution_mode=execution_mode)
-        global_cfg = self.gateway.config.get("global", {})
+        global_cfg = self.gateway.config.get("global") or {}
         self.sandbox = self._build_sandbox(global_cfg)
         self.ast_extractor = ASTExtractor()
         self.multi_reviewer = HeterogeneousReviewerEnsemble(self.gateway)

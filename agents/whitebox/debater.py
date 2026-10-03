@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
 from core.models import ReviewFinding, MultiModelDebateResult, VerificationVote, CodeSymbol
 from core.llm_gateway import LLMGateway
-from core.codecontext import render_symbols
+from core.codecontext import render_symbols, truncate_to_tokens
 
 logger = logging.getLogger("VibeHarness.Debater")
 
@@ -25,6 +25,9 @@ class MultiModelDebater:
 
     FINDINGS_PER_CALL = 15
     CODE_CONTEXT_TOKENS = 8000
+    # Finding text is free-form model output; clip the listing so a verbose finding cannot
+    # blow up the prompt. Worst case is about LISTING_MAX_TOKENS plus per-finding metadata.
+    LISTING_MAX_TOKENS = 6000
     MAX_WORKERS = 6
 
     def __init__(self, gateway: LLMGateway):
@@ -133,14 +136,7 @@ class MultiModelDebater:
         root_dir: Optional[str]
     ) -> Tuple[List[Tuple[int, VerificationVote]], bool]:
         alias = self.verifiers[agent_id]
-        listing = "\n".join(
-            f"[{local}] {findings[i].severity.value} | {findings[i].file_path} :: {findings[i].symbol_name or '-'}\n"
-            f"    Title: {findings[i].title}\n"
-            f"    Description: {findings[i].description}\n"
-            f"    Cause: {findings[i].root_cause}\n"
-            f"    Scenario: {findings[i].suggested_test_scenario}"
-            for local, i in enumerate(idxs)
-        )
+        listing = self._build_listing(findings, idxs)
         system_prompt = (
             f"You are an independent code-review verifier (model: {alias}).\n"
             "Other AI reviewers reported the findings below. You did not write them. For each one, decide from the "
@@ -175,6 +171,24 @@ class MultiModelDebater:
                 model_alias=alias, verdict=verdict, reason=str(item.get("reason") or "")
             )))
         return votes, False
+
+    def _build_listing(self, findings: List[ReviewFinding], idxs: List[int]) -> str:
+        """
+        One block per finding to verify, with every [local] index kept so verdicts still map back.
+        The per-field budget shrinks as the batch grows, keeping the listing within the token budget.
+        """
+        per_field = max(40, self.LISTING_MAX_TOKENS // max(len(idxs) * 4, 1))
+        blocks = []
+        for local, i in enumerate(idxs):
+            f = findings[i]
+            blocks.append(
+                f"[{local}] {f.severity.value} | {f.file_path} :: {f.symbol_name or '-'}\n"
+                f"    Title: {truncate_to_tokens(f.title or '', per_field, marker=' (truncated)')}\n"
+                f"    Description: {truncate_to_tokens(f.description or '', per_field, marker=' (truncated)')}\n"
+                f"    Cause: {truncate_to_tokens(f.root_cause or '', per_field, marker=' (truncated)')}\n"
+                f"    Scenario: {truncate_to_tokens(f.suggested_test_scenario or '', per_field, marker=' (truncated)')}"
+            )
+        return "\n".join(blocks)
 
     def _code_context(
         self,

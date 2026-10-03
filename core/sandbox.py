@@ -105,7 +105,9 @@ class LocalSubprocessSandbox:
             duration = time.time() - start_time
             if returncode is None:
                 self._after_timeout(cmd)
-                return TIMEOUT_EXIT_CODE, stdout, f"Execution timed out after {timeout} seconds.", duration, None, None
+                return TIMEOUT_EXIT_CODE, stdout, (
+                    f"Execution timed out after {timeout} seconds; module(s) attempted: {', '.join(sorted(files))}."
+                ), duration, None, None
 
             coverage_percent = self._extract_coverage_percent(stdout) if collect_coverage else None
             junit_xml = None

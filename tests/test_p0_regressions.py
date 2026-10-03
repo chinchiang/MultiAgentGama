@@ -1,5 +1,6 @@
 """Regression tests for executor correctness, self-healing, and result-provenance honesty."""
 import os
+import sys
 import pytest
 from core.models import GeneratedTest, TestStatus, AgentCallRecord
 from core.llm_gateway import LLMGateway, LLMGatewayError
@@ -129,6 +130,27 @@ def test_simulated_responses_are_flagged_and_logged():
 def test_invalid_execution_mode_rejected():
     with pytest.raises(ValueError):
         LLMGateway(CONFIG, execution_mode="yolo")
+
+
+def test_completion_without_api_key_env_fails_with_actionable_error():
+    gateway = LLMGateway(CONFIG, execution_mode="mock")
+    with pytest.raises(LLMGatewayError, match="api_key_env"):
+        gateway._complete({}, "some-model", [{"role": "user", "content": "hi"}], 0.2)
+
+
+def test_null_config_sections_are_treated_as_empty(tmp_path):
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text("global:\n  execution_mode: mock\nmodels:\nagents:\n", encoding="utf-8")
+    gateway = LLMGateway(str(cfg), execution_mode="mock")
+    assert gateway.models_config == {} and gateway.agents_config == {}
+    resp = gateway.generate("any_agent", "sys", "user")
+    assert gateway.is_simulated(resp)
+
+
+def test_force_utf8_stdio_is_safe_to_call():
+    from core.harness import force_utf8_stdio
+    force_utf8_stdio()  # must not raise on any platform, including pytest's captured streams
+    assert sys.stdout.writable()
 
 
 # --- No hardcoded sample-app tests -------------------------------------------

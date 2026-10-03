@@ -140,3 +140,34 @@ def test_reviewer_batches_by_tokens_and_reviews_every_symbol(fake_live, tmp_path
     assert seen == {f"handler_{i}" for i in range(8)}
     assert not any("omitted" in p for p in prompts)
     assert all(estimate_tokens(p) < 700 for p in prompts)
+
+
+# --- Verifier findings listing stays within its token budget --------------------------------------
+
+def test_debater_listing_clips_fields_and_keeps_every_index():
+    from agents.whitebox.debater import MultiModelDebater
+
+    debater = MultiModelDebater(LLMGateway(CONFIG, execution_mode="mock"))
+    findings = [
+        ReviewFinding(
+            finding_id=f"WB-CLA-{i:02d}", reviewer_name="Claude", model_alias="claude", file_path="app.py",
+            symbol_name="get_order", severity=FindingSeverity.HIGH, title="t" * 5000,
+            description="d" * 5000, root_cause="c" * 5000, suspected_vibe_flaw="",
+            suggested_test_scenario="s" * 5000
+        )
+        for i in range(MultiModelDebater.FINDINGS_PER_CALL)
+    ]
+    listing = debater._build_listing(findings, list(range(len(findings))))
+    assert all(f"[{i}]" in listing for i in range(len(findings)))
+    assert "(truncated)" in listing
+    assert estimate_tokens(listing) <= MultiModelDebater.LISTING_MAX_TOKENS + 1500
+
+
+def test_debater_listing_keeps_short_fields_intact():
+    from agents.whitebox.debater import MultiModelDebater
+
+    debater = MultiModelDebater(LLMGateway(CONFIG, execution_mode="mock"))
+    findings = [_finding(f"WB-CLA-{i:02d}", "Claude", f"defect {i}") for i in range(3)]
+    listing = debater._build_listing(findings, [0, 1, 2])
+    assert "(truncated)" not in listing
+    assert "defect 2" in listing
