@@ -65,8 +65,10 @@ def main():
     )
     parser.add_argument(
         "--base-url", "-u",
-        default="http://localhost:8000",
-        help="Base URL for dynamic black-box testing (default: 'http://localhost:8000')"
+        default=None,
+        help="Base URL of a running instance of the target for live HTTP black-box attacks "
+             "(e.g. 'http://localhost:8000'). Without it, black-box tests import the target in-process; "
+             "a default is never probed, so attacks cannot hit an unrelated local service"
     )
     parser.add_argument(
         "--output", "-o",

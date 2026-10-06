@@ -6,7 +6,7 @@ import urllib.parse
 import urllib.request
 from typing import List, Optional
 import os
-from core.models import ThreatItem, GeneratedTest, CodeSymbol
+from core.models import ThreatItem, GeneratedTest, CodeSymbol, text_or
 from core.llm_gateway import LLMGateway
 from core.codecheck import check_test_code, strip_code_fences
 from core.codecontext import render_symbols, import_instructions
@@ -91,16 +91,18 @@ class ThreatScenarioBuilder:
     def build_test_cases_from_threats(
         self,
         threats: List[ThreatItem],
-        base_url: str = "http://localhost:8000",
+        base_url: Optional[str] = None,
         symbols: Optional[List[CodeSymbol]] = None,
         root_dir: Optional[str] = None
     ) -> List[GeneratedTest]:
         if not threats:
             return []
 
-        server_is_live = self.check_server_live(base_url)
+        # Live HTTP attacks only run against a URL the user named explicitly: probing a default
+        # (e.g. localhost:8000) would aim attack scripts at whatever unrelated service listens there
+        server_is_live = self.check_server_live(base_url) if base_url else False
         mode_label = "Live HTTP" if server_is_live else "In-Process Contract"
-        logger.info(f"Synthesizing threat test cases in [{mode_label}] mode against: {base_url}")
+        logger.info(f"Synthesizing threat test cases in [{mode_label}] mode against: {base_url or 'the imported target'}")
         if server_is_live:
             mode_rules = (
                 f"Send real HTTP requests to {base_url} using only the standard library (urllib.request) "
@@ -137,7 +139,7 @@ class ThreatScenarioBuilder:
             )
 
             user_prompt = (
-                f"Target Base URL: {base_url}\n"
+                f"Target Base URL: {base_url or 'none (in-process only)'}\n"
                 f"Server Live Status: {server_is_live}\n"
                 f"Threat ID: {threat.threat_id}\n"
                 f"STRIDE Category: {threat.stride_category.value}\n"
@@ -160,7 +162,7 @@ class ThreatScenarioBuilder:
                 logger.warning(f"No executable test synthesized for [{threat.threat_id}]; threat remains untested.")
                 continue
             if server_is_live:
-                offenders = self._hosts_outside_base_url(code_str, base_url)
+                offenders = self._hosts_outside_base_url(code_str, base_url or "")
                 if offenders:
                     logger.warning(
                         f"Synthesized test for [{threat.threat_id}] targets non-target host(s) "
@@ -176,10 +178,10 @@ class ThreatScenarioBuilder:
                 test_id=f"BB-TEST-{threat.threat_id}",
                 test_type="blackbox_security",
                 target_component=threat.attack_vector,
-                title=resp.get("title", f"Security test for {threat.title}"),
+                title=text_or(resp.get("title"), f"Security test for {threat.title}"),
                 code=code_str,
-                rationale=resp.get("rationale", threat.attack_scenario),
-                expected_outcome=resp.get("expected_outcome", threat.test_verification_goal),
+                rationale=text_or(resp.get("rationale"), threat.attack_scenario),
+                expected_outcome=text_or(resp.get("expected_outcome"), threat.test_verification_goal),
                 source_ref=threat.threat_id
             ))
 

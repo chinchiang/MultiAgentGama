@@ -38,6 +38,13 @@ jobs:
         run: |
           pip install dist/*.whl
           vibeharness --version
+          # Run a real (mock-mode) audit from outside the checkout, so the installed package must
+          # find its own bundled config; verdict exit codes 0-3 are fine, 4/5 mean a broken install
+          mkdir -p "$RUNNER_TEMP/smoke" && cp examples/vibe_sample_app.py "$RUNNER_TEMP/smoke/"
+          cd "$RUNNER_TEMP/smoke"
+          set +e; vibeharness --target . --mode mock -o report.md; rc=$?; set -e
+          if [ "$rc" -gt 3 ]; then echo "::error::installed wheel failed to run (exit $rc)"; exit 1; fi
+          test -s report.md
 
       - name: Create release (if missing) and upload artifacts
         env:

@@ -132,7 +132,7 @@ class LocalSubprocessSandbox:
         start_time = time.time()
         try:
             cmd, cwd, env = self._build_command(
-                run_dir, list(files), base_dir, collect_coverage, coverage_target, custom_env
+                run_dir, list(files), base_dir, collect_coverage, coverage_target, custom_env, timeout
             )
             returncode, stdout, stderr = self._run(cmd, cwd=cwd, env=env, timeout=timeout)
             duration = time.time() - start_time
@@ -166,7 +166,8 @@ class LocalSubprocessSandbox:
         base_dir: str,
         collect_coverage: bool,
         coverage_target: Optional[str],
-        custom_env: Optional[Dict[str, str]]
+        custom_env: Optional[Dict[str, str]],
+        timeout_seconds: Optional[int] = None
     ) -> Tuple[List[str], str, Dict[str, str]]:
         """Returns (command, cwd, env) for one pytest run over the modules in run_dir."""
         # Inject paths into PYTHONPATH to resolve target modules reliably
@@ -404,7 +405,8 @@ class DockerSandbox(LocalSubprocessSandbox):
         base_dir: str,
         collect_coverage: bool,
         coverage_target: Optional[str],
-        custom_env: Optional[Dict[str, str]]
+        custom_env: Optional[Dict[str, str]],
+        timeout_seconds: Optional[int] = None
     ) -> Tuple[List[str], str, Dict[str, str]]:
         target = container_target_dir(base_dir)
         env = {
@@ -423,6 +425,7 @@ class DockerSandbox(LocalSubprocessSandbox):
 
         # `timeout` is the in-container backstop: if the host-side cleanup (docker rm -f) ever
         # fails, pytest still dies instead of running forever. Its 124 exit matches TIMEOUT_EXIT_CODE.
+        # It uses this run's own budget: a per-test rerun must not get the whole batch budget.
         cmd = [
             self.docker, "run", "--rm",
             "--name", f"vibeharness-{uuid.uuid4().hex[:12]}",
@@ -441,7 +444,7 @@ class DockerSandbox(LocalSubprocessSandbox):
         ]
         for key, value in env.items():
             cmd += ["-e", f"{key}={value}"]
-        cmd += [self.image, "timeout", "--kill-after=5", str(self.timeout_seconds),
+        cmd += [self.image, "timeout", "--kill-after=5", str(timeout_seconds or self.timeout_seconds),
                 "python", "-m", "pytest", *[f"{CONTAINER_RUN_DIR}/{f}" for f in filenames]]
         cmd += self._pytest_options(CONTAINER_RUN_DIR, f"{CONTAINER_RUN_DIR}/junit.xml")
         if collect_coverage:

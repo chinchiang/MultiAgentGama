@@ -24,6 +24,27 @@ jobs:
       - run: ruff check .
       - run: mypy core/ agents/ runners/ reports/ main.py
 
+  # The installed wheel must run without the source checkout (it once shipped without config/*.yaml)
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build
+      - run: python -m build --wheel
+      - name: Install the wheel and run a mock audit outside the checkout
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install dist/*.whl
+          mkdir -p "$RUNNER_TEMP/smoke" && cp examples/vibe_sample_app.py "$RUNNER_TEMP/smoke/"
+          cd "$RUNNER_TEMP/smoke"
+          set +e; "$RUNNER_TEMP/venv/bin/vibeharness" --target . --mode mock -o report.md; rc=$?; set -e
+          if [ "$rc" -gt 3 ]; then echo "::error::installed wheel failed to run (exit $rc)"; exit 1; fi
+          test -s report.md
+
   test:
     strategy:
       fail-fast: false

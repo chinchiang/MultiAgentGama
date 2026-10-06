@@ -3,7 +3,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any, Optional
 from pydantic import ValidationError
-from core.models import CodeSymbol, ReviewFinding, FindingSeverity
+from core.models import CodeSymbol, ReviewFinding, FindingSeverity, text_or
 from core.llm_gateway import LLMGateway, LLMGatewayError
 from core.codecontext import render_symbols, batch_symbols
 
@@ -82,6 +82,10 @@ class HeterogeneousReviewerEnsemble:
             for item in raw_findings:
                 if not isinstance(item, dict):
                     continue
+                if not text_or(item.get("title"), "") and not text_or(item.get("description"), ""):
+                    # Nothing a verifier or test generator could act on
+                    logger.warning(f"Skipping finding without a usable title or description from {reviewer['name']}")
+                    continue
                 severity_str = str(item.get("severity", "MEDIUM")).upper()
                 try:
                     severity = FindingSeverity(severity_str)
@@ -89,7 +93,8 @@ class HeterogeneousReviewerEnsemble:
                     logger.warning(f"Unknown severity '{severity_str.strip()}' from {reviewer['name']}; using MEDIUM")
                     severity = _DEFAULT_SEVERITY
 
-                symbol = self._match_symbol(item.get("symbol_name"), batch)
+                reported_symbol = item.get("symbol_name") if isinstance(item.get("symbol_name"), str) else None
+                symbol = self._match_symbol(reported_symbol, batch)
                 # Counters are keyed per reviewer agent, so two agents sharing a model_alias
                 # still generate distinct finding ids
                 counters[reviewer["agent_id"]] = counters.get(reviewer["agent_id"], 0) + 1
@@ -99,14 +104,14 @@ class HeterogeneousReviewerEnsemble:
                         reviewer_name=reviewer["name"],
                         model_alias=model_alias,
                         file_path=symbol.file_path if symbol else "unknown",
-                        symbol_name=symbol.name if symbol else item.get("symbol_name"),
+                        symbol_name=symbol.name if symbol else reported_symbol,
                         line_number=symbol.line_start if symbol else None,
                         severity=severity,
-                        title=item.get("title", "Potential Defect"),
-                        description=item.get("description", ""),
-                        root_cause=item.get("root_cause", ""),
-                        suspected_vibe_flaw=item.get("suspected_vibe_flaw", ""),
-                        suggested_test_scenario=item.get("suggested_test_scenario", ""),
+                        title=text_or(item.get("title"), "Potential Defect"),
+                        description=text_or(item.get("description"), ""),
+                        root_cause=text_or(item.get("root_cause"), ""),
+                        suspected_vibe_flaw=text_or(item.get("suspected_vibe_flaw"), ""),
+                        suggested_test_scenario=text_or(item.get("suggested_test_scenario"), ""),
                         is_simulated=simulated
                     ))
                 except ValidationError as e:

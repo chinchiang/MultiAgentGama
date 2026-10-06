@@ -163,15 +163,27 @@ class MultiModelDebater:
         for item in raw_verdicts:
             if not isinstance(item, dict):
                 continue
-            local, verdict = item.get("index"), str(item.get("verdict", "")).lower()
+            local, verdict = self._parse_index(item.get("index")), str(item.get("verdict", "")).strip().lower()
             # Out-of-range, duplicate or unknown rulings are ignored rather than guessed at
-            if not isinstance(local, int) or not 0 <= local < len(idxs) or local in seen or verdict not in _VERDICTS:
+            if local is None or not 0 <= local < len(idxs) or local in seen or verdict not in _VERDICTS:
                 continue
             seen.add(local)
             votes.append((idxs[local], VerificationVote(
                 model_alias=alias, verdict=verdict, reason=str(item.get("reason") or "")
             )))
         return votes, False
+
+    @staticmethod
+    def _parse_index(value: object) -> Optional[int]:
+        """The listing index a verdict refers to. Models often quote numbers ("0"), which used to
+        discard the vote silently; booleans are not indices even though bool subclasses int."""
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+        return None
 
     def _build_listing(self, findings: List[ReviewFinding], idxs: List[int]) -> str:
         """

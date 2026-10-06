@@ -4,6 +4,13 @@ from pydantic import BaseModel, Field
 from enum import Enum
 
 
+def text_or(value: object, default: str) -> str:
+    """A free-text field from model output: non-blank strings pass, anything else (None, numbers,
+    objects, blank) becomes the default. `dict.get(key, default)` alone is not enough, because a
+    model answering `"title": null` yields None, which these str-typed models then reject."""
+    return value if isinstance(value, str) and value.strip() else default
+
+
 class FindingSeverity(str, Enum):
     CRITICAL = "CRITICAL"
     HIGH = "HIGH"

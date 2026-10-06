@@ -4,6 +4,27 @@
 
 本專案所有重要變更都會記錄在本檔案。格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)，版本遵循[語意化版本](https://semver.org/lang/zh-TW/)。
 
+## [Unreleased]
+
+深度審查後的打包、模型輸出韌性、執行正確性與 SARIF 修正。
+
+### 修正
+- **安裝後無法執行**：wheel 先前未包含 `config/agents_config.yaml`／`threat_rules.yaml`，`pip install` 後的 `vibeharness` 一律以「Agent config not found」失敗（exit 5）；現在隨套件安裝。threat rules 缺失或損壞時改為記警告而非靜默略過
+- **模型回傳 `null` 欄位導致整個 pipeline 崩潰**：測試產生器與攻擊腳本合成器遇到 `"title": null` 等非字串欄位時會丟 `ValidationError`；現在一律退回預設值。reviewer 欄位同樣容錯，只有標題與描述皆不可用的 finding 才捨棄
+- **`from __future__` 匯入的生成測試一律 ERROR**：harness 標頭改插在 docstring／`__future__` 匯入之後
+- **跨批次威脅未去重**：同一威脅（STRIDE 分類＋標題＋攻擊向量，正規化後相同）只保留一筆並取最高 severity，不再每批重複合成與執行同一個攻擊
+- **離線 probe 會呼叫無必填參數的函式**：`main()`、`run_server()` 這類函式不再被 probe 執行（過去會觸發真實副作用或卡到逾時）
+- **黑箱測試不再自動探測 `localhost:8000`**：`--base-url` 預設改為無；只有明確指定時才進入 Live HTTP 模式，避免攻擊腳本打到本機無關服務
+- **白箱誤判**：生成測試以錯誤簽名呼叫目標（`TypeError` 且發生在測試模組本身）改判為 ERROR，不再算成目標缺陷而給出 NEEDS_FIXES
+- **SARIF**：不再輸出 `"locations": null`；無法歸屬的 finding（`unknown`）不再產生假 URI；URI 以 git repo 根目錄為基準；規則 id 改為固定值、指紋對大小寫與標點不敏感；黑箱突破盡量帶上被攻擊符號的位置
+- **Docker 沙盒**：容器內 `timeout` 兜底改用該次執行的預算（逐一重跑時為單測預算，而非整批預算）
+- **交叉驗證**：接受字串形式的 index（`"0"`），拒絕布林值（`True` 過去會被當成 1）
+
+### 工程
+- CI 新增 `package` job，`publish` 的 smoke test 也改為：建置 wheel、在 checkout 之外安裝並實際以 mock 模式跑一次稽核
+- `pyproject.toml` 依賴上界與 `requirements.txt` 對齊（`pydantic<3`、`litellm<2`）
+- 新增 `tests/test_quality_fixes.py`（每項修正皆有 regression test，且已確認在修正前會失敗）
+
 ## [0.1.2] - 2026-10-03
 
 深度審查後的正確性、誠實性與工程基礎建設總整理（PR #13、#14、#15、#16）。
