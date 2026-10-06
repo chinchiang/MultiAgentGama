@@ -6,7 +6,12 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
-Packaging, model-output robustness, execution correctness and SARIF fixes from a deep review.
+Packaging, model-output robustness, execution correctness and SARIF fixes from a deep review, plus parallel test synthesis and a cost guard.
+
+### Added
+- **Parallel white-box test generation and black-box attack synthesis**: model calls fan out on a thread pool like the review/verification phases, with deterministic output order (test ids, reports); one failing finding/threat no longer takes down the others (live mode still fails loudly)
+- **`max_model_calls` cost guard** (CLI `--max-model-calls`): caps real model invocations per run, exact under concurrency; when exhausted, hybrid falls back to simulation and lists an evidence gap (never `READY_TO_SHIP`), live fails
+- **Tunable limits**: `max_concurrent_calls` (parallelism) and `max_files` (CLI `--max-files`, previously hard-coded to 50)
 
 ### Fixed
 - **Installed package could not run**: the wheel did not ship `config/agents_config.yaml` / `threat_rules.yaml`, so a `pip install`ed `vibeharness` always failed with "Agent config not found" (exit 5); they are now installed with the package. Missing or broken threat rules now log a warning instead of being skipped silently

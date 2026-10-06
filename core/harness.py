@@ -15,7 +15,7 @@ from core.models import (
 )
 from core.llm_gateway import LLMGateway, DEFAULT_CONFIG_PATH
 from core.sandbox import LocalSubprocessSandbox, DockerSandbox, DEFAULT_DOCKER_IMAGE
-from agents.whitebox.ast_extractor import ASTExtractor
+from agents.whitebox.ast_extractor import ASTExtractor, DEFAULT_MAX_FILES
 from agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
 from agents.whitebox.debater import MultiModelDebater
 from agents.whitebox.deduplicator import deduplicate_findings
@@ -69,6 +69,7 @@ class VibeHarnessCommander:
             self.sandbox, per_test_timeout_seconds=int(global_cfg.get("per_test_timeout_seconds", 30))
         )
         self.reporter = ReportGenerator()
+        self.max_files = int(global_cfg.get("max_files") or DEFAULT_MAX_FILES)
 
     @staticmethod
     def _build_sandbox(global_cfg: dict) -> LocalSubprocessSandbox:
@@ -124,7 +125,7 @@ class VibeHarnessCommander:
         self.console.print("\n[bold blue]=== Phase 1: AST Ingestion & Semantic Extraction ===[/bold blue]")
         # A single-file target runs its tests from the containing directory
         work_dir = target_dir if os.path.isdir(target_dir) else os.path.dirname(os.path.abspath(target_dir))
-        symbols = self.ast_extractor.parse_directory(target_dir)
+        symbols = self.ast_extractor.parse_directory(target_dir, max_files=self.max_files)
         routes = [s.name for s in symbols if s.symbol_type == "route"]
         detected_langs = list(self.ast_extractor.detected_languages) or ["Python"]
         lang_str = ", ".join(detected_langs)
@@ -232,6 +233,12 @@ class VibeHarnessCommander:
 
         # Evidence gaps that forbid a READY_TO_SHIP verdict
         inconclusive_reasons: List[str] = []
+        budget_hits = self.gateway.budget_exhausted_calls
+        if budget_hits:
+            inconclusive_reasons.append(
+                f"The max_model_calls budget ({self.gateway.max_model_calls}) was exhausted; "
+                f"{len(budget_hits)} later agent call(s) used the simulation engine instead of a real model"
+            )
         if self.gateway.used_simulation:
             simulated_agents = sorted({rec.agent_id for rec in self.gateway.call_log if rec.mode == "simulated"})
             inconclusive_reasons.append(f"Simulation engine (not real models) was used for: {', '.join(simulated_agents)}")
@@ -255,7 +262,7 @@ class VibeHarnessCommander:
             )
         if self.ast_extractor.skipped_files:
             inconclusive_reasons.append(
-                f"{len(self.ast_extractor.skipped_files)} source file(s) were skipped by the max_files limit"
+                f"{len(self.ast_extractor.skipped_files)} source file(s) were skipped by the max_files limit ({self.max_files})"
             )
         if wb_errored or bb_errored:
             inconclusive_reasons.append(f"{wb_errored + bb_errored} generated test(s) errored, were skipped, or did not run")

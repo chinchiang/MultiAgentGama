@@ -28,7 +28,6 @@ class MultiModelDebater:
     # Finding text is free-form model output; clip the listing so a verbose finding cannot
     # blow up the prompt. Worst case is about LISTING_MAX_TOKENS plus per-finding metadata.
     LISTING_MAX_TOKENS = 6000
-    MAX_WORKERS = 6
 
     def __init__(self, gateway: LLMGateway):
         self.gateway = gateway
@@ -71,7 +70,7 @@ class MultiModelDebater:
         }
         any_simulated = False
         if jobs:
-            with ThreadPoolExecutor(max_workers=min(self.MAX_WORKERS, len(jobs))) as pool:
+            with ThreadPoolExecutor(max_workers=min(self.gateway.max_concurrent_calls, len(jobs))) as pool:
                 results = list(pool.map(lambda job: self._verify(job[0], findings, job[1], symbols, root_dir), jobs))
             for job_votes, simulated in results:
                 any_simulated = any_simulated or simulated

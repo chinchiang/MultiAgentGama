@@ -6,6 +6,10 @@ global:
   timeout_seconds: 60             # per LLM request
   max_retries: 2                  # LLM request retries before falling back to fallback_model
   max_output_tokens: 4096         # per LLM response
+  max_model_calls: null           # cost guard: live model invocations per run (null = unlimited); when exhausted,
+                                  # hybrid falls back to simulation (never READY_TO_SHIP), live fails
+  max_concurrent_calls: 6         # parallel model calls per agent phase
+  max_files: 50                   # source files analyzed per run; the rest are reported as skipped
   sandbox_provider: "local_subprocess"  # "local_subprocess" (NOT a security boundary) or "docker" (isolated container); e2b is planned
   # docker provider only; build the image first: docker build -t vibeharness-sandbox:latest -f docker/sandbox.Dockerfile .
   docker_image: "vibeharness-sandbox:latest"  # must contain pytest, pytest-cov and the target's dependencies

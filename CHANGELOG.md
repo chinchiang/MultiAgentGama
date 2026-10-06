@@ -6,7 +6,12 @@
 
 ## [Unreleased]
 
-深度審查後的打包、模型輸出韌性、執行正確性與 SARIF 修正。
+深度審查後的打包、模型輸出韌性、執行正確性與 SARIF 修正，以及測試合成平行化與成本護欄。
+
+### 新增
+- **白箱測試生成與黑箱攻擊合成改為平行**：與審查／驗證階段相同以 thread pool 並行呼叫模型，輸出順序（test id、報告）維持確定；單一 finding／threat 失敗不再拖垮其他項目（live 模式仍大聲失敗）
+- **成本護欄 `max_model_calls`**（CLI `--max-model-calls`）：限制每次執行的真實模型呼叫數，並行下計數精確；用完時 hybrid 退回模擬並列為證據缺口（不會給 `READY_TO_SHIP`）、live 直接失敗
+- **可調整的上限**：`max_concurrent_calls`（並行度）與 `max_files`（CLI `--max-files`，過去寫死 50）
 
 ### 修正
 - **安裝後無法執行**：wheel 先前未包含 `config/agents_config.yaml`／`threat_rules.yaml`，`pip install` 後的 `vibeharness` 一律以「Agent config not found」失敗（exit 5）；現在隨套件安裝。threat rules 缺失或損壞時改為記警告而非靜默略過

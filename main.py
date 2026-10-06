@@ -92,6 +92,18 @@ def main():
         help="Override execution_mode from config: live (real APIs only, fail otherwise), hybrid, or mock"
     )
     parser.add_argument(
+        "--max-files",
+        type=int,
+        default=None,
+        help="Override global.max_files: number of source files analyzed (the rest are reported as skipped)"
+    )
+    parser.add_argument(
+        "--max-model-calls",
+        type=int,
+        default=None,
+        help="Override global.max_model_calls: cost guard on live model invocations per run (0 = unlimited)"
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable debug logging"
@@ -122,8 +134,16 @@ def main():
         print(f"Error: Target path '{target_path}' does not exist.", file=sys.stderr)
         sys.exit(USAGE_ERROR_EXIT_CODE)
 
+    if args.max_files is not None and args.max_files < 1:
+        parser.error("--max-files must be at least 1")
+    if args.max_model_calls is not None and args.max_model_calls < 0:
+        parser.error("--max-model-calls must not be negative")
     try:
         commander = VibeHarnessCommander(config_path=args.config, execution_mode=args.mode)
+        if args.max_files is not None:
+            commander.max_files = args.max_files
+        if args.max_model_calls is not None:
+            commander.gateway.max_model_calls = args.max_model_calls or None
     except (ConfigError, ValueError, SandboxUnavailableError) as e:
         print(f"Error: harness configuration problem: {e}", file=sys.stderr)
         sys.exit(USAGE_ERROR_EXIT_CODE)

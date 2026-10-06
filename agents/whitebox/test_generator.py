@@ -3,9 +3,10 @@ import logging
 import os
 import re
 import textwrap
-from typing import List, Optional, Set
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Optional, Set, Tuple
 from core.models import ReviewFinding, GeneratedTest, CodeSymbol, text_or
-from core.llm_gateway import LLMGateway
+from core.llm_gateway import LLMGateway, LLMGatewayError
 from core.codecheck import check_test_code, strip_code_fences
 from core.codecontext import file_source, fence_language, import_instructions, truncate_to_tokens
 
@@ -41,73 +42,95 @@ class WhiteboxTestGenerator:
         if not findings:
             return []
 
-        generated_tests: List[GeneratedTest] = []
         target_file = symbols[0].file_path if symbols else "main.py"
         root = root_dir or os.path.dirname(os.path.abspath(target_file))
-        needs_probes = False
 
-        for idx, finding in enumerate(findings):
-            system_prompt = (
-                "You are an expert Python QA Engineer and Test Automation Specialist.\n"
-                "Your job is to generate a robust, executable pytest test module that imports the real "
-                "code under test and asserts correct behavior under the specified edge-case scenario.\n"
-                "Rules: import the target exactly as instructed; every test_ function must assert on the "
-                "target's behavior (assert / pytest.raises); a failing assertion must mean the target is defective; "
-                "do not use the network, do not write files outside tmp_path, do not mock the function under test.\n\n"
-                "Respond in JSON format:\n"
-                "{\n"
-                f'  "test_id": "WB-TEST-{idx+1:02d}",\n'
-                '  "title": "Clear description of test purpose",\n'
-                '  "rationale": "Why this test exposes vibe-coding flaws",\n'
-                '  "expected_outcome": "Expected assertion or exception handling",\n'
-                '  "code": "import pytest\\nfrom module import func\\n\\ndef test_something():\\n    with pytest.raises(ValueError):\\n        func(None)"\n'
-                "}"
-            )
+        # Findings are independent, so their generate-validate-heal loops run concurrently;
+        # results are collected in finding order so ids, reports and probes stay deterministic.
+        with ThreadPoolExecutor(max_workers=min(self.gateway.max_concurrent_calls, len(findings))) as pool:
+            futures = [
+                pool.submit(self._tests_for_finding, idx, finding, symbols, root, target_file)
+                for idx, finding in enumerate(findings)
+            ]
+            outcomes = []
+            for finding, future in zip(findings, futures, strict=True):
+                try:
+                    outcomes.append(future.result())
+                except LLMGatewayError:
+                    raise  # strict live mode fails loudly
+                except Exception as e:
+                    logger.error(f"Test generation for {finding.finding_id} failed: {type(e).__name__}: {e}")
+                    outcomes.append(([], False))
 
-            user_prompt = (
-                f"{self._code_context(finding, symbols, root, target_file)}\n\n"
-                f"Finding Title: {finding.title}\n"
-                f"Description: {finding.description}\n"
-                f"Root Cause: {finding.root_cause}\n"
-                f"Suggested Test Scenario: {finding.suggested_test_scenario}\n"
-                f"Produce an executable Pytest unit test."
-            )
-
-            resp = self.gateway.generate("whitebox_test_generator", system_prompt, user_prompt, json_output=True)
-
-            raw_tests = resp.get("tests")
-            tests_data = raw_tests if isinstance(raw_tests, list) else []
-            if not tests_data and isinstance(resp.get("code"), str) and resp["code"].strip():
-                tests_data = [resp]
-            tests_data = [t for t in tests_data if isinstance(t, dict) and text_or(t.get("code"), "")]
-
-            has_valid_test = False
-            for t_idx, t_item in enumerate(tests_data):
-                # Self-healing validation loop; code that stays invalid is kept so it is reported as ERROR
-                validated_code = self._validate_and_heal(t_item["code"], idx + 1)
-                has_valid_test = has_valid_test or check_test_code(validated_code)[0]
-
-                test_id = f"WB-TEST-{idx+1:02d}" + (f"-{t_idx+1}" if len(tests_data) > 1 else "")
-                generated_tests.append(GeneratedTest(
-                    test_id=test_id,
-                    test_type="whitebox_unit",
-                    target_component=finding.symbol_name or target_file,
-                    title=text_or(t_item.get("title"), finding.title),
-                    code=validated_code,
-                    rationale=text_or(t_item.get("rationale"), finding.suggested_test_scenario),
-                    expected_outcome=text_or(t_item.get("expected_outcome"), "Graceful handling without crash"),
-                    source_ref=finding.finding_id
-                ))
-
+        generated_tests: List[GeneratedTest] = []
+        for finding, (tests, has_valid_test) in zip(findings, outcomes, strict=True):
+            generated_tests.extend(tests)
             if not has_valid_test:
                 logger.warning(f"No executable model-generated test for finding {finding.finding_id}; will use target-derived probes.")
-                needs_probes = True
                 self.findings_without_model_tests.append(finding.finding_id)
 
-        if needs_probes:
+        if self.findings_without_model_tests:
             generated_tests.extend(self.build_offline_probes(symbols))
 
         return generated_tests
+
+    def _tests_for_finding(
+        self, idx: int, finding: ReviewFinding, symbols: List[CodeSymbol], root: str, target_file: str
+    ) -> Tuple[List[GeneratedTest], bool]:
+        """Model-generated (and healed) tests for one finding, and whether any of them is executable."""
+        system_prompt = (
+            "You are an expert Python QA Engineer and Test Automation Specialist.\n"
+            "Your job is to generate a robust, executable pytest test module that imports the real "
+            "code under test and asserts correct behavior under the specified edge-case scenario.\n"
+            "Rules: import the target exactly as instructed; every test_ function must assert on the "
+            "target's behavior (assert / pytest.raises); a failing assertion must mean the target is defective; "
+            "do not use the network, do not write files outside tmp_path, do not mock the function under test.\n\n"
+            "Respond in JSON format:\n"
+            "{\n"
+            f'  "test_id": "WB-TEST-{idx+1:02d}",\n'
+            '  "title": "Clear description of test purpose",\n'
+            '  "rationale": "Why this test exposes vibe-coding flaws",\n'
+            '  "expected_outcome": "Expected assertion or exception handling",\n'
+            '  "code": "import pytest\\nfrom module import func\\n\\ndef test_something():\\n    with pytest.raises(ValueError):\\n        func(None)"\n'
+            "}"
+        )
+
+        user_prompt = (
+            f"{self._code_context(finding, symbols, root, target_file)}\n\n"
+            f"Finding Title: {finding.title}\n"
+            f"Description: {finding.description}\n"
+            f"Root Cause: {finding.root_cause}\n"
+            f"Suggested Test Scenario: {finding.suggested_test_scenario}\n"
+            f"Produce an executable Pytest unit test."
+        )
+
+        resp = self.gateway.generate("whitebox_test_generator", system_prompt, user_prompt, json_output=True)
+
+        raw_tests = resp.get("tests")
+        tests_data = raw_tests if isinstance(raw_tests, list) else []
+        if not tests_data and isinstance(resp.get("code"), str) and resp["code"].strip():
+            tests_data = [resp]
+        tests_data = [t for t in tests_data if isinstance(t, dict) and text_or(t.get("code"), "")]
+
+        tests: List[GeneratedTest] = []
+        has_valid_test = False
+        for t_idx, t_item in enumerate(tests_data):
+            # Self-healing validation loop; code that stays invalid is kept so it is reported as ERROR
+            validated_code = self._validate_and_heal(t_item["code"], idx + 1)
+            has_valid_test = has_valid_test or check_test_code(validated_code)[0]
+
+            test_id = f"WB-TEST-{idx+1:02d}" + (f"-{t_idx+1}" if len(tests_data) > 1 else "")
+            tests.append(GeneratedTest(
+                test_id=test_id,
+                test_type="whitebox_unit",
+                target_component=finding.symbol_name or target_file,
+                title=text_or(t_item.get("title"), finding.title),
+                code=validated_code,
+                rationale=text_or(t_item.get("rationale"), finding.suggested_test_scenario),
+                expected_outcome=text_or(t_item.get("expected_outcome"), "Graceful handling without crash"),
+                source_ref=finding.finding_id
+            ))
+        return tests, has_valid_test
 
     def _validate_and_heal(self, code: str, case_index: int, max_retries: int = 2) -> str:
         """
