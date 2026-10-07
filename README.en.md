@@ -198,6 +198,8 @@ python main.py --target examples --output vibe_harness_report.md
 
 `--target` accepts a directory or a single file. Black-box tests import the target in-process by default; they send real HTTP requests only when you pass `--base-url` explicitly (e.g. `--base-url http://localhost:8000`) and a service answers there. No default address is ever probed, so attack scripts cannot hit an unrelated local service. See [`docs/sample_report.md`](docs/sample_report.md) for example output.
 
+Scale and cost limits can be overridden from the CLI: `--max-files` (number of source files analyzed per run, default 50; the rest are reported as skipped) and `--max-model-calls` (cap on model invocations per run, unlimited by default; when exhausted, hybrid falls back to simulation and lists an evidence gap, live fails). See [`docs/configuration.md`](docs/configuration.md).
+
 Report formats: `--format md` (default) or `--format json` (machine-readable, with the complete findings, threat model, and test results — suited to CI/CD):
 
 ```bash
@@ -236,6 +238,14 @@ Exit codes (evaluated in order):
 pip install -r requirements-dev.txt
 python -m pytest
 python -m ruff check .
+python -m mypy core/ agents/ runners/ reports/ main.py
+```
+
+Supply-chain check (the CI `audit` job runs the same command against the locked set; a dependency with a known CVE fails before merge):
+
+```bash
+pip install pip-audit
+python -m pip_audit -r requirements.lock --disable-pip --no-deps
 ```
 
 Optional: install [pre-commit](https://pre-commit.com/) to run ruff automatically before every `git commit`:

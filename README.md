@@ -197,6 +197,8 @@ python main.py --target examples --output vibe_harness_report.md
 
 `--target` 可為目錄或單一檔案。黑箱測試預設以 in-process 方式直接 import 目標呼叫；只有明確指定 `--base-url`（例如 `--base-url http://localhost:8000`）且該位址有服務回應時，才會改發真實 HTTP 請求。不會自動探測任何預設位址，以免攻擊腳本打到本機上無關的服務。範例輸出見 [`docs/sample_report.md`](docs/sample_report.md)。
 
+規模與成本上限可從 CLI 直接覆蓋設定檔：`--max-files`（單次分析的檔案數上限，預設 50，其餘檔案列為 skipped）與 `--max-model-calls`（單次執行的模型呼叫數上限，預設不限制；用完時 hybrid 退回模擬並列為證據缺口、live 直接失敗）。詳見 [`docs/configuration.md`](docs/configuration.md)。
+
 報告格式可用 `--format md`（預設）或 `--format json`（機器可讀，含完整的 findings、威脅模型與測試結果，適合接 CI/CD）：
 
 ```bash
@@ -235,6 +237,14 @@ Exit code（依序判定）：
 pip install -r requirements-dev.txt
 python -m pytest
 python -m ruff check .
+python -m mypy core/ agents/ runners/ reports/ main.py
+```
+
+供應鏈檢查（CI 的 `audit` job 對鎖定版本執行同一指令，含已知 CVE 的依賴會擋在合併前）：
+
+```bash
+pip install pip-audit
+python -m pip_audit -r requirements.lock --disable-pip --no-deps
 ```
 
 可選：安裝 [pre-commit](https://pre-commit.com/) 讓每次 `git commit` 前自動執行 ruff 檢查：

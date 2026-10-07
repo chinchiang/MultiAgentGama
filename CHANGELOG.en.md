@@ -6,7 +6,7 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
-Packaging, model-output robustness, execution correctness and SARIF fixes from a deep review, plus parallel test synthesis and a cost guard; a second verification round adds execution-attribution honesty, gate decoy protection and engineering convergence.
+Packaging, model-output robustness, execution correctness and SARIF fixes from a deep review, plus parallel test synthesis and a cost guard; a second verification round adds execution-attribution honesty, gate decoy protection and engineering convergence; a third hardening round covers stricter mypy, CI supply-chain protection and a higher coverage floor.
 
 ### Added
 - **Parallel white-box test generation and black-box attack synthesis**: model calls fan out on a thread pool like the review/verification phases, with deterministic output order (test ids, reports); one failing finding/threat no longer takes down the others (live mode still fails loudly)
@@ -43,16 +43,23 @@ Packaging, model-output robustness, execution correctness and SARIF fixes from a
 - **Non-Python targets disclosed and guided**: detected JS/TS is listed as an evidence gap (the sandbox only executes Python, so there is no dynamic verification); `import_instructions` for non-.py files state that the file cannot be imported or executed instead of handing out an importlib recipe that cannot work
 - **Misc**: the detected-language list in reports is sorted (deterministic); test-generator self-heal logs identify the finding id instead of an unrelated integer index; the evidence-gap message for clean targets is clearer about which boundaries remain unverified
 
+### Infrastructure
+- New CI `package` job, and the `publish` smoke test now builds the wheel, installs it outside the checkout and runs a real mock-mode audit
+- `pyproject.toml` dependency caps match `requirements.txt` (`pydantic<3`, `litellm<2`)
+- New `tests/test_quality_fixes.py` (a regression test per fix, each verified to fail before the fix)
+
 ### Infrastructure (verification round 2)
 - **Pinned lint tools**: the CI lint job installs from `requirements-dev.txt` (ruff==0.16.10, mypy==2.4.0); the pre-commit ruff hook was aligned and upgraded (v0.6.9 → v0.16.9)
 - **requirements-dev.txt completed**: adds `build` and `pytest-cov` (matching CI)
 - **threat_rules.yaml comments**: documents which fields are functional (fed into prompts) and which are documentation only
 - The CI test job enforces a total coverage floor (`--cov-fail-under`)
 
-### Infrastructure
-- New CI `package` job, and the `publish` smoke test now builds the wheel, installs it outside the checkout and runs a real mock-mode audit
-- `pyproject.toml` dependency caps match `requirements.txt` (`pydantic<3`, `litellm<2`)
-- New `tests/test_quality_fixes.py` (a regression test per fix, each verified to fail before the fix)
+### Infrastructure (hardening round 3)
+- **Stricter mypy**: `check_untyped_defs = true` (type-checks bodies of unannotated functions); `core/sandbox.py` now branches on `sys.platform` so mypy can narrow types — full suite reports 0 errors
+- **CI Actions pinned to commit SHAs**: checkout / setup-python / pypa publish actions all pin the full SHA (tag kept as a comment), so rewritten tags can no longer tamper with CI
+- **Dependency vulnerability audit**: new `audit` job runs pip-audit against the fully resolved `requirements.lock` (on every PR; a dependency bump with a known CVE fails before merge)
+- **Optional PyPI publishing**: the publish workflow gains a `pypi-publish` job that publishes the wheel/sdist via Trusted Publishing (OIDC); it runs only when the repo variable `ENABLE_PYPI_PUBLISH=true` is set, otherwise it is skipped
+- **Coverage floor raised to 93%**: regression tests added for reviewer-ensemble fault tolerance, threat-modeler rules degradation and coverage-table parsing (CI: 209 passed, 93.48% total coverage)
 
 ## [0.1.2] - 2026-10-03
 

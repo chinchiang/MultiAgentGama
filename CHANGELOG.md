@@ -6,7 +6,7 @@
 
 ## [Unreleased]
 
-深度審查後的打包、模型輸出韌性、執行正確性與 SARIF 修正，以及測試合成平行化與成本護欄；第二輪驗證補上執行歸因誠實度、閘門防誘餌與工程收斂。
+深度審查後的打包、模型輸出韌性、執行正確性與 SARIF 修正，以及測試合成平行化與成本護欄；第二輪驗證補上執行歸因誠實度、閘門防誘餌與工程收斂；第三輪強化涵蓋 mypy 加嚴、CI 供應鏈防護與覆蓋率門檻上調。
 
 ### 新增
 - **白箱測試生成與黑箱攻擊合成改為平行**：與審查／驗證階段相同以 thread pool 並行呼叫模型，輸出順序（test id、報告）維持確定；單一 finding／threat 失敗不再拖垮其他項目（live 模式仍大聲失敗）
@@ -53,6 +53,13 @@
 - **requirements-dev.txt 補齊**：加入 `build` 與 `pytest-cov`（與 CI 一致）
 - **threat_rules.yaml 註解**：標明哪些欄位是功能性的（會進 prompt）、哪些僅為文件
 - CI 測試 job 加 coverage 總量門檻（`--cov-fail-under`）
+
+### 工程（第三輪強化）
+- **mypy 檢查加嚴**：`check_untyped_defs = true`（未加註解的函式本體也檢查型別），`core/sandbox.py` 改以 `sys.platform` 判斷讓 mypy 完成窄化，全套 0 錯誤
+- **CI Actions 以 commit SHA 釘版**：checkout／setup-python／pypa publish action 全部改釘完整 SHA（保留 tag 註解），tag 被改寫不再影響 CI
+- **依賴漏洞稽核**：新增 `audit` job，以 pip-audit 掃描 `requirements.lock` 的完整解析結果（每個 PR 都執行，含已知 CVE 的依賴升級會擋在合併前）
+- **選配 PyPI 發布**：publish workflow 新增 `pypi-publish` job，以 Trusted Publishing（OIDC）發布 wheel／sdist；需設定 repo variable `ENABLE_PYPI_PUBLISH=true` 才啟用，未設定時跳過
+- **覆蓋率門檻上調至 93%**：補上 reviewer ensemble 容錯、threat modeler 規則降級與 coverage 表解析的 regression tests（CI 209 passed、總覆蓋率 93.48%）
 
 ## [0.1.2] - 2026-10-03
 
