@@ -6,7 +6,7 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
-Packaging, model-output robustness, execution correctness and SARIF fixes from a deep review, plus parallel test synthesis and a cost guard.
+Packaging, model-output robustness, execution correctness and SARIF fixes from a deep review, plus parallel test synthesis and a cost guard; a second verification round adds execution-attribution honesty, gate decoy protection and engineering convergence.
 
 ### Added
 - **Parallel white-box test generation and black-box attack synthesis**: model calls fan out on a thread pool like the review/verification phases, with deterministic output order (test ids, reports); one failing finding/threat no longer takes down the others (live mode still fails loudly)
@@ -28,6 +28,26 @@ Packaging, model-output robustness, execution correctness and SARIF fixes from a
 - **Docker sandbox**: the in-container `timeout` backstop uses the run's own budget (the per-test budget on reruns, not the whole batch budget)
 - **Cross-verification**: quoted indices (`"0"`) are accepted and booleans rejected (`True` used to count as index 1)
 - **`.gitignore` cleanup**: ignored `.venv/`, `*.sarif`, `report.json`, and cache folders
+
+### Fixed (verification round 2)
+- **Honest executor attribution**: a corrupted / unparseable sandbox junit report is reported as "report could not be parsed" instead of "no tests collected"; per-test rerun parse failures are flagged the same way. A target module that crashes on import (syntax error, missing dependency) is now attributed to the target ("Target code is broken and was never exercised by this test", with the real exception text) instead of blaming the test; the test's own import errors still blame the test; generic failure reasons prefer the pytest traceback `E` line
+- **Parent-directory module shadowing**: the sandbox sys.path puts the target directory first, so a same-named module in a parent directory no longer shadows the module under test
+- **Per-batch verifier isolation**: a non-gateway exception in one cross-verification batch is logged and treated as "no consensus" for that batch instead of aborting arbitration; gateway errors still fail loudly in live mode
+- **Threat-rules degradation**: structurally wrong `stride_categories` / `owasp_api_top10` (nulls, non-strings, non-dict entries) degrade safely to no guidance with a warning instead of raising `AttributeError`
+- **SARIF home-directory guard**: when the user's home directory is itself a git repo (dotfiles), `sarif_root` no longer treats it as the repo root (comparison via `os.path.samefile` + case normalization), so findings are no longer attached to the dotfiles repo
+- **Any-of key validation for LLM responses**: `generate()` accepts `required_keys_any`; the test generator requires `tests` or `code`, so a refusal can no longer silently produce zero tests
+- **URL guard resolves IPv6 and userinfo**: `scenario_builder` now uses `urlsplit().hostname` (`[::1]` and credentials no longer mask the host); unparseable URLs fail closed
+- **Full traceback on crashes**: unexpected CLI exceptions no longer print a bare `type: message` line
+- **Fallback threat ids have no gaps**: model-supplied ids no longer consume the fallback counter, so THREAT-XX numbering stays contiguous
+- **Vacuous-test gate decoys**: an `assert` inside a nested, never-called helper no longer satisfies the gate (only helpers actually invoked count); removed the unused `top_level_test_functions`
+- **Non-Python targets disclosed and guided**: detected JS/TS is listed as an evidence gap (the sandbox only executes Python, so there is no dynamic verification); `import_instructions` for non-.py files state that the file cannot be imported or executed instead of handing out an importlib recipe that cannot work
+- **Misc**: the detected-language list in reports is sorted (deterministic); test-generator self-heal logs identify the finding id instead of an unrelated integer index; the evidence-gap message for clean targets is clearer about which boundaries remain unverified
+
+### Infrastructure (verification round 2)
+- **Pinned lint tools**: the CI lint job installs from `requirements-dev.txt` (ruff==0.16.10, mypy==2.4.0); the pre-commit ruff hook was aligned and upgraded (v0.6.9 → v0.16.9)
+- **requirements-dev.txt completed**: adds `build` and `pytest-cov` (matching CI)
+- **threat_rules.yaml comments**: documents which fields are functional (fed into prompts) and which are documentation only
+- The CI test job enforces a total coverage floor (`--cov-fail-under`)
 
 ### Infrastructure
 - New CI `package` job, and the `publish` smoke test now builds the wheel, installs it outside the checkout and runs a real mock-mode audit

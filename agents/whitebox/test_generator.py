@@ -121,7 +121,7 @@ class WhiteboxTestGenerator:
         has_valid_test = False
         for t_idx, t_item in enumerate(tests_data):
             # Self-healing validation loop; code that stays invalid is kept so it is reported as ERROR
-            validated_code = self._validate_and_heal(t_item["code"], idx + 1)
+            validated_code = self._validate_and_heal(t_item["code"], f"finding {finding.finding_id}")
             has_valid_test = has_valid_test or check_test_code(validated_code)[0]
 
             test_id = f"WB-TEST-{idx+1:02d}" + (f"-{t_idx+1}" if len(tests_data) > 1 else "")
@@ -137,7 +137,7 @@ class WhiteboxTestGenerator:
             ))
         return tests, has_valid_test
 
-    def _validate_and_heal(self, code: str, case_index: int, max_retries: int = 2) -> str:
+    def _validate_and_heal(self, code: str, subject: str, max_retries: int = 2) -> str:
         """
         Validates that the code parses and defines a module-level test_ function.
         On failure, asks the model to repair it. Returns the best available code;
@@ -150,7 +150,7 @@ class WhiteboxTestGenerator:
             is_valid, problem = check_test_code(code_to_check)
             if is_valid:
                 return code_to_check
-            logger.warning(f"Generated test for case {case_index} is invalid (attempt {attempt+1}): {problem}")
+            logger.warning(f"Generated test for {subject} is invalid (attempt {attempt+1}): {problem}")
             if attempt == max_retries:
                 break
             heal_prompt = (

@@ -271,11 +271,13 @@ class AutomatedThreatModeler:
 
             threat_id = item.get("threat_id")
             if not isinstance(threat_id, str) or not threat_id.strip() or threat_id in used_ids:
+                # Only advance the fallback counter when a fallback id is actually consumed,
+                # otherwise model-supplied ids leave gaps in the THREAT-XX sequence.
                 while f"THREAT-{next_fallback:02d}" in used_ids:
                     next_fallback += 1
                 threat_id = f"THREAT-{next_fallback:02d}"
+                next_fallback += 1
             used_ids.add(threat_id)
-            next_fallback += 1
 
             owasp_mapping = item.get("owasp_mapping")
             try:

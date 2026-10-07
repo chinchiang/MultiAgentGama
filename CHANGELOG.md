@@ -6,7 +6,7 @@
 
 ## [Unreleased]
 
-深度審查後的打包、模型輸出韌性、執行正確性與 SARIF 修正，以及測試合成平行化與成本護欄。
+深度審查後的打包、模型輸出韌性、執行正確性與 SARIF 修正，以及測試合成平行化與成本護欄；第二輪驗證補上執行歸因誠實度、閘門防誘餌與工程收斂。
 
 ### 新增
 - **白箱測試生成與黑箱攻擊合成改為平行**：與審查／驗證階段相同以 thread pool 並行呼叫模型，輸出順序（test id、報告）維持確定；單一 finding／threat 失敗不再拖垮其他項目（live 模式仍大聲失敗）
@@ -29,10 +29,30 @@
 - **交叉驗證**：接受字串形式的 index（`"0"`），拒絕布林值（`True` 過去會被當成 1）
 - **`.gitignore` 完善**：補齊 `.venv/`、`*.sarif`、`report.json` 等快取與報告檔案
 
+### 修正（第二輪驗證）
+- **執行器誠實歸因**：沙盒 junit 報告損毀／無法解析時如實回報「report could not be parsed」，不再誤報成「no tests collected」；逐一重跑時的解析失敗同樣如實標記。目標模組 import 即崩潰（語法錯誤、缺失依賴）改為歸因給目標（"Target code is broken and was never exercised by this test"，附真實例外訊息），不再讓測試背黑鍋；測試自身的 import 錯誤仍歸責測試；一般失敗訊息優先取 pytest traceback 的 `E` 行
+- **父目錄同名模組遮蔽目標**：沙盒 sys.path 改為目標目錄優先，父目錄同名模組不再遮蔽被測模組
+- **驗證逐批隔離**：交叉驗證單一批次拋出非閘道例外時記 log 並以「無共識」處理該批，不再中止整個仲裁；閘道錯誤在 live 模式仍大聲失敗
+- **威脅規則降級**：threat_rules.yaml 的 `stride_categories`／`owasp_api_top10` 結構錯誤（null、非字串、非 dict 項目）安全降級為無指引並記警告，不再丟 `AttributeError` 崩潰
+- **SARIF 家目錄防護**：家目錄本身是 git repo（dotfiles）時，`sarif_root` 不再將家目錄當作 repo 根（改以 `os.path.samefile`＋大小寫正規化比較），避免所有 finding 誤掛到 dotfiles repo
+- **LLM 回應 any-of 鍵驗證**：`generate()` 新增 `required_keys_any`，測試生成器要求 `tests` 或 `code` 至少其一，廢話回應不再靜默產出零測試
+- **URL 防護正確解析 IPv6 與 userinfo**：`scenario_builder` 改用 `urlsplit().hostname`（`[::1]`、帶帳密的 URL 不再遮蔽 host），解析失敗一律 fail closed
+- **崩潰時印出完整 traceback**：CLI 非預期例外不再只有 `type: message` 一行
+- **fallback 威脅 id 不再跳號**：模型自帶 id 時不再消耗 fallback 計數器，THREAT-XX 編號連續
+- **空測試閘門防誘餌**：巢狀且從未呼叫的 helper 內之 `assert` 不再算數（僅實際被呼叫的 helper 可滿足閘門）；移除未使用的 `top_level_test_functions`
+- **非 Python 目標的揭露與指引**：偵測到 JS/TS 時列為證據缺口（沙盒只執行 Python，無動態驗證）；`import_instructions` 對非 .py 檔明確告知不可 import／執行，不再給出必敗的 importlib 指引
+- **雜項**：報告的偵測語言清單排序輸出（確定性）；test-generator 自癒日誌以 finding id 標識（過去的整數索引與測試無關）；乾淨目標的證據缺口訊息改寫得更明確（列出哪些邊界未被驗證）
+
 ### 工程
 - CI 新增 `package` job，`publish` 的 smoke test 也改為：建置 wheel、在 checkout 之外安裝並實際以 mock 模式跑一次稽核
 - `pyproject.toml` 依賴上界與 `requirements.txt` 對齊（`pydantic<3`、`litellm<2`）
 - 新增 `tests/test_quality_fixes.py`（每項修正皆有 regression test，且已確認在修正前會失敗）
+
+### 工程（第二輪驗證）
+- **lint 工具釘版**：CI lint job 改從 `requirements-dev.txt` 安裝（ruff==0.16.10、mypy==2.4.0），pre-commit ruff hook 對齊升級（v0.6.9 → v0.16.9）
+- **requirements-dev.txt 補齊**：加入 `build` 與 `pytest-cov`（與 CI 一致）
+- **threat_rules.yaml 註解**：標明哪些欄位是功能性的（會進 prompt）、哪些僅為文件
+- CI 測試 job 加 coverage 總量門檻（`--cov-fail-under`）
 
 ## [0.1.2] - 2026-10-03
 

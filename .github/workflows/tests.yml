@@ -20,7 +20,8 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements.lock
-      - run: python -m pip install ruff mypy
+      # Same pinned lint tools as local development (requirements-dev.txt), not unpinned latest
+      - run: python -m pip install -r requirements-dev.txt
       - run: ruff check .
       - run: mypy core/ agents/ runners/ reports/ main.py
 
@@ -70,4 +71,5 @@ jobs:
           docker build -t vibeharness-sandbox:latest -f docker/sandbox.Dockerfile .
           echo "VIBEHARNESS_REQUIRE_DOCKER=1" >> "$GITHUB_ENV"
       # Hermetic: the suite uses mock mode and a fake litellm, so no API keys are needed
-      - run: python -m pytest -q --cov=core --cov=agents --cov=runners --cov=reports --cov-report=term-missing
+      # Floor is the measured total minus headroom for OS matrix variance; raise as coverage grows
+      - run: python -m pytest -q --cov=core --cov=agents --cov=runners --cov=reports --cov-report=term-missing --cov-fail-under=92

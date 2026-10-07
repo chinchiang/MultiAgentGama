@@ -81,11 +81,11 @@ def test_self_healing_test_generator():
     gen = WhiteboxTestGenerator(gateway)
     # Valid syntax
     code_valid = "def test_ok(): assert 1 == 1"
-    assert gen._validate_and_heal(code_valid, 1) == code_valid
+    assert gen._validate_and_heal(code_valid, "finding WB-F-001") == code_valid
 
     # Unrepairable code is returned as-is (reported as ERROR later), never swapped for a passing no-op
     code_invalid = "def test_broken( invalid syntax here"
-    healed = gen._validate_and_heal(code_invalid, 1)
+    healed = gen._validate_and_heal(code_invalid, "finding WB-F-001")
     assert healed == code_invalid
     assert "pass" not in healed
 

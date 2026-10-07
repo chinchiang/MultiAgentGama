@@ -1,4 +1,10 @@
 -r requirements.txt
-ruff>=0.6.0
-# static type checking, run in CI and locally: mypy core/ agents/ runners/ reports/ main.py
-mypy>=1.10
+# Lint/type tools are pinned so CI (tests.yml lint job), local mypy/ruff runs and
+# .pre-commit-config.yaml all enforce the same rule set; bump deliberately.
+ruff==0.16.10
+# .pre-commit-config.yaml tracks the ruff-pre-commit mirror, whose tag can lag the pin by a patch
+mypy==2.4.0
+# CI runs pytest with --cov=core --cov=agents --cov=runners --cov=reports
+pytest-cov>=7.0
+# Used by the wheel-packaging job in CI and for local release builds
+build>=1.2
