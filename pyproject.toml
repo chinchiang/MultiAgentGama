@@ -21,9 +21,10 @@ classifiers = [
 ]
 # pytest / pytest-cov are runtime dependencies: the sandbox executes generated tests with them
 dependencies = [
-    "pydantic>=2.5.0",
+    "pydantic>=2.5.0,<3.0",
     "pyyaml>=6.0",
-    "litellm>=1.40.0",
+    # litellm is fast-moving with breaking changes between majors: cap it (matches requirements.txt)
+    "litellm>=1.40.0,<2.0",
     # litellm does not pull this in itself; live mode with retries fails without it
     "tenacity>=8.2.0",
     "pytest>=8.0.0",
@@ -43,7 +44,12 @@ py-modules = ["main"]
 version = { attr = "core.__version__" }
 
 [tool.setuptools.packages.find]
-include = ["core*", "agents*", "runners*", "reports*"]
+# `config` is a data-only namespace package: core/llm_gateway.py and the threat modeler resolve their
+# default YAML files relative to the install root, so the wheel must ship config/*.yaml beside core/
+include = ["core*", "agents*", "runners*", "reports*", "config"]
+
+[tool.setuptools.package-data]
+config = ["*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

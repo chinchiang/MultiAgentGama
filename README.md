@@ -195,7 +195,7 @@ docker build -t vibeharness-sandbox:latest -f docker/sandbox.Dockerfile .
 python main.py --target examples --output vibe_harness_report.md
 ```
 
-`--target` 可為目錄或單一檔案。若目標服務正在 `--base-url` 上執行，黑箱測試會發送真實 HTTP 請求；否則以 in-process 方式直接 import 目標呼叫。範例輸出見 [`docs/sample_report.md`](docs/sample_report.md)。
+`--target` 可為目錄或單一檔案。黑箱測試預設以 in-process 方式直接 import 目標呼叫；只有明確指定 `--base-url`（例如 `--base-url http://localhost:8000`）且該位址有服務回應時，才會改發真實 HTTP 請求。不會自動探測任何預設位址，以免攻擊腳本打到本機上無關的服務。範例輸出見 [`docs/sample_report.md`](docs/sample_report.md)。
 
 報告格式可用 `--format md`（預設）或 `--format json`（機器可讀，含完整的 findings、威脅模型與測試結果，適合接 CI/CD）：
 
@@ -203,7 +203,7 @@ python main.py --target examples --output vibe_harness_report.md
 python main.py --target examples --output report.json --format json
 ```
 
-另可加 `--sarif <路徑>` 一併輸出 [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html) 報告：白箱確認的 findings 會帶檔案/行號位置（依 `line_number` 或符號表解析），黑箱確認的資安突破列為 error 級結果。SARIF 可上傳到 GitHub Code Scanning，讓缺陷直接顯示在 repo 的 **Security** 頁籤：
+另可加 `--sarif <路徑>` 一併輸出 [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html) 報告：白箱確認的 findings 會帶檔案/行號位置（依 `line_number` 或符號表解析），黑箱確認的資安突破列為 error 級結果（能從攻擊向量對應到符號時也帶位置）。規則 id 固定為 `vibeharness/whitebox-finding`／`vibeharness/blackbox-breach`，本次執行的 finding／test id 放在 `properties`，因此重新編號不會讓 Code Scanning 的 alert 關掉又重開。SARIF 可上傳到 GitHub Code Scanning，讓缺陷直接顯示在 repo 的 **Security** 頁籤：
 
 ```yaml
 # 目標專案的 .github/workflows/security.yml 範例
@@ -216,7 +216,7 @@ python main.py --target examples --output report.json --format json
     sarif_file: vibeharness.sarif
 ```
 
-> 註：SARIF 中的檔案路徑以 `--target` 目錄為基準做相對化；建議將 `--target` 指向 repo 根目錄，路徑才會與 Code Scanning 的檢視對齊。
+> 註：SARIF 中的檔案路徑以包含 `--target` 的 git repo 根目錄為基準做相對化（找不到 repo 時才以 `--target` 目錄為基準），所以 `--target src` 也會產生 `src/app.py` 這樣與 Code Scanning 對齊的路徑。
 
 Exit code（依序判定）：
 

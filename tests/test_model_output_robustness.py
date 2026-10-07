@@ -263,9 +263,9 @@ def test_probe_fallback_is_disclosed_and_blocks_ready_to_ship(fake_live, tmp_pat
     sarif = json.loads((tmp_path / "r.sarif").read_text(encoding="utf-8"))
     assert sarif["version"] == "2.1.0"
     wb_rules = {r["id"] for r in sarif["runs"][0]["tool"]["driver"]["rules"]}
-    assert "WB-CLA-01" in wb_rules
+    assert "vibeharness/whitebox-finding" in wb_rules
     # The confirmed finding resolves its line from the extracted symbol table
-    wb_result = next(r for r in sarif["runs"][0]["results"] if r["ruleId"] == "WB-CLA-01")
+    wb_result = next(r for r in sarif["runs"][0]["results"] if r["properties"].get("findingId") == "WB-CLA-01")
     assert wb_result["locations"][0]["physicalLocation"]["region"]["startLine"] == 1
     assert wb_result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"].endswith("app.py")
 
@@ -356,9 +356,13 @@ def test_sarif_report_structure_levels_and_locations(tmp_path):
     run = payload["runs"][0]
     assert payload["version"] == "2.1.0"
     assert run["tool"]["driver"]["name"] == "VibeHarness-MAS"
-    # Disputed finding and the defended black-box result are not reported
-    assert [r["ruleId"] for r in run["results"]] == ["WB-CLA-01", "WB-NEM-01", "BB-T1-01"]
-    by_id = {r["ruleId"]: r for r in run["results"]}
+    # Disputed finding and the defended black-box result are not reported; rule ids are stable
+    # across runs and the run-specific ids live in the properties
+    assert [r["ruleId"] for r in run["results"]] == [
+        "vibeharness/whitebox-finding", "vibeharness/whitebox-finding", "vibeharness/blackbox-breach"
+    ]
+    by_id = {r["properties"].get("findingId") or r["properties"]["testId"]: r for r in run["results"]}
+    assert list(by_id) == ["WB-CLA-01", "WB-NEM-01", "BB-T1-01"]
     assert by_id["WB-CLA-01"]["level"] == "error"          # CRITICAL
     assert by_id["WB-NEM-01"]["level"] == "warning"        # MEDIUM
     assert by_id["BB-T1-01"]["level"] == "error"
@@ -369,7 +373,7 @@ def test_sarif_report_structure_levels_and_locations(tmp_path):
     assert loc1["artifactLocation"]["uriBaseId"] == "%SRCROOT%"
     loc2 = by_id["WB-NEM-01"]["locations"][0]["physicalLocation"]
     assert loc2["region"]["startLine"] == 42
-    # Breaches are system-level: no file location, failure reason in the message
+    # The breach's threat names no extracted symbol: no location (omitted, never null)
     assert "locations" not in by_id["BB-T1-01"]
     assert "defense bypassed" in by_id["BB-T1-01"]["message"]["text"]
     # Rules array indices line up with ruleIndex on results

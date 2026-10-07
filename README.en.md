@@ -196,7 +196,7 @@ Set `sandbox_provider: "docker"` in `config/agents_config.yaml`. Tunables: `dock
 python main.py --target examples --output vibe_harness_report.md
 ```
 
-`--target` accepts a directory or a single file. If a service is running at `--base-url`, black-box tests send real HTTP requests; otherwise they import the target in-process. See [`docs/sample_report.md`](docs/sample_report.md) for example output.
+`--target` accepts a directory or a single file. Black-box tests import the target in-process by default; they send real HTTP requests only when you pass `--base-url` explicitly (e.g. `--base-url http://localhost:8000`) and a service answers there. No default address is ever probed, so attack scripts cannot hit an unrelated local service. See [`docs/sample_report.md`](docs/sample_report.md) for example output.
 
 Report formats: `--format md` (default) or `--format json` (machine-readable, with the complete findings, threat model, and test results — suited to CI/CD):
 
@@ -204,7 +204,7 @@ Report formats: `--format md` (default) or `--format json` (machine-readable, wi
 python main.py --target examples --output report.json --format json
 ```
 
-You can also pass `--sarif <path>` to emit a [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html) report alongside: confirmed white-box findings carry file/line locations (resolved from `line_number` or the symbol table), and confirmed black-box breaches are error-level results. Upload the SARIF to GitHub Code Scanning to surface defects in the repo's **Security** tab:
+You can also pass `--sarif <path>` to emit a [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html) report alongside: confirmed white-box findings carry file/line locations (resolved from `line_number` or the symbol table), and confirmed black-box breaches are error-level results (located at the attacked symbol when the attack vector names one). Rule ids are stable (`vibeharness/whitebox-finding` / `vibeharness/blackbox-breach`) and the run-specific finding/test ids live in `properties`, so renumbering between runs does not close and reopen Code Scanning alerts. Upload the SARIF to GitHub Code Scanning to surface defects in the repo's **Security** tab:
 
 ```yaml
 # Example .github/workflows/security.yml for the target project
@@ -217,7 +217,7 @@ You can also pass `--sarif <path>` to emit a [SARIF 2.1.0](https://docs.oasis-op
     sarif_file: vibeharness.sarif
 ```
 
-> Note: file paths in the SARIF are relativized against the `--target` directory; point `--target` at the repo root so paths line up with Code Scanning's viewer.
+> Note: file paths in the SARIF are relativized against the root of the git repository containing `--target` (falling back to the `--target` directory outside a repository), so `--target src` still yields Code-Scanning-aligned paths such as `src/app.py`.
 
 Exit codes (evaluated in order):
 

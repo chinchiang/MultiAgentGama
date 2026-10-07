@@ -1,3 +1,4 @@
+import ast
 import re
 import os
 import time
@@ -14,6 +15,17 @@ logger = logging.getLogger("VibeHarness.TestExecutor")
 HARNESS_ERROR_EXCEPTIONS = (
     "ImportError", "ModuleNotFoundError", "NameError", "SyntaxError", "IndentationError"
 )
+
+# A TypeError about call arity/keywords means the generated test called the target with the wrong
+# signature — but only when it was raised in the test module itself (the innermost traceback
+# frame). The same message raised inside the target is a genuine defect in the target.
+_SIGNATURE_TYPEERROR_RE = re.compile(
+    r"^TypeError: .*(missing \d+ required (?:positional|keyword-only) argument|"
+    r"takes \d+ positional arguments? but \d+ (?:was|were) given|takes no arguments|"
+    r"got an unexpected keyword argument|got multiple values for argument|"
+    r"takes from \d+ to \d+ positional arguments)"
+)
+_RAISED_IN_TEST_MODULE_RE = re.compile(r"test_vh_\d+\.py:\d+: TypeError\s*$")
 
 
 class TestSuiteExecutor:
@@ -64,8 +76,9 @@ class TestSuiteExecutor:
                 continue
             module = f"test_vh_{idx:03d}"
             module_to_idx[module] = idx
+            preamble, body = self._split_future_imports(t.code)
             files[f"{module}.py"] = (
-                f"{header}\n# Target: {self._header_field(t.target_component)} | Test: {self._header_field(t.title)}\n{t.code}\n"
+                f"{preamble}{header}\n# Target: {self._header_field(t.target_component)} | Test: {self._header_field(t.title)}\n{body}\n"
             )
 
         coverage_pct: Optional[float] = None
@@ -151,6 +164,31 @@ class TestSuiteExecutor:
         return cases, timed_out, not_rerun
 
     @staticmethod
+    def _split_future_imports(code: str) -> Tuple[str, str]:
+        """Splits off the leading docstring and `from __future__` imports, which must stay at the very top.
+
+        The harness header is inserted between the two parts; prepending it to the whole module
+        turned every `from __future__ import annotations` into a SyntaxError (collection failure).
+        Returns ("", code) when there is nothing to hoist. The code was already validated by
+        check_test_code(), so it parses.
+        """
+        tree = ast.parse(code)
+        last_line = 0
+        for i, node in enumerate(tree.body):
+            if isinstance(node, ast.ImportFrom) and node.module == "__future__":
+                last_line = node.end_lineno or node.lineno
+            elif i == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) \
+                    and isinstance(node.value.value, str):
+                continue  # module docstring may precede future imports
+            else:
+                break
+        if not last_line:
+            return "", code
+        lines = code.splitlines(keepends=True)
+        preamble = "".join(lines[:last_line])
+        return (preamble if preamble.endswith("\n") else preamble + "\n"), "".join(lines[last_line:])
+
+    @staticmethod
     def _header_field(text: Optional[str]) -> str:
         """Metadata interpolated into a '#' comment in generated source.
 
@@ -225,7 +263,7 @@ class TestSuiteExecutor:
         stderr = "".join(c["stderr"] for c in cases)
         errors = [c for c in cases if c["outcome"] == "error"]
         failures = [c for c in cases if c["outcome"] == "failure"]
-        harness_failures = [c for c in failures if (c["message"] or "").startswith(HARNESS_ERROR_EXCEPTIONS)]
+        harness_failures = [c for c in failures if self._is_harness_failure(c)]
         defect_failures = [c for c in failures if c not in harness_failures]
 
         if defect_failures:
@@ -260,6 +298,15 @@ class TestSuiteExecutor:
                 "only the executed cases verify the boundary"
             )
         return passed
+
+    @staticmethod
+    def _is_harness_failure(case: dict) -> bool:
+        """A failure caused by the generated test itself rather than by the target's behaviour."""
+        message = case["message"] or ""
+        if message.startswith(HARNESS_ERROR_EXCEPTIONS):
+            return True
+        return bool(_SIGNATURE_TYPEERROR_RE.match(message)
+                    and _RAISED_IN_TEST_MODULE_RE.search(case["details"] or ""))
 
     @staticmethod
     def _is_assertion(message: Optional[str]) -> bool:

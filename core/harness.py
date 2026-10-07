@@ -93,7 +93,7 @@ class VibeHarnessCommander:
         self,
         target_dir: str,
         system_description: Optional[str] = None,
-        base_url: str = "http://localhost:8000",
+        base_url: Optional[str] = None,
         output_report_path: str = "vibe_harness_report.md",
         output_format: str = "md",
         output_sarif_path: Optional[str] = None

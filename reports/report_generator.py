@@ -7,6 +7,7 @@ from core.models import (
     CodeSymbol,
     MultiModelDebateResult,
     ReviewFinding,
+    ThreatItem,
     ThreatModelReport,
     TestExecutionResult,
     VibeHarnessSummary,
@@ -17,6 +18,12 @@ from core.models import (
 # Windows drive paths ("C:\...") count as absolute even on POSIX hosts, so a SARIF produced
 # on Windows relativizes identically when re-processed by a Linux CI runner.
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+# Stable SARIF rule ids: GitHub Code Scanning tracks alerts by ruleId + fingerprint, so a per-run
+# finding id (WB-CLA-01 is just "Claude's first finding this run") would close and reopen alerts
+# whenever the numbering shifted. The run-specific ids are kept in each result's properties.
+SARIF_RULE_WHITEBOX = "vibeharness/whitebox-finding"
+SARIF_RULE_BLACKBOX = "vibeharness/blackbox-breach"
 
 
 class ReportGenerator:
@@ -233,9 +240,12 @@ class ReportGenerator:
     ) -> str:
         """
         SARIF 2.1.0 output for GitHub Code Scanning: confirmed white-box findings with
-        best-effort file/line locations, plus confirmed black-box breaches.
+        best-effort file/line locations, plus confirmed black-box breaches (located at the
+        symbol their threat's attack vector names, when one can be resolved).
+        URIs are relative to the enclosing git repository (%SRCROOT%), else to the target.
         """
         from core import __version__
+        root = self._sarif_root(target_path)
 
         rules: List[Dict[str, object]] = []
         rule_index: Dict[str, int] = {}
@@ -253,6 +263,11 @@ class ReportGenerator:
                 })
             return rule_index[rule_id]
 
+        add_rule(
+            SARIF_RULE_WHITEBOX, "Confirmed white-box defect hypothesis",
+            "A defect reported by a reviewer model and confirmed (or left undecided) by cross-model verification.",
+            "warning",
+        )
         # 1. Confirmed white-box findings (file locations resolved from line_number or the symbol table)
         for f in debate_result.confirmed_findings:
             level = self._sarif_level(f.severity)
@@ -263,60 +278,61 @@ class ReportGenerator:
                 desc += f"\n\nRoot cause: {f.root_cause}"
             if f.suggested_test_scenario:
                 desc += f"\n\nSuggested test: {f.suggested_test_scenario}"
-            uri = self._sarif_uri(f.file_path, target_path)
-            line = self._resolve_line(f, symbols)
-            location = None
-            if uri:
-                location = [{
-                    "physicalLocation": {
-                        "artifactLocation": {"uri": uri, "uriBaseId": "%SRCROOT%"},
-                        "region": {"startLine": line},
-                    }
-                }]
-            results.append({
-                "ruleId": f.finding_id,
-                "ruleIndex": add_rule(
-                    f.finding_id,
-                    f"[{f.severity.value}] {f.title}",
-                    desc.split("\n\n")[0],
-                    level
-                ),
+            uri = self._sarif_uri(f.file_path, root)
+            result: Dict[str, object] = {
+                "ruleId": SARIF_RULE_WHITEBOX,
+                "ruleIndex": rule_index[SARIF_RULE_WHITEBOX],
                 "level": level,
                 "message": {"text": desc},
-                "locations": location,
                 "partialFingerprints": {"vibeharness/v1": self._fingerprint(
-                    uri or "", f.symbol_name or "", f.title
+                    uri or "", f.symbol_name or "", self._normalize(f.title)
                 )},
                 "properties": {
+                    "findingId": f.finding_id,
                     "severity": f.severity.value,
                     "reviewer": f.reviewer_name,
                     "symbol": f.symbol_name or "",
                     "corroboratedBy": f.corroborated_by,
                     "simulated": f.is_simulated,
                 },
-            })
+            }
+            if uri:
+                # Omitted (never null) when unknown: SARIF requires an array if present
+                result["locations"] = [self._location(uri, self._resolve_line(f, symbols))]
+            results.append(result)
 
-        # 2. Confirmed black-box security breaches (no file location: threats are system-level)
+        # 2. Confirmed black-box security breaches, located at the symbol the threat targets if known
+        threats_by_id = {t.threat_id: t for t in threat_model.threats}
         for r in blackbox_results:
             if not r.is_security_exploit_confirmed:
                 continue
-            derived = f" (derived from {r.source_ref})" if r.source_ref else ""
+            if SARIF_RULE_BLACKBOX not in rule_index:
+                add_rule(
+                    SARIF_RULE_BLACKBOX, "Confirmed black-box security breach",
+                    "A threat-model-derived attack test whose defensive assertion failed against the target.",
+                    "error",
+                )
+            threat = threats_by_id.get(r.source_ref or "")
+            derived = f" (derived from {r.source_ref}{': ' + threat.title if threat else ''})" if r.source_ref else ""
             text = f"Confirmed security breach {r.test_id}{derived}: {r.failure_reason or 'the attack test succeeded'}"
-            results.append({
-                "ruleId": r.test_id,
-                "ruleIndex": add_rule(
-                    r.test_id,
-                    f"Black-box breach: {r.test_id}",
-                    text,
-                    "error"
-                ),
+            breach: Dict[str, object] = {
+                "ruleId": SARIF_RULE_BLACKBOX,
+                "ruleIndex": rule_index[SARIF_RULE_BLACKBOX],
                 "level": "error",
                 "message": {"text": text},
                 "partialFingerprints": {"vibeharness/v1": self._fingerprint(
-                    r.test_id, r.source_ref or "", r.failure_reason or ""
+                    *((threat.stride_category.value, self._normalize(threat.title), self._normalize(threat.attack_vector))
+                      if threat else (r.test_id, r.source_ref or ""))
                 )},
-                "properties": {"security_breach": True, "simulated": False},
-            })
+                "properties": {"testId": r.test_id, "threatId": r.source_ref or "", "security_breach": True,
+                               "simulated": False},
+            }
+            target_symbol = self._threat_symbol(threat, symbols) if threat else None
+            if target_symbol:
+                uri = self._sarif_uri(target_symbol.file_path, root)
+                if uri:
+                    breach["locations"] = [self._location(uri, max(1, target_symbol.line_start))]
+            results.append(breach)
 
         payload = {
             "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
@@ -340,6 +356,47 @@ class ReportGenerator:
         return json.dumps(payload, indent=2, ensure_ascii=False)
 
     @staticmethod
+    def _location(uri: str, line: int) -> Dict[str, object]:
+        return {
+            "physicalLocation": {
+                "artifactLocation": {"uri": uri, "uriBaseId": "%SRCROOT%"},
+                "region": {"startLine": line},
+            }
+        }
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        """Case/punctuation-insensitive form of model text, so fingerprints survive cosmetic rewording."""
+        return " ".join(re.findall(r"[a-z0-9]+", (text or "").lower()))
+
+    @staticmethod
+    def _threat_symbol(threat: ThreatItem, symbols: Optional[List[CodeSymbol]]) -> Optional[CodeSymbol]:
+        """The extracted symbol the threat's attack vector names (whole-word match, routes first)."""
+        text = f"{threat.attack_vector} {threat.attack_scenario}"
+        for sym in sorted(symbols or [], key=lambda s: s.symbol_type != "route"):
+            short = sym.name.split(".")[-1]
+            if sym.name in text or re.search(rf"\b{re.escape(short)}\b", text):
+                return sym
+        return None
+
+    @staticmethod
+    def _sarif_root(target_path: str) -> str:
+        """%SRCROOT% for URIs: the git repository containing the target (Code Scanning resolves
+        URIs against the repo root), else the target directory itself."""
+        start = os.path.abspath(target_path)
+        if not os.path.isdir(start):
+            start = os.path.dirname(start)
+        current = start
+        while True:
+            if os.path.exists(os.path.join(current, ".git")):
+                return current
+            parent = os.path.dirname(current)
+            if parent == current:
+                # No repository: the target directory (a file target's own directory)
+                return start if os.path.isdir(start) else target_path
+            current = parent
+
+    @staticmethod
     def _sarif_level(severity: FindingSeverity) -> str:
         return {
             FindingSeverity.CRITICAL: "error",
@@ -352,7 +409,8 @@ class ReportGenerator:
     @staticmethod
     def _sarif_uri(file_path: str, target_path: str) -> Optional[str]:
         """Best-effort repo-root-relative URI with forward slashes; None when unknown."""
-        if not file_path or not file_path.strip():
+        # "unknown" is the reviewer's placeholder for a finding it could not attribute, not a file
+        if not file_path or not file_path.strip() or file_path.strip() == "unknown":
             return None
         p = file_path.strip().replace("\\", "/").removeprefix("./")
         drive = _WINDOWS_DRIVE_RE.match(file_path)

@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import yaml
 from pydantic import ValidationError
 from typing import List, Dict, Any, Optional
@@ -16,6 +17,11 @@ logger = logging.getLogger("VibeHarness.ThreatModeler")
 # instead of rendering everything into one prompt and silently dropping the overflow.
 BATCH_MAX_TOKENS = 8000
 BATCH_MAX_SYMBOLS = 15
+
+_SEVERITY_RANK = {
+    FindingSeverity.CRITICAL: 0, FindingSeverity.HIGH: 1, FindingSeverity.MEDIUM: 2,
+    FindingSeverity.LOW: 3, FindingSeverity.INFO: 4,
+}
 
 DEFAULT_TRUST_BOUNDARIES = ["Internet to Public Gateway", "Gateway to Database"]
 DEFAULT_ASSETS = ["User Credentials", "Business Records"]
@@ -47,10 +53,18 @@ class AutomatedThreatModeler:
         self.rules = self._load_rules(rules_path)
 
     def _load_rules(self, path: str) -> Dict[str, Any]:
-        if os.path.exists(path):
+        # The rules only enrich the prompt, so a missing or broken file degrades with a warning
+        # instead of failing the run (but never silently: it once went missing from the wheel)
+        if not os.path.exists(path):
+            logger.warning(f"Threat rules not found at {path}; threat modeling runs without the STRIDE/OWASP checklist.")
+            return {}
+        try:
             with open(path, "r", encoding="utf-8") as f:
-                return yaml.safe_load(f) or {}
-        return {}
+                rules = yaml.safe_load(f) or {}
+        except (OSError, yaml.YAMLError) as e:
+            logger.warning(f"Could not load threat rules from {path}: {e}; continuing without them.")
+            return {}
+        return rules if isinstance(rules, dict) else {}
 
     def _rules_guidance(self) -> str:
         """STRIDE vibe-bug checklist and OWASP API Top 10 from config/threat_rules.yaml."""
@@ -146,6 +160,8 @@ class AutomatedThreatModeler:
                 report_fields = resp
             threats.extend(self._parse_threats(resp, used_ids))
 
+        threats = self._merge_duplicate_threats(threats)
+
         if report_fields is None:  # every batch returned unusable output
             report_fields = {}
 
@@ -157,6 +173,26 @@ class AutomatedThreatModeler:
             threats=threats,
             is_simulated=any_simulated
         )
+
+    @staticmethod
+    def _merge_duplicate_threats(threats: List[ThreatItem]) -> List[ThreatItem]:
+        """Merges the same threat reported by several batches (same STRIDE category, title and
+        attack vector after normalization). The first report is kept, with the highest severity
+        any batch gave it; otherwise every batch would synthesize and run the same attack again."""
+        def norm(text: str) -> str:
+            return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
+
+        merged: Dict[Any, ThreatItem] = {}
+        for t in threats:
+            key = (t.stride_category, norm(t.title), norm(t.attack_vector))
+            kept = merged.get(key)
+            if kept is None:
+                merged[key] = t
+            elif _SEVERITY_RANK[t.severity] < _SEVERITY_RANK[kept.severity]:
+                merged[key] = kept.model_copy(update={"severity": t.severity})
+        if len(merged) < len(threats):
+            logger.info(f"Merged {len(threats)} threats from all batches into {len(merged)} distinct threats.")
+        return list(merged.values())
 
     def _parse_threats(self, resp: Dict[str, Any], used_ids: set) -> List[ThreatItem]:
         """Validated ThreatItems from one model response; ids that collide with earlier batches are renumbered."""

@@ -1,8 +1,10 @@
+import ast
 import logging
 import os
 import re
+import textwrap
 from typing import List, Optional, Set
-from core.models import ReviewFinding, GeneratedTest, CodeSymbol
+from core.models import ReviewFinding, GeneratedTest, CodeSymbol, text_or
 from core.llm_gateway import LLMGateway
 from core.codecheck import check_test_code, strip_code_fences
 from core.codecontext import file_source, fence_language, import_instructions, truncate_to_tokens
@@ -77,7 +79,7 @@ class WhiteboxTestGenerator:
             tests_data = raw_tests if isinstance(raw_tests, list) else []
             if not tests_data and isinstance(resp.get("code"), str) and resp["code"].strip():
                 tests_data = [resp]
-            tests_data = [t for t in tests_data if isinstance(t, dict) and (t.get("code") or "").strip()]
+            tests_data = [t for t in tests_data if isinstance(t, dict) and text_or(t.get("code"), "")]
 
             has_valid_test = False
             for t_idx, t_item in enumerate(tests_data):
@@ -90,10 +92,10 @@ class WhiteboxTestGenerator:
                     test_id=test_id,
                     test_type="whitebox_unit",
                     target_component=finding.symbol_name or target_file,
-                    title=t_item.get("title", finding.title),
+                    title=text_or(t_item.get("title"), finding.title),
                     code=validated_code,
-                    rationale=t_item.get("rationale", finding.suggested_test_scenario),
-                    expected_outcome=t_item.get("expected_outcome", "Graceful handling without crash"),
+                    rationale=text_or(t_item.get("rationale"), finding.suggested_test_scenario),
+                    expected_outcome=text_or(t_item.get("expected_outcome"), "Graceful handling without crash"),
                     source_ref=finding.finding_id
                 ))
 
@@ -130,7 +132,7 @@ class WhiteboxTestGenerator:
                 f"Output the corrected Python code only:\n\n{code_to_check}"
             )
             resp = self.gateway.generate("whitebox_test_generator", "Fix Python Test Code", heal_prompt, json_output=False)
-            fixed = strip_code_fences(resp.get("raw", ""))
+            fixed = strip_code_fences(text_or(resp.get("raw"), ""))
             if not fixed:
                 break  # Nothing to repair with (e.g. simulation engine)
             code_to_check = fixed
@@ -159,9 +161,30 @@ class WhiteboxTestGenerator:
         match = re.search(r"^\s*(async\s+)?def\s", source, re.MULTILINE)
         return bool(match and match.group(1))
 
+    @staticmethod
+    def _has_required_params(source: str) -> bool:
+        """True when the function takes at least one argument without a default.
+
+        A probe passes None for every required argument, so a function without any would be
+        called as-is: `main()`, `run_server()`, `reset_db()` and friends would execute their real
+        side effects (or hang until the sandbox timeout) while testing nothing about None inputs.
+        """
+        try:
+            tree = ast.parse(textwrap.dedent(source))
+        except SyntaxError:
+            return False
+        fn = next((n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))), None)
+        if fn is None:
+            return False
+        positional = fn.args.posonlyargs + fn.args.args
+        required_positional = len(positional) - len(fn.args.defaults)
+        required_kwonly = sum(1 for d in fn.args.kw_defaults if d is None)
+        return required_positional > 0 or required_kwonly > 0
+
     def build_offline_probes(self, symbols: List[CodeSymbol]) -> List[GeneratedTest]:
         """
-        Deterministic None-input robustness probes for module-level synchronous Python functions.
+        Deterministic None-input robustness probes for module-level synchronous Python functions
+        that take at least one required argument (argument-less functions are never invoked).
         An unhandled TypeError/KeyError/AttributeError/IndexError on None inputs is reported as a failure;
         explicit rejection via other exceptions (ValueError, custom errors) counts as a defended boundary.
         """
@@ -173,6 +196,8 @@ class WhiteboxTestGenerator:
             if sym.symbol_type != "function" or not sym.file_path.endswith(".py"):
                 continue
             if sym.name.startswith("__") or self._is_async_def(sym.source_code):
+                continue
+            if not self._has_required_params(sym.source_code):
                 continue
             key = f"{sym.file_path}::{sym.name}"
             if key in seen:
