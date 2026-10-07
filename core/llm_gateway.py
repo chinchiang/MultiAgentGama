@@ -131,11 +131,13 @@ class LLMGateway:
         system_prompt: str,
         user_prompt: str,
         json_output: bool = True,
-        required_keys: Optional[List[str]] = None
+        required_keys: Optional[List[str]] = None,
+        required_keys_any: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Executes a prompt targeting the designated agent's configured LLM.
-        A live response that is not valid JSON or lacks any of `required_keys` is recorded with
+        A live response that is not valid JSON or lacks any of `required_keys` (all must be
+        present) or `required_keys_any` (at least one must be present) is recorded with
         mode "invalid" (and returned as {}), so callers and the quality gate never mistake an
         unusable answer for a genuine empty result.
         """
@@ -158,27 +160,31 @@ class LLMGateway:
             fallback_reason = BUDGET_EXHAUSTED_REASON
 
         if fallback_reason is None:
+            logger.info(f"Dispatching [{agent_id}] to Live LLM: {model_name} (Alias: {model_alias})")
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
             try:
-                logger.info(f"Dispatching [{agent_id}] to Live LLM: {model_name} (Alias: {model_alias})")
-                messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ]
                 raw_text, model_name = self._complete(model_info, model_name, messages, temperature)
-                result = self._clean_and_parse_json(raw_text) if json_output else {"raw": raw_text}
-                problem = self._validate_output(result, json_output, required_keys)
-                if problem:
-                    logger.error(f"[{agent_id}] {model_name} returned unusable output: {problem}")
-                    self._record(agent_id, model_alias, model_name, "invalid", problem)
-                    return {PROVENANCE_KEY: {"mode": "invalid", "model": model_name, "reason": problem}}
-                self._record(agent_id, model_alias, model_name, "live")
-                result[PROVENANCE_KEY] = {"mode": "live", "model": model_name}
-                return result
             except Exception as e:
                 fallback_reason = f"live invocation failed: {e}"
                 if self.execution_mode == "live":
                     raise LLMGatewayError(f"[{agent_id}] {model_name}: {fallback_reason}") from e
                 logger.warning(f"Live invocation failed for {agent_id} ({model_name}): {e}. Falling back to simulation logic.")
+            else:
+                # Only the network call is guarded above: a bug in parsing/validation/booking
+                # must fail loudly instead of being masked as a fallback to simulation.
+                result = self._clean_and_parse_json(raw_text) if json_output else {"raw": raw_text}
+                problem = self._validate_output(result, json_output, required_keys, required_keys_any)
+                if problem is None and result is not None:
+                    self._record(agent_id, model_alias, model_name, "live")
+                    result[PROVENANCE_KEY] = {"mode": "live", "model": model_name}
+                    return result
+                reason = problem or "response is not valid JSON"
+                logger.error(f"[{agent_id}] {model_name} returned unusable output: {reason}")
+                self._record(agent_id, model_alias, model_name, "invalid", reason)
+                return {PROVENANCE_KEY: {"mode": "invalid", "model": model_name, "reason": reason}}
         elif self.execution_mode == "live":
             raise LLMGatewayError(f"[{agent_id}] cannot run live with {model_name}: {fallback_reason}")
 
@@ -229,16 +235,21 @@ class LLMGateway:
         raise last_error
 
     @staticmethod
-    def _validate_output(result: Any, json_output: bool, required_keys: Optional[List[str]]) -> Optional[str]:
+    def _validate_output(
+        result: Any, json_output: bool,
+        required_keys: Optional[List[str]], required_keys_any: Optional[List[str]] = None
+    ) -> Optional[str]:
         if not json_output:
             return None
+        if result is None:
+            return "response is not valid JSON"
         if not isinstance(result, dict):
             return f"expected a JSON object, got {type(result).__name__}"
-        if result.get("error") == "JSONDecodeError":
-            return "response is not valid JSON"
         missing = [k for k in (required_keys or []) if k not in result]
         if missing:
             return f"response is missing required key(s): {', '.join(missing)}"
+        if required_keys_any and not any(k in result for k in required_keys_any):
+            return f"response has none of the expected key(s): {', '.join(required_keys_any)}"
         return None
 
     def _record(self, agent_id: str, model_alias: str, model_name: str, mode: str, reason: Optional[str] = None):
@@ -246,7 +257,7 @@ class LLMGateway:
             agent_id=agent_id, model_alias=model_alias, model_name=model_name, mode=mode, reason=reason
         ))
 
-    def _clean_and_parse_json(self, text: str) -> Dict[str, Any]:
+    def _clean_and_parse_json(self, text: str) -> Optional[Dict[str, Any]]:
         """Strips markdown code fences and parses JSON safely, with conversational fallback."""
         text = text.strip()
         # 1. Closed markdown code fence (```json ... ``` or ```JSON / ```)
@@ -302,7 +313,9 @@ class LLMGateway:
                         continue
 
         logger.error(f"JSON parsing error: could not extract valid JSON. Raw content: {text[:200]}")
-        return {"error": "JSONDecodeError", "raw_content": text}
+        # None (not a sentinel dict): a model could legitimately echo such a dict, which would
+        # have been indistinguishable from a parse failure.
+        return None
 
     def _generate_simulated_response(self, agent_id: str, model_alias: str, prompt: str) -> Dict[str, Any]:
         """

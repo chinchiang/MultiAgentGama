@@ -75,12 +75,20 @@ class ThreatScenarioBuilder:
 
         The prompt tells the model to attack only the base URL; this static check is the
         best-effort net behind that instruction (dynamically built URLs are not caught).
+        Hosts are extracted with urlsplit so IPv6 literals ('http://[::1]:8080') resolve
+        to '::1' instead of the naive bracket-stripping artifact '['; a literal that
+        cannot be parsed at all (e.g. a cut-off IPv6 address) cannot be cleared, so it is
+        flagged — the net fails closed.
         """
-        base_host = (urllib.parse.urlparse(base_url).hostname or "").lower()
+        base_host = (urllib.parse.urlsplit(base_url).hostname or "").lower()
         offenders: List[str] = []
-        for match in re.finditer(r"https?://([^/'\"\s<>())\\]+)", code, re.IGNORECASE):
-            netloc = match.group(1).split("@")[-1]
-            host = netloc.rsplit("@", 1)[-1].split("/")[0].split(":")[0].lower()
+        for match in re.finditer(r"https?://[^/'\"\s<>())\\]+", code, re.IGNORECASE):
+            try:
+                host = (urllib.parse.urlsplit(match.group(0)).hostname or "").lower()
+            except ValueError:
+                if match.group(0) not in offenders:
+                    offenders.append(match.group(0))
+                continue
             if not host or host == base_host:
                 continue
             if base_host in ThreatScenarioBuilder._LOOPBACK_HOSTS and host in ThreatScenarioBuilder._LOOPBACK_HOSTS:

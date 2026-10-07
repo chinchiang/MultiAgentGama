@@ -70,6 +70,68 @@ def test_parent_dir_module_does_not_shadow_the_target(executor, tmp_path):
     assert results[0].status == TestStatus.PASSED, results[0].failure_reason
 
 
+# --- Executor: honest attribution of sandbox/report failures -------------------------------------
+
+def test_unparseable_junit_report_is_not_reported_as_no_tests_collected(executor, tmp_path, monkeypatch):
+    """A truncated/corrupt JUnit report is a sandbox problem, not 'no test was collected
+    from the generated code', which would wrongly blame the generated tests."""
+    def broken_report(files, working_dir=None, **kwargs):
+        return 0, "", "", 0.1, None, "<testsuites><truncated"
+
+    monkeypatch.setattr(executor.sandbox, "execute_pytest_files", broken_report)
+    results, _ = executor.execute_test_suite([
+        _test("A", "def test_a():\n    assert True"),
+        _test("B", "def test_b():\n    assert True"),
+    ], working_dir=str(tmp_path))
+    assert [r.status for r in results] == [TestStatus.ERROR, TestStatus.ERROR]
+    for r in results:
+        assert "could not be parsed" in r.failure_reason
+        assert "No test was collected" not in r.failure_reason
+
+
+def test_rerun_report_parse_failure_is_reported_honestly(executor, tmp_path, monkeypatch):
+    def batch_times_out_then_bad_report(files, working_dir=None, **kwargs):
+        if len(files) > 1:
+            return TIMEOUT_EXIT_CODE, "", "", 0.0, None, None
+        return 0, "", "", 0.1, None, "<junk"
+
+    monkeypatch.setattr(executor.sandbox, "execute_pytest_files", batch_times_out_then_bad_report)
+    results, _ = executor.execute_test_suite([
+        _test("A", "def test_a():\n    assert True"),
+        _test("B", "def test_b():\n    assert True"),
+    ], working_dir=str(tmp_path))
+    assert [r.status for r in results] == [TestStatus.ERROR, TestStatus.ERROR]
+    for r in results:
+        assert "could not be parsed" in r.failure_reason
+
+
+def test_broken_target_import_is_attributed_to_the_target(executor, tmp_path):
+    """A target that cannot even be imported (missing dependency) means the target is
+    broken: the report must attribute the error to the target instead of the generated
+    test, and must not claim the boundary was exercised."""
+    (tmp_path / "m.py").write_text("import nonexistent_pkg_xyz\n\ndef f(x):\n    return x\n", encoding="utf-8")
+    results, _ = executor.execute_test_suite(
+        [_test("A", "from m import f\n\ndef test_a():\n    assert f(1) == 1")],
+        working_dir=str(tmp_path),
+    )
+    r = results[0]
+    assert r.status == TestStatus.ERROR
+    assert "Target code is broken" in r.failure_reason, r.failure_reason
+    assert "nonexistent_pkg_xyz" in r.failure_reason
+    assert r.is_security_exploit_confirmed is False
+
+
+def test_test_side_import_error_still_blames_the_test(executor, tmp_path):
+    results, _ = executor.execute_test_suite(
+        [_test("A", "import definitely_missing_mod\n\ndef test_a():\n    assert True")],
+        working_dir=str(tmp_path),
+    )
+    r = results[0]
+    assert r.status == TestStatus.ERROR
+    assert "Target code is broken" not in r.failure_reason
+    assert "definitely_missing_mod" in r.failure_reason
+
+
 def test_pytest_fail_is_recognized_as_confirmed_exploit(executor, tmp_path):
     results, _ = executor.execute_test_suite([
         _test("FAIL_CALL", "import pytest\ndef test_exploit():\n    pytest.fail('BOLA breach succeeded')"),
@@ -581,6 +643,23 @@ def test_generated_attack_code_targeting_another_host_is_rejected():
         assert "evil.example.com" not in "".join(t.code for t in tests)
     finally:
         server.shutdown()
+
+
+def test_url_guard_resolves_ipv6_literals_and_userinfo():
+    """Host extraction must not break on IPv6 literals ('[::1]' parsed as '[') or be
+    fooled by userinfo ('user@evil.example.com'); unparseable literals fail closed."""
+    check = ThreatScenarioBuilder._hosts_outside_base_url
+    # an IPv6 loopback literal is the same machine as a loopback base URL: not an offender
+    assert check('requests.get("http://[::1]:8080/admin")', "http://localhost:8000") == []
+    # the declared IPv6 base URL itself is never an offender
+    assert check('urllib.request.urlopen("http://[::1]:8000/api")', "http://[::1]:8000") == []
+    # a real external IPv6 host is an offender
+    assert check('requests.get("http://[2001:db8::1]/x")', "http://localhost:8000") == ["http://[2001:db8::1]"]
+    # userinfo no longer hides the real host
+    assert check('requests.get("http://user@evil.example.com/x")', "http://localhost:8000") == [
+        "http://user@evil.example.com"]
+    # an unparseable (cut-off) literal cannot be cleared, so it is flagged
+    assert check('requests.get("http://[::1", timeout=1)', "http://localhost:8000") == ["http://[::1"]
 
 
 def test_symbol_relevance_uses_word_boundaries():
