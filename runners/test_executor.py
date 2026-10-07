@@ -277,9 +277,10 @@ class TestSuiteExecutor:
             )
         if errors or harness_failures:
             case = (errors or harness_failures)[0]
+            reason = self._first_line(case["message"]) or self._first_line(case["details"]) or "Unknown execution failure"
             return self._result(
                 test, test_id, TestStatus.ERROR,
-                failure_reason=f"Test could not run correctly: {self._first_line(case['message'])}",
+                failure_reason=f"Test could not run correctly: {reason}",
                 traceback=case["details"], duration=duration, stdout=stdout, stderr=stderr
             )
         if all(c["outcome"] == "skipped" for c in cases):
@@ -310,9 +311,18 @@ class TestSuiteExecutor:
 
     @staticmethod
     def _is_assertion(message: Optional[str]) -> bool:
-        """pytest reports explicit AssertionErrors and rewritten bare asserts ('assert x == y')."""
-        message = message or ""
-        return message.startswith("AssertionError") or message.startswith("assert ")
+        """pytest reports explicit AssertionErrors, rewritten bare asserts ('assert x == y'),
+        and explicit test failures via pytest.fail() ('Failed: ...')."""
+        msg = (message or "").strip()
+        return (
+            msg.startswith("AssertionError")
+            or msg.startswith("assert ")
+            or msg.startswith("assert\n")
+            or msg == "assert"
+            or msg.startswith("Failed:")
+            or msg.startswith("Failed ")
+            or msg == "Failed"
+        )
 
     @staticmethod
     def _first_line(text: Optional[str]) -> str:

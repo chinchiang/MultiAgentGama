@@ -55,6 +55,25 @@ def test_module_level_import_error_is_isolated(executor, tmp_path):
     assert results[1].is_security_exploit_confirmed
 
 
+def test_pytest_fail_is_recognized_as_confirmed_exploit(executor, tmp_path):
+    results, _ = executor.execute_test_suite([
+        _test("FAIL_CALL", "import pytest\ndef test_exploit():\n    pytest.fail('BOLA breach succeeded')"),
+    ], working_dir=str(tmp_path))
+    assert results[0].status == TestStatus.FAILED
+    assert results[0].is_security_exploit_confirmed is True
+    assert "BOLA breach succeeded" in (results[0].failure_reason or "")
+
+
+def test_is_assertion_recognizes_assertion_and_pytest_fail():
+    assert TestSuiteExecutor._is_assertion("AssertionError: value mismatch")
+    assert TestSuiteExecutor._is_assertion("assert 1 == 2")
+    assert TestSuiteExecutor._is_assertion("Failed: exploit confirmed")
+    assert TestSuiteExecutor._is_assertion("Failed")
+    assert not TestSuiteExecutor._is_assertion("TypeError: takes 0 arguments")
+    assert not TestSuiteExecutor._is_assertion("ValueError: bad value")
+    assert not TestSuiteExecutor._is_assertion("")
+
+
 def test_import_error_inside_test_is_error_not_exploit(executor, tmp_path):
     results, _ = executor.execute_test_suite([
         _test("A", "def test_a():\n    import definitely_missing_mod\n    assert definitely_missing_mod"),

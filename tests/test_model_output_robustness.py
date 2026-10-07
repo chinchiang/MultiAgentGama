@@ -395,3 +395,24 @@ def test_sarif_uri_relativization(tmp_path):
     assert uri("E:\\other\\x.py", r"D:\work\proj") == "x.py"
     # Same drive relativizes consistently on Windows and on POSIX hosts
     assert uri(r"D:\proj\app.py", r"D:\proj") == "app.py"
+
+
+def test_clean_and_parse_json_robustness():
+    gw = LLMGateway(CONFIG, execution_mode="mock")
+    # 1. Pure valid JSON
+    assert gw._clean_and_parse_json('{"key": "value"}') == {"key": "value"}
+    # 2. Markdown fences with json / JSON / no lang tag
+    assert gw._clean_and_parse_json('```json\n{"key": 1}\n```') == {"key": 1}
+    assert gw._clean_and_parse_json('```JSON\n{"key": 2}\n```') == {"key": 2}
+    assert gw._clean_and_parse_json('```\n{"key": 3}\n```') == {"key": 3}
+    # 3. Conversational wrapper without fences
+    assert gw._clean_and_parse_json('Sure! Here is the output:\n{"key": 4}\nHope this helps!') == {"key": 4}
+    # 4. Text with prior non-JSON braces before the real JSON block
+    assert gw._clean_and_parse_json('Note: {ignore this invalid}\nReal output:\n{"key": 5}') == {"key": 5}
+    # 5. Unclosed code fence
+    assert gw._clean_and_parse_json('```json\n{"key": 6}\n') == {"key": 6}
+    # 6. Completely non-JSON text returns JSONDecodeError dict gracefully
+    bad = gw._clean_and_parse_json('Sorry, I cannot help with that.')
+    assert bad.get("error") == "JSONDecodeError"
+    assert "Sorry" in bad.get("raw_content", "")
+

@@ -11,9 +11,10 @@ import pytest
 import yaml
 
 from core.llm_gateway import LLMGateway, LLMGatewayError, ConfigError, BUDGET_EXHAUSTED_REASON
-from core.models import FindingSeverity, ReviewFinding, STRIDECategory, ThreatItem
+from core.models import FindingSeverity, ReviewFinding, STRIDECategory, ThreatItem, CodeSymbol
 from agents.whitebox.test_generator import WhiteboxTestGenerator
 from agents.blackbox.scenario_builder import ThreatScenarioBuilder
+from agents.blackbox.threat_modeler import AutomatedThreatModeler
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(REPO_ROOT, "config", "agents_config.yaml")
@@ -83,6 +84,44 @@ def test_blackbox_synthesis_runs_concurrently_and_keeps_threat_order():
     tests = builder.build_test_cases_from_threats([_threat(i) for i in range(6)])
     assert probe.peak > 1
     assert [t.source_ref for t in tests] == [f"T{i}" for i in range(6)]
+
+
+def test_threat_modeling_batches_run_concurrently_and_keep_order(tmp_path):
+    tm = AutomatedThreatModeler(LLMGateway(CONFIG, execution_mode="mock"))
+    symbols = [
+        CodeSymbol(
+            name=f"func_{i}", symbol_type="function", file_path="app.py",
+            line_start=1, line_end=1000, signature=f"func_{i}()",
+            source_code=f"def func_{i}():\n" + "    x = 'filler token budget'\n" * 1000
+        )
+        for i in range(4)
+    ]
+
+    class _ThreatProbe:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.in_flight = self.peak = 0
+
+        def __call__(self, agent_id, system, user, **kwargs):
+            match = re.search(r"Symbol: func_(\d+)", user)
+            index = int(match.group(1)) if match else 0
+            with self.lock:
+                self.in_flight += 1
+                self.peak = max(self.peak, self.in_flight)
+            time.sleep(0.05 * (4 - index))
+            with self.lock:
+                self.in_flight -= 1
+            return {
+                "threats": [{"threat_id": f"THREAT-0{index+1}", "stride_category": "Tampering", "title": f"threat for {index}"}],
+                "entrypoints": [f"/api/{index}"]
+            }
+
+    probe = _ThreatProbe()
+    tm.gateway.generate = probe
+    report = tm.model_system("desc", ["/api"], symbols=symbols, root_dir=str(tmp_path))
+    assert probe.peak > 1
+    assert [t.title for t in report.threats] == [f"threat for {i}" for i in range(4)]
+    assert report.entrypoints == ["/api/0"]
 
 
 def test_max_concurrent_calls_bounds_the_worker_pool(tmp_path):

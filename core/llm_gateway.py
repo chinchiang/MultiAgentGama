@@ -247,16 +247,62 @@ class LLMGateway:
         ))
 
     def _clean_and_parse_json(self, text: str) -> Dict[str, Any]:
-        """Strips markdown code fences and parses JSON safely."""
+        """Strips markdown code fences and parses JSON safely, with conversational fallback."""
         text = text.strip()
-        match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
+        # 1. Closed markdown code fence (```json ... ``` or ```JSON / ```)
+        match = re.search(r"```[\w-]*\s*([\s\S]*?)\s*```", text)
         if match:
-            text = match.group(1).strip()
+            candidate = match.group(1).strip()
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+
+        # 2. Direct JSON string
         try:
-            return json.loads(text)
-        except json.JSONDecodeError as err:
-            logger.error(f"JSON parsing error: {err}. Raw content: {text[:200]}")
-            return {"error": "JSONDecodeError", "raw_content": text}
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+        # 3. Unclosed code fence (starts with ```tag but missing closing ```)
+        unclosed_match = re.match(r"^\s*```[\w-]*\s*([\s\S]*)$", text)
+        if unclosed_match:
+            candidate = re.sub(r"```+\s*$", "", unclosed_match.group(1)).strip()
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+
+        # 4. Conversational wrapping fallback: extract substring between first '{' and last '}'
+        first_brace = text.find("{")
+        last_brace = text.rfind("}")
+        if first_brace != -1 and last_brace > first_brace:
+            candidate = text[first_brace:last_brace + 1]
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                # If first-to-last failed (e.g. earlier unclosed non-JSON brace), search each '{' to last '}'
+                for m in re.finditer(r"\{", text):
+                    start = m.start()
+                    if start == first_brace or start >= last_brace:
+                        continue
+                    try:
+                        parsed = json.loads(text[start:last_brace + 1])
+                        if isinstance(parsed, dict):
+                            return parsed
+                    except json.JSONDecodeError:
+                        continue
+
+        logger.error(f"JSON parsing error: could not extract valid JSON. Raw content: {text[:200]}")
+        return {"error": "JSONDecodeError", "raw_content": text}
 
     def _generate_simulated_response(self, agent_id: str, model_alias: str, prompt: str) -> Dict[str, Any]:
         """
