@@ -386,15 +386,27 @@ class ReportGenerator:
         start = os.path.abspath(target_path)
         if not os.path.isdir(start):
             start = os.path.dirname(start)
+        home = os.path.expanduser("~")
         current = start
         while True:
-            if os.path.exists(os.path.join(current, ".git")):
+            # A git repository at the home directory is almost always a dotfiles/config repo,
+            # never the code repo the SARIF will be uploaded against; a throwaway run directory
+            # under such a home must not inherit it as %SRCROOT%.
+            if not ReportGenerator._same_path(current, home) and os.path.exists(os.path.join(current, ".git")):
                 return current
             parent = os.path.dirname(current)
-            if parent == current:
+            if parent == current or ReportGenerator._same_path(current, home):
                 # No repository: the target directory (a file target's own directory)
                 return start if os.path.isdir(start) else target_path
             current = parent
+
+    @staticmethod
+    def _same_path(a: str, b: str) -> bool:
+        """Path identity that survives Windows 8.3 short names, case differences and symlinks."""
+        try:
+            return os.path.samefile(a, b)
+        except OSError:
+            return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
 
     @staticmethod
     def _sarif_level(severity: FindingSeverity) -> str:

@@ -55,6 +55,21 @@ def test_module_level_import_error_is_isolated(executor, tmp_path):
     assert results[1].is_security_exploit_confirmed
 
 
+def test_parent_dir_module_does_not_shadow_the_target(executor, tmp_path):
+    """proj\\m.py must not shadow proj\\app\\m.py: in the generated header the target
+    directory ends up at sys.path[0] (matching the sandbox PYTHONPATH order), so the
+    module under test always wins over a same-named module in the parent directory."""
+    (tmp_path / "m.py").write_text("WHO = 'parent'\ndef f(x):\n    return WHO\n", encoding="utf-8")
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "m.py").write_text("WHO = 'target'\ndef f(x):\n    return WHO\n", encoding="utf-8")
+    results, _ = executor.execute_test_suite(
+        [_test("A", "from m import f\n\ndef test_which():\n    assert f(1) == 'target'")],
+        working_dir=str(app),
+    )
+    assert results[0].status == TestStatus.PASSED, results[0].failure_reason
+
+
 def test_pytest_fail_is_recognized_as_confirmed_exploit(executor, tmp_path):
     results, _ = executor.execute_test_suite([
         _test("FAIL_CALL", "import pytest\ndef test_exploit():\n    pytest.fail('BOLA breach succeeded')"),
@@ -62,6 +77,19 @@ def test_pytest_fail_is_recognized_as_confirmed_exploit(executor, tmp_path):
     assert results[0].status == TestStatus.FAILED
     assert results[0].is_security_exploit_confirmed is True
     assert "BOLA breach succeeded" in (results[0].failure_reason or "")
+
+
+def test_did_not_raise_is_recognized_as_confirmed_exploit(executor, tmp_path):
+    """A missing defense (`pytest.raises` not satisfied) must count as a confirmed exploit
+    like any other assertion failure, not as a non-security test error."""
+    (tmp_path / "m.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
+    results, _ = executor.execute_test_suite([
+        _test("NO_RAISE", "import pytest\nfrom m import f\n\ndef test_exploit():\n"
+                          "    with pytest.raises(ValueError):\n        f(None)"),
+    ], working_dir=str(tmp_path))
+    assert results[0].status == TestStatus.FAILED
+    assert results[0].is_security_exploit_confirmed is True
+    assert "DID NOT RAISE" in (results[0].failure_reason or "")
 
 
 def test_is_assertion_recognizes_assertion_and_pytest_fail():
@@ -667,13 +695,30 @@ def test_sandbox_withholds_secrets_from_generated_code(executor, tmp_path, monke
     assert results[0].status == TestStatus.PASSED, results[0].failure_reason
 
 
-def test_hanging_test_does_not_void_the_batch(tmp_path):
-    executor = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=8), per_test_timeout_seconds=4)
+def test_hanging_test_does_not_void_the_batch(tmp_path, monkeypatch):
+    """A per-test hang must cost at most a per-test rerun, not the whole batch: the batch
+    times out as one unit, then the suspicious modules are rerun individually with their
+    own per-test budget. The batch-level timeout is simulated (a real 8s batch timeout plus
+    real subprocess reruns is inherently timing-dependent on slow machines)."""
+    from core.sandbox import TIMEOUT_EXIT_CODE
+
+    executor = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60), per_test_timeout_seconds=4)
+    real_execute = executor.sandbox.execute_pytest_files
+    calls = {"batch_timeouts": 0}
+
+    def batch_times_out(files, working_dir=None, timeout_seconds=None, **kwargs):
+        if len(files) > 1:
+            calls["batch_timeouts"] += 1
+            return TIMEOUT_EXIT_CODE, "", "sandbox: batch timed out", 0.0, None, None
+        return real_execute(files, working_dir=working_dir, timeout_seconds=timeout_seconds)
+
+    monkeypatch.setattr(executor.sandbox, "execute_pytest_files", batch_times_out)
     results, _ = executor.execute_test_suite([
         _test("OK", "def test_ok():\n    assert True"),
         _test("HANG", "import time\ndef test_hang():\n    time.sleep(60)\n    assert True"),
         _test("BAD", "def test_bad():\n    assert 1 == 2"),
     ], working_dir=str(tmp_path))
+    assert calls["batch_timeouts"] == 1  # the batch timed out and triggered the individual reruns
     assert [r.status for r in results] == [TestStatus.PASSED, TestStatus.ERROR, TestStatus.FAILED]
     assert "timed out" in results[1].failure_reason
 
