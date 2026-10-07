@@ -392,11 +392,11 @@ class DockerSandbox(LocalSubprocessSandbox):
         # The host user on POSIX, so files written to the run directory stay removable; otherwise nobody.
         # A root harness (common in CI) would otherwise silently run a root container, contradicting
         # the documented non-root isolation; nobody is used instead and the run dir is opened up.
-        if hasattr(os, "getuid"):
-            if os.getuid() == 0:
-                return "65534:65534"
-            return f"{os.getuid()}:{os.getgid()}"
-        return "65534:65534"
+        if sys.platform == "win32":
+            return "65534:65534"
+        if os.getuid() == 0:
+            return "65534:65534"
+        return f"{os.getuid()}:{os.getgid()}"
 
     def _build_command(
         self,
