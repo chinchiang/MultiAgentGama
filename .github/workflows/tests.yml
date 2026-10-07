@@ -14,8 +14,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      # Third-party actions are pinned to commit SHAs (supply-chain hardening); bump the tag in the comment
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
           cache: pip
@@ -25,13 +26,28 @@ jobs:
       - run: ruff check .
       - run: mypy core/ agents/ runners/ reports/ main.py
 
+  # Known-vulnerability audit of the exact locked dependency set; runs on every PR so a
+  # dependency bump that introduces a CVE fails before merge
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pip-audit
+      # --no-deps: the lock already contains the fully resolved tree (regenerate with
+      # `uv pip compile --universal requirements.txt -o requirements.lock`)
+      - run: python -m pip_audit -r requirements.lock --disable-pip --no-deps
+
   # The installed wheel must run without the source checkout (it once shipped without config/*.yaml)
   package:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - run: python -m pip install build
@@ -56,8 +72,8 @@ jobs:
     # The Linux job builds the sandbox image and runs the real-container tests; budget generously
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
