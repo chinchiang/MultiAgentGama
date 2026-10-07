@@ -2,7 +2,7 @@
 import json
 import os
 
-from core.llm_gateway import LLMGateway
+from core.llm_gateway import LLMGateway, PROVENANCE_KEY
 from core.models import (
     AgentCallRecord,
     CodeSymbol,
@@ -411,8 +411,35 @@ def test_clean_and_parse_json_robustness():
     assert gw._clean_and_parse_json('Note: {ignore this invalid}\nReal output:\n{"key": 5}') == {"key": 5}
     # 5. Unclosed code fence
     assert gw._clean_and_parse_json('```json\n{"key": 6}\n') == {"key": 6}
-    # 6. Completely non-JSON text returns JSONDecodeError dict gracefully
-    bad = gw._clean_and_parse_json('Sorry, I cannot help with that.')
-    assert bad.get("error") == "JSONDecodeError"
-    assert "Sorry" in bad.get("raw_content", "")
+    # 6. Completely non-JSON text returns None (no sentinel dict a model could collide with)
+    assert gw._clean_and_parse_json('Sorry, I cannot help with that.') is None
+    # 7. A model echoing a parse-failure-shaped dict is just a normal dict, not an error
+    assert gw._clean_and_parse_json('{"error": "JSONDecodeError", "raw_content": "hi"}') == {
+        "error": "JSONDecodeError", "raw_content": "hi"
+    }
+
+
+def test_validate_output_any_of_keys():
+    assert LLMGateway._validate_output({"tests": []}, True, None, ["tests", "code"]) is None
+    assert LLMGateway._validate_output({"code": "def test_x(): pass"}, True, None, ["tests", "code"]) is None
+    assert LLMGateway._validate_output(None, True, None, ["tests", "code"]) == "response is not valid JSON"
+    problem = LLMGateway._validate_output({"oops": 1}, True, None, ["tests", "code"])
+    assert problem is not None and "none of the expected" in problem
+    # all-of semantics are unchanged
+    assert LLMGateway._validate_output({"a": 1}, True, ["a", "b"], None) == "response is missing required key(s): b"
+    assert LLMGateway._validate_output({"a": 1, "b": 2}, True, ["a", "b"], None) is None
+
+
+def test_garbage_json_object_is_recorded_as_invalid_call(fake_live):
+    """A live response that parses as JSON but has none of the expected keys must be
+    recorded with mode 'invalid' (with its reason), not treated as a successful call that
+    just happens to produce zero results."""
+    import json
+    gw = LLMGateway(CONFIG, execution_mode="live")
+    fake_live(lambda s, u: json.dumps({"sorry": "no tests in here"}))
+    result = gw.generate("whitebox_test_generator", "sys", "user", json_output=True,
+                         required_keys_any=["tests", "code"])
+    assert set(result.keys()) == {PROVENANCE_KEY}
+    assert gw.call_log[-1].mode == "invalid"
+    assert "none of the expected" in gw.call_log[-1].reason
 

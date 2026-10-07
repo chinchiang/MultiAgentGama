@@ -104,7 +104,12 @@ class WhiteboxTestGenerator:
             f"Produce an executable Pytest unit test."
         )
 
-        resp = self.gateway.generate("whitebox_test_generator", system_prompt, user_prompt, json_output=True)
+        # The model may answer with a batch ({"tests": [...]}) or a single object ({"code": ...});
+        # anything else is recorded as an invalid call instead of silently producing zero tests.
+        resp = self.gateway.generate(
+            "whitebox_test_generator", system_prompt, user_prompt,
+            json_output=True, required_keys_any=["tests", "code"]
+        )
 
         raw_tests = resp.get("tests")
         tests_data = raw_tests if isinstance(raw_tests, list) else []

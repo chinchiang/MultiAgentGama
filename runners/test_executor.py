@@ -97,20 +97,27 @@ class TestSuiteExecutor:
             cases = self._parse_junit(junit_xml)
             timed_out: Set[str] = set()
             not_rerun: Set[str] = set()
+            parse_failed: Set[str] = set()
             if exit_code == TIMEOUT_EXIT_CODE and len(files) > 1:
                 # One hanging test must not void the whole batch: rerun each module on its own budget
                 logger.warning("Batch run timed out; re-running each test module individually to isolate the hang.")
                 coverage_pct = None
-                cases, timed_out, not_rerun = self._run_individually(files, working_dir)
+                cases, timed_out, not_rerun, parse_failed = self._run_individually(files, working_dir)
                 junit_xml = ""  # per-module outcomes are now in `cases` / `timed_out`
 
             for module, idx in module_to_idx.items():
                 t = tests[idx]
-                module_cases = cases.get(module)
+                module_cases = cases.get(module) if cases is not None else None
                 if module in not_rerun:
                     results[idx] = self._result(
                         t, unique_ids[idx], TestStatus.ERROR,
                         failure_reason="Rerun budget exhausted after the batch timeout; module was not re-run"
+                    )
+                elif module in parse_failed:
+                    results[idx] = self._result(
+                        t, unique_ids[idx], TestStatus.ERROR,
+                        failure_reason="Sandbox test report could not be parsed; no per-test verdict available",
+                        stderr=stderr
                     )
                 elif junit_xml is None:
                     if exit_code == TIMEOUT_EXIT_CODE:
@@ -125,6 +132,12 @@ class TestSuiteExecutor:
                             failure_reason=f"Sandbox run produced no report: {stderr.strip()[:200] or f'exit code {exit_code}'}",
                             stdout=stdout, stderr=stderr
                         )
+                elif cases is None:
+                    results[idx] = self._result(
+                        t, unique_ids[idx], TestStatus.ERROR,
+                        failure_reason="Sandbox test report could not be parsed; no per-test verdict available",
+                        stdout=stdout, stderr=stderr
+                    )
                 elif not module_cases and module in timed_out:
                     results[idx] = self._result(
                         t, unique_ids[idx], TestStatus.ERROR,
@@ -143,15 +156,17 @@ class TestSuiteExecutor:
 
     def _run_individually(
         self, files: Dict[str, str], working_dir: str
-    ) -> Tuple[Dict[str, List[dict]], Set[str], Set[str]]:
+    ) -> Tuple[Dict[str, List[dict]], Set[str], Set[str], Set[str]]:
         """Runs each module in its own process.
 
         Returns (junit cases by module, modules that timed out, modules skipped because the
-        rerun budget (the sandbox's own batch budget) was exhausted).
+        rerun budget (the sandbox's own batch budget) was exhausted, modules whose JUnit
+        report could not be parsed).
         """
         cases: Dict[str, List[dict]] = {}
         timed_out: Set[str] = set()
         not_rerun: Set[str] = set()
+        parse_failed: Set[str] = set()
         deadline = time.monotonic() + float(getattr(self.sandbox, "timeout_seconds", 0) or 0)
         for filename, code in files.items():
             module = filename[:-3]
@@ -164,8 +179,12 @@ class TestSuiteExecutor:
             if exit_code == TIMEOUT_EXIT_CODE:
                 timed_out.add(module)
                 continue
-            cases.update(self._parse_junit(junit_xml))
-        return cases, timed_out, not_rerun
+            module_cases = self._parse_junit(junit_xml)
+            if module_cases is None:
+                parse_failed.add(module)
+                continue
+            cases.update(module_cases)
+        return cases, timed_out, not_rerun, parse_failed
 
     @staticmethod
     def _split_future_imports(code: str) -> Tuple[str, str]:
@@ -213,8 +232,13 @@ class TestSuiteExecutor:
         return unique
 
     @staticmethod
-    def _parse_junit(junit_xml: Optional[str]) -> Dict[str, List[dict]]:
-        """Groups JUnit testcases by generated module name (test_vh_NNN)."""
+    def _parse_junit(junit_xml: Optional[str]) -> Optional[Dict[str, List[dict]]]:
+        """Groups JUnit testcases by generated module name (test_vh_NNN).
+
+        Returns {} when nothing was produced (or nothing matched), and None when a report
+        existed but could not be parsed — the caller must not report that as "no test
+        collected", which blames the generated code for a broken sandbox report.
+        """
         grouped: Dict[str, List[dict]] = {}
         if not junit_xml:
             return grouped
@@ -222,7 +246,7 @@ class TestSuiteExecutor:
             root = ET.fromstring(junit_xml)
         except ET.ParseError as e:
             logger.error(f"Unable to parse JUnit XML: {e}")
-            return grouped
+            return None
 
         for tc in root.iter("testcase"):
             # Collection errors: classname="" and name=<module>; regular tests: classname=<module>
@@ -281,7 +305,20 @@ class TestSuiteExecutor:
             )
         if errors or harness_failures:
             case = (errors or harness_failures)[0]
-            reason = self._first_line(case["message"]) or self._first_line(case["details"]) or "Unknown execution failure"
+            if case["outcome"] == "error" and self._raised_in_target_code(case):
+                summary = self._exception_summary(case)
+                if summary.startswith(HARNESS_ERROR_EXCEPTIONS):
+                    # The import/syntax failure happened in the target (or its dependencies),
+                    # not in the generated test: the boundary was never exercised and the
+                    # report must not blame the test for the target being broken.
+                    return self._result(
+                        test, test_id, TestStatus.ERROR,
+                        failure_reason=(f"Target code is broken and was never exercised by this test: "
+                                        f"{summary} (raised outside the generated test module)"),
+                        traceback=case["details"], duration=duration, stdout=stdout, stderr=stderr
+                    )
+            reason = (self._exception_summary(case) or self._first_line(case["message"])
+                      or self._first_line(case["details"]) or "Unknown execution failure")
             return self._result(
                 test, test_id, TestStatus.ERROR,
                 failure_reason=f"Test could not run correctly: {reason}",
@@ -312,6 +349,30 @@ class TestSuiteExecutor:
             return True
         return bool(_SIGNATURE_TYPEERROR_RE.match(message)
                     and _RAISED_IN_TEST_MODULE_RE.search(case["details"] or ""))
+
+    @staticmethod
+    def _exception_summary(case: dict) -> str:
+        """The raised exception ('E   ModuleNotFoundError: ...') from pytest's traceback.
+
+        JUnit's message for collection errors is just 'collection failure', which says
+        nothing about what actually broke; the traceback's E-line names the exception.
+        """
+        details = case["details"] or ""
+        e_lines = re.findall(r"^E\s+(.+)$", details, re.MULTILINE)
+        return (e_lines[-1].strip() if e_lines else (case["message"] or "").strip())[:300]
+
+    @staticmethod
+    def _raised_in_target_code(case: dict) -> bool:
+        """True when the innermost traceback frame is not the generated test module (pytest
+        junit tracebacks use the short 'path.py:LINE: in ...' format): the target, or its
+        dependency chain, is what raised. Without a usable traceback the answer stays
+        conservative (test-side framing) so nothing is over-attributed to the target."""
+        details = case["details"] or ""
+        frames = re.findall(r'File "([^"]+?\.py)"', details) \
+            or re.findall(r"^(.+\.py):\d+: in ", details, re.MULTILINE)
+        if not frames:
+            return False
+        return not os.path.basename(frames[-1]).startswith("test_vh_")
 
     @staticmethod
     def _is_assertion(message: Optional[str]) -> bool:
