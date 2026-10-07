@@ -88,4 +88,4 @@ jobs:
           echo "VIBEHARNESS_REQUIRE_DOCKER=1" >> "$GITHUB_ENV"
       # Hermetic: the suite uses mock mode and a fake litellm, so no API keys are needed
       # Floor is the measured total minus headroom for OS matrix variance; raise as coverage grows
-      - run: python -m pytest -q --cov=core --cov=agents --cov=runners --cov=reports --cov-report=term-missing --cov-fail-under=92
+      - run: python -m pytest -q --cov=core --cov=agents --cov=runners --cov=reports --cov-report=term-missing --cov-fail-under=93
