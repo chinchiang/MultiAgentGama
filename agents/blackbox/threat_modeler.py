@@ -68,17 +68,32 @@ class AutomatedThreatModeler:
         return rules if isinstance(rules, dict) else {}
 
     def _rules_guidance(self) -> str:
-        """STRIDE vibe-bug checklist and OWASP API Top 10 from config/threat_rules.yaml."""
+        """STRIDE vibe-bug checklist and OWASP API Top 10 from config/threat_rules.yaml.
+
+        The file is user-editable, so every level is type-checked: a structurally wrong file
+        (e.g. a list where a mapping is expected) skips the checklist instead of crashing
+        every modeling batch with an AttributeError.
+        """
         lines = []
-        for cat in (self.rules.get("stride_categories") or {}).values():
-            bugs = "; ".join(cat.get("common_vibe_bugs") or [])
-            lines.append(f"- {cat.get('name')}: {bugs}")
-        owasp = [f"{o.get('id')} {o.get('name')}" for o in self.rules.get("owasp_api_top10") or []]
+        stride = self.rules.get("stride_categories")
+        if isinstance(stride, dict):
+            for cat in stride.values():
+                if not isinstance(cat, dict):
+                    continue
+                bugs = cat.get("common_vibe_bugs")
+                bug_list = "; ".join(b for b in bugs if isinstance(b, str)) if isinstance(bugs, list) else ""
+                name = cat.get("name") if isinstance(cat.get("name"), str) else "Unnamed category"
+                lines.append(f"- {name}: {bug_list}")
+        owasp = self.rules.get("owasp_api_top10")
+        owasp_entries = [
+            f"{o.get('id')} {o.get('name')}" for o in owasp
+            if isinstance(o, dict) and isinstance(o.get("id"), str)
+        ] if isinstance(owasp, list) else []
         text = ""
         if lines:
             text += "Common vibe-coding flaws to check per STRIDE category:\n" + "\n".join(lines) + "\n\n"
-        if owasp:
-            text += "Use these OWASP API Top 10 ids for owasp_mapping: " + ", ".join(owasp) + "\n\n"
+        if owasp_entries:
+            text += "Use these OWASP API Top 10 ids for owasp_mapping: " + ", ".join(owasp_entries) + "\n\n"
         return text
 
     @staticmethod

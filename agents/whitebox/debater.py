@@ -3,7 +3,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
 from core.models import ReviewFinding, MultiModelDebateResult, VerificationVote, CodeSymbol
-from core.llm_gateway import LLMGateway
+from core.llm_gateway import LLMGateway, LLMGatewayError
 from core.codecontext import render_symbols, truncate_to_tokens
 
 logger = logging.getLogger("VibeHarness.Debater")
@@ -70,8 +70,20 @@ class MultiModelDebater:
         }
         any_simulated = False
         if jobs:
+            # Verifiers are independent models, so their calls run concurrently. A crashed
+            # batch must not discard every other batch's (already paid-for) votes; live-mode
+            # failures still propagate so the run fails loudly.
             with ThreadPoolExecutor(max_workers=min(self.gateway.max_concurrent_calls, len(jobs))) as pool:
-                results = list(pool.map(lambda job: self._verify(job[0], findings, job[1], symbols, root_dir), jobs))
+                futures = [pool.submit(self._verify, job[0], findings, job[1], symbols, root_dir) for job in jobs]
+                results = []
+                for job, future in zip(jobs, futures, strict=True):
+                    try:
+                        results.append(future.result())
+                    except LLMGatewayError:
+                        raise
+                    except Exception as e:
+                        logger.error(f"Verifier batch for {job[0]} failed: {type(e).__name__}: {e}")
+                        results.append(([], False))
             for job_votes, simulated in results:
                 any_simulated = any_simulated or simulated
                 for idx, vote in job_votes:

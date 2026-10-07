@@ -223,6 +223,24 @@ def test_mock_threat_model_is_not_multiplied_by_batching(tmp_path):
     assert len(report.threats) == len({t.title for t in report.threats}) == 3
 
 
+def test_structurally_wrong_threat_rules_degrade_to_no_guidance(tmp_path):
+    """threat_rules.yaml is user-editable: a YAML file that parses but has the wrong shape
+    (a list where a mapping is expected, string entries instead of objects) must skip the
+    checklist instead of raising AttributeError out of every modeling batch."""
+    from core.llm_gateway import LLMGateway
+    from agents.blackbox.threat_modeler import AutomatedThreatModeler
+    rules = tmp_path / "threat_rules.yaml"
+    rules.write_text(
+        "stride_categories:\n  - just a string\n"
+        "owasp_api_top10:\n  - 'also a string'\n  - {id: API1, name: BOLA}\n",
+        encoding="utf-8",
+    )
+    tm = AutomatedThreatModeler(LLMGateway(CONFIG, execution_mode="mock"), rules_path=str(rules))
+    guidance = tm._rules_guidance()
+    assert "API1 BOLA" in guidance  # the valid entries are still used
+    assert "just a string" not in guidance
+
+
 # --- Offline probes never invoke argument-less functions ---------------------------------------
 
 def test_probes_skip_functions_without_required_arguments(tmp_path):
@@ -282,6 +300,20 @@ def test_sarif_uris_are_relative_to_the_enclosing_repository(tmp_path):
     run = _sarif([_finding(file_path=str(app), line_number=3)], src)
     uri = run["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
     assert uri == "services/api/app.py"
+
+
+def test_sarif_root_ignores_a_dotfiles_repo_in_the_home_directory(tmp_path, monkeypatch):
+    """A git repo at ~ (a dotfiles/config repo) must not become %SRCROOT% for targets under
+    ~: the SARIF URIs would point into a private home path no CI checkout can resolve."""
+    from reports.report_generator import ReportGenerator
+    real_expanduser = os.path.expanduser
+    fake_home = tmp_path / "home"
+    (fake_home / ".git").mkdir(parents=True)
+    run_dir = fake_home / "runs" / "vibe-target"
+    run_dir.mkdir(parents=True)
+    monkeypatch.setattr(os.path, "expanduser",
+                        lambda p: str(fake_home) if p == "~" else real_expanduser(p))
+    assert ReportGenerator._sarif_root(str(run_dir / "app.py")) == str(run_dir)
 
 
 def test_sarif_rule_ids_and_fingerprints_do_not_depend_on_run_numbering(tmp_path):
@@ -361,3 +393,25 @@ def test_verifier_accepts_quoted_indices_and_rejects_booleans(fake_live):
     result = MultiModelDebater(LLMGateway(CONFIG, execution_mode="live")).arbitrate(findings)
     votes = {f.finding_id: [v.verdict for v in f.verification_votes] for f in result.confirmed_findings}
     assert votes == {"A": ["confirm", "confirm"], "B": []}
+
+
+def test_one_crashed_verifier_batch_does_not_abort_arbitration(fake_live, monkeypatch):
+    """A non-LLM crash in one verifier's batch must not propagate out of the thread pool and
+    discard every other verifier's votes; live-mode LLM failures still fail the run loudly."""
+    import json
+    from core.llm_gateway import LLMGateway
+    from agents.whitebox.debater import MultiModelDebater
+    findings = [_finding(finding_id="A", file_path="app.py")]
+    fake_live(lambda s, u: json.dumps({"verdicts": [{"index": 0, "verdict": "confirm"}]}))
+    debater = MultiModelDebater(LLMGateway(CONFIG, execution_mode="live"))
+    real_verify = debater._verify
+
+    def flaky_verify(agent_id, *args, **kwargs):
+        if agent_id == "whitebox_verifier_nemotron":
+            raise RuntimeError("simulated thread crash")
+        return real_verify(agent_id, *args, **kwargs)
+
+    monkeypatch.setattr(debater, "_verify", flaky_verify)
+    result = debater.arbitrate(findings)
+    votes = [v.verdict for f in result.confirmed_findings for v in f.verification_votes]
+    assert votes == ["confirm"]  # chatgpt's vote survived nemotron's crash

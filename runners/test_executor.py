@@ -56,8 +56,12 @@ class TestSuiteExecutor:
             "import sys",
             "import os",
             "from typing import Any, Dict",
-            f"sys.path.insert(0, {abs_target!r})",
+            # The parent dir goes in first so the target itself ends up with the highest
+            # priority (last insert wins position 0), matching the sandbox PYTHONPATH order.
+            # Otherwise a same-named module in the parent directory (e.g. proj\utils.py vs
+            # proj\app\utils.py) would shadow the target module under test.
             f"sys.path.insert(0, {parent_dir!r})",
+            f"sys.path.insert(0, {abs_target!r})",
             "# --- VibeHarness Auto-Generated Test ---",
         ])
 
