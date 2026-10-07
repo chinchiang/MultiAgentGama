@@ -62,6 +62,14 @@ def module_import_name(file_path: str, root_dir: str) -> Optional[str]:
 def import_instructions(file_path: str, root_dir: str, symbol_name: Optional[str] = None) -> str:
     """Tells the model exactly how the generated test must import the code under test."""
     abs_path = os.path.abspath(file_path)
+    if not file_path.endswith(".py"):
+        # The sandbox only executes Python tests; giving importlib instructions for a JS/TS
+        # file would push the model toward an ImportError it cannot fix.
+        return (
+            f"Target file (absolute path): {abs_path}\n"
+            "This is not a Python file: it can be reviewed statically but cannot be imported or "
+            "executed by the Python test sandbox, so write no import or executable test code for it."
+        )
     module = module_import_name(file_path, root_dir)
     lines = [f"Target file (absolute path): {abs_path}"]
     if module:

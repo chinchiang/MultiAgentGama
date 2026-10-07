@@ -33,14 +33,22 @@ def _top_level_test_nodes(tree: ast.Module) -> List[_TestNode]:
     return nodes
 
 
-def top_level_test_functions(code: str) -> List[str]:
-    """Names of module-level pytest test functions; raises SyntaxError/ValueError on invalid code."""
-    return [node.name for node in _top_level_test_nodes(ast.parse(code))]
-
-
 def _has_assertion(fn: ast.AST) -> bool:
-    """True if the function body contains an assert, raises AssertionError, or uses pytest.raises/fail/..."""
-    for node in ast.walk(fn):
+    """
+    True if the function body contains an assert, raises AssertionError, or uses pytest.raises/fail/...
+    An assert inside a nested function counts only when that helper is actually called from the
+    test body, otherwise an uncalled helper would satisfy the gate without checking anything.
+    """
+    called_helpers = {
+        node.func.id for node in ast.walk(fn)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    stack = list(ast.iter_child_nodes(fn))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            if isinstance(node, ast.Lambda) or node.name not in called_helpers:
+                continue  # never-called nested function: its assert proves nothing
         if isinstance(node, ast.Assert):
             return True
         if isinstance(node, ast.Raise) and node.exc is not None:
@@ -55,6 +63,7 @@ def _has_assertion(fn: ast.AST) -> bool:
             # the gate without checking any target behaviour.
             if name in _ASSERTING_CALLS:
                 return True
+        stack.extend(ast.iter_child_nodes(node))
     return False
 
 
@@ -74,7 +83,17 @@ def check_test_code(code: str) -> Tuple[bool, Optional[str]]:
     tests = _top_level_test_nodes(tree)
     if not tests:
         return False, "no top-level test_ function defined"
-    vacuous = [t.name for t in tests if not _has_assertion(t)]
+    vacuous = [t.name for t in tests if not _test_has_assertion(t)]
     if vacuous:
         return False, f"test function(s) without any assertion: {', '.join(vacuous)}"
     return True, None
+
+
+def _test_has_assertion(test_node: _TestNode) -> bool:
+    """Assertion gate for one top-level test node; for a class, any test method with an assertion counts."""
+    if isinstance(test_node, ast.ClassDef):
+        return any(
+            _has_assertion(m) for m in test_node.body
+            if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
+        )
+    return _has_assertion(test_node)

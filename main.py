@@ -3,6 +3,7 @@ import argparse
 import logging
 import sys
 import os
+import traceback
 
 from core import __version__
 from core.harness import VibeHarnessCommander, force_utf8_stdio
@@ -161,6 +162,7 @@ def main():
         sys.exit(4)
     except Exception as e:
         # A crashed run must never fall through to exit code 1, which CI reads as NEEDS_FIXES
+        traceback.print_exc(file=sys.stderr)
         print(f"Error: harness crashed unexpectedly: {type(e).__name__}: {e}", file=sys.stderr)
         sys.exit(USAGE_ERROR_EXIT_CODE)
 

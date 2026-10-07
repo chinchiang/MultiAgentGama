@@ -1,4 +1,5 @@
 """Regression tests for executor correctness, self-healing, and result-provenance honesty."""
+import json
 import os
 import sys
 import pytest
@@ -6,6 +7,7 @@ from core.models import GeneratedTest, TestStatus, AgentCallRecord
 from core.llm_gateway import LLMGateway, LLMGatewayError
 from core.sandbox import LocalSubprocessSandbox, TIMEOUT_EXIT_CODE
 from core.codecheck import check_test_code, strip_code_fences
+from core.codecontext import import_instructions
 from agents.whitebox.ast_extractor import ASTExtractor
 from agents.whitebox.test_generator import WhiteboxTestGenerator
 from agents.blackbox.threat_modeler import AutomatedThreatModeler
@@ -289,13 +291,13 @@ def test_sandbox_does_not_write_into_target(executor, tmp_path):
 def test_heal_keeps_valid_code_with_leading_imports():
     gen = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="mock"))
     code = "import pytest\n\ndef test_real():\n    assert 1 == 2"
-    assert gen._validate_and_heal(code, 1) == code
+    assert gen._validate_and_heal(code, "finding WB-F-001") == code
 
 
 def test_heal_strips_markdown_fences():
     gen = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="mock"))
     fenced = "```python\ndef test_real():\n    assert True\n```"
-    assert gen._validate_and_heal(fenced, 1) == "def test_real():\n    assert True"
+    assert gen._validate_and_heal(fenced, "finding WB-F-001") == "def test_real():\n    assert True"
 
 
 def test_check_test_code_requires_test_function():
@@ -463,6 +465,39 @@ def test_check_test_code_accepts_assertion_forms():
     assert check_test_code("def test_a():\n    raise AssertionError('boom')")[0]
     assert check_test_code("def test_a():\n    pytest.fail('x')")[0]
     assert not check_test_code("def test_a():\n    x = 1\ndef test_b():\n    assert x")[0]
+
+
+def test_check_test_code_rejects_uncalled_helper_assertion_decoy():
+    # An assert inside a nested, never-called helper would otherwise satisfy the gate
+    is_valid, problem = check_test_code("def test_a():\n    def unused():\n        assert False\n")
+    assert not is_valid
+    assert "without any assertion" in problem
+
+
+def test_check_test_code_accepts_assertion_in_called_helper():
+    code = "def test_a():\n    def check():\n        assert f(1) == 1\n    check()\n"
+    assert check_test_code(code)[0] is True
+
+
+def test_import_instructions_disclose_non_python_targets():
+    text = import_instructions("app/server.ts", ".")
+    assert "not a Python file" in text
+    assert "importlib" not in text
+    assert "cannot be imported" in text
+
+
+def test_fallback_threat_ids_have_no_gaps(fake_live):
+    # A model-supplied id must not consume the fallback counter, otherwise the THREAT-XX
+    # sequence skips numbers (THREAT-01 could stay unused while fallbacks jump to 02+).
+    fake_live(lambda s, u: json.dumps({"threats": [
+        {"threat_id": "THREAT-02", "stride_category": "Tampering", "title": "T2", "attack_vector": "v2"},
+        {"threat_id": "THREAT-02", "stride_category": "Tampering", "title": "dup", "attack_vector": "dup"},
+        {"threat_id": "  ", "stride_category": "Tampering", "title": "blank", "attack_vector": "blank"},
+    ]}))
+    gateway = LLMGateway(CONFIG, execution_mode="live")
+    report = AutomatedThreatModeler(gateway).model_system("desc", [], symbols=[], root_dir=".")
+    ids = sorted(t.threat_id for t in report.threats)
+    assert ids == ["THREAT-01", "THREAT-02", "THREAT-03"]
 
 
 def test_unparseable_live_output_is_recorded_invalid(fake_live):

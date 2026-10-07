@@ -1,4 +1,10 @@
 # Threat Modeling Rules & Mapping Configuration for Vibe Coding
+#
+# Functional fields (parsed by agents/blackbox/threat_modeler.py as prompt guidance):
+#   - stride_categories.<key>.name / description / common_vibe_bugs
+#   - owasp_api_top10[*].id / name
+# Everything else in this file (code, target_components, ...) is documentation:
+# the harness never reads it, so edits there change nothing at runtime.
 stride_categories:
   spoofing:
     code: "S"

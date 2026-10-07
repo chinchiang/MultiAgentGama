@@ -127,7 +127,8 @@ class VibeHarnessCommander:
         work_dir = target_dir if os.path.isdir(target_dir) else os.path.dirname(os.path.abspath(target_dir))
         symbols = self.ast_extractor.parse_directory(target_dir, max_files=self.max_files)
         routes = [s.name for s in symbols if s.symbol_type == "route"]
-        detected_langs = list(self.ast_extractor.detected_languages) or ["Python"]
+        # Sorted so the reported stack is deterministic regardless of set iteration order
+        detected_langs = sorted(self.ast_extractor.detected_languages) or ["Python"]
         lang_str = ", ".join(detected_langs)
         self.console.print(f"[+] Detected Target Stack: [bold green]{lang_str}[/bold green]")
         self.console.print(f"[+] Extracted [bold]{len(symbols)}[/bold] code symbols across target files.")
@@ -265,7 +266,16 @@ class VibeHarnessCommander:
                 f"{len(self.ast_extractor.skipped_files)} source file(s) were skipped by the max_files limit ({self.max_files})"
             )
         if wb_errored or bb_errored:
-            inconclusive_reasons.append(f"{wb_errored + bb_errored} generated test(s) errored, were skipped, or did not run")
+            inconclusive_reasons.append(
+                f"{wb_errored + bb_errored} generated test(s) errored, were skipped, or never ran; "
+                "the boundaries they cover remain unverified by this run"
+            )
+        non_python_langs = [lang for lang in detected_langs if lang != "Python"]
+        if non_python_langs:
+            inconclusive_reasons.append(
+                f"{', '.join(non_python_langs)} code was reviewed statically only: the test sandbox "
+                "executes Python, so no dynamic verification covers it"
+            )
         if bb_failed_unclassified:
             inconclusive_reasons.append(
                 f"{len(bb_failed_unclassified)} black-box attack test(s) failed without a confirmed exploit "
