@@ -10,3 +10,11 @@ dist/
 *.egg-info/
 # Generated audit reports (a sample lives in docs/sample_report.md)
 vibe_harness_report.md
+report.json
+*.sarif
+
+# Environments and caches
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/

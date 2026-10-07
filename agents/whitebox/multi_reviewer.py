@@ -24,7 +24,6 @@ class HeterogeneousReviewerEnsemble:
     # Every symbol is reviewed, in as many batches as needed; a batch's code listing fits the token budget
     BATCH_MAX_TOKENS = 10000
     BATCH_MAX_SYMBOLS = 15
-    MAX_WORKERS = 6
 
     def __init__(self, gateway: LLMGateway):
         self.gateway = gateway
@@ -59,7 +58,7 @@ class HeterogeneousReviewerEnsemble:
         # Reviewers are independent models, so their calls run concurrently. A crashed batch
         # must not discard every other batch's (already paid-for) results; live-mode failures
         # still propagate so the run fails loudly.
-        with ThreadPoolExecutor(max_workers=min(self.MAX_WORKERS, len(jobs))) as pool:
+        with ThreadPoolExecutor(max_workers=min(self.gateway.max_concurrent_calls, len(jobs))) as pool:
             futures = [pool.submit(self._review_batch, job[0], job[1], root) for job in jobs]
             responses = []
             for job, future in zip(jobs, futures, strict=True):

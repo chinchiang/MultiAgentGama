@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import re
+import threading
 from typing import Dict, Any, Optional, List
 import yaml
 
@@ -20,6 +21,11 @@ DEFAULT_CONFIG_PATH = os.path.join(
 
 # Key added to every response so callers can tell simulated output from real model output
 PROVENANCE_KEY = "_provenance"
+
+DEFAULT_MAX_CONCURRENT_CALLS = 6
+
+
+BUDGET_EXHAUSTED_REASON = "max_model_calls budget exhausted"
 
 
 class LLMGatewayError(RuntimeError):
@@ -53,6 +59,37 @@ class LLMGateway:
         self.models_config = self.config.get("models") or {}
         self.agents_config = self.config.get("agents") or {}
         self.call_log: List[AgentCallRecord] = []
+        global_cfg = self.config.get("global") or {}
+        # Cost guard: live model invocations allowed per run (litellm retries / fallback_model of one
+        # invocation are not counted separately). None or 0 means unlimited.
+        self.max_model_calls = self._positive_int(global_cfg.get("max_model_calls"), "max_model_calls")
+        # Agents fan their calls out on a thread pool of at most this many workers
+        self.max_concurrent_calls = self._positive_int(
+            global_cfg.get("max_concurrent_calls", DEFAULT_MAX_CONCURRENT_CALLS), "max_concurrent_calls"
+        ) or DEFAULT_MAX_CONCURRENT_CALLS
+        self.live_calls_attempted = 0
+        self._budget_lock = threading.Lock()
+
+    @staticmethod
+    def _positive_int(value: Any, key: str) -> Optional[int]:
+        """An optional positive integer setting; None/0 mean "not set"."""
+        if value is None or value == 0:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ConfigError(f"global.{key} must be a non-negative integer, got {value!r}")
+        return value
+
+    def _reserve_live_call(self) -> bool:
+        """Claims one live invocation from the budget (thread-safe); False when it is exhausted."""
+        with self._budget_lock:
+            if self.max_model_calls is not None and self.live_calls_attempted >= self.max_model_calls:
+                return False
+            self.live_calls_attempted += 1
+            return True
+
+    @property
+    def budget_exhausted_calls(self) -> List[AgentCallRecord]:
+        return [rec for rec in self.call_log if rec.reason == BUDGET_EXHAUSTED_REASON]
 
     @property
     def used_simulation(self) -> bool:
@@ -117,6 +154,8 @@ class LLMGateway:
         elif not self.is_live_configured(model_alias):
             env_var = model_info.get("api_key_env") or "<no api_key_env configured>"
             fallback_reason = f"API key env var {env_var} is not set"
+        elif not self._reserve_live_call():
+            fallback_reason = BUDGET_EXHAUSTED_REASON
 
         if fallback_reason is None:
             try:
@@ -208,16 +247,62 @@ class LLMGateway:
         ))
 
     def _clean_and_parse_json(self, text: str) -> Dict[str, Any]:
-        """Strips markdown code fences and parses JSON safely."""
+        """Strips markdown code fences and parses JSON safely, with conversational fallback."""
         text = text.strip()
-        match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
+        # 1. Closed markdown code fence (```json ... ``` or ```JSON / ```)
+        match = re.search(r"```[\w-]*\s*([\s\S]*?)\s*```", text)
         if match:
-            text = match.group(1).strip()
+            candidate = match.group(1).strip()
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+
+        # 2. Direct JSON string
         try:
-            return json.loads(text)
-        except json.JSONDecodeError as err:
-            logger.error(f"JSON parsing error: {err}. Raw content: {text[:200]}")
-            return {"error": "JSONDecodeError", "raw_content": text}
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+        # 3. Unclosed code fence (starts with ```tag but missing closing ```)
+        unclosed_match = re.match(r"^\s*```[\w-]*\s*([\s\S]*)$", text)
+        if unclosed_match:
+            candidate = re.sub(r"```+\s*$", "", unclosed_match.group(1)).strip()
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+
+        # 4. Conversational wrapping fallback: extract substring between first '{' and last '}'
+        first_brace = text.find("{")
+        last_brace = text.rfind("}")
+        if first_brace != -1 and last_brace > first_brace:
+            candidate = text[first_brace:last_brace + 1]
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                # If first-to-last failed (e.g. earlier unclosed non-JSON brace), search each '{' to last '}'
+                for m in re.finditer(r"\{", text):
+                    start = m.start()
+                    if start == first_brace or start >= last_brace:
+                        continue
+                    try:
+                        parsed = json.loads(text[start:last_brace + 1])
+                        if isinstance(parsed, dict):
+                            return parsed
+                    except json.JSONDecodeError:
+                        continue
+
+        logger.error(f"JSON parsing error: could not extract valid JSON. Raw content: {text[:200]}")
+        return {"error": "JSONDecodeError", "raw_content": text}
 
     def _generate_simulated_response(self, agent_id: str, model_alias: str, prompt: str) -> Dict[str, Any]:
         """

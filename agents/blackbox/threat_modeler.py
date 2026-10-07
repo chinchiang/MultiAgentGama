@@ -2,10 +2,11 @@ import logging
 import os
 import re
 import yaml
+from concurrent.futures import ThreadPoolExecutor
 from pydantic import ValidationError
 from typing import List, Dict, Any, Optional
 from core.models import ThreatItem, ThreatModelReport, STRIDECategory, FindingSeverity, CodeSymbol
-from core.llm_gateway import LLMGateway
+from core.llm_gateway import LLMGateway, LLMGatewayError
 from core.codecontext import render_symbols, batch_symbols
 
 DEFAULT_RULES_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config", "threat_rules.yaml")
@@ -87,6 +88,28 @@ class AutomatedThreatModeler:
         root = root_dir or os.path.dirname(os.path.abspath(symbols[0].file_path))
         return f"Target source code:\n{render_symbols(symbols, root, max_tokens=BATCH_MAX_TOKENS)}\n\n"
 
+    def _model_batch(
+        self,
+        batch: List[CodeSymbol],
+        system_prompt: str,
+        system_description: str,
+        entrypoints_summary: str,
+        routes_summary: str,
+        root_dir: Optional[str]
+    ) -> Dict[str, Any]:
+        user_prompt = (
+            f"System Description: {system_description}\n"
+            f"Entrypoints: {entrypoints_summary}\n"
+            f"Detected Routes: {routes_summary}\n\n"
+            f"{self._rules_guidance()}"
+            f"{self._code_guidance(batch, root_dir)}"
+            f"Perform comprehensive threat modeling identifying vibe-coding vulnerabilities. "
+            f"Only include threats that are plausible for the code shown, and name the concrete function/route in attack_vector."
+        )
+        return self.gateway.generate(
+            "blackbox_threat_modeler", system_prompt, user_prompt, json_output=True, required_keys=["threats"]
+        )
+
     def model_system(
         self,
         system_description: str,
@@ -136,24 +159,35 @@ class AutomatedThreatModeler:
         batches = batch_symbols(ordered, root_dir or os.getcwd(), BATCH_MAX_TOKENS, BATCH_MAX_SYMBOLS) or [[]]
 
         logger.info("Initiating STRIDE & OWASP threat modeling...")
+        with ThreadPoolExecutor(max_workers=min(self.gateway.max_concurrent_calls, len(batches))) as pool:
+            futures = [
+                pool.submit(
+                    self._model_batch,
+                    batch,
+                    system_prompt,
+                    system_description,
+                    entrypoints_summary,
+                    routes_summary,
+                    root_dir
+                )
+                for batch in batches
+            ]
+            responses: List[Dict[str, Any]] = []
+            for _batch, future in zip(batches, futures, strict=True):
+                try:
+                    responses.append(future.result())
+                except LLMGatewayError:
+                    raise
+                except Exception as e:
+                    logger.error(f"Threat modeler batch failed: {type(e).__name__}: {e}")
+                    responses.append({})
+
         report_fields: Optional[Dict[str, Any]] = None
         threats: List[ThreatItem] = []
         used_ids: set = set()
         any_simulated = False
 
-        for batch in batches:
-            user_prompt = (
-                f"System Description: {system_description}\n"
-                f"Entrypoints: {entrypoints_summary}\n"
-                f"Detected Routes: {routes_summary}\n\n"
-                f"{self._rules_guidance()}"
-                f"{self._code_guidance(batch, root_dir)}"
-                f"Perform comprehensive threat modeling identifying vibe-coding vulnerabilities. "
-                f"Only include threats that are plausible for the code shown, and name the concrete function/route in attack_vector."
-            )
-            resp = self.gateway.generate(
-                "blackbox_threat_modeler", system_prompt, user_prompt, json_output=True, required_keys=["threats"]
-            )
+        for resp in responses:
             any_simulated = any_simulated or self.gateway.is_simulated(resp)
             if report_fields is None and self.gateway.is_usable(resp):
                 # Report-level fields come from the first batch that produced a usable answer

@@ -4,9 +4,9 @@ English (US) ｜ [正體中文（臺灣）](configuration.md)
 
 This document covers every field in `config/agents_config.yaml`: semantics, defaults, and what actually takes effect (as implemented).
 
-The file has three top-level sections: **`global`** (execution and sandbox parameters), **`models`** (provider definitions), and **`agents`** (per-agent model routing). A missing config file fails loudly (`FileNotFoundError`); the harness never runs on an empty configuration.
+The file has three top-level sections: **`global`** (execution and sandbox parameters), **`models`** (provider definitions), and **`agents`** (per-agent model routing). A missing or invalid-YAML config file fails loudly (`ConfigError`; the CLI exits with code 5); the harness never runs on an empty configuration.
 
-From the CLI, use `--config <path>` to point at a different file and `--mode` to override `execution_mode` (precedence: CLI `--mode` > `global.execution_mode` > default `hybrid`).
+From the CLI, use `--config <path>` to point at a different file and `--mode` to override `execution_mode` (precedence: CLI `--mode` > `global.execution_mode` > default `hybrid`); `--max-files` and `--max-model-calls` override their `global` fields the same way.
 
 ---
 
@@ -18,6 +18,9 @@ From the CLI, use `--config <path>` to point at a different file and `--mode` to
 | `timeout_seconds` | `60` | Per-LLM-request timeout in seconds, passed to litellm |
 | `max_retries` | `2` | Retry count at the litellm level (retries the same primary model; the `fallback_model` is tried once only after all retries fail) |
 | `max_output_tokens` | `4096` | Token cap per model response |
+| `max_model_calls` | `null` (unlimited) | Cost guard: real model invocations per run (litellm retries and the `fallback_model` of one invocation are not counted separately). Once exhausted, `hybrid` falls back to the simulation engine and it is listed as an evidence gap (the verdict cannot be `READY_TO_SHIP`); `live` raises `LLMGatewayError` (exit 4). Must be a non-negative integer; `0` means unlimited |
+| `max_concurrent_calls` | `6` | Concurrent model calls per agent phase (review, verification, white-box test generation, black-box attack synthesis); `1` makes everything sequential |
+| `max_files` | `50` | Source files analyzed per run; files beyond the cap are listed as an evidence gap (the verdict cannot be `READY_TO_SHIP`) |
 | `sandbox_provider` | `"local_subprocess"` | `local_subprocess` (local subprocess, **not a security boundary**) or `docker` (disposable isolated container); anything else fails at startup |
 | `docker_image` | `"vibeharness-sandbox:latest"` | Docker sandbox image; must ship `pytest`, `pytest-cov`, and the target's dependencies |
 | `docker_network` | `"none"` | Container network mode; `none` blocks all network. Black-box tests against a running service need network access (e.g. `host` on Linux), which reduces isolation |

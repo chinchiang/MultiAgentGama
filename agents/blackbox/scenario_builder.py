@@ -4,10 +4,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 import os
 from core.models import ThreatItem, GeneratedTest, CodeSymbol, text_or
-from core.llm_gateway import LLMGateway
+from core.llm_gateway import LLMGateway, LLMGatewayError
 from core.codecheck import check_test_code, strip_code_fences
 from core.codecontext import render_symbols, import_instructions
 
@@ -114,75 +115,102 @@ class ThreatScenarioBuilder:
                 "its functions/handlers directly with attacker-controlled arguments. Do not start servers or use the network.\n"
             )
 
-        tests: List[GeneratedTest] = []
-
-        for threat in threats:
-            logger.info(f"Synthesizing black-box exploit test for: [{threat.threat_id}] {threat.title}")
-
-            system_prompt = (
-                "You are an Elite Offensive Security & AppSec Test Automation Engineer.\n"
-                f"Execution Mode: {mode_label}.\n"
-                f"{mode_rules}"
-                "Your task is to translate a specific STRIDE/OWASP threat model item into a concrete, "
-                "executable Python pytest module.\n\n"
-                "The test must assert that defensive boundaries hold (e.g. status code is 401/403/422, "
-                "or sensitive fields are uncompromised), so that an assertion failure means the attack succeeded. "
-                "If the attack cannot be expressed against the given code, return an empty code string instead of guessing.\n\n"
-                "Output JSON:\n"
-                "{\n"
-                f'  "test_id": "BB-TEST-{threat.threat_id}",\n'
-                '  "title": "Clear test name",\n'
-                '  "rationale": "Why this test proves or disproves the threat",\n'
-                '  "expected_outcome": "Defensive condition that must be met",\n'
-                '  "code": "from module import handler\\n\\ndef test_security_case():\\n    result = handler(...)\\n    assert result[\\"status\\"] == \\"error\\""\n'
-                "}"
-            )
-
-            user_prompt = (
-                f"Target Base URL: {base_url or 'none (in-process only)'}\n"
-                f"Server Live Status: {server_is_live}\n"
-                f"Threat ID: {threat.threat_id}\n"
-                f"STRIDE Category: {threat.stride_category.value}\n"
-                f"OWASP Mapping: {threat.owasp_mapping}\n"
-                f"Attack Vector: {threat.attack_vector}\n"
-                f"Attack Scenario: {threat.attack_scenario}\n"
-                f"Defense Verification Goal: {threat.test_verification_goal}\n\n"
-                f"{self._code_context(threat, symbols, root_dir)}"
-                f"Generate the executable Python test function."
-            )
-
-            resp = self.gateway.generate(
-                "blackbox_test_synthesizer", system_prompt, user_prompt, json_output=True, required_keys=["code"]
-            )
-
-            raw_code = resp.get("code")
-            code_str = strip_code_fences(raw_code if isinstance(raw_code, str) else "")
-            if not code_str:
-                # No fabricated fallback: a threat without a synthesized test is reported as NOT TESTED
-                logger.warning(f"No executable test synthesized for [{threat.threat_id}]; threat remains untested.")
-                continue
-            if server_is_live:
-                offenders = self._hosts_outside_base_url(code_str, base_url or "")
-                if offenders:
-                    logger.warning(
-                        f"Synthesized test for [{threat.threat_id}] targets non-target host(s) "
-                        f"{', '.join(offenders)}; rejected and the threat remains untested."
-                    )
+        # Threats are independent: synthesize their attack tests concurrently, keeping threat order
+        with ThreadPoolExecutor(max_workers=min(self.gateway.max_concurrent_calls, len(threats))) as pool:
+            futures = [
+                pool.submit(self._test_for_threat, threat, base_url, server_is_live, mode_label, mode_rules,
+                            symbols, root_dir)
+                for threat in threats
+            ]
+            tests: List[GeneratedTest] = []
+            for threat, future in zip(threats, futures, strict=True):
+                try:
+                    test = future.result()
+                except LLMGatewayError:
+                    raise  # strict live mode fails loudly
+                except Exception as e:
+                    # The threat is reported as untested rather than aborting the other syntheses
+                    logger.error(f"Attack synthesis for [{threat.threat_id}] failed: {type(e).__name__}: {e}")
                     continue
-            is_valid, problem = check_test_code(code_str)
-            if not is_valid:
-                # Kept so the executor reports it as ERROR rather than silently dropping it
-                logger.warning(f"Synthesized test for [{threat.threat_id}] is not executable: {problem}")
-
-            tests.append(GeneratedTest(
-                test_id=f"BB-TEST-{threat.threat_id}",
-                test_type="blackbox_security",
-                target_component=threat.attack_vector,
-                title=text_or(resp.get("title"), f"Security test for {threat.title}"),
-                code=code_str,
-                rationale=text_or(resp.get("rationale"), threat.attack_scenario),
-                expected_outcome=text_or(resp.get("expected_outcome"), threat.test_verification_goal),
-                source_ref=threat.threat_id
-            ))
-
+                if test is not None:
+                    tests.append(test)
         return tests
+
+    def _test_for_threat(
+        self,
+        threat: ThreatItem,
+        base_url: Optional[str],
+        server_is_live: bool,
+        mode_label: str,
+        mode_rules: str,
+        symbols: Optional[List[CodeSymbol]],
+        root_dir: Optional[str]
+    ) -> Optional[GeneratedTest]:
+        """The attack test synthesized for one threat, or None when the threat stays untested."""
+        logger.info(f"Synthesizing black-box exploit test for: [{threat.threat_id}] {threat.title}")
+
+        system_prompt = (
+            "You are an Elite Offensive Security & AppSec Test Automation Engineer.\n"
+            f"Execution Mode: {mode_label}.\n"
+            f"{mode_rules}"
+            "Your task is to translate a specific STRIDE/OWASP threat model item into a concrete, "
+            "executable Python pytest module.\n\n"
+            "The test must assert that defensive boundaries hold (e.g. status code is 401/403/422, "
+            "or sensitive fields are uncompromised), so that an assertion failure means the attack succeeded. "
+            "If the attack cannot be expressed against the given code, return an empty code string instead of guessing.\n\n"
+            "Output JSON:\n"
+            "{\n"
+            f'  "test_id": "BB-TEST-{threat.threat_id}",\n'
+            '  "title": "Clear test name",\n'
+            '  "rationale": "Why this test proves or disproves the threat",\n'
+            '  "expected_outcome": "Defensive condition that must be met",\n'
+            '  "code": "from module import handler\\n\\ndef test_security_case():\\n    result = handler(...)\\n    assert result[\\"status\\"] == \\"error\\""\n'
+            "}"
+        )
+
+        user_prompt = (
+            f"Target Base URL: {base_url or 'none (in-process only)'}\n"
+            f"Server Live Status: {server_is_live}\n"
+            f"Threat ID: {threat.threat_id}\n"
+            f"STRIDE Category: {threat.stride_category.value}\n"
+            f"OWASP Mapping: {threat.owasp_mapping}\n"
+            f"Attack Vector: {threat.attack_vector}\n"
+            f"Attack Scenario: {threat.attack_scenario}\n"
+            f"Defense Verification Goal: {threat.test_verification_goal}\n\n"
+            f"{self._code_context(threat, symbols, root_dir)}"
+            f"Generate the executable Python test function."
+        )
+
+        resp = self.gateway.generate(
+            "blackbox_test_synthesizer", system_prompt, user_prompt, json_output=True, required_keys=["code"]
+        )
+
+        raw_code = resp.get("code")
+        code_str = strip_code_fences(raw_code if isinstance(raw_code, str) else "")
+        if not code_str:
+            # No fabricated fallback: a threat without a synthesized test is reported as NOT TESTED
+            logger.warning(f"No executable test synthesized for [{threat.threat_id}]; threat remains untested.")
+            return None
+        if server_is_live:
+            offenders = self._hosts_outside_base_url(code_str, base_url or "")
+            if offenders:
+                logger.warning(
+                    f"Synthesized test for [{threat.threat_id}] targets non-target host(s) "
+                    f"{', '.join(offenders)}; rejected and the threat remains untested."
+                )
+                return None
+        is_valid, problem = check_test_code(code_str)
+        if not is_valid:
+            # Kept so the executor reports it as ERROR rather than silently dropping it
+            logger.warning(f"Synthesized test for [{threat.threat_id}] is not executable: {problem}")
+
+        return GeneratedTest(
+            test_id=f"BB-TEST-{threat.threat_id}",
+            test_type="blackbox_security",
+            target_component=threat.attack_vector,
+            title=text_or(resp.get("title"), f"Security test for {threat.title}"),
+            code=code_str,
+            rationale=text_or(resp.get("rationale"), threat.attack_scenario),
+            expected_outcome=text_or(resp.get("expected_outcome"), threat.test_verification_goal),
+            source_ref=threat.threat_id
+        )

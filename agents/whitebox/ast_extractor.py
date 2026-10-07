@@ -8,6 +8,7 @@ from core.models import CodeSymbol
 
 logger = logging.getLogger("VibeHarness.ASTExtractor")
 
+DEFAULT_MAX_FILES = 50
 SOURCE_EXTENSIONS = (".py", ".js", ".jsx", ".ts", ".tsx")
 # FastAPI/Starlette verbs plus Flask/Quart route decorators
 ROUTE_DECORATORS = {"get", "post", "put", "delete", "patch", "route", "api_route", "websocket"}
@@ -51,7 +52,7 @@ class ASTExtractor:
             return self._parse_js_ts_file(file_path)
         return []
 
-    def parse_directory(self, dir_path: str, max_files: int = 50) -> List[CodeSymbol]:
+    def parse_directory(self, dir_path: str, max_files: int = DEFAULT_MAX_FILES) -> List[CodeSymbol]:
         """Parses a directory tree (up to max_files source files) or a single source file."""
         self.parse_failures, self.skipped_files = [], []
         if os.path.isfile(dir_path):
