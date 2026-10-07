@@ -68,4 +68,6 @@ select = ["E4", "E7", "E9", "F", "B"]
 python_version = "3.10"
 # litellm / rich ship no type stubs
 ignore_missing_imports = true
+# Also type-check function bodies without annotations (free correctness win: no new errors surfaced)
+check_untyped_defs = true
 files = ["core", "agents", "runners", "reports", "main.py"]
