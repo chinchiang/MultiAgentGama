@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-07
+
 Packaging, model-output robustness, execution correctness and SARIF fixes from a deep review, plus parallel test synthesis and a cost guard; a second verification round adds execution-attribution honesty, gate decoy protection and engineering convergence; a third hardening round covers stricter mypy, CI supply-chain protection and a higher coverage floor.
 
 ### Added
