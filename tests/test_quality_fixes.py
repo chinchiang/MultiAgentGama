@@ -415,3 +415,128 @@ def test_one_crashed_verifier_batch_does_not_abort_arbitration(fake_live, monkey
     result = debater.arbitrate(findings)
     votes = [v.verdict for f in result.confirmed_findings for v in f.verification_votes]
     assert votes == ["confirm"]  # chatgpt's vote survived nemotron's crash
+
+
+# --- Coverage push: degradation and fallback paths of the reviewer ensemble and threat modeler ----
+
+def test_reviewer_ensemble_skips_empty_symbols_without_model_calls():
+    from core.llm_gateway import LLMGateway
+    from agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
+    gw = LLMGateway(CONFIG, execution_mode="mock")
+
+    def must_not_be_called(*a, **k):
+        raise AssertionError("no model call may be made for an empty symbol list")
+
+    gw.generate = must_not_be_called
+    assert HeterogeneousReviewerEnsemble(gw).review_symbols([]) == []
+
+
+def test_one_crashed_reviewer_batch_does_not_abort_the_review(fake_live, tmp_path, monkeypatch):
+    """A non-LLM crash in one reviewer's batch must not discard the other reviewers' findings;
+    live-mode LLM failures still propagate (they are re-raised, not swallowed)."""
+    import json
+    from core.llm_gateway import LLMGateway
+    from agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
+    from agents.whitebox.ast_extractor import ASTExtractor
+    (tmp_path / "svc.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
+    symbols = ASTExtractor().parse_file(str(tmp_path / "svc.py"))
+    fake_live(lambda s, u: json.dumps({"findings": [{"symbol_name": "f", "title": "ok", "severity": "HIGH"}]}))
+    ensemble = HeterogeneousReviewerEnsemble(LLMGateway(CONFIG, execution_mode="live"))
+    real_batch = ensemble._review_batch
+
+    def flaky_batch(reviewer, batch, root):
+        if reviewer["agent_id"] == "whitebox_reviewer_nemotron":
+            raise RuntimeError("simulated thread crash")
+        return real_batch(reviewer, batch, root)
+
+    monkeypatch.setattr(ensemble, "_review_batch", flaky_batch)
+    findings = ensemble.review_symbols(symbols, root_dir=str(tmp_path))
+    assert [f.title for f in findings] == ["ok", "ok"]  # claude and chatgpt survived
+    assert all(not f.is_simulated for f in findings)
+
+
+def test_unknown_reviewer_severity_falls_back_to_medium(fake_live, tmp_path):
+    import json
+    from core.llm_gateway import LLMGateway
+    from agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
+    from core.models import FindingSeverity
+    from agents.whitebox.ast_extractor import ASTExtractor
+    (tmp_path / "svc.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
+    symbols = ASTExtractor().parse_file(str(tmp_path / "svc.py"))
+    fake_live(lambda s, u: json.dumps({"findings": [
+        {"symbol_name": "f", "title": "cosmic", "severity": "COSMIC"},
+        {"symbol_name": "f", "title": "ok", "severity": "high"},
+    ]}))
+    findings = HeterogeneousReviewerEnsemble(LLMGateway(CONFIG, execution_mode="live")).review_symbols(
+        symbols, root_dir=str(tmp_path)
+    )
+    by_title = {f.title: f.severity for f in findings}
+    assert by_title["cosmic"] == FindingSeverity.MEDIUM
+    assert by_title["ok"] == FindingSeverity.HIGH
+
+
+def test_missing_threat_rules_file_degrades_with_warning():
+    from core.llm_gateway import LLMGateway
+    from agents.blackbox.threat_modeler import AutomatedThreatModeler
+    tm = AutomatedThreatModeler(LLMGateway(CONFIG, execution_mode="mock"), rules_path="Z:/definitely/not/here.yaml")
+    assert tm.rules == {}
+    report = tm.model_system("desc", [])
+    assert len(report.threats) == 3  # modeling still works, just without the checklist
+
+
+def test_broken_yaml_threat_rules_degrade_with_warning(tmp_path):
+    from core.llm_gateway import LLMGateway
+    from agents.blackbox.threat_modeler import AutomatedThreatModeler
+    rules = tmp_path / "threat_rules.yaml"
+    rules.write_text("stride_categories: [unclosed\n  bad yaml here", encoding="utf-8")
+    tm = AutomatedThreatModeler(LLMGateway(CONFIG, execution_mode="mock"), rules_path=str(rules))
+    assert tm.rules == {}
+    assert tm._rules_guidance() == ""
+
+
+def test_non_dict_stride_category_entry_is_skipped(tmp_path):
+    from core.llm_gateway import LLMGateway
+    from agents.blackbox.threat_modeler import AutomatedThreatModeler
+    rules = tmp_path / "threat_rules.yaml"
+    rules.write_text(
+        "stride_categories:\n"
+        "  spoofing: \"not a mapping\"\n"
+        "  tampering: {name: Tampering, common_vibe_bugs: [\"mass assignment\"]}\n",
+        encoding="utf-8",
+    )
+    tm = AutomatedThreatModeler(LLMGateway(CONFIG, execution_mode="mock"), rules_path=str(rules))
+    guidance = tm._rules_guidance()
+    assert "Tampering: mass assignment" in guidance
+    assert "not a mapping" not in guidance
+
+
+def test_unknown_threat_severity_falls_back_to_high(fake_live):
+    import json
+    from core.llm_gateway import LLMGateway
+    from agents.blackbox.threat_modeler import AutomatedThreatModeler
+    from core.models import FindingSeverity
+    fake_live(lambda s, u: json.dumps({"threats": [
+        {"threat_id": "THREAT-01", "stride_category": "Tampering", "title": "t", "severity": "CATASTROPHIC"},
+    ]}))
+    report = AutomatedThreatModeler(LLMGateway(CONFIG, execution_mode="live")).model_system("desc", [])
+    assert [t.severity for t in report.threats] == [FindingSeverity.HIGH]
+
+
+def test_all_unusable_batches_still_produce_a_default_report(fake_live):
+    from core.llm_gateway import LLMGateway
+    from agents.blackbox.threat_modeler import AutomatedThreatModeler
+    fake_live(lambda s, u: "I refuse to answer in JSON.")
+    report = AutomatedThreatModeler(LLMGateway(CONFIG, execution_mode="live")).model_system("desc", ["/api/users"])
+    assert report.threats == []
+    # report-level fields fall back to what the harness itself passed in
+    assert report.entrypoints == ["/api/users"]
+    assert not report.is_simulated
+
+
+def test_coverage_extraction_ignores_malformed_totals():
+    from core.sandbox import LocalSubprocessSandbox
+    extract = LocalSubprocessSandbox(timeout_seconds=60)._extract_coverage_percent
+    assert extract("TOTAL 10 2 87%") == 87.0
+    assert extract("TOTAL 10 2 87.5%") == 87.5
+    assert extract("TOTAL 10 2 not-a-number%") is None
+    assert extract("no table at all") is None
