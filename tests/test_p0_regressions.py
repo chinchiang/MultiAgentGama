@@ -816,7 +816,8 @@ def test_hanging_test_does_not_void_the_batch(tmp_path, monkeypatch):
     real subprocess reruns is inherently timing-dependent on slow machines)."""
     from core.sandbox import TIMEOUT_EXIT_CODE
 
-    executor = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60), per_test_timeout_seconds=4)
+    # 15s per test: one pytest subprocess alone takes ~4s on a loaded Windows host, and HANG sleeps 60s
+    executor = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60), per_test_timeout_seconds=15)
     real_execute = executor.sandbox.execute_pytest_files
     calls = {"batch_timeouts": 0}
 

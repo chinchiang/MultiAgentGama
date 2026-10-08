@@ -15,9 +15,9 @@ From the CLI, use `--config <path>` to point at a different file and `--mode` to
 | Field | Default | Description |
 | :--- | :--- | :--- |
 | `execution_mode` | `"hybrid"` | One of `live` / `hybrid` / `mock` (see table below); anything else fails at startup |
-| `timeout_seconds` | `60` | Per-LLM-request timeout in seconds, passed to litellm |
+| `timeout_seconds` | `180` | Per-LLM-request timeout in seconds, passed to litellm |
 | `max_retries` | `2` | Retry count at the litellm level (retries the same primary model; the `fallback_model` is tried once only after all retries fail) |
-| `max_output_tokens` | `4096` | Token cap per model response; `models.<alias>.max_output_tokens` overrides it per model |
+| `max_output_tokens` | `16384` | Token cap per model response; `models.<alias>.max_output_tokens` overrides it per model |
 | `max_model_calls` | `null` (unlimited) | Cost guard: real model invocations per run (litellm retries and the `fallback_model` of one invocation are not counted separately). Once exhausted, `hybrid` falls back to the simulation engine and it is listed as an evidence gap (the verdict cannot be `READY_TO_SHIP`); `live` raises `LLMGatewayError` (exit 4). Must be a non-negative integer; `0` means unlimited |
 | `max_concurrent_calls` | `6` | Concurrent model calls per agent phase (review, verification, white-box test generation, black-box attack synthesis); `1` makes everything sequential |
 | `max_files` | `50` | Source files analyzed per run; files beyond the cap are listed as an evidence gap (the verdict cannot be `READY_TO_SHIP`) |
@@ -50,7 +50,8 @@ Each **key** is a `model_alias` (referenced by the `agents` section's `model_ali
 | `api_key_env` | Required for live mode | Name of the environment variable holding the API key. The key is passed explicitly to litellm, so providers whose litellm default env var differs from `api_key_env` still authenticate. Without this field, live calls raise `LLMGatewayError` |
 | `fallback_model` | Optional | Litellm model string tried **once** after the primary model still fails after `max_retries`; the report records which model was actually used |
 | `api_base` | Optional | Custom API endpoint (e.g. a self-hosted OpenAI-compatible gateway at `https://llm-gateway.example.com/v1`, or a local Ollama at `http://localhost:11434`). **Must be `https://`**; plain `http://` is accepted only for loopback hosts (`localhost` / `127.0.0.1` / `::1`); anything else fails at startup with `ConfigError` (exit 5). Target source code is sent to these endpoints, so only allow-listed endpoints are accepted (OWASP LLM04:2026 Supply Chain) |
-| `max_output_tokens` | Optional | Overrides `global.max_output_tokens`. Reasoning models (GLM, DeepSeek, Gemini 3) count thinking tokens against this limit, so they default to `16384`; too small a value yields empty or cut-off answers, reported as "output truncated at the max_output_tokens limit" |
+| `aws_profile_name` / `aws_region_name` | Optional | For models that authenticate through the AWS credential chain (e.g. `bedrock/...`), use these instead of `api_key_env`: the named AWS profile (SSO included) and region; a configured profile counts as live credentials |
+| `max_output_tokens` | Optional | Overrides `global.max_output_tokens`. Reasoning models (GLM, DeepSeek, Gemini 3) count thinking tokens against this limit; too small a value yields empty or cut-off answers, reported as "output truncated at the max_output_tokens limit" |
 | `provider` | Optional | **Label only — not read by the code** (routing is determined entirely by the litellm model string) |
 
 Built-in aliases and defaults:
@@ -97,7 +98,7 @@ Each **key** is an `agent_id` and supports:
 | `whitebox_verifier_claude` / `_deepseek` / `_glm` / `_gemini` | their matching models | 0.0 | Vote confirm / reject / unsure on findings reported by other models |
 | `whitebox_test_generator` | deepseek | 0.3 | Generates executable pytest tests targeting confirmed defects |
 | `blackbox_threat_modeler` | claude | 0.2 | STRIDE, OWASP API and (for AI-integrated targets) OWASP LLM threat modeling |
-| `blackbox_test_synthesizer` | glm | 0.2 | Turns threat scenarios into black-box attack scripts (BOLA, injection, rate limiting, prompt injection) |
+| `blackbox_test_synthesizer` | deepseek | 0.2 | Turns threat scenarios into black-box attack scripts (BOLA, injection, rate limiting, prompt injection) |
 
 ---
 

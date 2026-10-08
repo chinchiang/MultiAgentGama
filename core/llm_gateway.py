@@ -25,6 +25,8 @@ DEFAULT_CONFIG_PATH = os.path.join(
 PROVENANCE_KEY = "_provenance"
 
 DEFAULT_MAX_CONCURRENT_CALLS = 6
+# A cap, not a spend: threat-model JSON and reasoning models' thinking tokens both overflowed 4096 in live runs
+DEFAULT_MAX_OUTPUT_TOKENS = 16384
 
 
 BUDGET_EXHAUSTED_REASON = "max_model_calls budget exhausted"
@@ -150,8 +152,11 @@ class LLMGateway:
             raise ConfigError(f"Agent config is not valid YAML ({path}): {e}") from e
 
     def is_live_configured(self, model_alias: str) -> bool:
-        """Checks whether the requested model has its API key configured."""
+        """Checks whether the requested model has credentials: its API key, or an AWS profile
+        (Bedrock authenticates through the AWS credential chain, not an API key)."""
         model_info = self.models_config.get(model_alias, {})
+        if model_info.get("aws_profile_name"):
+            return True
         env_var = model_info.get("api_key_env")
         return bool(env_var and os.getenv(env_var))
 
@@ -197,7 +202,7 @@ class LLMGateway:
                 {"role": "user", "content": user_prompt}
             ]
             try:
-                raw_text, model_name, truncated = self._complete(model_info, model_name, messages, temperature)
+                raw_text, model_name, finish_reason = self._complete(model_info, model_name, messages, temperature)
             except Exception as e:
                 fallback_reason = f"live invocation failed: {e}"
                 if self.execution_mode == "live":
@@ -213,7 +218,10 @@ class LLMGateway:
                     result[PROVENANCE_KEY] = {"mode": "live", "model": model_name}
                     return result
                 reason = problem or "response is not valid JSON"
-                if truncated:
+                if not raw_text.strip():
+                    # e.g. a provider safety filter blocking attack-test code; the finish reason says which
+                    reason = f"model returned an empty response (finish_reason: {finish_reason or 'unknown'})"
+                if finish_reason == "length":
                     # Reasoning models spend part of the budget thinking; say so instead of blaming the format
                     reason = (
                         f"output truncated at the max_output_tokens limit ({self._max_output_tokens(model_info)}); "
@@ -237,24 +245,33 @@ class LLMGateway:
         Calls the primary model (with litellm's own retries), then `fallback_model` once if the primary fails.
         The API key is passed explicitly, so providers whose litellm default env var differs from
         `api_key_env` (e.g. Z.AI for GLM) still authenticate.
-        Returns (text, model_actually_used, truncated) where truncated means the token limit cut the answer off.
+        Returns (text, model_actually_used, finish_reason); finish_reason "length" means the token limit cut it off.
         """
         global_cfg = self.config.get("global") or {}
         env_var = model_info.get("api_key_env")
-        if not env_var:
+        aws_profile = model_info.get("aws_profile_name")
+        if not env_var and not aws_profile:
             # Fail with an actionable message instead of a KeyError from the config lookup below
             raise LLMGatewayError(
-                f"Model '{model_name}' has no 'api_key_env' configured; set it in the models section "
-                "of the agents config to make live calls."
+                f"Model '{model_name}' has no 'api_key_env' (or 'aws_profile_name' for Bedrock) configured; "
+                "set it in the models section of the agents config to make live calls."
             )
         kwargs: Dict[str, Any] = {
             "messages": messages,
             "temperature": temperature,
-            "api_key": os.getenv(env_var),
-            "timeout": global_cfg.get("timeout_seconds", 60),
+            # Newer models reject sampling knobs (Claude Opus 5.5 on Bedrock accepts only temperature=1;
+            # Gemini 3 is deprecating them): drop what a model does not support rather than failing the call
+            "drop_params": True,
+            "timeout": global_cfg.get("timeout_seconds", 180),
             "num_retries": global_cfg.get("max_retries", 2),
             "max_tokens": self._max_output_tokens(model_info),
         }
+        if env_var:
+            kwargs["api_key"] = os.getenv(env_var)
+        if aws_profile:
+            kwargs["aws_profile_name"] = aws_profile
+            if model_info.get("aws_region_name"):
+                kwargs["aws_region_name"] = model_info["aws_region_name"]
         if model_info.get("api_base"):
             kwargs["api_base"] = model_info["api_base"]
 
@@ -264,7 +281,8 @@ class LLMGateway:
             try:
                 response = litellm.completion(model=candidate, **kwargs)
                 choice = response.choices[0]
-                return choice.message.content or "", candidate, getattr(choice, "finish_reason", None) == "length"
+                finish_reason = getattr(choice, "finish_reason", None)
+                return choice.message.content or "", candidate, finish_reason if isinstance(finish_reason, str) else None
             except Exception as e:
                 last_error = e
                 logger.warning(f"Model {candidate} failed: {e}")
@@ -276,7 +294,9 @@ class LLMGateway:
     def _max_output_tokens(self, model_info: Dict[str, Any]) -> int:
         """Per-model `max_output_tokens` overrides the global one: reasoning models (GLM, DeepSeek,
         Gemini 3) count thinking tokens against this limit and need a larger budget."""
-        value = model_info.get("max_output_tokens") or (self.config.get("global") or {}).get("max_output_tokens", 4096)
+        value = model_info.get("max_output_tokens") or (self.config.get("global") or {}).get(
+            "max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS
+        )
         return int(value)
 
     @staticmethod

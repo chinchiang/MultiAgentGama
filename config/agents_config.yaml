@@ -3,9 +3,10 @@
 
 global:
   execution_mode: "hybrid"  # "live" (calls APIs), "mock" (offline/dry-run for testing), or "hybrid"
-  timeout_seconds: 60             # per LLM request
+  timeout_seconds: 180            # per LLM request; long JSON at a 16k output cap took Opus over 60s
   max_retries: 2                  # LLM request retries before falling back to fallback_model
-  max_output_tokens: 4096         # per LLM response; a model's own max_output_tokens overrides it
+  max_output_tokens: 16384        # per LLM response (a cap; reasoning tokens count against it); a model's own
+                                  # max_output_tokens overrides it. 4096 truncated threat models in live runs
   max_model_calls: null           # cost guard: live model invocations per run (null = unlimited); when exhausted,
                                   # hybrid falls back to simulation (never READY_TO_SHIP), live fails
   max_concurrent_calls: 6         # parallel model calls per agent phase
@@ -39,7 +40,6 @@ models:
     api_key_env: "ZAI_API_KEY"
     fallback_model: "zai/glm-5.3-flash"
     provider: "zhipu"
-    max_output_tokens: 16384      # reasoning model: thinking tokens count against this limit
 
   deepseek:
     # Versioned ids rather than the moving deepseek-chat alias, so a provider-side swap is visible in reports
@@ -47,7 +47,6 @@ models:
     api_key_env: "DEEPSEEK_API_KEY"
     fallback_model: "deepseek/deepseek-v4-flash"
     provider: "deepseek"
-    max_output_tokens: 16384      # reasoning model: thinking tokens count against this limit
 
   gemini:
     # gemini-2.5-flash is no longer available to new Google API users; use 3.x instead
@@ -55,7 +54,6 @@ models:
     api_key_env: "GEMINI_API_KEY"
     fallback_model: "gemini/gemini-3.5-flash"
     provider: "google"
-    max_output_tokens: 16384      # Gemini 3 thinks by default; 4096 left test-generation answers empty or cut off
 
 agents:
   # 1. White-Box Agents (Multi-Model Ensemble to eliminate bias)
@@ -126,9 +124,12 @@ agents:
     temperature: 0.2
     role: "Extracts trust boundaries, assets, and builds STRIDE, OWASP API and (for AI-integrated targets) OWASP LLM risk matrix"
 
+  # deepseek, chosen from live runs: GLM-5.3 spent its whole 16k output budget thinking on 8 of 12 attack
+  # scripts (empty answers), and Gemini's safety filter refused one ("content_filter"); DeepSeek produced
+  # every white-box test of the same run. Refusals and empty answers are reported, the threat stays untested.
   blackbox_test_synthesizer:
     name: "Security Scenario & Exploit Test Generator"
-    model_alias: "glm"
+    model_alias: "deepseek"
     temperature: 0.2
     role: "Translates threat scenarios into automated black-box tests (BOLA, Injection, Rate-limit, Prompt injection)"
 

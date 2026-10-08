@@ -67,7 +67,7 @@ flowchart TD
 | 交叉驗證投票（`whitebox_verifier_*` ×4） | claude／deepseek／glm／gemini | 只對「別的模型」回報的發現投票：confirm／reject／unsure | 0.0 |
 | 白箱測試生成器（`whitebox_test_generator`） | deepseek | 針對確認缺陷生成可執行的 pytest 測試 | 0.3 |
 | STRIDE 威脅建模師（`blackbox_threat_modeler`） | claude | 擷取信任邊界與資產、建立 STRIDE＋OWASP（API；AI 目標另加 LLM Top 10 2026）攻擊矩陣，並標註 MITRE ATLAS 技術 | 0.2 |
-| 攻擊場景合成器（`blackbox_test_synthesizer`） | glm | 把威脅場景轉成黑箱攻擊腳本（BOLA、注入、限流、提示注入） | 0.2 |
+| 攻擊場景合成器（`blackbox_test_synthesizer`） | deepseek | 把威脅場景轉成黑箱攻擊腳本（BOLA、注入、限流、提示注入） | 0.2 |
 
 ---
 
