@@ -43,12 +43,14 @@
 深度審查後的打包、模型輸出韌性、執行正確性與 SARIF 修正，以及測試合成平行化與成本護欄；第二輪驗證補上執行歸因誠實度、閘門防誘餌與工程收斂；第三輪強化涵蓋 mypy 加嚴、CI 供應鏈防護與覆蓋率門檻上調。
 
 ### 新增
+- **JS/TS 擷取器改寫**（PR #19）：改為無相依的 lexer 加真正的大括號／括號配對——先遮蔽字串、template literal（含 `${}` 巢狀）、註解與 regex literal，註解或字串內容不再造出假宣告；函式、箭頭函式與路由的行範圍正確（過去是固定 15／25 行視窗，會截斷長函式、重複相鄰符號）；支援 generator、async、多行簽名、裸參數箭頭函式與 class method（constructor／static／async，`if`／`while` 不再被誤認）；路由支援任意 receiver（app／router／server／fastify…）與字串或 template literal 路徑，Next.js App Router 以 HTTP 動詞命名的 handler 標為路由
 - **白箱測試生成與黑箱攻擊合成改為平行**：與審查／驗證階段相同以 thread pool 並行呼叫模型，輸出順序（test id、報告）維持確定；單一 finding／threat 失敗不再拖垮其他項目（live 模式仍大聲失敗）
 - **威脅建模多批次平行化**：`AutomatedThreatModeler` 多批次符號審計改以 thread pool 並行呼叫模型，消除大型專案 Phase 4 串行瓶頸，維持輸出確定性
 - **成本護欄 `max_model_calls`**（CLI `--max-model-calls`）：限制每次執行的真實模型呼叫數，並行下計數精確；用完時 hybrid 退回模擬並列為證據缺口（不會給 `READY_TO_SHIP`）、live 直接失敗
 - **可調整的上限**：`max_concurrent_calls`（並行度）與 `max_files`（CLI `--max-files`，過去寫死 50）
 
 ### 修正
+- **審查、去重與黑箱合成的確定性與精度**（PR #18）：去重改為遞移的 union-find，corroborator 清單排序，同嚴重度以 finding_id 決定平手，複數詞幹化不再弄壞 `classes`／`address`；符號比對優先完全同名、再退到後綴，沒指名符號的 finding 保持未解析而不是釘到該批第一個符號；finding id 依 reviewer agent 編號並去重，兩個 agent 共用同一 model alias 也不撞號；黑箱符號相關性改用整字比對（`username` 不再拉進 `get_user`），live 模式下攻擊程式碼指向非 base URL 主機時靜態拒絕；`render_symbols` 超過預算改為截斷而非整塊省略；報告遇到無法辨識的 `overall_status` 顯示 UNKNOWN 徽章，誤傳成字串的清單欄位顯示為一項而不被逐字元拆開
 - **`pytest.fail` 資安突破誤判**：執行器 `_is_assertion` 納入 `pytest.fail()` 產生的 `Failed:` 訊息，黑箱突破如實標記為 `is_security_exploit_confirmed`，不再被誤判降級為 `INCONCLUSIVE`
 - **LLM JSON 解析多層容錯**：`_clean_and_parse_json` 支援自然語言前後綴包裹、非正規/未閉合 code fence 與多區塊提取，大幅降低 live 模式因模型輸出格式偏差導致的 `invalid` 錯誤
 - **安裝後無法執行**：wheel 先前未包含 `config/agents_config.yaml`／`threat_rules.yaml`，`pip install` 後的 `vibeharness` 一律以「Agent config not found」失敗（exit 5）；現在隨套件安裝。threat rules 缺失或損壞時改為記警告而非靜默略過

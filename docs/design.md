@@ -621,7 +621,7 @@ console 輸出另外用 `rich.markup.escape`（`core/harness.py:6`）。
 
 ## 15. 測試策略與 CI
 
-### 15.1 測試套件（`tests/`，約 325 個測試）
+### 15.1 測試套件（`tests/`，約 330 個測試）
 
 整個套件是 hermetic 的：mock 模式加 `conftest.py` 的 `fake_live` fixture（設假金鑰、用 `_FakeLiteLLM` 替換 `core.llm_gateway.litellm`），不需要網路或真實金鑰就能跑 live 路徑。
 
@@ -635,9 +635,9 @@ console 輸出另外用 `rich.markup.escape`（`core/harness.py:6`）。
 | `test_js_ts_extractor.py` | JS/TS lexer：範圍、箭頭函式、generator、class method、route、Next.js |
 | `test_model_output_robustness.py` | 畸形模型輸出的降級、威脅建模分批、probe、Markdown 跳脫、JSON 完整性、SARIF 結構與 URI、`_clean_and_parse_json` |
 | `test_p0_regressions.py` | 執行器、JUnit、自癒、`check_test_code`、gateway 模式、mock pipeline 永不 READY、黑箱分類、URL guard、PoC fence、逾時與孫行程、CLI exit code（以 subprocess 執行） |
-| `test_parallel_and_budgets.py` | 並行且順序穩定、`max_concurrent_calls`、單項失敗隔離、預算在 hybrid 與 live 的行為、並行下計數精確、CLI 旗標 |
+| `test_parallel_and_budgets.py` | 並行且順序穩定、`max_concurrent_calls`、單項失敗隔離、預算在 hybrid 與 live 的行為、並行下計數精確、CLI 旗標、`max_files` 驗證、單一模型的 evidence gap |
 | `test_prompt_context.py` | import 名稱與指引、prompt 帶入實際程式碼、fallback model、config 與 cwd 無關 |
-| `test_quality_fixes.py` | wheel 帶 config、null 欄位、`--base-url`、`__future__`、跨批去重、規則降級、SARIF、簽名錯誤判 ERROR、批次隔離、coverage 解析 |
+| `test_quality_fixes.py` | wheel 帶 config、null 欄位、`--base-url`、`__future__`、跨批去重、規則降級、SARIF、簽名錯誤判 ERROR、批次隔離（含崩潰的記錄）、coverage 解析 |
 
 沒有 golden／snapshot 檔；報告類測試對字串或結構做斷言。每個 CHANGELOG 的修正都有對應的 regression test，且已確認在修正前會失敗。
 
@@ -662,11 +662,11 @@ console 輸出另外用 `rich.markup.escape`（`core/harness.py:6`）。
 
 ## 16. 已知限制與技術債
 
-以下都已對照 `f087dfb` 的程式碼核實。
+以下都已對照目前的程式碼核實。
 
 ### 16.1 未實作（README 已列）
 
-mutation testing、DAST／fuzzing、hypothesis、e2b 沙盒、JS/TS 測試執行（只做靜態擷取；偵測到 JS/TS 時是 evidence gap #11）。
+mutation testing、DAST／fuzzing、hypothesis、e2b 沙盒、JS/TS 測試執行（只做靜態擷取；偵測到 JS/TS 時是 evidence gap #12）。
 
 ### 16.2 行為上的缺口
 

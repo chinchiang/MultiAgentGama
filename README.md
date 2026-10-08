@@ -168,6 +168,7 @@ MultiAgentGama/
 │   ├── sample_report.md          # mock 模式產生的範例報告
 │   ├── configuration.md          # 設定檔欄位完整參考（正體中文）
 │   ├── design.md                 # 設計文件：架構、資料流、閘門判定、沙盒安全模型（正體中文）
+│   ├── design.en.md              # Design document (English)
 │   └── configuration.en.md       # Configuration reference (English)
 ├── tests/                       # 工具包本身之測試（離線、不需 API 金鑰）
 └── main.py                      # CLI 執行入口
@@ -196,7 +197,7 @@ vibeharness --version
 
 > 設定檔（`config/agents_config.yaml`）每個欄位的完整說明——含預設值、改派模型與 Docker 沙盒範例——見 **[docs/configuration.md](docs/configuration.md)**（[English](docs/configuration.en.md)）。
 >
-> 想了解每個元件為什麼這樣設計、資料怎麼在階段之間流動、閘門與 evidence gap 怎麼判定，見 **[docs/design.md](docs/design.md)**（設計文件，正體中文）。
+> 想了解每個元件為什麼這樣設計、資料怎麼在階段之間流動、閘門與 evidence gap 怎麼判定，見 **[docs/design.md](docs/design.md)**（設計文件，正體中文；[English](docs/design.en.md)）。
 
 ```bash
 # 若要使用即時模型：
