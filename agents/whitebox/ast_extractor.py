@@ -38,6 +38,8 @@ class ASTExtractor:
         # Files that could not be read/parsed, and files left out by the max_files cap
         self.parse_failures: List[str] = []
         self.skipped_files: List[str] = []
+        # Source files within the max_files cap (the static AI-security rules scan exactly these)
+        self.analyzed_files: List[str] = []
 
     def parse_file(self, file_path: str) -> List[CodeSymbol]:
         if not os.path.exists(file_path):
@@ -54,8 +56,10 @@ class ASTExtractor:
 
     def parse_directory(self, dir_path: str, max_files: int = DEFAULT_MAX_FILES) -> List[CodeSymbol]:
         """Parses a directory tree (up to max_files source files) or a single source file."""
-        self.parse_failures, self.skipped_files = [], []
+        self.parse_failures, self.skipped_files, self.analyzed_files = [], [], []
         if os.path.isfile(dir_path):
+            if dir_path.lower().endswith(SOURCE_EXTENSIONS):
+                self.analyzed_files = [dir_path]
             return self.parse_file(dir_path)
         source_files: List[str] = []
         for root, dirs, files in os.walk(dir_path):
@@ -65,8 +69,9 @@ class ASTExtractor:
         self.skipped_files = source_files[max_files:]
         if self.skipped_files:
             logger.warning(f"Only the first {max_files} of {len(source_files)} source files are analyzed; {len(self.skipped_files)} skipped.")
+        self.analyzed_files = source_files[:max_files]
         all_symbols: List[CodeSymbol] = []
-        for full_path in source_files[:max_files]:
+        for full_path in self.analyzed_files:
             all_symbols.extend(self.parse_file(full_path))
         return all_symbols
 

@@ -1,8 +1,10 @@
+import hashlib
 import os
 import json
 import logging
 import re
 import threading
+import urllib.parse
 from typing import Dict, Any, Optional, List
 import yaml
 
@@ -23,9 +25,17 @@ DEFAULT_CONFIG_PATH = os.path.join(
 PROVENANCE_KEY = "_provenance"
 
 DEFAULT_MAX_CONCURRENT_CALLS = 6
+# A cap, not a spend: threat-model JSON and reasoning models' thinking tokens both overflowed 4096 in live runs
+DEFAULT_MAX_OUTPUT_TOKENS = 16384
 
 
 BUDGET_EXHAUSTED_REASON = "max_model_calls budget exhausted"
+
+# Agents missing from the config resolve to this alias, which has no model and no key: hybrid mode
+# simulates them and live mode fails loudly, instead of silently routing them to some real provider
+UNCONFIGURED_ALIAS = "unconfigured"
+
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
 class LLMGatewayError(RuntimeError):
@@ -43,7 +53,7 @@ class ConfigError(ValueError):
 
 class LLMGateway:
     """
-    Unified gateway for orchestrating calls to heterogeneous LLMs (Claude, Nemotron, ChatGPT).
+    Unified gateway for orchestrating calls to heterogeneous LLMs (by default Claude, GLM, DeepSeek and Gemini).
     Execution modes:
     - live:   real API calls only; any missing key or failure raises LLMGatewayError.
     - hybrid: real API calls when possible, otherwise the offline simulation engine (recorded as simulated).
@@ -69,6 +79,28 @@ class LLMGateway:
         ) or DEFAULT_MAX_CONCURRENT_CALLS
         self.live_calls_attempted = 0
         self._budget_lock = threading.Lock()
+        self._validate_endpoints()
+
+    def _validate_endpoints(self) -> None:
+        """Every custom api_base must be https (plain http only to loopback): target source code and
+        prompts travel to these endpoints, so a typo or a hostile config must not send them in clear
+        text to an arbitrary host (OWASP LLM04:2026; allow-listed model endpoints)."""
+        for alias, info in self.models_config.items():
+            base = info.get("api_base") if isinstance(info, dict) else None
+            if not base:
+                continue
+            try:
+                parts = urllib.parse.urlsplit(str(base))
+                host = (parts.hostname or "").lower()
+            except ValueError as e:
+                raise ConfigError(f"models.{alias}.api_base is not a valid URL: {base!r}") from e
+            if parts.scheme == "https" and host:
+                continue
+            if parts.scheme == "http" and host in _LOOPBACK_HOSTS:
+                continue
+            raise ConfigError(
+                f"models.{alias}.api_base must be an https:// URL (http:// only for loopback hosts), got {base!r}"
+            )
 
     @staticmethod
     def _positive_int(value: Any, key: str) -> Optional[int]:
@@ -120,8 +152,11 @@ class LLMGateway:
             raise ConfigError(f"Agent config is not valid YAML ({path}): {e}") from e
 
     def is_live_configured(self, model_alias: str) -> bool:
-        """Checks whether the requested model has its API key configured."""
+        """Checks whether the requested model has credentials: its API key, or an AWS profile
+        (Bedrock authenticates through the AWS credential chain, not an API key)."""
         model_info = self.models_config.get(model_alias, {})
+        if model_info.get("aws_profile_name"):
+            return True
         env_var = model_info.get("api_key_env")
         return bool(env_var and os.getenv(env_var))
 
@@ -141,11 +176,12 @@ class LLMGateway:
         mode "invalid" (and returned as {}), so callers and the quality gate never mistake an
         unusable answer for a genuine empty result.
         """
-        agent_meta = self.agents_config.get(agent_id, {})
-        model_alias = agent_meta.get("model_alias", "chatgpt")
+        agent_meta = self.agents_config.get(agent_id) or {}
+        model_alias = agent_meta.get("model_alias") or UNCONFIGURED_ALIAS
         temperature = agent_meta.get("temperature", 0.2)
-        model_info = self.models_config.get(model_alias, {})
-        model_name = model_info.get("model", "gpt-4o")
+        model_info = self.models_config.get(model_alias) or {}
+        model_name = model_info.get("model") or f"(no model configured for alias '{model_alias}')"
+        prompt_hash = hashlib.sha256(f"{system_prompt}\x00{user_prompt}".encode("utf-8")).hexdigest()
 
         # Decide whether to invoke live API or mock engine
         fallback_reason: Optional[str] = None
@@ -166,7 +202,7 @@ class LLMGateway:
                 {"role": "user", "content": user_prompt}
             ]
             try:
-                raw_text, model_name = self._complete(model_info, model_name, messages, temperature)
+                raw_text, model_name, finish_reason = self._complete(model_info, model_name, messages, temperature)
             except Exception as e:
                 fallback_reason = f"live invocation failed: {e}"
                 if self.execution_mode == "live":
@@ -178,19 +214,28 @@ class LLMGateway:
                 result = self._clean_and_parse_json(raw_text) if json_output else {"raw": raw_text}
                 problem = self._validate_output(result, json_output, required_keys, required_keys_any)
                 if problem is None and result is not None:
-                    self._record(agent_id, model_alias, model_name, "live")
+                    self._record(agent_id, model_alias, model_name, "live", prompt_sha256=prompt_hash)
                     result[PROVENANCE_KEY] = {"mode": "live", "model": model_name}
                     return result
                 reason = problem or "response is not valid JSON"
+                if not raw_text.strip():
+                    # e.g. a provider safety filter blocking attack-test code; the finish reason says which
+                    reason = f"model returned an empty response (finish_reason: {finish_reason or 'unknown'})"
+                if finish_reason == "length":
+                    # Reasoning models spend part of the budget thinking; say so instead of blaming the format
+                    reason = (
+                        f"output truncated at the max_output_tokens limit ({self._max_output_tokens(model_info)}); "
+                        f"{reason}. Raise max_output_tokens for this model (reasoning tokens count against it)"
+                    )
                 logger.error(f"[{agent_id}] {model_name} returned unusable output: {reason}")
-                self._record(agent_id, model_alias, model_name, "invalid", reason)
+                self._record(agent_id, model_alias, model_name, "invalid", reason, prompt_sha256=prompt_hash)
                 return {PROVENANCE_KEY: {"mode": "invalid", "model": model_name, "reason": reason}}
         elif self.execution_mode == "live":
             raise LLMGatewayError(f"[{agent_id}] cannot run live with {model_name}: {fallback_reason}")
 
         # Offline / Mock Fallback
         logger.info(f"Dispatching [{agent_id}] to Simulation Engine (Model Alias: {model_alias}; reason: {fallback_reason})")
-        self._record(agent_id, model_alias, model_name, "simulated", fallback_reason)
+        self._record(agent_id, model_alias, model_name, "simulated", fallback_reason, prompt_sha256=prompt_hash)
         result = self._generate_simulated_response(agent_id, model_alias, user_prompt)
         result[PROVENANCE_KEY] = {"mode": "simulated", "model": model_name, "reason": fallback_reason}
         return result
@@ -199,24 +244,34 @@ class LLMGateway:
         """
         Calls the primary model (with litellm's own retries), then `fallback_model` once if the primary fails.
         The API key is passed explicitly, so providers whose litellm default env var differs from
-        `api_key_env` (e.g. NVIDIA NIM) still authenticate. Returns (text, model_actually_used).
+        `api_key_env` (e.g. Z.AI for GLM) still authenticate.
+        Returns (text, model_actually_used, finish_reason); finish_reason "length" means the token limit cut it off.
         """
         global_cfg = self.config.get("global") or {}
         env_var = model_info.get("api_key_env")
-        if not env_var:
+        aws_profile = model_info.get("aws_profile_name")
+        if not env_var and not aws_profile:
             # Fail with an actionable message instead of a KeyError from the config lookup below
             raise LLMGatewayError(
-                f"Model '{model_name}' has no 'api_key_env' configured; set it in the models section "
-                "of the agents config to make live calls."
+                f"Model '{model_name}' has no 'api_key_env' (or 'aws_profile_name' for Bedrock) configured; "
+                "set it in the models section of the agents config to make live calls."
             )
         kwargs: Dict[str, Any] = {
             "messages": messages,
             "temperature": temperature,
-            "api_key": os.getenv(env_var),
-            "timeout": global_cfg.get("timeout_seconds", 60),
+            # Newer models reject sampling knobs (Claude Opus 5.5 on Bedrock accepts only temperature=1;
+            # Gemini 3 is deprecating them): drop what a model does not support rather than failing the call
+            "drop_params": True,
+            "timeout": global_cfg.get("timeout_seconds", 180),
             "num_retries": global_cfg.get("max_retries", 2),
-            "max_tokens": global_cfg.get("max_output_tokens", 4096),
+            "max_tokens": self._max_output_tokens(model_info),
         }
+        if env_var:
+            kwargs["api_key"] = os.getenv(env_var)
+        if aws_profile:
+            kwargs["aws_profile_name"] = aws_profile
+            if model_info.get("aws_region_name"):
+                kwargs["aws_region_name"] = model_info["aws_region_name"]
         if model_info.get("api_base"):
             kwargs["api_base"] = model_info["api_base"]
 
@@ -225,7 +280,9 @@ class LLMGateway:
         for candidate in candidates:
             try:
                 response = litellm.completion(model=candidate, **kwargs)
-                return response.choices[0].message.content or "", candidate
+                choice = response.choices[0]
+                finish_reason = getattr(choice, "finish_reason", None)
+                return choice.message.content or "", candidate, finish_reason if isinstance(finish_reason, str) else None
             except Exception as e:
                 last_error = e
                 logger.warning(f"Model {candidate} failed: {e}")
@@ -233,6 +290,14 @@ class LLMGateway:
             # Unreachable in practice: candidates is never empty, but never raise an Optional
             raise LLMGatewayError(f"Model {model_name}: no candidate model could be attempted")
         raise last_error
+
+    def _max_output_tokens(self, model_info: Dict[str, Any]) -> int:
+        """Per-model `max_output_tokens` overrides the global one: reasoning models (GLM, DeepSeek,
+        Gemini 3) count thinking tokens against this limit and need a larger budget."""
+        value = model_info.get("max_output_tokens") or (self.config.get("global") or {}).get(
+            "max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS
+        )
+        return int(value)
 
     @staticmethod
     def _validate_output(
@@ -252,9 +317,13 @@ class LLMGateway:
             return f"response has none of the expected key(s): {', '.join(required_keys_any)}"
         return None
 
-    def _record(self, agent_id: str, model_alias: str, model_name: str, mode: str, reason: Optional[str] = None):
+    def _record(
+        self, agent_id: str, model_alias: str, model_name: str, mode: str,
+        reason: Optional[str] = None, prompt_sha256: Optional[str] = None
+    ):
         self.call_log.append(AgentCallRecord(
-            agent_id=agent_id, model_alias=model_alias, model_name=model_name, mode=mode, reason=reason
+            agent_id=agent_id, model_alias=model_alias, model_name=model_name, mode=mode, reason=reason,
+            prompt_sha256=prompt_sha256
         ))
 
     def _clean_and_parse_json(self, text: str) -> Optional[Dict[str, Any]]:
@@ -319,56 +388,20 @@ class LLMGateway:
 
     def _generate_simulated_response(self, agent_id: str, model_alias: str, prompt: str) -> Dict[str, Any]:
         """
-        High-fidelity domain-specific fallback logic reflecting distinctive model traits:
-        - Claude: Excels at state transitions, missing null checks, edge-case logic.
-        - Nemotron: Focuses on boundary limits, buffer/memory safety, defensive guards.
-        - ChatGPT: Focuses on contract specifications, API compliance, parameter validation.
+        High-fidelity domain-specific fallback logic reflecting each reviewer's focus:
+        - Claude: state transitions, missing null checks, edge-case logic.
+        - DeepSeek: boundary limits, input sanitization, defensive guards.
+        - GLM: contract specifications, API compliance, parameter validation.
+        - Gemini: AI/LLM integration (OWASP Top 10 for LLM Applications 2026).
+        Reviewer templates are chosen by model alias, falling back to the agent id's suffix.
         NOTE: responses are fixed templates independent of the target code; they exist so the
         pipeline can be exercised offline and are always flagged as simulated in reports.
         """
-        if "reviewer_claude" in agent_id:
-            return {
-                "findings": [
-                    {
-                        "severity": "HIGH",
-                        "title": "Unchecked Null / Implicit State Assumption in Handler",
-                        "description": "The vibe-coded logic assumes entities exist and state transitions are valid without verifying database fetch outcomes, leading to unhandled NoneType / NullPointer exceptions.",
-                        "root_cause": "Absence of defensive null-check before property traversal.",
-                        "suspected_vibe_flaw": "Vibe coding commonly assumes the 'happy path' where records are always found.",
-                        "suggested_test_scenario": "Invoke the endpoint/function with a non-existent ID or empty payload and assert proper error status (404/400) instead of a 500 crash."
-                    }
-                ]
-            }
+        if "reviewer_" in agent_id:
+            template = _SIMULATED_REVIEWS.get(model_alias) or _SIMULATED_REVIEWS.get(agent_id.rsplit("_", 1)[-1])
+            return {"findings": [dict(template)] if template else []}
 
-        elif "reviewer_nemotron" in agent_id:
-            return {
-                "findings": [
-                    {
-                        "severity": "CRITICAL",
-                        "title": "Missing Input Sanitization & Unbounded Resource Allocation",
-                        "description": "The logic lacks input length and numerical range clamping on queries or data arrays, allowing memory exhaustion and ReDoS or unvalidated bulk payloads.",
-                        "root_cause": "Directly feeding untrusted input into downstream iteration and memory structures.",
-                        "suspected_vibe_flaw": "AI coding assistants frequently skip explicit size checks and pagination limits.",
-                        "suggested_test_scenario": "Supply a 10MB payload or integer values exceeding 1,000,000 and verify graceful rejection with HTTP 413 or 422."
-                    }
-                ]
-            }
-
-        elif "reviewer_chatgpt" in agent_id:
-            return {
-                "findings": [
-                    {
-                        "severity": "MEDIUM",
-                        "title": "API Contract Specification Drift & Schema Inconsistency",
-                        "description": "Missing parameter type enforcement and inconsistency between expected response schema and actual serialized dictionary fields.",
-                        "root_cause": "Implicit schema casting without strict Pydantic/dataclass schema validation.",
-                        "suspected_vibe_flaw": "Quick prototyping in vibe coding often changes response structures on the fly without updating contract definitions.",
-                        "suggested_test_scenario": "Assert response schema matches the expected OpenAPI/JSON contract exactly across all field types."
-                    }
-                ]
-            }
-
-        elif "verifier" in agent_id:
+        if "verifier" in agent_id:
             # A template cannot judge target-specific findings; the debater ignores simulated verdicts
             return {"verdicts": []}
 
@@ -427,3 +460,41 @@ class LLMGateway:
             return {"tests": []}
 
         return {"status": "ok", "message": f"Simulated output for {agent_id}"}
+
+
+# Fixed offline review templates per model alias (see LLMGateway._generate_simulated_response)
+_SIMULATED_REVIEWS: Dict[str, Dict[str, str]] = {
+    "claude": {
+        "severity": "HIGH",
+        "title": "Unchecked Null / Implicit State Assumption in Handler",
+        "description": "The vibe-coded logic assumes entities exist and state transitions are valid without verifying database fetch outcomes, leading to unhandled NoneType / NullPointer exceptions.",
+        "root_cause": "Absence of defensive null-check before property traversal.",
+        "suspected_vibe_flaw": "Vibe coding commonly assumes the 'happy path' where records are always found.",
+        "suggested_test_scenario": "Invoke the endpoint/function with a non-existent ID or empty payload and assert proper error status (404/400) instead of a 500 crash.",
+    },
+    "deepseek": {
+        "severity": "CRITICAL",
+        "title": "Missing Input Sanitization & Unbounded Resource Allocation",
+        "description": "The logic lacks input length and numerical range clamping on queries or data arrays, allowing memory exhaustion and ReDoS or unvalidated bulk payloads.",
+        "root_cause": "Directly feeding untrusted input into downstream iteration and memory structures.",
+        "suspected_vibe_flaw": "AI coding assistants frequently skip explicit size checks and pagination limits.",
+        "suggested_test_scenario": "Supply a 10MB payload or integer values exceeding 1,000,000 and verify graceful rejection with HTTP 413 or 422.",
+    },
+    "glm": {
+        "severity": "MEDIUM",
+        "title": "API Contract Specification Drift & Schema Inconsistency",
+        "description": "Missing parameter type enforcement and inconsistency between expected response schema and actual serialized dictionary fields.",
+        "root_cause": "Implicit schema casting without strict Pydantic/dataclass schema validation.",
+        "suspected_vibe_flaw": "Quick prototyping in vibe coding often changes response structures on the fly without updating contract definitions.",
+        "suggested_test_scenario": "Assert response schema matches the expected OpenAPI/JSON contract exactly across all field types.",
+    },
+    "gemini": {
+        "severity": "HIGH",
+        "title": "Untrusted Input Reaches the Prompt and Model Output Is Used Unvalidated",
+        "description": "User-controlled or retrieved text is concatenated into model prompts, and model output drives decisions or downstream calls without a strict schema check.",
+        "root_cause": "No trust boundary between instructions and data, and no deterministic validation of model output (OWASP LLM01:2026 / LLM10:2026).",
+        "suspected_vibe_flaw": "Vibe-coded AI features wire the model straight into business logic because the demo prompt behaved.",
+        "suggested_test_scenario": "Feed input containing an instruction override and invisible Unicode, and assert the output is schema-validated and never reaches eval/SQL/HTML or a privileged action.",
+        "owasp_mapping": "LLM01:2026",
+    },
+}

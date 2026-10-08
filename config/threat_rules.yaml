@@ -3,6 +3,7 @@
 # Functional fields (parsed by agents/blackbox/threat_modeler.py as prompt guidance):
 #   - stride_categories.<key>.name / description / common_vibe_bugs
 #   - owasp_api_top10[*].id / name
+#   - owasp_llm_top10_2026[*].id / name / common_vibe_bugs / atlas_techniques (AI-integrated targets only)
 # Everything else in this file (code, target_components, ...) is documentation:
 # the harness never reads it, so edits there change nothing at runtime.
 stride_categories:
@@ -96,3 +97,96 @@ owasp_api_top10:
   - id: "API10:2023"
     name: "Unsafe Consumption of APIs"
     severity: "High"
+
+# OWASP Top 10 for LLM Applications 2026 (v1.0, 2026-08). Used only when the target imports an
+# AI/LLM SDK (see agents/whitebox/ai_static_scanner.py). Functional fields: id / name / common_vibe_bugs.
+# `cwe` and `atlas_tactics` follow the 2026 document's Appendix A mapping tables (MITRE ATLAS content
+# v2026.06, tactic level); `atlas_techniques` is this harness's technique-level mapping, checked against
+# ATLAS content release 2026.07. The threat modeler is told to use these technique ids for atlas_mapping.
+owasp_llm_top10_2026:
+  - id: "LLM01:2026"
+    name: "Prompt Injection"
+    cwe: ["CWE-1427", "CWE-707", "CWE-349", "CWE-693"]
+    atlas_tactics: ["AML.TA0004", "AML.TA0005", "AML.TA0006", "AML.TA0007", "AML.TA0010", "AML.TA0001", "AML.TA0011", "AML.TA0012"]
+    atlas_techniques: ["AML.T0051.000", "AML.T0051.001", "AML.T0054", "AML.T0068"]
+    common_vibe_bugs:
+      - "User input, retrieved documents, tool output or file content concatenated straight into the system/user prompt"
+      - "No stripping of invisible Unicode (tag block U+E0000-E007F, variation selectors, zero-width) before the model or renderer"
+      - "Access control or safety rules enforced only by prompt text instead of application code"
+  - id: "LLM02:2026"
+    name: "Sensitive Information Disclosure"
+    cwe: ["CWE-200", "CWE-359", "CWE-212", "CWE-532", "CWE-285", "CWE-732", "CWE-201"]
+    atlas_tactics: ["AML.TA0010", "AML.TA0013", "AML.TA0000", "AML.TA0007"]
+    atlas_techniques: ["AML.T0057", "AML.T0055"]
+    common_vibe_bugs:
+      - "Whole database records or PII sent to an external model provider without a field allowlist"
+      - "Full prompts, completions or reasoning traces written to logs/telemetry"
+      - "Retrieval authorization applied after the vector query instead of inside it"
+  - id: "LLM03:2026"
+    name: "Excessive Agency"
+    cwe: ["CWE-285", "CWE-732", "CWE-284", "CWE-770", "CWE-1427"]
+    atlas_tactics: ["AML.TA0005", "AML.TA0011", "AML.TA0010", "AML.TA0012"]
+    atlas_techniques: ["AML.T0053", "AML.T0086", "AML.T0101"]
+    common_vibe_bugs:
+      - "Open-ended tools (run shell command, fetch any URL, raw SQL) exposed to the model"
+      - "Tools running with a broad service identity instead of the requesting user's permissions"
+      - "Irreversible or external actions executed without human confirmation or a deterministic policy check"
+  - id: "LLM04:2026"
+    name: "Supply Chain"
+    cwe: ["CWE-494", "CWE-829", "CWE-349", "CWE-664"]
+    atlas_tactics: ["AML.TA0004", "AML.TA0003", "AML.TA0005", "AML.TA0006"]
+    atlas_techniques: ["AML.T0010", "AML.T0011.000", "AML.T0060", "AML.T0109"]
+    common_vibe_bugs:
+      - "from_pretrained / hub downloads without a pinned revision, or with trust_remote_code=True"
+      - "torch.load / pickle on downloaded model or data artifacts without hash or signature verification"
+      - "AI-suggested dependencies installed without checking they exist (slopsquatting)"
+  - id: "LLM05:2026"
+    name: "Data and Model Poisoning"
+    cwe: ["CWE-349", "CWE-829", "CWE-494", "CWE-1427"]
+    atlas_tactics: ["AML.TA0003", "AML.TA0006", "AML.TA0011", "AML.TA0004", "AML.TA0001", "AML.TA0005"]
+    atlas_techniques: ["AML.T0020", "AML.T0018", "AML.T0115"]
+    common_vibe_bugs:
+      - "User feedback or uploaded content fed into fine-tuning or RAG ingestion without validation or rate limits"
+      - "Chat templates, tokenizer configs or adapters loaded without integrity checks"
+  - id: "LLM06:2026"
+    name: "Unbounded Consumption"
+    cwe: ["CWE-400", "CWE-770", "CWE-664", "CWE-691", "CWE-829"]
+    atlas_tactics: ["AML.TA0011", "AML.TA0010", "AML.TA0000"]
+    atlas_techniques: ["AML.T0034", "AML.T0029"]
+    common_vibe_bugs:
+      - "Model calls without max_tokens, timeout, per-user rate limit or hard spend cap"
+      - "Agent / tool-calling loops without step, recursion-depth or cost limits"
+      - "No input-size check before sending user content to the model"
+  - id: "LLM07:2026"
+    name: "Misinformation"
+    cwe: ["CWE-1426", "CWE-349", "CWE-494", "CWE-1427"]
+    atlas_tactics: ["AML.TA0011", "AML.TA0003", "AML.TA0004", "AML.TA0001"]
+    atlas_techniques: ["AML.T0062", "AML.T0060"]
+    common_vibe_bugs:
+      - "Model output used to decide or act (approve, refund, route, call a tool) without claim-check-act verification"
+      - "Free-text answers parsed loosely instead of a strict schema with mandatory fields"
+  - id: "LLM08:2026"
+    name: "Hidden Context Exposure"
+    cwe: ["CWE-200", "CWE-798", "CWE-693", "CWE-285"]
+    atlas_tactics: ["AML.TA0008", "AML.TA0010", "AML.TA0002", "AML.TA0013"]
+    atlas_techniques: ["AML.T0056", "AML.T0069.002", "AML.T0083"]
+    common_vibe_bugs:
+      - "API keys, connection strings or internal URLs placed in the system prompt or tool descriptions"
+      - "Roles and permissions described in the prompt rather than enforced in code"
+  - id: "LLM09:2026"
+    name: "Vector and Embedding Weaknesses"
+    cwe: ["CWE-200", "CWE-285", "CWE-359", "CWE-732", "CWE-829"]
+    atlas_tactics: ["AML.TA0010", "AML.TA0001", "AML.TA0011", "AML.TA0008"]
+    atlas_techniques: ["AML.T0070", "AML.T0080"]
+    common_vibe_bugs:
+      - "Tenant / user filter supplied by the client or applied after vector retrieval (cross-tenant leakage)"
+      - "Untrusted and trusted documents mixed in one index; raw similarity scores returned to clients"
+  - id: "LLM10:2026"
+    name: "Improper Output Handling"
+    cwe: ["CWE-1426", "CWE-116", "CWE-79", "CWE-707", "CWE-200", "CWE-201"]
+    atlas_tactics: ["AML.TA0005", "AML.TA0010", "AML.TA0011", "AML.TA0012"]
+    atlas_techniques: ["AML.T0077", "AML.T0050", "AML.T0102"]
+    common_vibe_bugs:
+      - "Model output passed to eval/exec, a shell, raw SQL or a file path"
+      - "Model output rendered as HTML/Markdown without escaping (XSS, image-URL exfiltration)"
+      - "Terminal/log output of model text without stripping ANSI/OSC control sequences"

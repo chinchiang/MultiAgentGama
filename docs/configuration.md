@@ -15,9 +15,9 @@ CLI 啟動時可用 `--config <路徑>` 改用其他設定檔、`--mode` 覆蓋 
 | 欄位 | 預設值 | 說明 |
 | :--- | :--- | :--- |
 | `execution_mode` | `"hybrid"` | `live`／`hybrid`／`mock` 三選一，行為見下方表格；其他值啟動即報錯 |
-| `timeout_seconds` | `60` | 單次 LLM 請求的逾時（秒），傳給 litellm |
+| `timeout_seconds` | `180` | 單次 LLM 請求的逾時（秒），傳給 litellm |
 | `max_retries` | `2` | litellm 層級的重試次數（同一主模型重試；全部失敗後才會嘗試 `fallback_model` 一次） |
-| `max_output_tokens` | `4096` | 單次模型回應的 token 上限 |
+| `max_output_tokens` | `16384` | 單次模型回應的 token 上限；`models.<alias>.max_output_tokens` 可個別覆蓋 |
 | `max_model_calls` | `null`（不限） | 成本護欄：每次執行最多幾次真實模型呼叫（同一次呼叫內 litellm 的重試與 `fallback_model` 不另計）。用完後 `hybrid` 改走模擬引擎、列為證據缺口（判定不會是 `READY_TO_SHIP`）；`live` 直接擲出 `LLMGatewayError`（exit 4）。須為非負整數，`0` 等同不限 |
 | `max_concurrent_calls` | `6` | 每個 Agent 階段（審查、驗證、白箱測試生成、黑箱攻擊合成）同時進行的模型呼叫上限；設 `1` 即完全循序 |
 | `max_files` | `50` | 每次分析的原始碼檔案上限，超出的檔案列入證據缺口（判定不會是 `READY_TO_SHIP`） |
@@ -46,22 +46,26 @@ CLI 啟動時可用 `--config <路徑>` 改用其他設定檔、`--mode` 覆蓋 
 
 | 欄位 | 必要 | 說明 |
 | :--- | :--- | :--- |
-| `model` | ✅ | [litellm model string](https://docs.litellm.ai/docs/providers)，例如 `"claude-sonnet-5"`、`"nvidia_nim/nvidia/nemotron-4-340b-instruct"`、`"gemini/gemini-3.8-flash"` |
-| `api_key_env` | live 模式必填 | 存放 API 金鑰的環境變數名稱；金鑰會明確傳給 litellm，因此即使 litellm 預設的環境變數名不同（如 NVIDIA NIM）也能驗證。缺此欄位時 live 呼叫會擲出 `LLMGatewayError` |
+| `model` | ✅ | [litellm model string](https://docs.litellm.ai/docs/providers)，例如 `"claude-sonnet-5-5"`、`"zai/glm-5.3"`、`"gemini/gemini-3.8-flash"`。建議用帶版本的 id 而非會漂移的別名（例如用 `deepseek/deepseek-v4-pro` 而非 `deepseek-chat`），供應商端換模型時才會反映在報告上 |
+| `api_key_env` | live 模式必填 | 存放 API 金鑰的環境變數名稱；金鑰會明確傳給 litellm，因此即使 litellm 預設的環境變數名與 `api_key_env` 不同也能驗證。缺此欄位時 live 呼叫會擲出 `LLMGatewayError` |
 | `fallback_model` | 選填 | 主模型在 `max_retries` 次重試後仍失敗時，改試這個 litellm model string **一次**；報告會記錄實際使用的模型 |
-| `api_base` | 選填 | 自訂 API 端點（例如 NVIDIA NIM 的 `https://integrate.api.nvidia.com/v1`） |
+| `api_base` | 選填 | 自訂 API 端點（例如自架的 OpenAI 相容閘道 `https://llm-gateway.example.com/v1`，或本機 Ollama 的 `http://localhost:11434`）。**必須是 `https://`**；`http://` 只允許迴路位址（`localhost`／`127.0.0.1`／`::1`），其他一律在啟動時報 `ConfigError`（exit 5）。目標原始碼會送往這些端點，因此只接受明確允許的端點（OWASP LLM04:2026 供應鏈） |
+| `aws_profile_name`／`aws_region_name` | 選填 | 以 AWS 憑證鏈驗證的模型（例如 `bedrock/...`）改用這兩欄取代 `api_key_env`：使用指定的 AWS profile（含 SSO）與區域；設定 profile 即視為具備 live 憑證 |
+| `max_output_tokens` | 選填 | 覆蓋 `global.max_output_tokens`。會思考的模型（GLM、DeepSeek、Gemini 3）的思考 token 也算在此上限內；太小時回應會是空的或被截斷，報告會標示「output truncated at the max_output_tokens limit」 |
 | `provider` | 選填 | **僅供標註，程式不讀取**（實際路由完全由 litellm model string 決定） |
 
 內建別名與預設值：
 
 | 別名 | model | api_key_env | fallback_model |
 | :--- | :--- | :--- | :--- |
-| `claude` | `claude-sonnet-5` | `ANTHROPIC_API_KEY` | `claude-haiku-4-5-20251001` |
-| `nemotron` | `nvidia_nim/nvidia/nemotron-4-340b-instruct` | `NVIDIA_API_KEY` | `nvidia_nim/meta/llama-3.3-70b-instruct` |
-| `chatgpt` | `gpt-4o` | `OPENAI_API_KEY` | `gpt-4o-mini` |
+| `claude` | `claude-sonnet-5-5` | `ANTHROPIC_API_KEY` | `claude-haiku-4-5-20251001` |
+| `glm` | `zai/glm-5.3`（智譜 AI／Z.AI，litellm 的 `zai/` provider） | `ZAI_API_KEY` | `zai/glm-5.3-flash` |
+| `deepseek` | `deepseek/deepseek-v4-pro` | `DEEPSEEK_API_KEY` | `deepseek/deepseek-v4-flash` |
 | `gemini` | `gemini/gemini-3.8-flash` | `GEMINI_API_KEY` | `gemini/gemini-3.5-flash` |
 
 > 註：`gemini-2.5-flash` 已不再供新申請的 Google API 金鑰使用，請使用 3.x 版本。
+>
+> 資料處理：目標原始碼會送往每個被 agent 指到的供應商（送出前已移除隱形 Unicode 字元，寫死的密鑰也已遮蔽為 `<REDACTED:kind>`），請只設定資料保留條款可接受的供應商。報告中每筆呼叫紀錄都帶有 `prompt_sha256`（system＋user 提示詞的 SHA-256），稽核時可把判定對回確切的輸入，而報告本身不必保存程式碼。
 
 ---
 
@@ -71,14 +75,15 @@ CLI 啟動時可用 `--config <路徑>` 改用其他設定檔、`--mode` 覆蓋 
 
 | 欄位 | 預設值 | 說明 |
 | :--- | :--- | :--- |
-| `model_alias` | `"chatgpt"` | 指向 `models` 區段的別名；**這是實際生效的模型路由欄位** |
+| `model_alias` | 無（解析為 `unconfigured`） | 指向 `models` 區段的別名；**這是實際生效的模型路由欄位**。缺少或指向不存在的別名時沒有模型也沒有金鑰：`hybrid` 以模擬引擎執行該 agent，`live` 擲出 `LLMGatewayError` |
 | `temperature` | `0.2` | 取樣溫度（驗證投票類的 agent 建議 `0.0`） |
-| `name` | — | 說明性欄位，目前程式不讀取（提示詞中的 Agent 名稱寫死在程式碼） |
-| `role`／`focus` | — | 說明性欄位，目前程式不讀取（reviewer 的審查焦點寫死在程式碼） |
+| `name` | — | `whitebox_reviewer_*`：審查者名稱，用於其提示詞與報告（「Identified by ...」）；其他 agent 僅供說明 |
+| `focus` | — | `whitebox_reviewer_*`：審查焦點，**會放進該審查者的提示詞**（預設為「General correctness and security defects」） |
+| `role` | — | 說明性欄位，程式不讀取 |
 
 ### 實際生效範圍（重要）
 
-- **白箱審查者名單固定三位**（`whitebox_reviewer_claude`、`whitebox_reviewer_nemotron`、`whitebox_reviewer_chatgpt`）：設定檔可改派其 `model_alias` 與 `temperature`，但無法透過設定檔新增或移除審查者。
+- **白箱審查者由設定檔決定**：所有以 `whitebox_reviewer_` 為前綴的條目都是審查者，各自使用自己的 `name`、`model_alias`、`temperature` 與 `focus`；**新增或刪除條目即改變審查陣容**。發現編號以模型別名前三碼為前綴（`WB-CLA-01`、`WB-DEE-01`、`WB-GLM-01`、`WB-GEM-01`）。審查者可選擇性回傳 `owasp_mapping`（例如 `LLM01:2026`、`API1:2023`），報告會標在該發現旁。若完全沒有 `whitebox_reviewer_*` 條目，白箱審查會跳過並列為證據缺口（判定不會是 `READY_TO_SHIP`）。
 - **交叉驗證者是動態的**：所有以 `whitebox_verifier_` 為前綴的條目都會參與投票；**新增或刪除條目即增減該模型的票數**。每筆發現只由「沒有回報它」的模型投票（模型不評審自己的發現）；其他模型也回報過同一缺陷（去重合併時記錄）則算一票確認。
 - 其餘 agent（測試生成、威脅建模、攻擊場景合成）由程式以固定 `agent_id` 呼叫，設定檔控制其模型與溫度。
 
@@ -86,13 +91,14 @@ CLI 啟動時可用 `--config <路徑>` 改用其他設定檔、`--mode` 覆蓋 
 
 | agent_id | 預設 `model_alias` | `temperature` | 職責 |
 | :--- | :--- | :--- | :--- |
-| `whitebox_reviewer_claude` | claude | 0.2 | 深度邏輯邊界、未處理例外、狀態不一致 |
-| `whitebox_reviewer_nemotron` | nemotron | 0.1 | 輸入清洗、資源上限、記憶體安全護欄 |
-| `whitebox_reviewer_chatgpt` | chatgpt | 0.2 | API 契約遵守、規格一致性、測試案例合成 |
-| `whitebox_verifier_claude`／`_nemotron`／`_chatgpt` | 各自同名模型 | 0.0 | 對非自家模型回報的發現投票：confirm／reject／unsure |
-| `whitebox_test_generator` | chatgpt | 0.3 | 針對確認缺陷生成可執行 pytest 測試 |
-| `blackbox_threat_modeler` | claude | 0.2 | STRIDE 與 OWASP 威脅建模 |
-| `blackbox_test_synthesizer` | chatgpt | 0.2 | 威脅場景轉黑箱攻擊腳本（BOLA、注入、限流） |
+| `whitebox_reviewer_claude` | claude | 0.2 | 邏輯與狀態：深度邏輯邊界、未處理例外、狀態不一致、隱藏的 null／型別錯誤 |
+| `whitebox_reviewer_deepseek` | deepseek | 0.1 | 安全與防禦：輸入清洗、注入（SQL／命令／路徑）、防禦性檢查、資源耗盡、不安全的並行 |
+| `whitebox_reviewer_glm` | glm | 0.2 | 規格與契約：API 簽章遵守、業務規格一致性、契約違反、授權檢查（BOLA／BFLA） |
+| `whitebox_reviewer_gemini` | gemini | 0.2 | AI 整合與供應鏈：呼叫模型的程式碼對照 OWASP Top 10 for LLM Applications 2026（LLM01–LLM10），以及寫死的憑證與未鎖版的相依套件 |
+| `whitebox_verifier_claude`／`_deepseek`／`_glm`／`_gemini` | 各自同名模型 | 0.0 | 對非自家模型回報的發現投票：confirm／reject／unsure |
+| `whitebox_test_generator` | deepseek | 0.3 | 針對確認缺陷生成可執行 pytest 測試 |
+| `blackbox_threat_modeler` | claude | 0.2 | STRIDE、OWASP API 與（AI 整合型目標的）OWASP LLM 威脅建模 |
+| `blackbox_test_synthesizer` | deepseek | 0.2 | 威脅場景轉黑箱攻擊腳本（BOLA、注入、限流、提示詞注入） |
 
 ---
 
@@ -106,25 +112,29 @@ CLI 啟動時可用 `--config <路徑>` 改用其他設定檔、`--mode` 覆蓋 
 agents:
   whitebox_reviewer_claude:
     model_alias: "gemini"      # 原為 claude
-  whitebox_reviewer_nemotron:
-    model_alias: "gemini"      # 原為 nemotron
-  whitebox_reviewer_chatgpt:
-    model_alias: "gemini"      # 原本就是 chatgpt -> 改成 gemini
+  whitebox_reviewer_deepseek:
+    model_alias: "gemini"      # 原為 deepseek
+  whitebox_reviewer_glm:
+    model_alias: "gemini"      # 原為 glm
+  whitebox_reviewer_gemini:
+    model_alias: "gemini"      # 原本就是 gemini
   whitebox_verifier_claude:
     model_alias: "gemini"
-  whitebox_verifier_nemotron:
+  whitebox_verifier_deepseek:
     model_alias: "gemini"
-  whitebox_verifier_chatgpt:
+  whitebox_verifier_glm:
+    model_alias: "gemini"
+  whitebox_verifier_gemini:
     model_alias: "gemini"
   whitebox_test_generator:
-    model_alias: "gemini"
+    model_alias: "gemini"      # 原為 deepseek
   blackbox_threat_modeler:
-    model_alias: "gemini"
+    model_alias: "gemini"      # 原為 claude
   blackbox_test_synthesizer:
-    model_alias: "gemini"
+    model_alias: "gemini"      # 原為 glm
 ```
 
-> 註：所有 agent 指向同一顆模型時，「多模型去偏」與「跨模型驗證」的獨立性會下降（同一顆模型審查並驗證自己的發現），報告的共識率解讀時請留意。
+> 註：只有單一模型家族時，**跨模型驗證無法執行**：所有發現都來自 `gemini`，而驗證者不評審自家模型的發現，因此沒有任何發現會得到投票（不會被過濾，共識率顯示 N/A），終端機也會警告「Fewer than two distinct reviewer models」。四位審查者仍會各自依不同的 `focus` 審查，但同一顆模型的多份副本彼此同意只是一致，不是佐證（OWASP LLM07:2026）。
 
 ### 改用 Docker 沙盒
 
@@ -143,14 +153,44 @@ global:
 ```yaml
 models:
   my_model:
-    model: "openai/qwen2.5-72b-instruct"   # 任何 litellm 支援的字串
+    model: "openai/qwen2.5-72b-instruct"   # 任何 litellm 支援的字串（此例為 OpenAI 相容端點）
     api_key_env: "MY_API_KEY"
-    api_base: "https://my-endpoint.example.com/v1"
-    fallback_model: "openai/gpt-4o-mini"
+    api_base: "https://llm-gateway.example.com/v1"   # 必須是 https（http 只限 localhost）
+    fallback_model: "openai/qwen2.5-32b-instruct"   # 沿用同一組 api_key_env 與 api_base
 
 agents:
   whitebox_reviewer_claude:
     model_alias: "my_model"
 ```
 
-找不到 `model_alias` 指向的別名時，該 agent 會退回預設模型（`gpt-4o`）與預設溫度（`0.2`），並在 live 模式因缺金鑰而報錯——請確認別名拼寫一致。
+### 新增第五位審查者
+
+任何新的 `whitebox_reviewer_*` 條目都會加入審查陣容，其 `focus` 直接放進它的提示詞。若希望該模型也對其他審查者的發現投票，再加一個對應的 `whitebox_verifier_*` 條目：
+
+```yaml
+agents:
+  whitebox_reviewer_local:
+    name: "Concurrency Reviewer (local Qwen)"
+    model_alias: "my_model"
+    temperature: 0.1
+    focus: "Race conditions, lock ordering, async cancellation and shared mutable state"
+  whitebox_verifier_local:
+    model_alias: "my_model"
+    temperature: 0.0
+```
+
+agent 沒有 `model_alias`，或 `model_alias` 指向 `models` 區段不存在的別名時，會解析為 `unconfigured`（沒有模型也沒有金鑰）：`hybrid` 改用模擬引擎並在報告中標示，`live` 直接擲出 `LLMGatewayError`（exit 4）。絕不會默默改走其他供應商——請確認別名拼寫一致。
+
+---
+
+## 相關檔案：`config/threat_rules.yaml`
+
+威脅建模器會把 `config/threat_rules.yaml` 中的少數欄位當作提示詞指引讀取；其餘內容（`code`、`target_components`、`cwe`、`atlas_tactics` 等）僅供說明，修改不影響執行。
+
+| 區段 | 程式讀取的欄位 | 使用時機 |
+| :--- | :--- | :--- |
+| `stride_categories.<key>` | `name`／`description`／`common_vibe_bugs` | 一律使用 |
+| `owasp_api_top10[*]` | `id`／`name` | 一律使用；id 供 `owasp_mapping` 引用 |
+| `owasp_llm_top10_2026[*]` | `id`／`name`／`common_vibe_bugs`／`atlas_techniques` | 僅在目標匯入 AI／LLM SDK（`openai`、`anthropic`、`litellm`、`langchain`、`transformers`、`@ai-sdk/*` 等）時使用；由確定性規則偵測，並在報告中列為 `ai_components` |
+
+`owasp_llm_top10_2026` 列出 OWASP Top 10 for LLM Applications 2026 的 LLM01:2026 至 LLM10:2026。威脅建模器會被要求以這些 id 填 `owasp_mapping`、以所列的 MITRE ATLAS 技術 id 填 `atlas_mapping`（顯示在報告的 MITRE ATLAS 欄）。`cwe` 與 `atlas_tactics` 取自 2026 文件附錄 A 的對照表（ATLAS 內容 v2026.06，戰術層級）；`atlas_techniques` 則是本工具自訂的技術層級對照，已比對 ATLAS 內容 2026.07 版。

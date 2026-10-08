@@ -47,15 +47,19 @@ def test_llm_gateway_heterogeneous_personas():
     assert "findings" in claude_resp
     assert any("Null" in f["title"] or "State" in f["title"] for f in claude_resp["findings"])
 
-    # Test Nemotron guardrail persona
-    nemotron_resp = gateway.generate("whitebox_reviewer_nemotron", "sys", "prompt")
-    assert "findings" in nemotron_resp
-    assert any("Sanitization" in f["title"] or "Resource" in f["title"] for f in nemotron_resp["findings"])
+    # Test DeepSeek guardrail persona
+    deepseek_resp = gateway.generate("whitebox_reviewer_deepseek", "sys", "prompt")
+    assert "findings" in deepseek_resp
+    assert any("Sanitization" in f["title"] or "Resource" in f["title"] for f in deepseek_resp["findings"])
 
-    # Test ChatGPT spec persona
-    chatgpt_resp = gateway.generate("whitebox_reviewer_chatgpt", "sys", "prompt")
-    assert "findings" in chatgpt_resp
-    assert any("Contract" in f["title"] or "Specification" in f["title"] for f in chatgpt_resp["findings"])
+    # Test GLM spec persona
+    glm_resp = gateway.generate("whitebox_reviewer_glm", "sys", "prompt")
+    assert "findings" in glm_resp
+    assert any("Contract" in f["title"] or "Specification" in f["title"] for f in glm_resp["findings"])
+
+    # Test Gemini AI-integration persona (OWASP LLM Top 10 2026)
+    gemini_resp = gateway.generate("whitebox_reviewer_gemini", "sys", "prompt")
+    assert any(f.get("owasp_mapping") == "LLM01:2026" for f in gemini_resp["findings"])
 
 
 def test_debater_consensus_resolution():

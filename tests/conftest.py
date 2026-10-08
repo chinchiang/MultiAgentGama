@@ -27,7 +27,7 @@ class _FakeLiteLLM:
 @pytest.fixture
 def fake_live(monkeypatch):
     """Sets fake API keys; call the returned function with a responder to install the fake litellm."""
-    for var in ("ANTHROPIC_API_KEY", "NVIDIA_API_KEY", "OPENAI_API_KEY"):
+    for var in ("ANTHROPIC_API_KEY", "ZAI_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY"):
         monkeypatch.setenv(var, "test-key")
 
     def install(responder):

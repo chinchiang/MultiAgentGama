@@ -71,6 +71,7 @@ class ReviewFinding(BaseModel):
     root_cause: str
     suspected_vibe_flaw: str
     suggested_test_scenario: str
+    owasp_mapping: Optional[str] = None  # optional taxonomy id from the reviewer, e.g. "LLM01:2026"
     is_simulated: bool = False  # True when produced by the offline simulation engine, not a real model
     # Set when duplicate reports were merged into this finding: the other reviewers and their finding ids
     corroborated_by: List[str] = Field(default_factory=list)
@@ -98,6 +99,7 @@ class ThreatItem(BaseModel):
     threat_id: str
     stride_category: STRIDECategory
     owasp_mapping: Optional[str] = None
+    atlas_mapping: Optional[str] = None  # MITRE ATLAS technique id(s), e.g. "AML.T0051.001"
     title: str
     description: str
     asset_at_risk: str
@@ -153,6 +155,27 @@ class AgentCallRecord(BaseModel):
     model_name: str
     mode: str  # "live", "simulated", or "invalid" (live call whose output was unusable)
     reason: Optional[str] = None  # why simulation was used / why the output was rejected
+    # SHA-256 of the exact system+user prompt sent, so an audit can tie a verdict to its inputs
+    # without the report having to store (possibly sensitive) target code
+    prompt_sha256: Optional[str] = None
+
+
+class StaticFinding(BaseModel):
+    """A deterministic rule hit (no model involved), e.g. an unsafe model-artifact load or a
+    reviewer-directed prompt injection planted in the target."""
+    rule_id: str
+    title: str
+    severity: FindingSeverity
+    file_path: str
+    line_number: int
+    evidence: str = ""
+    remediation: str = ""
+    owasp_mapping: Optional[str] = None
+    atlas_mapping: Optional[str] = None
+    cwe: Optional[str] = None
+    # True when the hit undermines the trustworthiness of the model-driven phases themselves
+    # (prompt injection aimed at the harness, invisible characters): it is an evidence gap
+    affects_review_integrity: bool = False
 
 
 class VibeHarnessSummary(BaseModel):
@@ -177,4 +200,8 @@ class VibeHarnessSummary(BaseModel):
     inconclusive_reasons: List[str] = Field(default_factory=list)
     line_coverage_pct: Optional[float] = None
     detected_language: str = "Python"
+    static_findings: List[StaticFinding] = Field(default_factory=list)
+    # AI/LLM SDKs the target imports; non-empty switches on OWASP LLM Top 10 threat modeling
+    ai_components: List[str] = Field(default_factory=list)
+    reviewer_models: List[str] = Field(default_factory=list)
     key_recommendations: List[str] = Field(default_factory=list)

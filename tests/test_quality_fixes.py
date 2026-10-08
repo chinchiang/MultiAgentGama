@@ -102,7 +102,7 @@ def test_null_reviewer_fields_fall_back_but_empty_findings_are_dropped(fake_live
     findings = HeterogeneousReviewerEnsemble(LLMGateway(CONFIG, execution_mode="live")).review_symbols(
         symbols, root_dir=str(tmp_path)
     )
-    assert len(findings) == 3  # the usable finding from each reviewer; the empty one is dropped
+    assert len(findings) == 4  # the usable finding from each reviewer; the empty one is dropped
     assert all(f.title == "Potential Defect" and f.symbol_name is None for f in findings)
     assert all(f.description == "x.y crashes on None" and f.root_cause == "" for f in findings)
 
@@ -392,7 +392,7 @@ def test_verifier_accepts_quoted_indices_and_rejects_booleans(fake_live):
     ]}))
     result = MultiModelDebater(LLMGateway(CONFIG, execution_mode="live")).arbitrate(findings)
     votes = {f.finding_id: [v.verdict for v in f.verification_votes] for f in result.confirmed_findings}
-    assert votes == {"A": ["confirm", "confirm"], "B": []}
+    assert votes == {"A": ["confirm", "confirm", "confirm"], "B": []}
 
 
 def test_one_crashed_verifier_batch_does_not_abort_arbitration(fake_live, monkeypatch):
@@ -407,14 +407,14 @@ def test_one_crashed_verifier_batch_does_not_abort_arbitration(fake_live, monkey
     real_verify = debater._verify
 
     def flaky_verify(agent_id, *args, **kwargs):
-        if agent_id == "whitebox_verifier_nemotron":
+        if agent_id == "whitebox_verifier_deepseek":
             raise RuntimeError("simulated thread crash")
         return real_verify(agent_id, *args, **kwargs)
 
     monkeypatch.setattr(debater, "_verify", flaky_verify)
     result = debater.arbitrate(findings)
     votes = [v.verdict for f in result.confirmed_findings for v in f.verification_votes]
-    assert votes == ["confirm"]  # chatgpt's vote survived nemotron's crash
+    assert votes == ["confirm", "confirm"]  # glm's and gemini's votes survived deepseek's crash
 
 
 # --- Coverage push: degradation and fallback paths of the reviewer ensemble and threat modeler ----
@@ -445,13 +445,13 @@ def test_one_crashed_reviewer_batch_does_not_abort_the_review(fake_live, tmp_pat
     real_batch = ensemble._review_batch
 
     def flaky_batch(reviewer, batch, root):
-        if reviewer["agent_id"] == "whitebox_reviewer_nemotron":
+        if reviewer["agent_id"] == "whitebox_reviewer_deepseek":
             raise RuntimeError("simulated thread crash")
         return real_batch(reviewer, batch, root)
 
     monkeypatch.setattr(ensemble, "_review_batch", flaky_batch)
     findings = ensemble.review_symbols(symbols, root_dir=str(tmp_path))
-    assert [f.title for f in findings] == ["ok", "ok"]  # claude and chatgpt survived
+    assert [f.title for f in findings] == ["ok", "ok", "ok"]  # claude, glm and gemini survived
     assert all(not f.is_simulated for f in findings)
 
 

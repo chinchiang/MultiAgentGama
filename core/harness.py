@@ -3,6 +3,7 @@ import os
 import sys
 from typing import Any, Dict, Optional, List
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 
 from core.models import (
@@ -11,11 +12,13 @@ from core.models import (
     TestStatus,
     MultiModelDebateResult,
     ThreatModelReport,
-    TestExecutionResult
+    TestExecutionResult,
+    StaticFinding
 )
 from core.llm_gateway import LLMGateway, DEFAULT_CONFIG_PATH
 from core.sandbox import LocalSubprocessSandbox, DockerSandbox, DEFAULT_DOCKER_IMAGE
 from agents.whitebox.ast_extractor import ASTExtractor, DEFAULT_MAX_FILES
+from agents.whitebox.ai_static_scanner import AISecurityStaticScanner
 from agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
 from agents.whitebox.debater import MultiModelDebater
 from agents.whitebox.deduplicator import deduplicate_findings
@@ -60,6 +63,7 @@ class VibeHarnessCommander:
         global_cfg = self.gateway.config.get("global") or {}
         self.sandbox = self._build_sandbox(global_cfg)
         self.ast_extractor = ASTExtractor()
+        self.static_scanner = AISecurityStaticScanner()
         self.multi_reviewer = HeterogeneousReviewerEnsemble(self.gateway)
         self.debater = MultiModelDebater(self.gateway)
         self.whitebox_test_gen = WhiteboxTestGenerator(self.gateway)
@@ -101,7 +105,7 @@ class VibeHarnessCommander:
     ) -> VibeHarnessSummary:
         """
         Executes the complete dual-engine testing workflow:
-        Phase 1: Code Ingestion & AST Extraction
+        Phase 1: Code Ingestion, AST Extraction & deterministic AI-security rules
         Phase 2: Heterogeneous Multi-Model White-Box Review & Debate
         Phase 3: White-Box Unit Test Generation & Sandbox Execution
         Phase 4: Mandatory STRIDE/OWASP Threat Modeling
@@ -110,10 +114,12 @@ class VibeHarnessCommander:
         """
         if output_format not in ("md", "json"):
             raise ValueError(f"Unknown output_format '{output_format}' (expected 'md' or 'json')")
+        reviewer_models = self.multi_reviewer.distinct_models
+        ensemble_label = " | ".join(r["model_alias"] for r in self.multi_reviewer.reviewer_agents) or "none configured"
         self.console.print(Panel.fit(
             "[bold cyan][VibeHarness-MAS] Commander Harness Active[/bold cyan]\n"
-            f"[yellow]Target Codebase:[/yellow] {os.path.abspath(target_dir)}\n"
-            "[green]Multi-Model Ensemble:[/green] Claude | NVIDIA Nemotron | ChatGPT\n"
+            f"[yellow]Target Codebase:[/yellow] {escape(os.path.abspath(target_dir))}\n"
+            f"[green]Multi-Model Ensemble:[/green] {escape(ensemble_label)}\n"
             f"[magenta]Execution Mode:[/magenta] {self.gateway.execution_mode}",
             title="AI Test Orchestration Engine",
             border_style="cyan"
@@ -133,14 +139,32 @@ class VibeHarnessCommander:
         self.console.print(f"[+] Detected Target Stack: [bold green]{lang_str}[/bold green]")
         self.console.print(f"[+] Extracted [bold]{len(symbols)}[/bold] code symbols across target files.")
         if routes:
-            self.console.print(f"[+] Detected [bold]{len(routes)}[/bold] API route handlers: {', '.join(routes[:5])}")
+            self.console.print(f"[+] Detected [bold]{len(routes)}[/bold] API route handlers: {escape(', '.join(routes[:5]))}")
+
+        # Deterministic rules run before any model sees the code: they cannot be prompt-injected
+        static_findings = self.static_scanner.scan_files(self.ast_extractor.analyzed_files)
+        ai_components = self.static_scanner.ai_components
+        if ai_components:
+            self.console.print(
+                f"[+] AI/LLM components detected: [bold]{escape(', '.join(ai_components))}[/bold] "
+                "(OWASP LLM Top 10 2026 threat modeling enabled)"
+            )
+        self.console.print(f"[+] Deterministic AI-security rules: [bold]{len(static_findings)}[/bold] hit(s)")
+        for sf in static_findings:
+            self.console.print(
+                f"   - [{sf.severity.value}] {sf.rule_id} {escape(sf.title)} "
+                f"({escape(os.path.basename(sf.file_path))}:{sf.line_number})"
+            )
 
         # -------------------------------------------------------------
         # Phase 2: Heterogeneous White-Box Review & Multi-Model Debate
         # -------------------------------------------------------------
         self.console.print("\n[bold blue]=== Phase 2: Heterogeneous Multi-Model White-Box Review ===[/bold blue]")
         raw_findings = self.multi_reviewer.review_symbols(symbols, root_dir=work_dir)
-        self.console.print(f"[+] Received [bold]{len(raw_findings)}[/bold] raw review findings from Claude, Nemotron, and ChatGPT.")
+        self.console.print(f"[+] Received [bold]{len(raw_findings)}[/bold] raw review findings from {escape(ensemble_label)}.")
+        if len(reviewer_models) < 2:
+            # Agreement among copies of one model is consistency, not corroboration (OWASP LLM07:2026)
+            self.console.print("[yellow][!] Fewer than two distinct reviewer models: cross-model verification cannot run.[/yellow]")
         findings = deduplicate_findings(raw_findings)
         corroborated = sum(1 for f in findings if f.corroborated_by)
         if len(findings) < len(raw_findings):
@@ -188,11 +212,12 @@ class VibeHarnessCommander:
             entrypoints=routes or ["HTTP/REST Endpoints"],
             detected_routes=routes,
             symbols=symbols,
-            root_dir=work_dir
+            root_dir=work_dir,
+            ai_components=ai_components
         )
         self.console.print(f"[+] STRIDE Matrix Constructed: [bold yellow]{len(threat_report.threats)}[/bold yellow] attack scenarios identified.")
         for t in threat_report.threats:
-            self.console.print(f"   - [[bold magenta]{t.stride_category.value}[/bold magenta]] ({t.severity.value}) {t.title}")
+            self.console.print(f"   - [[bold magenta]{t.stride_category.value}[/bold magenta]] ({t.severity.value}) {escape(t.title)}")
 
         # -------------------------------------------------------------
         # Phase 5: Threat-Derived Black-Box Dynamic Test Execution
@@ -255,6 +280,15 @@ class VibeHarnessCommander:
                 f"{len(unmodeled_findings)} confirmed finding(s) had no usable model-generated test and were only "
                 f"covered by deterministic probes, not by a test targeting the defect: {', '.join(unmodeled_findings)}"
             )
+        integrity_hits = [f for f in static_findings if f.affects_review_integrity]
+        if integrity_hits:
+            inconclusive_reasons.append(
+                f"{len(integrity_hits)} reviewer-directed instruction(s) or invisible-character sequence(s) were found in "
+                f"the target ({', '.join(sorted({f.rule_id for f in integrity_hits}))}); model-based review, verification "
+                "and threat modeling may have been manipulated (OWASP LLM01:2026), so review those locations manually"
+            )
+        if not self.multi_reviewer.reviewer_agents:
+            inconclusive_reasons.append("No whitebox_reviewer_* agents are configured, so no white-box model review ran")
         if not symbols:
             inconclusive_reasons.append("No analyzable source symbols were found in the target")
         if self.ast_extractor.parse_failures:
@@ -289,10 +323,14 @@ class VibeHarnessCommander:
         if untested_threats:
             inconclusive_reasons.append(f"{len(untested_threats)} modeled threat(s) have no executable test: {', '.join(untested_threats)}")
 
-        # Only executed evidence can block or fail the gate; modeled threats are hypotheses until tested
+        # Only executed evidence or deterministic rule hits can block or fail the gate; model findings and
+        # modeled threats are hypotheses until a test confirms them
+        static_blocking = [
+            f for f in static_findings if f.severity in (FindingSeverity.CRITICAL, FindingSeverity.HIGH)
+        ]
         if bb_breaches > 0:
             overall_status = "BLOCKED_CRITICAL_RISK"
-        elif wb_failed > 0:
+        elif wb_failed > 0 or static_blocking:
             overall_status = "NEEDS_FIXES"
         elif inconclusive_reasons:
             overall_status = "INCONCLUSIVE"
@@ -302,7 +340,7 @@ class VibeHarnessCommander:
             self.console.print(f"[yellow][!] Evidence gap: {reason}[/yellow]")
 
         recommendations = self._build_recommendations(
-            wb_results, bb_results, threat_report, untested_threats, inconclusive_reasons
+            wb_results, bb_results, threat_report, untested_threats, inconclusive_reasons, static_blocking
         )
 
         summary = VibeHarnessSummary(
@@ -324,7 +362,10 @@ class VibeHarnessCommander:
             inconclusive_reasons=inconclusive_reasons,
             line_coverage_pct=cov_pct,
             detected_language=lang_str,
-            key_recommendations=recommendations
+            key_recommendations=recommendations,
+            static_findings=static_findings,
+            ai_components=ai_components,
+            reviewer_models=reviewer_models
         )
 
         # Output report
@@ -368,7 +409,8 @@ class VibeHarnessCommander:
         bb_results: List[TestExecutionResult],
         threat_report: ThreatModelReport,
         untested_threats: List[str],
-        inconclusive_reasons: List[str]
+        inconclusive_reasons: List[str],
+        static_blocking: Optional[List[StaticFinding]] = None
     ) -> List[str]:
         """Recommendations derived from this run's evidence, most urgent first."""
         recs: List[str] = []
@@ -378,6 +420,11 @@ class VibeHarnessCommander:
                 threat = threats_by_id.get(r.source_ref or "")
                 label = f"{threat.threat_id} {threat.title}" if threat else r.test_id
                 recs.append(f"Fix confirmed security breach `{r.test_id}` ({label}): {r.failure_reason}")
+        for f in static_blocking or []:
+            recs.append(
+                f"Fix `{f.rule_id}` {f.title} at `{os.path.basename(f.file_path)}:{f.line_number}` "
+                f"({f.owasp_mapping}): {f.remediation}"
+            )
         for r in wb_results:
             if r.status == TestStatus.FAILED:
                 recs.append(f"Fix defect exposed by `{r.test_id}` (from `{r.source_ref or '-'}`): {r.failure_reason}")

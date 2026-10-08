@@ -6,6 +6,7 @@ import textwrap
 from typing import Iterable, List, Optional
 
 from core.models import CodeSymbol
+from core.sanitize import prepare_untrusted_code
 
 _FENCE_LANG = {".py": "python", ".js": "javascript", ".jsx": "jsx", ".ts": "typescript", ".tsx": "tsx"}
 # Rough tokenizer-free estimate: code averages ~3.5 characters per token; non-ASCII (e.g. CJK) is ~1 token each.
@@ -110,9 +111,10 @@ def class_skeleton(source: str) -> str:
 
 
 def symbol_source(sym: CodeSymbol) -> str:
+    """The symbol's code as shown to models: invisible characters stripped and secrets redacted."""
     if sym.symbol_type == "class" and sym.file_path.endswith(".py"):
-        return class_skeleton(sym.source_code)
-    return sym.source_code
+        return prepare_untrusted_code(class_skeleton(sym.source_code))
+    return prepare_untrusted_code(sym.source_code)
 
 
 def render_symbol(sym: CodeSymbol, root_dir: str, max_tokens: Optional[int] = None) -> str:
@@ -192,4 +194,4 @@ def file_source(file_path: str, max_tokens: int = 3000) -> str:
         # Undecodable (non-UTF-8 or binary) targets must degrade to an empty listing,
         # not crash the pipeline.
         return ""
-    return truncate_to_tokens(text, max_tokens)
+    return truncate_to_tokens(prepare_untrusted_code(text), max_tokens)

@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from core.models import CodeSymbol, ReviewFinding, FindingSeverity, text_or
 from core.llm_gateway import LLMGateway, LLMGatewayError
 from core.codecontext import render_symbols, batch_symbols
+from core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
 
 logger = logging.getLogger("VibeHarness.MultiReviewer")
 
@@ -13,12 +14,15 @@ logger = logging.getLogger("VibeHarness.MultiReviewer")
 _DEFAULT_SEVERITY = FindingSeverity.MEDIUM
 
 
+REVIEWER_PREFIX = "whitebox_reviewer_"
+
+
 class HeterogeneousReviewerEnsemble:
     """
-    Orchestrates the white-box multi-model review ensemble:
-    - Claude: Deep logic & unhandled edge-case state analysis.
-    - Nemotron: Defensive sanitization, resource boundaries & guardrails.
-    - ChatGPT: Specification compliance & API contract adherence.
+    Orchestrates the white-box multi-model review ensemble. Reviewers come from config: every
+    `whitebox_reviewer_*` agent is used with its own model, name and focus. The default lineup is
+    Claude (logic & state), DeepSeek (defensive & resource), GLM (spec & contract) and Gemini
+    (AI/LLM-integration & supply-chain security per the OWASP Top 10 for LLM Applications 2026).
     """
 
     # Every symbol is reviewed, in as many batches as needed; a batch's code listing fits the token budget
@@ -27,29 +31,28 @@ class HeterogeneousReviewerEnsemble:
 
     def __init__(self, gateway: LLMGateway):
         self.gateway = gateway
-        self.reviewer_agents = [
-            {
-                "agent_id": "whitebox_reviewer_claude",
-                "model_alias": "claude",
-                "name": "Claude Logic Reviewer",
-                "focus": "Logic state consistency, null-pointer assumptions, unhandled exception paths"
-            },
-            {
-                "agent_id": "whitebox_reviewer_nemotron",
-                "model_alias": "nemotron",
-                "name": "Nemotron Safety & Guardrails Reviewer",
-                "focus": "Input sanitization, memory/array limits, ReDoS, defensive error suppression"
-            },
-            {
-                "agent_id": "whitebox_reviewer_chatgpt",
-                "model_alias": "chatgpt",
-                "name": "ChatGPT Spec & Contract Reviewer",
-                "focus": "API contract adherence, parameter type checking, schema consistency"
-            }
-        ]
+        self.reviewer_agents: List[Dict[str, str]] = []
+        for agent_id, meta in gateway.agents_config.items():
+            if not agent_id.startswith(REVIEWER_PREFIX):
+                continue
+            meta = meta if isinstance(meta, dict) else {}
+            alias = meta.get("model_alias") or agent_id[len(REVIEWER_PREFIX):]
+            self.reviewer_agents.append({
+                "agent_id": agent_id,
+                "model_alias": str(alias),
+                "name": text_or(meta.get("name"), f"Reviewer ({alias})"),
+                "focus": text_or(meta.get("focus"), "General correctness and security defects"),
+            })
+        if not self.reviewer_agents:
+            logger.warning("No whitebox_reviewer_* agents are configured; the white-box review is skipped.")
+
+    @property
+    def distinct_models(self) -> List[str]:
+        """Model aliases in the ensemble; fewer than two means no cross-model verification is possible."""
+        return sorted({r["model_alias"] for r in self.reviewer_agents})
 
     def review_symbols(self, symbols: List[CodeSymbol], root_dir: Optional[str] = None) -> List[ReviewFinding]:
-        if not symbols:
+        if not symbols or not self.reviewer_agents:
             return []
         root = root_dir or os.path.dirname(os.path.abspath(symbols[0].file_path))
         batches = batch_symbols(symbols, root, self.BATCH_MAX_TOKENS, self.BATCH_MAX_SYMBOLS)
@@ -111,6 +114,7 @@ class HeterogeneousReviewerEnsemble:
                         root_cause=text_or(item.get("root_cause"), ""),
                         suspected_vibe_flaw=text_or(item.get("suspected_vibe_flaw"), ""),
                         suggested_test_scenario=text_or(item.get("suggested_test_scenario"), ""),
+                        owasp_mapping=text_or(item.get("owasp_mapping"), "") or None,
                         is_simulated=simulated
                     ))
                 except ValidationError as e:
@@ -147,14 +151,17 @@ class HeterogeneousReviewerEnsemble:
             f'      "description": "Detailed observation",\n'
             f'      "root_cause": "Underlying mechanism",\n'
             f'      "suspected_vibe_flaw": "Why vibe coding caused this",\n'
-            f'      "suggested_test_scenario": "Concrete test condition to expose this flaw"\n'
+            f'      "suggested_test_scenario": "Concrete test condition to expose this flaw",\n'
+            f'      "owasp_mapping": "Optional taxonomy id, e.g. LLM01:2026 or API1:2023"\n'
             f'    }}\n'
             f'  ]\n'
             f"}}\n"
             f'Return {{"findings": []}} if you find no defect.'
+            f"{UNTRUSTED_CODE_POLICY}"
         )
         user_prompt = (
-            f"Target Codebase Extract:\n\n{render_symbols(batch, root, max_tokens=self.BATCH_MAX_TOKENS)}\n\n"
+            f"Target Codebase Extract:\n\n"
+            f"{untrusted_block(render_symbols(batch, root, max_tokens=self.BATCH_MAX_TOKENS))}\n\n"
             f"Please audit against your specialty."
         )
         logger.info(f"Running white-box audit with reviewer: {name} ({len(batch)} symbols)")

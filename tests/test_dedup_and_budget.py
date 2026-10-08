@@ -29,22 +29,22 @@ def _finding(fid, reviewer, title, root_cause="", symbol="get_order", file_path=
 def test_same_defect_from_three_models_is_merged_keeping_highest_severity():
     findings = [
         _finding("WB-CLA-01", "Claude", "Unhandled KeyError when order id is absent", "dict access order['id']", severity="MEDIUM"),
-        _finding("WB-NEM-01", "Nemotron", "KeyError on absent order id", "direct order['id'] access", severity="CRITICAL"),
-        _finding("WB-CHA-01", "ChatGPT", "Order id KeyError not handled", "order['id'] dict access"),
+        _finding("WB-DEE-01", "DeepSeek", "KeyError on absent order id", "direct order['id'] access", severity="CRITICAL"),
+        _finding("WB-GLM-01", "GLM", "Order id KeyError not handled", "order['id'] dict access"),
     ]
     merged = deduplicate_findings(findings)
     assert len(merged) == 1
-    assert merged[0].finding_id == "WB-NEM-01"
+    assert merged[0].finding_id == "WB-DEE-01"
     assert merged[0].severity == FindingSeverity.CRITICAL
     # Sorted lists: the merged record is independent of reporting order
-    assert merged[0].corroborated_by == ["ChatGPT", "Claude"]
-    assert merged[0].merged_finding_ids == ["WB-CHA-01", "WB-CLA-01"]
+    assert merged[0].corroborated_by == ["Claude", "GLM"]
+    assert merged[0].merged_finding_ids == ["WB-CLA-01", "WB-GLM-01"]
 
 
 def test_distinct_defects_on_the_same_symbol_are_kept():
     findings = [
         _finding("A", "Claude", "Unhandled KeyError when order id is absent", "dict access order['id']"),
-        _finding("B", "Nemotron", "SQL injection through unescaped search string", "f-string query building"),
+        _finding("B", "DeepSeek", "SQL injection through unescaped search string", "f-string query building"),
     ]
     assert [f.finding_id for f in deduplicate_findings(findings)] == ["A", "B"]
 
@@ -52,7 +52,7 @@ def test_distinct_defects_on_the_same_symbol_are_kept():
 def test_similar_titles_on_different_symbols_are_kept():
     findings = [
         _finding("A", "Claude", "Unhandled KeyError on absent id", symbol="get_order"),
-        _finding("B", "ChatGPT", "Unhandled KeyError on absent id", symbol="get_user"),
+        _finding("B", "GLM", "Unhandled KeyError on absent id", symbol="get_user"),
     ]
     assert len(deduplicate_findings(findings)) == 2
 
@@ -60,12 +60,12 @@ def test_similar_titles_on_different_symbols_are_kept():
 def test_unattributed_findings_merge_only_on_identical_title():
     findings = [
         _finding("A", "Claude", "Race condition in cache", symbol=None, file_path="unknown"),
-        _finding("B", "ChatGPT", "race condition in cache ", symbol=None, file_path="unknown"),
-        _finding("C", "Nemotron", "Race condition in cache refresh", symbol=None, file_path="unknown"),
+        _finding("B", "GLM", "race condition in cache ", symbol=None, file_path="unknown"),
+        _finding("C", "DeepSeek", "Race condition in cache refresh", symbol=None, file_path="unknown"),
     ]
     merged = deduplicate_findings(findings)
     assert [f.finding_id for f in merged] == ["A", "C"]
-    assert merged[0].corroborated_by == ["ChatGPT"]
+    assert merged[0].corroborated_by == ["GLM"]
 
 
 def test_plural_stems_are_handled_without_mangling():
@@ -84,8 +84,8 @@ def test_clustering_is_transitive_and_order_independent():
     """A~B, B~C must land in one cluster whichever order the models report in."""
     def make(fid, reviewer):
         return _finding(fid, reviewer, "Unhandled KeyError when order id is absent", "dict access order['id']")
-    forward = deduplicate_findings([make("A", "Claude"), make("B", "Nemotron"), make("C", "ChatGPT")])
-    reversed_ = deduplicate_findings([make("C", "ChatGPT"), make("B", "Nemotron"), make("A", "Claude")])
+    forward = deduplicate_findings([make("A", "Claude"), make("B", "DeepSeek"), make("C", "GLM")])
+    reversed_ = deduplicate_findings([make("C", "GLM"), make("B", "DeepSeek"), make("A", "Claude")])
     assert len(forward) == 1 and len(reversed_) == 1
     # Tie on severity: the finding_id decides, not arrival order
     assert forward[0].finding_id == reversed_[0].finding_id == "A"
@@ -155,7 +155,7 @@ def test_reviewer_batches_by_tokens_and_reviews_every_symbol(fake_live, tmp_path
     seen, prompts = set(), []
 
     def responder(system, user):
-        if "Claude Logic Reviewer" in system:
+        if "(Claude)" in system:
             prompts.append(user)
             seen.update(re.findall(r"Symbol: (handler_\d+)", user))
         return json.dumps({"findings": []})
@@ -234,7 +234,7 @@ def test_finding_ids_stay_unique_when_two_agents_share_a_model_alias(fake_live):
         # Both reviewers point at the same model alias; ids must not collide
         ensemble.reviewer_agents = [
             {"agent_id": "whitebox_reviewer_claude", "model_alias": "claude", "name": "R1", "focus": "f"},
-            {"agent_id": "whitebox_reviewer_nemotron", "model_alias": "claude", "name": "R2", "focus": "f"},
+            {"agent_id": "whitebox_reviewer_deepseek", "model_alias": "claude", "name": "R2", "focus": "f"},
         ]
         findings = ensemble.review_symbols([sym], root_dir=td)
         ids = [f.finding_id for f in findings]
