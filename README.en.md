@@ -239,7 +239,7 @@ python main.py --target examples --output vibe_harness_report.md
 
 Scale and cost limits can be overridden from the CLI: `--max-files` (number of source files analyzed per run, default 50; the rest are reported as skipped) and `--max-model-calls` (cap on model invocations per run, unlimited by default; when exhausted, hybrid falls back to simulation and lists an evidence gap, live fails). See [`docs/configuration.md`](docs/configuration.md).
 
-Report formats: `--format md` (default) or `--format json` (machine-readable, with the complete findings, threat model, and test results — suited to CI/CD):
+Report formats: `--format md` (default) or `--format json` (machine-readable, with the complete findings, threat model, and test results — suited to CI/CD). Both keep every generated test's code: the Markdown appendix "Generated Test Code" lists each test's code next to its outcome in collapsible blocks (control characters removed), and the JSON `generated_tests` / `blackbox_generated_tests` keep it verbatim for audits or re-runs. Model-written tests are hypotheses too — a "passing" test may be asserting the defect itself (e.g. `pytest.raises(KeyError)`), so check that the assertions describe the correct behaviour:
 
 ```bash
 python main.py --target examples --output report.json --format json

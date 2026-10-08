@@ -451,3 +451,82 @@ def test_bedrock_model_authenticates_with_an_aws_profile(tmp_path, monkeypatch):
     gw.generate("whitebox_reviewer_claude", "s", "u", required_keys=["findings"])
     assert calls[0]["aws_profile_name"] == "my-sso" and calls[0]["aws_region_name"] == "ap-southeast-1"
     assert "api_key" not in calls[0]
+
+
+# --- Audit trail: the generated tests' code is kept in the reports ---------------------------------------
+
+def _report_inputs():
+    from core.models import (
+        GeneratedTest, MultiModelDebateResult, TestExecutionResult, TestStatus, ThreatModelReport,
+        VibeHarnessSummary,
+    )
+    hostile = "def test_x():\n    s = '````'\n    assert '\x1b[31m' != 'x'  # </details><img src=x>\n"
+    wb = [
+        GeneratedTest(test_id="WB-TEST-01", test_type="whitebox_unit", target_component="f", title="t1",
+                      code="def test_a():\n    assert 1\n", rationale="r", expected_outcome="e", source_ref="WB-CLA-01"),
+        GeneratedTest(test_id="WB-TEST-01", test_type="whitebox_unit", target_component="f", title="dup id",
+                      code=hostile, rationale="r", expected_outcome="e", source_ref="<b>WB-GLM-01</b>"),
+    ]
+    bb = [GeneratedTest(test_id="BB-TEST-THREAT-01", test_type="blackbox_security", target_component="f",
+                        title="t3", code="def test_c():\n    assert 0\n", rationale="r", expected_outcome="e",
+                        source_ref="THREAT-01")]
+    wb_results = [
+        TestExecutionResult(test_id="WB-TEST-01", test_type="whitebox_unit", status=TestStatus.PASSED),
+        TestExecutionResult(test_id="WB-TEST-01-2", test_type="whitebox_unit", status=TestStatus.FAILED),
+    ]
+    bb_results = [TestExecutionResult(test_id="BB-TEST-THREAT-01", test_type="blackbox_security",
+                                      status=TestStatus.FAILED, is_security_exploit_confirmed=True)]
+    args = dict(
+        summary=VibeHarnessSummary(
+            overall_status="BLOCKED_CRITICAL_RISK", total_whitebox_findings=0, confirmed_whitebox_bugs=0,
+            whitebox_tests_passed=1, whitebox_tests_failed=1, total_threats_modeled=1, critical_threats_count=0,
+            blackbox_tests_passed=0, blackbox_security_breaches=1,
+        ),
+        debate_result=MultiModelDebateResult(consensus_summary="c"),
+        threat_model=ThreatModelReport(system_description="s"),
+        whitebox_results=wb_results, blackbox_results=bb_results, target_path=".",
+        whitebox_tests=wb, blackbox_tests=bb,
+    )
+    return args, hostile
+
+
+def test_markdown_appendix_shows_each_tests_code_with_its_outcome():
+    from reports.report_generator import ReportGenerator
+    args, _ = _report_inputs()
+    md = ReportGenerator().generate_markdown_report(**args)
+    appendix = md[md.index("## 6. 🧪 Generated Test Code"):]
+    assert "<code>WB-TEST-01</code> — ✅ PASSED — from <code>WB-CLA-01</code>" in appendix
+    # duplicate model ids are disambiguated exactly like the executor does, so outcomes line up
+    assert "<code>WB-TEST-01-2</code> — ❌ FAILED" in appendix
+    assert "<code>BB-TEST-THREAT-01</code> — ❌ VULNERABLE" in appendix
+    assert "def test_a():" in appendix and "def test_c():" in appendix
+
+
+def test_appendix_code_cannot_break_out_of_its_fence_or_inject_html():
+    from reports.report_generator import ReportGenerator
+    args, _ = _report_inputs()
+    appendix = ReportGenerator().generate_markdown_report(**args).split("## 6. 🧪 Generated Test Code")[1]
+    assert "`````python\n" in appendix          # fence longer than the code's 4-backtick run
+    assert "\x1b" not in appendix               # terminal escapes removed for display
+    assert "<b>WB-GLM-01</b>" not in appendix and "&lt;b&gt;WB-GLM-01&lt;/b&gt;" in appendix
+    assert appendix.count("</details>\n") == 3  # one per test; the code's own "</details>" stays inside its fence
+
+
+def test_json_report_keeps_generated_test_code_verbatim():
+    from reports.report_generator import ReportGenerator
+    args, hostile = _report_inputs()
+    payload = json.loads(ReportGenerator().generate_json_report(**args))
+    assert [t["code"] for t in payload["whitebox"]["generated_tests"]][1] == hostile
+    assert payload["blackbox_generated_tests"][0]["test_id"] == "BB-TEST-THREAT-01"
+
+
+def test_reports_without_tests_have_no_appendix():
+    from reports.report_generator import ReportGenerator
+    args, _ = _report_inputs()
+    args.update(whitebox_tests=None, blackbox_tests=None)
+    assert "Generated Test Code" not in ReportGenerator().generate_markdown_report(**args)
+
+
+def test_pipeline_report_includes_the_executed_tests(tmp_path):
+    summary, md, _ = _run(tmp_path, "def f(x):\n    return x['k']\n")
+    assert "## 6. 🧪 Generated Test Code" in md and "WB-PROBE-01" in md.split("## 6.")[1]

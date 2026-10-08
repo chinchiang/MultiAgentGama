@@ -1,4 +1,5 @@
 import hashlib
+import html
 import json
 import os
 import re
@@ -10,6 +11,7 @@ from core.models import (
     ThreatItem,
     ThreatModelReport,
     TestExecutionResult,
+    GeneratedTest,
     VibeHarnessSummary,
     TestStatus,
     FindingSeverity,
@@ -43,7 +45,9 @@ class ReportGenerator:
         threat_model: ThreatModelReport,
         whitebox_results: List[TestExecutionResult],
         blackbox_results: List[TestExecutionResult],
-        target_path: str
+        target_path: str,
+        whitebox_tests: Optional[List[GeneratedTest]] = None,
+        blackbox_tests: Optional[List[GeneratedTest]] = None
     ) -> str:
         md = []
 
@@ -197,8 +201,7 @@ class ReportGenerator:
                 for p in pocs:
                     md.append(f"#### PoC for `{p.test_id}`")
                     poc_text = p.reproduction_poc or ""
-                    # A PoC containing triple backticks would break a ``` fence
-                    fence = "````" if "```" in poc_text else "```"
+                    fence = self._fence(poc_text)
                     md.append(f"{fence}python\n{poc_text}\n{fence}")
         else:
             md.append("No black-box tests executed.")
@@ -216,6 +219,8 @@ class ReportGenerator:
         for rec in summary.key_recommendations:
             md.append(f"- {markdown_safe(rec)}")
 
+        md.extend(self._generated_tests_section(whitebox_tests, whitebox_results, blackbox_tests, blackbox_results))
+
         md.append("\n---\n*Generated automatically by VibeHarness-MAS Harness Commander.*")
 
         return "\n".join(md)
@@ -227,9 +232,12 @@ class ReportGenerator:
         threat_model: ThreatModelReport,
         whitebox_results: List[TestExecutionResult],
         blackbox_results: List[TestExecutionResult],
-        target_path: str
+        target_path: str,
+        whitebox_tests: Optional[List[GeneratedTest]] = None,
+        blackbox_tests: Optional[List[GeneratedTest]] = None
     ) -> str:
-        """Machine-readable report with the same content as the Markdown one (provenance included)."""
+        """Machine-readable report with the same content as the Markdown one (provenance included).
+        Generated test code is stored verbatim, so a run can be audited and its tests re-executed."""
         payload = {
             "tool": "vibeharness-mas",
             "target_path": os.path.abspath(target_path),
@@ -237,9 +245,11 @@ class ReportGenerator:
             "whitebox": {
                 "debate": debate_result.model_dump(),
                 "test_results": [r.model_dump() for r in whitebox_results],
+                "generated_tests": [t.model_dump() for t in whitebox_tests or []],
             },
             "threat_model": threat_model.model_dump(),
             "blackbox_test_results": [r.model_dump() for r in blackbox_results],
+            "blackbox_generated_tests": [t.model_dump() for t in blackbox_tests or []],
         }
         return json.dumps(payload, indent=2, ensure_ascii=False, default=str)
 
@@ -539,6 +549,57 @@ class ReportGenerator:
         fence = "`" * (longest + 1)
         pad = " " if body.startswith("`") or body.endswith("`") else ""
         return f"{fence}{pad}{body}{pad}{fence}"
+
+    @staticmethod
+    def _fence(text: str) -> str:
+        """A code fence longer than any backtick run in the text, so model-written code cannot close it early."""
+        longest = max((len(run) for run in re.findall(r"`+", text or "")), default=0)
+        return "`" * max(3, longest + 1)
+
+    def _generated_tests_section(
+        self,
+        whitebox_tests: Optional[List[GeneratedTest]],
+        whitebox_results: List[TestExecutionResult],
+        blackbox_tests: Optional[List[GeneratedTest]],
+        blackbox_results: List[TestExecutionResult],
+    ) -> List[str]:
+        """Appendix with every executed test's code next to its outcome. A model-written test that "passes"
+        may be asserting the defect itself (e.g. `pytest.raises(KeyError)`), so the code must be reviewable;
+        the JSON report keeps it verbatim, here control characters are removed for safe rendering."""
+        from runners.test_executor import TestSuiteExecutor
+        if not whitebox_tests and not blackbox_tests:
+            return []
+        md = ["\n## 6. 🧪 Generated Test Code (audit trail)",
+              "Model-written tests are hypotheses too: check that each assertion encodes the *correct* behaviour, "
+              "not the defect. Outcomes refer to the tables above.\n"]
+        for label, tests, results in (
+            ("White-box tests", whitebox_tests or [], whitebox_results),
+            ("Black-box attack tests", blackbox_tests or [], blackbox_results),
+        ):
+            if not tests:
+                continue
+            md.append(f"### {label} ({len(tests)})")
+            by_id = {r.test_id: r for r in results}
+            for test_id, t in zip(TestSuiteExecutor._unique_test_ids(tests), tests, strict=True):
+                result = by_id.get(test_id)
+                if result is None:
+                    outcome = "not run"
+                elif result.is_security_exploit_confirmed:
+                    outcome = "❌ VULNERABLE"
+                else:
+                    outcome = self._status_label(result.status, "FAILED")
+                # <summary> is an HTML block (Markdown is not rendered there): escape ids as HTML
+                source = f" — from <code>{html.escape(clean_model_text(t.source_ref))}</code>" if t.source_ref else ""
+                code = clean_model_text(t.code)
+                fence = self._fence(code)
+                md.append("<details>")
+                md.append(f"<summary><code>{html.escape(clean_model_text(test_id))}</code> — {outcome}{source}</summary>\n")
+                md.append(f"- **Title**: {markdown_safe(t.title)}")
+                md.append(f"- **Rationale**: {markdown_safe(t.rationale)}")
+                md.append(f"- **Expected outcome**: {markdown_safe(t.expected_outcome)}\n")
+                md.append(f"{fence}python\n{code}\n{fence}\n")
+                md.append("</details>\n")
+        return md
 
     def _static_section(self, findings: List[StaticFinding]) -> List[str]:
         """Deterministic AI-security rule hits (OWASP LLM Top 10 2026 / MITRE ATLAS mapped)."""

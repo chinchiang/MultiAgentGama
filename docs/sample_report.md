@@ -48,7 +48,7 @@ No rule hits. Rules cover unsafe model loading and unpinned model downloads (LLM
 | `whitebox_verifier_gemini` | `gemini/gemini-3.8-flash` | 🟡 simulated | 1 | execution_mode is 'mock' |
 | `whitebox_test_generator` | `deepseek/deepseek-v4-pro` | 🟡 simulated | 4 | execution_mode is 'mock' |
 | `blackbox_threat_modeler` | `claude-sonnet-5-5` | 🟡 simulated | 1 | execution_mode is 'mock' |
-| `blackbox_test_synthesizer` | `zai/glm-5.3` | 🟡 simulated | 3 | execution_mode is 'mock' |
+| `blackbox_test_synthesizer` | `deepseek/deepseek-v4-pro` | 🟡 simulated | 3 | execution_mode is 'mock' |
 
 
 ## 2. 🔬 Phase 1: Heterogeneous White-Box Code Review & Debate
@@ -77,9 +77,9 @@ No rule hits. Rules cover unsafe model loading and unpinned model downloads (LLM
 ### White-Box Test Execution Results
 | Test ID | Type | Derived From | Status | Duration | Outcome |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `WB-PROBE-01` | whitebox_probe | `get_user_profile` | ❌ FAILED | `0.03s` | AssertionError: get_user_profile() crashed with unhandled KeyError on None inputs: None |
-| `WB-PROBE-02` | whitebox_probe | `update_user_settings` | ✅ PASSED | `0.004s` | Passed |
-| `WB-PROBE-03` | whitebox_probe | `process_payment_transfer` | ❌ FAILED | `0.002s` | AssertionError: process_payment_transfer() crashed with unhandled TypeError on None inputs: 'NoneType' object is not subscriptable |
+| `WB-PROBE-01` | whitebox_probe | `get_user_profile` | ❌ FAILED | `0.016s` | AssertionError: get_user_profile() crashed with unhandled KeyError on None inputs: None |
+| `WB-PROBE-02` | whitebox_probe | `update_user_settings` | ✅ PASSED | `0.001s` | Passed |
+| `WB-PROBE-03` | whitebox_probe | `process_payment_transfer` | ❌ FAILED | `0.001s` | AssertionError: process_payment_transfer() crashed with unhandled TypeError on None inputs: 'NoneType' object is not subscriptable |
 
 
 ## 3. 🎯 Phase 2: Black-Box Threat Modeling (STRIDE & OWASP) `[SIMULATED]`
@@ -109,6 +109,107 @@ No executable test was synthesized for these threats; they are neither confirmed
 - Fix defect exposed by `WB-PROBE-03` (from `process_payment_transfer`): AssertionError: process_payment_transfer() crashed with unhandled TypeError on None inputs: 'NoneType' object is not subscriptable
 - Write or synthesize tests for untested threats: THREAT-01, THREAT-02, THREAT-03
 - Close the evidence gaps listed above (e.g. run with `--mode live` and valid API keys) before trusting a pass verdict.
+
+## 6. 🧪 Generated Test Code (audit trail)
+Model-written tests are hypotheses too: check that each assertion encodes the *correct* behaviour, not the defect. Outcomes refer to the tables above.
+
+### White-box tests (3)
+<details>
+<summary><code>WB-PROBE-01</code> — ❌ FAILED — from <code>get_user_profile</code></summary>
+
+- **Title**: Offline None-input robustness probe: get_user_profile()
+- **Rationale**: Target-derived deterministic probe (no model-generated test available).
+- **Expected outcome**: Function rejects or handles None inputs without an unhandled TypeError/KeyError/AttributeError/IndexError.
+
+```python
+import importlib.util
+import inspect
+
+_spec = importlib.util.spec_from_file_location('vh_probe_target_1', '<repo>\\examples\\vibe_sample_app.py')
+_target = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_target)
+
+
+def test_probe_get_user_profile_none_inputs():
+    fn = getattr(_target, 'get_user_profile')
+    params = [p for p in inspect.signature(fn).parameters.values() if p.default is p.empty]
+    positional = [p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    keyword = {p.name: None for p in params if p.kind is p.KEYWORD_ONLY}
+    try:
+        fn(*[None] * len(positional), **keyword)
+    except (TypeError, KeyError, AttributeError, IndexError) as exc:
+        raise AssertionError(f'get_user_profile() crashed with unhandled {type(exc).__name__} on None inputs: {exc}')
+    except Exception:
+        pass  # Explicit rejection is treated as a defended boundary
+
+```
+
+</details>
+
+<details>
+<summary><code>WB-PROBE-02</code> — ✅ PASSED — from <code>update_user_settings</code></summary>
+
+- **Title**: Offline None-input robustness probe: update_user_settings()
+- **Rationale**: Target-derived deterministic probe (no model-generated test available).
+- **Expected outcome**: Function rejects or handles None inputs without an unhandled TypeError/KeyError/AttributeError/IndexError.
+
+```python
+import importlib.util
+import inspect
+
+_spec = importlib.util.spec_from_file_location('vh_probe_target_2', '<repo>\\examples\\vibe_sample_app.py')
+_target = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_target)
+
+
+def test_probe_update_user_settings_none_inputs():
+    fn = getattr(_target, 'update_user_settings')
+    params = [p for p in inspect.signature(fn).parameters.values() if p.default is p.empty]
+    positional = [p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    keyword = {p.name: None for p in params if p.kind is p.KEYWORD_ONLY}
+    try:
+        fn(*[None] * len(positional), **keyword)
+    except (TypeError, KeyError, AttributeError, IndexError) as exc:
+        raise AssertionError(f'update_user_settings() crashed with unhandled {type(exc).__name__} on None inputs: {exc}')
+    except Exception:
+        pass  # Explicit rejection is treated as a defended boundary
+
+```
+
+</details>
+
+<details>
+<summary><code>WB-PROBE-03</code> — ❌ FAILED — from <code>process_payment_transfer</code></summary>
+
+- **Title**: Offline None-input robustness probe: process_payment_transfer()
+- **Rationale**: Target-derived deterministic probe (no model-generated test available).
+- **Expected outcome**: Function rejects or handles None inputs without an unhandled TypeError/KeyError/AttributeError/IndexError.
+
+```python
+import importlib.util
+import inspect
+
+_spec = importlib.util.spec_from_file_location('vh_probe_target_3', '<repo>\\examples\\vibe_sample_app.py')
+_target = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_target)
+
+
+def test_probe_process_payment_transfer_none_inputs():
+    fn = getattr(_target, 'process_payment_transfer')
+    params = [p for p in inspect.signature(fn).parameters.values() if p.default is p.empty]
+    positional = [p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    keyword = {p.name: None for p in params if p.kind is p.KEYWORD_ONLY}
+    try:
+        fn(*[None] * len(positional), **keyword)
+    except (TypeError, KeyError, AttributeError, IndexError) as exc:
+        raise AssertionError(f'process_payment_transfer() crashed with unhandled {type(exc).__name__} on None inputs: {exc}')
+    except Exception:
+        pass  # Explicit rejection is treated as a defended boundary
+
+```
+
+</details>
+
 
 ---
 *Generated automatically by VibeHarness-MAS Harness Commander.*
