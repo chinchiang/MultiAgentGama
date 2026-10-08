@@ -5,7 +5,7 @@ global:
   execution_mode: "hybrid"  # "live" (calls APIs), "mock" (offline/dry-run for testing), or "hybrid"
   timeout_seconds: 60             # per LLM request
   max_retries: 2                  # LLM request retries before falling back to fallback_model
-  max_output_tokens: 4096         # per LLM response
+  max_output_tokens: 4096         # per LLM response; a model's own max_output_tokens overrides it
   max_model_calls: null           # cost guard: live model invocations per run (null = unlimited); when exhausted,
                                   # hybrid falls back to simulation (never READY_TO_SHIP), live fails
   max_concurrent_calls: 6         # parallel model calls per agent phase
@@ -39,6 +39,7 @@ models:
     api_key_env: "ZAI_API_KEY"
     fallback_model: "zai/glm-5.3-flash"
     provider: "zhipu"
+    max_output_tokens: 16384      # reasoning model: thinking tokens count against this limit
 
   deepseek:
     # Versioned ids rather than the moving deepseek-chat alias, so a provider-side swap is visible in reports
@@ -46,6 +47,7 @@ models:
     api_key_env: "DEEPSEEK_API_KEY"
     fallback_model: "deepseek/deepseek-v4-flash"
     provider: "deepseek"
+    max_output_tokens: 16384      # reasoning model: thinking tokens count against this limit
 
   gemini:
     # gemini-2.5-flash is no longer available to new Google API users; use 3.x instead
@@ -53,6 +55,7 @@ models:
     api_key_env: "GEMINI_API_KEY"
     fallback_model: "gemini/gemini-3.5-flash"
     provider: "google"
+    max_output_tokens: 16384      # Gemini 3 thinks by default; 4096 left test-generation answers empty or cut off
 
 agents:
   # 1. White-Box Agents (Multi-Model Ensemble to eliminate bias)

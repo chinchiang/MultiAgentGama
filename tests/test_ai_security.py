@@ -386,3 +386,33 @@ def test_markdown_report_defangs_model_authored_images(tmp_path):
     )
     assert "![x]" not in md and "<script>" not in md
     assert "`` s`x` ``" in md  # fence widened past the inner backticks
+
+
+# --- Reasoning models: per-model output budget and honest truncation reason ------------------------------
+
+def _fake_completion(monkeypatch, calls, content, finish_reason):
+    from types import SimpleNamespace
+
+    def completion(**kwargs):
+        calls.append(kwargs)
+        choice = SimpleNamespace(message=SimpleNamespace(content=content), finish_reason=finish_reason)
+        return SimpleNamespace(choices=[choice])
+    monkeypatch.setattr("core.llm_gateway.litellm", SimpleNamespace(completion=completion))
+
+
+def test_per_model_output_limit_overrides_the_global_one(fake_live, monkeypatch):
+    calls = []
+    _fake_completion(monkeypatch, calls, '{"findings": []}', "stop")
+    gw = LLMGateway(CONFIG, execution_mode="live")
+    gw.generate("whitebox_reviewer_gemini", "s", "u", required_keys=["findings"])
+    gw.generate("whitebox_reviewer_claude", "s", "u", required_keys=["findings"])
+    assert [c["max_tokens"] for c in calls] == [16384, 4096]
+
+
+def test_truncated_answer_is_reported_as_truncation(fake_live, monkeypatch):
+    calls = []
+    _fake_completion(monkeypatch, calls, '{"findings": [{"title": "cut', "length")
+    gw = LLMGateway(CONFIG, execution_mode="live")
+    resp = gw.generate("whitebox_reviewer_gemini", "s", "u", required_keys=["findings"])
+    assert not gw.is_usable(resp)
+    assert "output truncated at the max_output_tokens limit (16384)" in gw.call_log[-1].reason

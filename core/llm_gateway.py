@@ -197,7 +197,7 @@ class LLMGateway:
                 {"role": "user", "content": user_prompt}
             ]
             try:
-                raw_text, model_name = self._complete(model_info, model_name, messages, temperature)
+                raw_text, model_name, truncated = self._complete(model_info, model_name, messages, temperature)
             except Exception as e:
                 fallback_reason = f"live invocation failed: {e}"
                 if self.execution_mode == "live":
@@ -213,6 +213,12 @@ class LLMGateway:
                     result[PROVENANCE_KEY] = {"mode": "live", "model": model_name}
                     return result
                 reason = problem or "response is not valid JSON"
+                if truncated:
+                    # Reasoning models spend part of the budget thinking; say so instead of blaming the format
+                    reason = (
+                        f"output truncated at the max_output_tokens limit ({self._max_output_tokens(model_info)}); "
+                        f"{reason}. Raise max_output_tokens for this model (reasoning tokens count against it)"
+                    )
                 logger.error(f"[{agent_id}] {model_name} returned unusable output: {reason}")
                 self._record(agent_id, model_alias, model_name, "invalid", reason, prompt_sha256=prompt_hash)
                 return {PROVENANCE_KEY: {"mode": "invalid", "model": model_name, "reason": reason}}
@@ -230,7 +236,8 @@ class LLMGateway:
         """
         Calls the primary model (with litellm's own retries), then `fallback_model` once if the primary fails.
         The API key is passed explicitly, so providers whose litellm default env var differs from
-        `api_key_env` (e.g. Z.AI for GLM) still authenticate. Returns (text, model_actually_used).
+        `api_key_env` (e.g. Z.AI for GLM) still authenticate.
+        Returns (text, model_actually_used, truncated) where truncated means the token limit cut the answer off.
         """
         global_cfg = self.config.get("global") or {}
         env_var = model_info.get("api_key_env")
@@ -246,7 +253,7 @@ class LLMGateway:
             "api_key": os.getenv(env_var),
             "timeout": global_cfg.get("timeout_seconds", 60),
             "num_retries": global_cfg.get("max_retries", 2),
-            "max_tokens": global_cfg.get("max_output_tokens", 4096),
+            "max_tokens": self._max_output_tokens(model_info),
         }
         if model_info.get("api_base"):
             kwargs["api_base"] = model_info["api_base"]
@@ -256,7 +263,8 @@ class LLMGateway:
         for candidate in candidates:
             try:
                 response = litellm.completion(model=candidate, **kwargs)
-                return response.choices[0].message.content or "", candidate
+                choice = response.choices[0]
+                return choice.message.content or "", candidate, getattr(choice, "finish_reason", None) == "length"
             except Exception as e:
                 last_error = e
                 logger.warning(f"Model {candidate} failed: {e}")
@@ -264,6 +272,12 @@ class LLMGateway:
             # Unreachable in practice: candidates is never empty, but never raise an Optional
             raise LLMGatewayError(f"Model {model_name}: no candidate model could be attempted")
         raise last_error
+
+    def _max_output_tokens(self, model_info: Dict[str, Any]) -> int:
+        """Per-model `max_output_tokens` overrides the global one: reasoning models (GLM, DeepSeek,
+        Gemini 3) count thinking tokens against this limit and need a larger budget."""
+        value = model_info.get("max_output_tokens") or (self.config.get("global") or {}).get("max_output_tokens", 4096)
+        return int(value)
 
     @staticmethod
     def _validate_output(

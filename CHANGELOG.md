@@ -22,6 +22,7 @@
 - **生成測試禁止安裝套件**（slopsquatting，LLM04:2026、AML.T0060）：`pip install`、`import pip` 等一律被靜態閘門拒絕
 - **模型端點只允許 https**（http 僅限 loopback），設定錯誤在啟動時以 `ConfigError` 失敗；每次模型呼叫記錄 `prompt_sha256` 供稽核追溯
 - 審查者可回報選填的 `owasp_mapping`；報告列出審查模型與偵測到的 AI 元件
+- **依模型設定輸出上限**（live 實測發現）：`models.<alias>.max_output_tokens` 覆蓋全域值；GLM／DeepSeek／Gemini 預設 `16384`，因為思考 token 也算在上限內，4096 會讓 Gemini 3 的測試生成回應空白或被截斷。被截斷的回應改記錄為「output truncated at the max_output_tokens limit」而非籠統的「not valid JSON」
 
 ## [0.2.0] - 2026-10-07
 

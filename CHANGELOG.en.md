@@ -22,6 +22,7 @@ Design corrections against the OWASP Top 10 for LLM Applications 2026 and MITRE 
 - **Generated tests may not install packages** (slopsquatting, LLM04:2026, AML.T0060): `pip install`, `import pip` and the like are refused by the static gate
 - **Model endpoints must be https** (plain http only for loopback); a bad `api_base` fails at startup with `ConfigError`. Every model call records a `prompt_sha256` for audit traceability
 - Reviewers may report an optional `owasp_mapping`; reports list the reviewer models and the detected AI components
+- **Per-model output limit** (found in a live run): `models.<alias>.max_output_tokens` overrides the global value; GLM / DeepSeek / Gemini default to `16384` because thinking tokens count against the limit, and 4096 left Gemini 3 test-generation answers empty or cut off. Truncated answers are now recorded as "output truncated at the max_output_tokens limit" instead of a generic "not valid JSON"
 
 ## [0.2.0] - 2026-10-07
 
