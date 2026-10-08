@@ -415,6 +415,10 @@ def test_one_crashed_verifier_batch_does_not_abort_arbitration(fake_live, monkey
     result = debater.arbitrate(findings)
     votes = [v.verdict for f in result.confirmed_findings for v in f.verification_votes]
     assert votes == ["confirm", "confirm"]  # glm's and gemini's votes survived deepseek's crash
+    # The crash is booked, so the gate sees the missing votes as an evidence gap, not as "unsure"
+    crashed = [rec for rec in debater.gateway.invalid_calls if rec.agent_id == "whitebox_verifier_deepseek"]
+    assert len(crashed) == 1 and crashed[0].model_alias == "deepseek"
+    assert "crashed" in (crashed[0].reason or "") and "RuntimeError: simulated thread crash" in (crashed[0].reason or "")
 
 
 # --- Coverage push: degradation and fallback paths of the reviewer ensemble and threat modeler ----
@@ -453,6 +457,30 @@ def test_one_crashed_reviewer_batch_does_not_abort_the_review(fake_live, tmp_pat
     findings = ensemble.review_symbols(symbols, root_dir=str(tmp_path))
     assert [f.title for f in findings] == ["ok", "ok", "ok"]  # claude, glm and gemini survived
     assert all(not f.is_simulated for f in findings)
+    crashed = [rec for rec in ensemble.gateway.invalid_calls if rec.agent_id == "whitebox_reviewer_deepseek"]
+    assert len(crashed) == 1 and "RuntimeError: simulated thread crash" in (crashed[0].reason or "")
+
+
+def test_a_crashed_reviewer_batch_is_an_evidence_gap(tmp_path, monkeypatch):
+    """A batch that raised produced no findings: the gate must report the gap (with the exception),
+    never let the missing review pass as a clean result."""
+    from core.harness import VibeHarnessCommander
+    target = tmp_path / "app"
+    target.mkdir()
+    (target / "app.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
+    commander = VibeHarnessCommander(config_path=DEFAULT_CONFIG_PATH, execution_mode="mock")
+    real_batch = commander.multi_reviewer._review_batch
+
+    def flaky_batch(reviewer, batch, root):
+        if reviewer["agent_id"] == "whitebox_reviewer_glm":
+            raise ValueError("boom")
+        return real_batch(reviewer, batch, root)
+
+    monkeypatch.setattr(commander.multi_reviewer, "_review_batch", flaky_batch)
+    summary = commander.run_full_pipeline(target_dir=str(target), output_report_path=str(tmp_path / "r.md"))
+    assert summary.overall_status != "READY_TO_SHIP"
+    gap = [r for r in summary.inconclusive_reasons if "crashed before answering" in r]
+    assert len(gap) == 1 and "whitebox_reviewer_glm (agent call crashed before producing output: ValueError: boom)" in gap[0]
 
 
 def test_unknown_reviewer_severity_falls_back_to_medium(fake_live, tmp_path):

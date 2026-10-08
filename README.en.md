@@ -167,6 +167,7 @@ MultiAgentGama/
 │   ├── sample_report.md         # Sample report produced in mock mode
 │   ├── configuration.md         # Configuration reference (Traditional Chinese)
 │   ├── design.md                # Design document: architecture, data flow, gate verdicts, sandbox security model (Traditional Chinese)
+│   ├── design.en.md             # Design document (English)
 │   └── configuration.en.md      # Configuration reference (English)
 ├── tests/                       # The toolkit's own tests (offline, no API keys needed)
 └── main.py                      # CLI entry point
@@ -195,7 +196,7 @@ The toolkit supports real API calls and an offline simulation mode (Hybrid Mode)
 
 > For a complete reference to every field in `config/agents_config.yaml` — defaults, model reassignment, and Docker sandbox examples — see **[docs/configuration.en.md](docs/configuration.en.md)** ([正體中文](docs/configuration.md)).
 >
-> For why each component is designed the way it is, how data flows between phases, and how the gate and evidence gaps are decided, see **[docs/design.md](docs/design.md)** (design document, Traditional Chinese).
+> For why each component is designed the way it is, how data flows between phases, and how the gate and evidence gaps are decided, see **[docs/design.en.md](docs/design.en.md)** (design document; [正體中文](docs/design.md)).
 
 ```bash
 # To use live models:

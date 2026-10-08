@@ -65,6 +65,7 @@ def test_run_command_is_isolated(tmp_path, monkeypatch):
     target = tmp_path / "app"
     target.mkdir()
     run_dir = tmp_path / "run"
+    run_dir.mkdir()  # execute_pytest_files always creates it first; a root harness chmods it
     cmd, cwd, cli_env = _sandbox(network="none", memory="512m")._build_command(
         str(run_dir), ["test_vh_000.py"], str(target), True, None, {"TARGET_URL": "http://svc"}
     )
@@ -101,7 +102,9 @@ def test_custom_env_cannot_carry_credentials_or_injection_vectors(tmp_path):
         "BASH_ENV": "/tmp/evil.sh",           # injection vector, dropped
         "LD_PRELOAD": "/tmp/evil.so",         # injection vector, dropped
     }
-    cmd, _, _ = _sandbox()._build_command(str(tmp_path / "run"), ["test_x.py"], str(target), False, None, env)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cmd, _, _ = _sandbox()._build_command(str(run_dir), ["test_x.py"], str(target), False, None, env)
     joined = " ".join(cmd)
     assert "TARGET_URL=http://svc" in joined
     for forbidden in ("sk-secret", "MY_SERVICE_SECRET", "AWS_SESSION_TOKEN", "DB_PASSWORD",
@@ -118,6 +121,22 @@ def test_root_harness_runs_the_container_as_nobody(tmp_path, monkeypatch):
     monkeypatch.setattr(sandbox_mod.os, "getuid", lambda: 1000, raising=False)
     monkeypatch.setattr(sandbox_mod.os, "getgid", lambda: 1001, raising=False)
     assert DockerSandbox._user() == "1000:1001"  # uid and gid need not match (e.g. GH runners)
+
+
+def test_root_harness_opens_the_run_dir_for_nobody(tmp_path, monkeypatch):
+    """As root the container runs as nobody, so the run dir (junit.xml, coverage) must be writable
+    for it; CI runners are not root, so this branch is exercised by faking the uid."""
+    if not hasattr(os, "getuid"):
+        pytest.skip("POSIX only")
+    monkeypatch.setattr(sandbox_mod.os, "getuid", lambda: 0, raising=False)
+    monkeypatch.setattr(sandbox_mod.os, "getgid", lambda: 0, raising=False)
+    target = tmp_path / "app"
+    target.mkdir()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(mode=0o700)
+    cmd, _, _ = _sandbox()._build_command(str(run_dir), ["test_vh_000.py"], str(target), False, None, None)
+    assert "--user" in cmd and cmd[cmd.index("--user") + 1] == "65534:65534"
+    assert run_dir.stat().st_mode & 0o777 == 0o777
 
 
 def test_bind_quotes_paths_with_commas():

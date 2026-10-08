@@ -26,6 +26,14 @@
 - **不支援的取樣參數改為丟棄而非失敗**（live 實測發現）：Bedrock 上的 Claude Opus 5.5 只接受 `temperature=1`，過去每次呼叫都失敗並退回備援模型；改傳 `drop_params`。另外 Bedrock 等以 AWS 憑證驗證的模型可設 `aws_profile_name`／`aws_region_name` 取代 `api_key_env`；空白回應會記錄 `finish_reason`（例如安全過濾的 `content_filter`）
 - **報告保存生成的測試程式碼**（稽核軌跡）：Markdown 新增附錄「Generated Test Code」，以可收合區塊列出每個白箱／黑箱測試的程式碼、來源發現／威脅與執行結果；JSON 新增 `generated_tests`／`blackbox_generated_tests`，原封不動保存程式碼。live 實測發現部分「通過」的測試其實是在斷言缺陷本身，沒有程式碼就無法稽核。程式碼區塊的 fence 會依內容中最長的反引號自動加長（原本 PoC 區塊遇到四個反引號會被跳出，一併修正）
 
+### 修正（設計文件列出的缺口）
+- **審查／驗證批次崩潰列為證據缺口**：reviewer 或 verifier 的批次在 gateway 之外拋出例外時，過去只記 log、該批當成空結果，`call_log` 沒有紀錄，閘門看不到缺席的審查；現在經 `LLMGateway.record_failure` 記成一筆 `invalid` 呼叫（原因附例外），證據缺口訊息逐一列出 agent 與原因
+- **單一 reviewer 模型列為證據缺口**：所有 `whitebox_reviewer_*` 都指向同一模型時，過去只在終端機警告；現在也寫入 `inconclusive_reasons`（判定不會是 `READY_TO_SHIP`；OWASP LLM07:2026）
+- **報告消毒補齊**：Markdown 的證據缺口清單與「Threats Not Tested」清單原本沒有經過 `markdown_safe`／`_code_span`，模型選定的 threat id 或失敗文字可以插入圖片、HTML 或跳出反引號
+- **缺 `model_alias` 的 agent 一律顯示為 `unconfigured`**：reviewer 與 verifier 過去用 agent_id 後綴當 alias（報告顯示一個從未被呼叫的模型，debater 的「不評自家」判斷也比對錯 alias），現在與 gateway 的路由一致；finding id 為 `WB-UNC-NN`
+- **設定檔 `max_files` 驗證**：負數、布林或非整數改為 `ConfigError`（exit 5），與 `max_model_calls`／`max_concurrent_calls` 相同；過去負數會被當成切片、字串會被 `int()` 默默轉換
+- **以 root 執行測試套件時兩個 Docker 測試失敗**：測試現在先建立 run_dir（正式路徑一定先 `mkdtemp`），並新增以假 uid 驗證 root 分支把 run_dir 開放給 `nobody` 的測試
+
 ### 文件
 - 新增設計文件 `docs/design.md`：架構與元件職責、六階段資料流、資料模型、LLM gateway 模式決策、白箱／黑箱子系統、確定性規則、沙盒安全模型、品質閘門的 15 項證據缺口與判定順序、報告格式、信任邊界、設定擴充點、並行與成本模型、測試策略、已知限制與設計決策紀錄（引用 commit `f087dfb` 的檔案行號）
 - 修正文件與程式不一致：`docs/configuration.md` 的單一金鑰範例把 `blackbox_test_synthesizer` 原值寫成 `glm`（實為 `deepseek`）；`threat_rules.yaml` 檔頭與 `docs/configuration.md` 宣稱 `stride_categories.<key>.description` 會進提示詞，實際只讀 `name` 與 `common_vibe_bugs`
@@ -35,12 +43,14 @@
 深度審查後的打包、模型輸出韌性、執行正確性與 SARIF 修正，以及測試合成平行化與成本護欄；第二輪驗證補上執行歸因誠實度、閘門防誘餌與工程收斂；第三輪強化涵蓋 mypy 加嚴、CI 供應鏈防護與覆蓋率門檻上調。
 
 ### 新增
+- **JS/TS 擷取器改寫**（PR #19）：改為無相依的 lexer 加真正的大括號／括號配對——先遮蔽字串、template literal（含 `${}` 巢狀）、註解與 regex literal，註解或字串內容不再造出假宣告；函式、箭頭函式與路由的行範圍正確（過去是固定 15／25 行視窗，會截斷長函式、重複相鄰符號）；支援 generator、async、多行簽名、裸參數箭頭函式與 class method（constructor／static／async，`if`／`while` 不再被誤認）；路由支援任意 receiver（app／router／server／fastify…）與字串或 template literal 路徑，Next.js App Router 以 HTTP 動詞命名的 handler 標為路由
 - **白箱測試生成與黑箱攻擊合成改為平行**：與審查／驗證階段相同以 thread pool 並行呼叫模型，輸出順序（test id、報告）維持確定；單一 finding／threat 失敗不再拖垮其他項目（live 模式仍大聲失敗）
 - **威脅建模多批次平行化**：`AutomatedThreatModeler` 多批次符號審計改以 thread pool 並行呼叫模型，消除大型專案 Phase 4 串行瓶頸，維持輸出確定性
 - **成本護欄 `max_model_calls`**（CLI `--max-model-calls`）：限制每次執行的真實模型呼叫數，並行下計數精確；用完時 hybrid 退回模擬並列為證據缺口（不會給 `READY_TO_SHIP`）、live 直接失敗
 - **可調整的上限**：`max_concurrent_calls`（並行度）與 `max_files`（CLI `--max-files`，過去寫死 50）
 
 ### 修正
+- **審查、去重與黑箱合成的確定性與精度**（PR #18）：去重改為遞移的 union-find，corroborator 清單排序，同嚴重度以 finding_id 決定平手，複數詞幹化不再弄壞 `classes`／`address`；符號比對優先完全同名、再退到後綴，沒指名符號的 finding 保持未解析而不是釘到該批第一個符號；finding id 依 reviewer agent 編號並去重，兩個 agent 共用同一 model alias 也不撞號；黑箱符號相關性改用整字比對（`username` 不再拉進 `get_user`），live 模式下攻擊程式碼指向非 base URL 主機時靜態拒絕；`render_symbols` 超過預算改為截斷而非整塊省略；報告遇到無法辨識的 `overall_status` 顯示 UNKNOWN 徽章，誤傳成字串的清單欄位顯示為一項而不被逐字元拆開
 - **`pytest.fail` 資安突破誤判**：執行器 `_is_assertion` 納入 `pytest.fail()` 產生的 `Failed:` 訊息，黑箱突破如實標記為 `is_security_exploit_confirmed`，不再被誤判降級為 `INCONCLUSIVE`
 - **LLM JSON 解析多層容錯**：`_clean_and_parse_json` 支援自然語言前後綴包裹、非正規/未閉合 code fence 與多區塊提取，大幅降低 live 模式因模型輸出格式偏差導致的 `invalid` 錯誤
 - **安裝後無法執行**：wheel 先前未包含 `config/agents_config.yaml`／`threat_rules.yaml`，`pip install` 後的 `vibeharness` 一律以「Agent config not found」失敗（exit 5）；現在隨套件安裝。threat rules 缺失或損壞時改為記警告而非靜默略過
