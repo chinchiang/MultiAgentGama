@@ -29,6 +29,7 @@ def test_wheel_ships_the_default_config_files():
         assert any(filename.endswith(p.lstrip("*")) for p in patterns), (filename, patterns)
 
 
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="tomllib is Python 3.11+")
 def test_no_generic_top_level_packages_are_installed():
     """`core`, `agents`, `config`, `main`... used to be installed as top-level packages/modules and
     collided with anything else of the same name in site-packages; everything is namespaced now."""
