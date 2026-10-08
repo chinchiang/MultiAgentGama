@@ -4,8 +4,8 @@
 
 ## 驗證／Verification
 
-- [ ] `python -m pytest --cov=core --cov=agents --cov=runners --cov=reports --cov-fail-under=93`
-- [ ] `python -m ruff check .` 與 `python -m mypy core/ agents/ runners/ reports/ main.py`
+- [ ] `python -m pytest --cov=vibeharness --cov-fail-under=93`
+- [ ] `python -m ruff check .` 與 `python -m mypy vibeharness/ main.py`
 - [ ] 每個修正都有「修正前會失敗」的 regression test / every fix has a regression test that fails before it
 - [ ] 行為變更已同步 `README*.md`、`docs/configuration*.md` 與兩份 `CHANGELOG` 的 `[Unreleased]` / docs and both CHANGELOGs updated
 

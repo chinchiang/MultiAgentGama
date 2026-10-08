@@ -3,20 +3,20 @@ import json
 import os
 import sys
 import pytest
-from core.models import GeneratedTest, TestStatus, AgentCallRecord
-from core.llm_gateway import LLMGateway, LLMGatewayError
-from core.sandbox import LocalSubprocessSandbox, TIMEOUT_EXIT_CODE
-from core.codecheck import check_test_code, strip_code_fences
-from core.codecontext import import_instructions
-from agents.whitebox.ast_extractor import ASTExtractor
-from agents.whitebox.test_generator import WhiteboxTestGenerator
-from agents.blackbox.threat_modeler import AutomatedThreatModeler
-from agents.blackbox.scenario_builder import ThreatScenarioBuilder
-from runners.test_executor import TestSuiteExecutor
-from core.harness import VibeHarnessCommander
+from vibeharness.core.models import GeneratedTest, TestStatus, AgentCallRecord
+from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
+from vibeharness.core.sandbox import LocalSubprocessSandbox, TIMEOUT_EXIT_CODE
+from vibeharness.core.codecheck import check_test_code, strip_code_fences
+from vibeharness.core.codecontext import import_instructions
+from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
+from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
+from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
+from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
+from vibeharness.runners.test_executor import TestSuiteExecutor
+from vibeharness.core.harness import VibeHarnessCommander
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG = os.path.join(REPO_ROOT, "config", "agents_config.yaml")
+CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
 EXAMPLES = os.path.join(REPO_ROOT, "examples")
 
 
@@ -390,7 +390,7 @@ def test_null_config_sections_are_treated_as_empty(tmp_path):
 
 
 def test_force_utf8_stdio_is_safe_to_call():
-    from core.harness import force_utf8_stdio
+    from vibeharness.core.harness import force_utf8_stdio
     force_utf8_stdio()  # must not raise on any platform, including pytest's captured streams
     assert sys.stdout.writable()
 
@@ -551,7 +551,7 @@ def test_single_file_target_is_analyzed(tmp_path):
 def test_failed_unclassified_blackbox_test_is_an_evidence_gap(tmp_path, monkeypatch):
     """A black-box attack test that fails without matching the exploit predicate must count
     as ambiguous evidence — the gate may no longer pass the run as READY_TO_SHIP."""
-    from core.models import TestExecutionResult
+    from vibeharness.core.models import TestExecutionResult
 
     commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
 
@@ -600,8 +600,8 @@ def test_server_returning_404_counts_as_live():
 
 def test_server_probe_retries_before_giving_up(monkeypatch):
     """A slow-starting server gets a few attempts before the harness falls back to in-process mode."""
-    import agents.blackbox.scenario_builder as sb_mod
-    from agents.blackbox.scenario_builder import ThreatScenarioBuilder
+    import vibeharness.agents.blackbox.scenario_builder as sb_mod
+    from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
 
     builder = ThreatScenarioBuilder(None)
 
@@ -632,9 +632,9 @@ def test_generated_attack_code_targeting_another_host_is_rejected():
     """'Never target any other host' is enforced by a static check, not only by prompt instruction."""
     import threading
     import http.server
-    from agents.blackbox.scenario_builder import ThreatScenarioBuilder
-    from core.models import ThreatItem, STRIDECategory, FindingSeverity
-    from core.llm_gateway import LLMGateway
+    from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
+    from vibeharness.core.models import ThreatItem, STRIDECategory, FindingSeverity
+    from vibeharness.core.llm_gateway import LLMGateway
 
     class NotFound(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -699,8 +699,8 @@ def test_url_guard_resolves_ipv6_literals_and_userinfo():
 
 
 def test_symbol_relevance_uses_word_boundaries():
-    from agents.blackbox.scenario_builder import ThreatScenarioBuilder
-    from core.models import ThreatItem, STRIDECategory, FindingSeverity, CodeSymbol
+    from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
+    from vibeharness.core.models import ThreatItem, STRIDECategory, FindingSeverity, CodeSymbol
 
     def sym(name):
         return CodeSymbol(name=name, symbol_type="function", file_path="app.py",
@@ -721,11 +721,11 @@ def test_symbol_relevance_uses_word_boundaries():
 
 
 def test_report_poc_fence_widens_when_code_contains_fences(tmp_path):
-    from core.models import (
+    from vibeharness.core.models import (
         ThreatModelReport, VibeHarnessSummary, TestExecutionResult, TestStatus,
         ThreatItem, STRIDECategory, FindingSeverity, MultiModelDebateResult,
     )
-    from reports.report_generator import ReportGenerator
+    from vibeharness.reports.report_generator import ReportGenerator
     poc = "# PoC\ntext = ```\nwith fence markers\n```\n"
     threat = ThreatItem(
         threat_id="THREAT-01", stride_category=STRIDECategory.TAMPERING, title="t", description="",
@@ -749,10 +749,10 @@ def test_report_poc_fence_widens_when_code_contains_fences(tmp_path):
 
 
 def test_report_flags_unknown_status_and_coerces_list_fields():
-    from core.models import (
+    from vibeharness.core.models import (
         ThreatModelReport, VibeHarnessSummary, MultiModelDebateResult,
     )
-    from reports.report_generator import ReportGenerator
+    from vibeharness.reports.report_generator import ReportGenerator
     summary = VibeHarnessSummary(
         overall_status="MYSTERY_STATUS", total_whitebox_findings=0, confirmed_whitebox_bugs=0,
         whitebox_tests_passed=0, whitebox_tests_failed=0, total_threats_modeled=0,
@@ -815,7 +815,7 @@ def test_hanging_test_does_not_void_the_batch(tmp_path, monkeypatch):
     times out as one unit, then the suspicious modules are rerun individually with their
     own per-test budget. The batch-level timeout is simulated (a real 8s batch timeout plus
     real subprocess reruns is inherently timing-dependent on slow machines)."""
-    from core.sandbox import TIMEOUT_EXIT_CODE
+    from vibeharness.core.sandbox import TIMEOUT_EXIT_CODE
 
     # 15s per test: one pytest subprocess alone takes ~4s on a loaded Windows host, and HANG sleeps 60s
     executor = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60), per_test_timeout_seconds=15)
@@ -845,7 +845,7 @@ def test_daemonized_grandchild_cannot_hang_the_sandbox(tmp_path):
     drain its pipes with a short timeout instead of blocking on communicate() forever."""
     import subprocess
     import time
-    from core.sandbox import TIMEOUT_EXIT_CODE
+    from vibeharness.core.sandbox import TIMEOUT_EXIT_CODE
 
     code = (
         "import subprocess, sys, time\n"
@@ -898,7 +898,7 @@ def test_litellm_retry_dependency_is_installed():
 
 def test_cli_reports_the_package_version():
     import subprocess
-    from core import __version__
+    from vibeharness import __version__
     proc = subprocess.run(
         [sys.executable, "main.py", "--version"],
         cwd=REPO_ROOT, capture_output=True, text=True, timeout=60
@@ -918,7 +918,7 @@ def test_cli_rejects_unknown_report_format():
 
 
 def test_cli_exit_code_semantics_are_disjoint():
-    from main import verdict_exit_code
+    from vibeharness.cli import verdict_exit_code
     assert verdict_exit_code("BLOCKED_CRITICAL_RISK") == 2
     assert verdict_exit_code("NEEDS_FIXES") == 1
     assert verdict_exit_code("INCONCLUSIVE") == 3

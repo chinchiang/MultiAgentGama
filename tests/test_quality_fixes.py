@@ -4,11 +4,11 @@ import sys
 
 import pytest
 
-from core.llm_gateway import DEFAULT_CONFIG_PATH
-from agents.blackbox.threat_modeler import DEFAULT_RULES_PATH
+from vibeharness.core.llm_gateway import DEFAULT_CONFIG_PATH
+from vibeharness.agents.blackbox.threat_modeler import DEFAULT_RULES_PATH
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG = os.path.join(REPO_ROOT, "config", "agents_config.yaml")
+CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
 
 
 # --- Packaging: the installed wheel must carry the default config it resolves at runtime -----------
@@ -19,19 +19,31 @@ def test_wheel_ships_the_default_config_files():
     with open(os.path.join(REPO_ROOT, "pyproject.toml"), "rb") as f:
         setuptools_cfg = tomllib.load(f)["tool"]["setuptools"]
     for default_path in (DEFAULT_CONFIG_PATH, DEFAULT_RULES_PATH):
-        rel = os.path.relpath(default_path, REPO_ROOT)
-        package, filename = os.path.split(rel)
-        # The defaults resolve relative to the install root, i.e. a top-level data package
-        assert package == "config", rel
-        assert package in setuptools_cfg["packages"]["find"]["include"]
+        rel = os.path.relpath(default_path, REPO_ROOT).replace(os.sep, "/")
+        package_dir, filename = rel.rsplit("/", 1)
+        # The defaults resolve relative to the package: a data-only sub-package of vibeharness
+        assert package_dir == "vibeharness/config", rel
+        package = package_dir.replace("/", ".")
+        assert any(package.startswith(inc.rstrip("*")) for inc in setuptools_cfg["packages"]["find"]["include"])
         patterns = setuptools_cfg["package-data"][package]
         assert any(filename.endswith(p.lstrip("*")) for p in patterns), (filename, patterns)
+
+
+def test_no_generic_top_level_packages_are_installed():
+    """`core`, `agents`, `config`, `main`... used to be installed as top-level packages/modules and
+    collided with anything else of the same name in site-packages; everything is namespaced now."""
+    import tomllib
+    with open(os.path.join(REPO_ROOT, "pyproject.toml"), "rb") as f:
+        cfg = tomllib.load(f)
+    assert cfg["project"]["scripts"]["vibeharness"] == "vibeharness.cli:main"
+    assert "py-modules" not in cfg["tool"]["setuptools"]
+    assert cfg["tool"]["setuptools"]["packages"]["find"]["include"] == ["vibeharness*"]
 
 
 # --- Model output: null / wrong-typed text fields must fall back, not crash the pipeline ----------
 
 def _threat():
-    from core.models import ThreatItem, STRIDECategory, FindingSeverity
+    from vibeharness.core.models import ThreatItem, STRIDECategory, FindingSeverity
     return ThreatItem(
         threat_id="T1", stride_category=STRIDECategory.TAMPERING, title="Mass assignment", description="",
         asset_at_risk="a", attack_vector="v", trust_boundary_crossed="b", severity=FindingSeverity.HIGH,
@@ -40,7 +52,7 @@ def _threat():
 
 
 def _finding(**update):
-    from core.models import ReviewFinding, FindingSeverity
+    from vibeharness.core.models import ReviewFinding, FindingSeverity
     return ReviewFinding(
         finding_id="WB-CLA-01", reviewer_name="Claude", model_alias="claude", file_path="unknown",
         severity=FindingSeverity.HIGH, title="None crash", description="d", root_cause="r",
@@ -53,8 +65,8 @@ _NULL_FIELDS = {"title": None, "rationale": None, "expected_outcome": 7}
 
 def test_null_fields_from_the_attack_synthesizer_fall_back_to_the_threat(fake_live):
     import json
-    from core.llm_gateway import LLMGateway
-    from agents.blackbox.scenario_builder import ThreatScenarioBuilder
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
     fake_live(lambda s, u: json.dumps({"code": "def test_x():\n    assert True\n", **_NULL_FIELDS}))
     builder = ThreatScenarioBuilder(LLMGateway(CONFIG, execution_mode="live"))
     tests = builder.build_test_cases_from_threats([_threat()], base_url=None)
@@ -66,8 +78,8 @@ def test_null_fields_from_the_attack_synthesizer_fall_back_to_the_threat(fake_li
 
 def test_null_fields_from_the_test_generator_fall_back_to_the_finding(fake_live, tmp_path):
     import json
-    from core.llm_gateway import LLMGateway
-    from agents.whitebox.test_generator import WhiteboxTestGenerator
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
     fake_live(lambda s, u: json.dumps({"code": "def test_x():\n    assert True\n", **_NULL_FIELDS}))
     gen = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="live"))
     tests = gen.generate_tests_for_findings([_finding()], [], root_dir=str(tmp_path))
@@ -79,8 +91,8 @@ def test_null_fields_from_the_test_generator_fall_back_to_the_finding(fake_live,
 
 def test_non_string_test_code_is_ignored_not_fatal(fake_live, tmp_path):
     import json
-    from core.llm_gateway import LLMGateway
-    from agents.whitebox.test_generator import WhiteboxTestGenerator
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
     fake_live(lambda s, u: json.dumps({"tests": [{"code": ["not", "a", "string"]}, {"code": None}]}))
     gen = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="live"))
     assert gen.generate_tests_for_findings([_finding()], [], root_dir=str(tmp_path)) == []
@@ -89,9 +101,9 @@ def test_non_string_test_code_is_ignored_not_fatal(fake_live, tmp_path):
 
 def test_null_reviewer_fields_fall_back_but_empty_findings_are_dropped(fake_live, tmp_path):
     import json
-    from core.llm_gateway import LLMGateway
-    from agents.whitebox.ast_extractor import ASTExtractor
-    from agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
+    from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
     (tmp_path / "svc.py").write_text("def f(x):\n    return x.y\n", encoding="utf-8")
     symbols = ASTExtractor().parse_file(str(tmp_path / "svc.py"))
     fake_live(lambda s, u: json.dumps({"findings": [
@@ -110,8 +122,8 @@ def test_null_reviewer_fields_fall_back_but_empty_findings_are_dropped(fake_live
 # --- Black-box: no implicit live-HTTP target -----------------------------------------------------
 
 def test_no_base_url_means_in_process_and_no_network_probe(monkeypatch):
-    from core.llm_gateway import LLMGateway
-    from agents.blackbox.scenario_builder import ThreatScenarioBuilder
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
     builder = ThreatScenarioBuilder(LLMGateway(CONFIG, execution_mode="mock"))
     probed = []
     monkeypatch.setattr(builder, "check_server_live", lambda url, *a, **k: probed.append(url) or True)
@@ -127,8 +139,8 @@ def test_non_http_base_urls_are_rejected(monkeypatch, tmp_path, url):
     """urllib opens file:/ftp:/data: URLs too, so `--base-url file:///etc/hostname` once counted as a
     live server and switched every attack script into Live HTTP mode."""
     import sys
-    import main
-    from agents.blackbox.scenario_builder import ThreatScenarioBuilder, validate_base_url
+    from vibeharness import cli as main
+    from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder, validate_base_url
     with pytest.raises(ValueError, match="base URL"):
         validate_base_url(url)
     monkeypatch.setattr(sys, "argv", ["vibeharness", "-t", str(tmp_path), "-m", "mock", "--base-url", url])
@@ -136,7 +148,7 @@ def test_non_http_base_urls_are_rejected(monkeypatch, tmp_path, url):
         main.main()
     assert exit_info.value.code == main.USAGE_ERROR_EXIT_CODE
     # Library callers are guarded too: the builder never probes such a URL
-    from core.llm_gateway import LLMGateway
+    from vibeharness.core.llm_gateway import LLMGateway
     builder = ThreatScenarioBuilder(LLMGateway(CONFIG, execution_mode="mock"))
     monkeypatch.setattr(builder, "check_server_live", lambda *a, **k: pytest.fail("probed a non-http URL"))
     with pytest.raises(ValueError, match="base URL"):
@@ -145,12 +157,12 @@ def test_non_http_base_urls_are_rejected(monkeypatch, tmp_path, url):
 
 @pytest.mark.parametrize("url", ["http://localhost:8000", "https://[::1]:8443/api", "http://127.0.0.1"])
 def test_http_base_urls_are_accepted(url):
-    from agents.blackbox.scenario_builder import validate_base_url
+    from vibeharness.agents.blackbox.scenario_builder import validate_base_url
     assert validate_base_url(f" {url} ") == url
 
 
 def test_cli_does_not_default_to_a_live_base_url(monkeypatch, tmp_path):
-    import main
+    from vibeharness import cli as main
     seen = {}
 
     class _Commander:
@@ -159,7 +171,7 @@ def test_cli_does_not_default_to_a_live_base_url(monkeypatch, tmp_path):
 
         def run_full_pipeline(self, **kwargs):
             seen.update(kwargs)
-            from core.models import VibeHarnessSummary
+            from vibeharness.core.models import VibeHarnessSummary
             return VibeHarnessSummary(
                 overall_status="INCONCLUSIVE", total_whitebox_findings=0, confirmed_whitebox_bugs=0,
                 whitebox_tests_passed=0, whitebox_tests_failed=0, total_threats_modeled=0,
@@ -177,7 +189,7 @@ def test_cli_does_not_default_to_a_live_base_url(monkeypatch, tmp_path):
 # --- Executor: the harness header must not break `from __future__` imports ----------------------
 
 def _gen_test(code, test_id="T1", test_type="whitebox_unit"):
-    from core.models import GeneratedTest
+    from vibeharness.core.models import GeneratedTest
     return GeneratedTest(
         test_id=test_id, test_type=test_type, target_component="f", title="t", code=code,
         rationale="", expected_outcome=""
@@ -190,9 +202,9 @@ def _gen_test(code, test_id="T1", test_type="whitebox_unit"):
     "from m import f\n\ndef test_a():\n    assert f(1) == 1\n",
 ])
 def test_future_imports_survive_the_harness_header(tmp_path, code):
-    from core.models import TestStatus
-    from core.sandbox import LocalSubprocessSandbox
-    from runners.test_executor import TestSuiteExecutor
+    from vibeharness.core.models import TestStatus
+    from vibeharness.core.sandbox import LocalSubprocessSandbox
+    from vibeharness.runners.test_executor import TestSuiteExecutor
     (tmp_path / "m.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
     results, _ = TestSuiteExecutor(LocalSubprocessSandbox(60)).execute_test_suite(
         [_gen_test(code)], working_dir=str(tmp_path)
@@ -201,7 +213,7 @@ def test_future_imports_survive_the_harness_header(tmp_path, code):
 
 
 def test_header_still_precedes_code_without_future_imports():
-    from runners.test_executor import TestSuiteExecutor
+    from vibeharness.runners.test_executor import TestSuiteExecutor
     assert TestSuiteExecutor._split_future_imports("import os\n\ndef test_a():\n    assert os\n") == (
         "", "import os\n\ndef test_a():\n    assert os\n"
     )
@@ -210,9 +222,9 @@ def test_header_still_precedes_code_without_future_imports():
 # --- Threat modeling: the same threat from several batches is merged ---------------------------
 
 def test_identical_threats_from_several_batches_are_merged_keeping_highest_severity():
-    from core.llm_gateway import LLMGateway
-    from core.models import CodeSymbol, FindingSeverity
-    from agents.blackbox.threat_modeler import AutomatedThreatModeler
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.core.models import CodeSymbol, FindingSeverity
+    from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
     gw = LLMGateway(CONFIG, execution_mode="mock")
     calls = {"n": 0}
 
@@ -239,9 +251,9 @@ def test_identical_threats_from_several_batches_are_merged_keeping_highest_sever
 
 
 def test_mock_threat_model_is_not_multiplied_by_batching(tmp_path):
-    from core.llm_gateway import LLMGateway
-    from agents.whitebox.ast_extractor import ASTExtractor
-    from agents.blackbox.threat_modeler import AutomatedThreatModeler
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
+    from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
     (tmp_path / "big.py").write_text("".join(f"def f{i}(x):\n    return x\n\n" for i in range(40)), encoding="utf-8")
     symbols = ASTExtractor().parse_directory(str(tmp_path))
     report = AutomatedThreatModeler(LLMGateway(CONFIG, execution_mode="mock")).model_system(
@@ -254,8 +266,8 @@ def test_structurally_wrong_threat_rules_degrade_to_no_guidance(tmp_path):
     """threat_rules.yaml is user-editable: a YAML file that parses but has the wrong shape
     (a list where a mapping is expected, string entries instead of objects) must skip the
     checklist instead of raising AttributeError out of every modeling batch."""
-    from core.llm_gateway import LLMGateway
-    from agents.blackbox.threat_modeler import AutomatedThreatModeler
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
     rules = tmp_path / "threat_rules.yaml"
     rules.write_text(
         "stride_categories:\n  - just a string\n"
@@ -271,11 +283,11 @@ def test_structurally_wrong_threat_rules_degrade_to_no_guidance(tmp_path):
 # --- Offline probes never invoke argument-less functions ---------------------------------------
 
 def test_probes_skip_functions_without_required_arguments(tmp_path):
-    from core.llm_gateway import LLMGateway
-    from core.sandbox import LocalSubprocessSandbox
-    from runners.test_executor import TestSuiteExecutor
-    from agents.whitebox.ast_extractor import ASTExtractor
-    from agents.whitebox.test_generator import WhiteboxTestGenerator
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.core.sandbox import LocalSubprocessSandbox
+    from vibeharness.runners.test_executor import TestSuiteExecutor
+    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
+    from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
     marker = tmp_path / "SIDE_EFFECT"
     (tmp_path / "app.py").write_text(
         "def main():\n"
@@ -297,8 +309,8 @@ def test_probes_skip_functions_without_required_arguments(tmp_path):
 
 def _sarif(findings, target, symbols=None, breaches=(), threats=()):
     import json
-    from core.models import MultiModelDebateResult, ThreatModelReport, VibeHarnessSummary
-    from reports.report_generator import ReportGenerator
+    from vibeharness.core.models import MultiModelDebateResult, ThreatModelReport, VibeHarnessSummary
+    from vibeharness.reports.report_generator import ReportGenerator
     summary = VibeHarnessSummary(
         overall_status="NEEDS_FIXES", total_whitebox_findings=len(findings), confirmed_whitebox_bugs=len(findings),
         whitebox_tests_passed=0, whitebox_tests_failed=0, total_threats_modeled=len(threats),
@@ -332,7 +344,7 @@ def test_sarif_uris_are_relative_to_the_enclosing_repository(tmp_path):
 def test_sarif_root_ignores_a_dotfiles_repo_in_the_home_directory(tmp_path, monkeypatch):
     """A git repo at ~ (a dotfiles/config repo) must not become %SRCROOT% for targets under
     ~: the SARIF URIs would point into a private home path no CI checkout can resolve."""
-    from reports.report_generator import ReportGenerator
+    from vibeharness.reports.report_generator import ReportGenerator
     real_expanduser = os.path.expanduser
     fake_home = tmp_path / "home"
     (fake_home / ".git").mkdir(parents=True)
@@ -355,7 +367,7 @@ def test_sarif_rule_ids_and_fingerprints_do_not_depend_on_run_numbering(tmp_path
 
 
 def test_sarif_breach_is_located_at_the_attacked_symbol(tmp_path):
-    from core.models import CodeSymbol, TestExecutionResult, TestStatus
+    from vibeharness.core.models import CodeSymbol, TestExecutionResult, TestStatus
     route = CodeSymbol(name="update_user_settings", symbol_type="route", file_path=str(tmp_path / "app.py"),
                        line_start=12, line_end=20, signature="", source_code="")
     threat = _threat().model_copy(update={"attack_vector": "PUT /settings via update_user_settings"})
@@ -373,9 +385,9 @@ def test_sarif_breach_is_located_at_the_attacked_symbol(tmp_path):
 # --- Executor: a test calling the target with the wrong signature is not a target defect --------
 
 def test_wrong_signature_call_in_the_test_is_an_error_not_a_defect(tmp_path):
-    from core.models import TestStatus
-    from core.sandbox import LocalSubprocessSandbox
-    from runners.test_executor import TestSuiteExecutor
+    from vibeharness.core.models import TestStatus
+    from vibeharness.core.sandbox import LocalSubprocessSandbox
+    from vibeharness.runners.test_executor import TestSuiteExecutor
     (tmp_path / "m.py").write_text("def f(x):\n    return g(x, 1)\n\ndef g(a):\n    return a\n", encoding="utf-8")
     results, _ = TestSuiteExecutor(LocalSubprocessSandbox(60)).execute_test_suite([
         _gen_test("from m import g\n\ndef test_a():\n    assert g(1, 2) == 1\n", "TEST-SIG"),
@@ -395,7 +407,7 @@ def test_wrong_signature_call_in_the_test_is_an_error_not_a_defect(tmp_path):
 # --- Docker: the in-container timeout follows the run's own budget ------------------------------
 
 def test_docker_in_container_timeout_uses_the_per_run_budget(tmp_path, monkeypatch):
-    from core.sandbox import DockerSandbox
+    from vibeharness.core.sandbox import DockerSandbox
     sandbox = DockerSandbox(timeout_seconds=120, verify=False)
     seen = []
     monkeypatch.setattr(sandbox, "_run", lambda cmd, **k: seen.append(cmd) or (0, "", ""))
@@ -410,8 +422,8 @@ def test_docker_in_container_timeout_uses_the_per_run_budget(tmp_path, monkeypat
 
 def test_verifier_accepts_quoted_indices_and_rejects_booleans(fake_live):
     import json
-    from core.llm_gateway import LLMGateway
-    from agents.whitebox.debater import MultiModelDebater
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.agents.whitebox.debater import MultiModelDebater
     findings = [_finding(finding_id="A", file_path="app.py"), _finding(finding_id="B", file_path="app.py")]
     # index True would have been read as 1 (bool subclasses int) and voted on finding B
     fake_live(lambda s, u: json.dumps({"verdicts": [
@@ -426,8 +438,8 @@ def test_one_crashed_verifier_batch_does_not_abort_arbitration(fake_live, monkey
     """A non-LLM crash in one verifier's batch must not propagate out of the thread pool and
     discard every other verifier's votes; live-mode LLM failures still fail the run loudly."""
     import json
-    from core.llm_gateway import LLMGateway
-    from agents.whitebox.debater import MultiModelDebater
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.agents.whitebox.debater import MultiModelDebater
     findings = [_finding(finding_id="A", file_path="app.py")]
     fake_live(lambda s, u: json.dumps({"verdicts": [{"index": 0, "verdict": "confirm"}]}))
     debater = MultiModelDebater(LLMGateway(CONFIG, execution_mode="live"))
@@ -451,8 +463,8 @@ def test_one_crashed_verifier_batch_does_not_abort_arbitration(fake_live, monkey
 # --- Coverage push: degradation and fallback paths of the reviewer ensemble and threat modeler ----
 
 def test_reviewer_ensemble_skips_empty_symbols_without_model_calls():
-    from core.llm_gateway import LLMGateway
-    from agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
     gw = LLMGateway(CONFIG, execution_mode="mock")
 
     def must_not_be_called(*a, **k):
@@ -466,9 +478,9 @@ def test_one_crashed_reviewer_batch_does_not_abort_the_review(fake_live, tmp_pat
     """A non-LLM crash in one reviewer's batch must not discard the other reviewers' findings;
     live-mode LLM failures still propagate (they are re-raised, not swallowed)."""
     import json
-    from core.llm_gateway import LLMGateway
-    from agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
-    from agents.whitebox.ast_extractor import ASTExtractor
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
+    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
     (tmp_path / "svc.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
     symbols = ASTExtractor().parse_file(str(tmp_path / "svc.py"))
     fake_live(lambda s, u: json.dumps({"findings": [{"symbol_name": "f", "title": "ok", "severity": "HIGH"}]}))
@@ -491,7 +503,7 @@ def test_one_crashed_reviewer_batch_does_not_abort_the_review(fake_live, tmp_pat
 def test_a_crashed_reviewer_batch_is_an_evidence_gap(tmp_path, monkeypatch):
     """A batch that raised produced no findings: the gate must report the gap (with the exception),
     never let the missing review pass as a clean result."""
-    from core.harness import VibeHarnessCommander
+    from vibeharness.core.harness import VibeHarnessCommander
     target = tmp_path / "app"
     target.mkdir()
     (target / "app.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
@@ -512,10 +524,10 @@ def test_a_crashed_reviewer_batch_is_an_evidence_gap(tmp_path, monkeypatch):
 
 def test_unknown_reviewer_severity_falls_back_to_medium(fake_live, tmp_path):
     import json
-    from core.llm_gateway import LLMGateway
-    from agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
-    from core.models import FindingSeverity
-    from agents.whitebox.ast_extractor import ASTExtractor
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
+    from vibeharness.core.models import FindingSeverity
+    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
     (tmp_path / "svc.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
     symbols = ASTExtractor().parse_file(str(tmp_path / "svc.py"))
     fake_live(lambda s, u: json.dumps({"findings": [
@@ -531,8 +543,8 @@ def test_unknown_reviewer_severity_falls_back_to_medium(fake_live, tmp_path):
 
 
 def test_missing_threat_rules_file_degrades_with_warning():
-    from core.llm_gateway import LLMGateway
-    from agents.blackbox.threat_modeler import AutomatedThreatModeler
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
     tm = AutomatedThreatModeler(LLMGateway(CONFIG, execution_mode="mock"), rules_path="Z:/definitely/not/here.yaml")
     assert tm.rules == {}
     report = tm.model_system("desc", [])
@@ -540,8 +552,8 @@ def test_missing_threat_rules_file_degrades_with_warning():
 
 
 def test_broken_yaml_threat_rules_degrade_with_warning(tmp_path):
-    from core.llm_gateway import LLMGateway
-    from agents.blackbox.threat_modeler import AutomatedThreatModeler
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
     rules = tmp_path / "threat_rules.yaml"
     rules.write_text("stride_categories: [unclosed\n  bad yaml here", encoding="utf-8")
     tm = AutomatedThreatModeler(LLMGateway(CONFIG, execution_mode="mock"), rules_path=str(rules))
@@ -550,8 +562,8 @@ def test_broken_yaml_threat_rules_degrade_with_warning(tmp_path):
 
 
 def test_non_dict_stride_category_entry_is_skipped(tmp_path):
-    from core.llm_gateway import LLMGateway
-    from agents.blackbox.threat_modeler import AutomatedThreatModeler
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
     rules = tmp_path / "threat_rules.yaml"
     rules.write_text(
         "stride_categories:\n"
@@ -567,9 +579,9 @@ def test_non_dict_stride_category_entry_is_skipped(tmp_path):
 
 def test_unknown_threat_severity_falls_back_to_high(fake_live):
     import json
-    from core.llm_gateway import LLMGateway
-    from agents.blackbox.threat_modeler import AutomatedThreatModeler
-    from core.models import FindingSeverity
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
+    from vibeharness.core.models import FindingSeverity
     fake_live(lambda s, u: json.dumps({"threats": [
         {"threat_id": "THREAT-01", "stride_category": "Tampering", "title": "t", "severity": "CATASTROPHIC"},
     ]}))
@@ -578,8 +590,8 @@ def test_unknown_threat_severity_falls_back_to_high(fake_live):
 
 
 def test_all_unusable_batches_still_produce_a_default_report(fake_live):
-    from core.llm_gateway import LLMGateway
-    from agents.blackbox.threat_modeler import AutomatedThreatModeler
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
     fake_live(lambda s, u: "I refuse to answer in JSON.")
     report = AutomatedThreatModeler(LLMGateway(CONFIG, execution_mode="live")).model_system("desc", ["/api/users"])
     assert report.threats == []
@@ -589,7 +601,7 @@ def test_all_unusable_batches_still_produce_a_default_report(fake_live):
 
 
 def test_coverage_extraction_ignores_malformed_totals():
-    from core.sandbox import LocalSubprocessSandbox
+    from vibeharness.core.sandbox import LocalSubprocessSandbox
     extract = LocalSubprocessSandbox(timeout_seconds=60)._extract_coverage_percent
     assert extract("TOTAL 10 2 87%") == 87.0
     assert extract("TOTAL 10 2 87.5%") == 87.5

@@ -10,14 +10,14 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 import yaml
 
-from core.llm_gateway import LLMGateway, LLMGatewayError, ConfigError, BUDGET_EXHAUSTED_REASON
-from core.models import FindingSeverity, ReviewFinding, STRIDECategory, ThreatItem, CodeSymbol
-from agents.whitebox.test_generator import WhiteboxTestGenerator
-from agents.blackbox.scenario_builder import ThreatScenarioBuilder
-from agents.blackbox.threat_modeler import AutomatedThreatModeler
+from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError, ConfigError, BUDGET_EXHAUSTED_REASON
+from vibeharness.core.models import FindingSeverity, ReviewFinding, STRIDECategory, ThreatItem, CodeSymbol
+from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
+from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
+from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG = os.path.join(REPO_ROOT, "config", "agents_config.yaml")
+CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
 
 
 def _config(tmp_path, **global_overrides):
@@ -249,14 +249,14 @@ def test_invalid_per_model_tokens_and_agent_temperature_are_config_errors(tmp_pa
 def test_invalid_max_files_in_config_is_a_config_error(tmp_path, value):
     """The CLI already rejects a bad --max-files; the config path must not quietly accept a negative
     slice (which analyzed all but one file) or a string (which int() happened to convert)."""
-    from core.harness import VibeHarnessCommander
+    from vibeharness.core.harness import VibeHarnessCommander
     with pytest.raises(ConfigError, match="max_files"):
         VibeHarnessCommander(config_path=_config(tmp_path, max_files=value), execution_mode="mock")
 
 
 def test_zero_or_null_max_files_keeps_the_default(tmp_path):
-    from core.harness import VibeHarnessCommander
-    from agents.whitebox.ast_extractor import DEFAULT_MAX_FILES
+    from vibeharness.core.harness import VibeHarnessCommander
+    from vibeharness.agents.whitebox.ast_extractor import DEFAULT_MAX_FILES
     for value in (0, None):
         commander = VibeHarnessCommander(config_path=_config(tmp_path, max_files=value), execution_mode="mock")
         assert commander.max_files == DEFAULT_MAX_FILES
@@ -265,7 +265,7 @@ def test_zero_or_null_max_files_keeps_the_default(tmp_path):
 def test_single_reviewer_model_is_an_evidence_gap(tmp_path):
     """Four reviewer agents on one model cannot cross-verify each other (no model rules on its own
     findings): the run must say so in the gate, not only on the console (OWASP LLM07:2026)."""
-    from core.harness import VibeHarnessCommander
+    from vibeharness.core.harness import VibeHarnessCommander
     with open(CONFIG, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     for agent_id, meta in cfg["agents"].items():
@@ -284,7 +284,7 @@ def test_single_reviewer_model_is_an_evidence_gap(tmp_path):
 
 
 def test_exhausted_budget_makes_the_run_inconclusive(fake_live, tmp_path):
-    from core.harness import VibeHarnessCommander
+    from vibeharness.core.harness import VibeHarnessCommander
     target = tmp_path / "app"
     target.mkdir()
     (target / "app.py").write_text("def greet(name):\n    return 'hi ' + name\n", encoding="utf-8")
@@ -298,7 +298,7 @@ def test_exhausted_budget_makes_the_run_inconclusive(fake_live, tmp_path):
 # --- max_files from config and CLI ---------------------------------------------------------------
 
 def test_max_files_comes_from_config(tmp_path):
-    from core.harness import VibeHarnessCommander
+    from vibeharness.core.harness import VibeHarnessCommander
     target = tmp_path / "proj"
     target.mkdir()
     for i in range(4):
@@ -310,8 +310,8 @@ def test_max_files_comes_from_config(tmp_path):
 
 
 def test_cli_limit_flags_override_the_config(monkeypatch, tmp_path):
-    import main
-    from core.models import VibeHarnessSummary
+    from vibeharness import cli as main
+    from vibeharness.core.models import VibeHarnessSummary
     seen = {}
 
     def run(self, **kwargs):
@@ -332,7 +332,7 @@ def test_cli_limit_flags_override_the_config(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("argv", [["--max-files", "0"], ["--max-model-calls", "-3"]])
 def test_cli_rejects_invalid_limits_with_the_usage_exit_code(monkeypatch, tmp_path, argv):
-    import main
+    from vibeharness import cli as main
     monkeypatch.setattr(sys, "argv", ["vibeharness", "-t", str(tmp_path), *argv])
     with pytest.raises(SystemExit) as exit_info:
         main.main()
@@ -409,7 +409,7 @@ def _tree(tmp_path):
 
 
 def test_include_and_exclude_globs_select_files(tmp_path):
-    from agents.whitebox.ast_extractor import ASTExtractor
+    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
     root = _tree(tmp_path)
     ex = ASTExtractor()
     names = lambda: sorted(os.path.relpath(f, root).replace(os.sep, "/") for f in ex.analyzed_files)  # noqa: E731
@@ -424,14 +424,14 @@ def test_include_and_exclude_globs_select_files(tmp_path):
 
 
 def test_oversized_files_are_skipped_and_disclosed(tmp_path):
-    from agents.whitebox.ast_extractor import ASTExtractor
+    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
     root = _tree(tmp_path)
     (root / "src" / "bundle.min.js").write_text("var a=1;" * 2000)
     ex = ASTExtractor()
     ex.parse_directory(str(root), max_file_bytes=1000)
     assert [os.path.basename(p) for p in ex.oversized_files] == ["bundle.min.js"]
     assert "bundle.min.js" not in {os.path.basename(p) for p in ex.analyzed_files}
-    from core.harness import VibeHarnessCommander
+    from vibeharness.core.harness import VibeHarnessCommander
     commander = VibeHarnessCommander(config_path=_config(tmp_path, max_file_bytes=1000), execution_mode="mock")
     summary = commander.run_full_pipeline(target_dir=str(root), output_report_path=str(tmp_path / "r.md"))
     assert any("exceed max_file_bytes" in r and "bundle.min.js" in r for r in summary.inconclusive_reasons)
@@ -440,12 +440,12 @@ def test_oversized_files_are_skipped_and_disclosed(tmp_path):
 
 
 def test_cli_file_filters_override_config(monkeypatch, tmp_path):
-    import main
+    from vibeharness import cli as main
     seen = {}
 
     def run(self, **kwargs):
         seen.update(include=self.include_patterns, exclude=self.exclude_patterns, since=self.changed_since)
-        from core.models import VibeHarnessSummary
+        from vibeharness.core.models import VibeHarnessSummary
         return VibeHarnessSummary(
             overall_status="INCONCLUSIVE", total_whitebox_findings=0, confirmed_whitebox_bugs=0,
             whitebox_tests_passed=0, whitebox_tests_failed=0, total_threats_modeled=0,
@@ -463,7 +463,7 @@ def test_cli_file_filters_override_config(monkeypatch, tmp_path):
 
 def test_changed_since_selects_git_changes_and_rejects_bad_refs(tmp_path):
     import subprocess
-    from core.harness import VibeHarnessCommander
+    from vibeharness.core.harness import VibeHarnessCommander
     root = _tree(tmp_path)
     git = lambda *a: subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)  # noqa: E731
     git("init", "-q", ".")
@@ -485,3 +485,66 @@ def test_changed_since_selects_git_changes_and_rejects_bad_refs(tmp_path):
         no_repo = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
         no_repo._git = lambda args, cwd: None  # type: ignore[method-assign]
         no_repo.changed_files(str(root / "src"), "HEAD")
+
+
+# --- CLI exit codes for every failure path (in-process, so coverage sees vibeharness/cli.py) ----
+
+def _summary(status):
+    from vibeharness.core.models import VibeHarnessSummary
+    return VibeHarnessSummary(
+        overall_status=status, total_whitebox_findings=0, confirmed_whitebox_bugs=0,
+        whitebox_tests_passed=0, whitebox_tests_failed=0, total_threats_modeled=0,
+        critical_threats_count=0, blackbox_tests_passed=0, blackbox_security_breaches=0,
+    )
+
+
+@pytest.mark.parametrize("outcome,code", [
+    (LLMGatewayError("no key"), 4),
+    (ValueError("--changed-since: git ref 'x' cannot be resolved"), 5),
+    (KeyboardInterrupt(), 130),
+    (RuntimeError("boom"), 5),
+    (_summary("READY_TO_SHIP"), 0),
+    (_summary("NEEDS_FIXES"), 1),
+    (_summary("BLOCKED_CRITICAL_RISK"), 2),
+    (_summary("INCONCLUSIVE"), 3),
+    (_summary("WHATEVER"), 3),  # unknown verdicts fail closed
+])
+def test_cli_maps_every_pipeline_outcome_to_its_exit_code(monkeypatch, tmp_path, capsys, outcome, code):
+    from vibeharness import cli
+
+    def run(self, **kwargs):
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(cli.VibeHarnessCommander, "run_full_pipeline", run)
+    monkeypatch.setattr(sys, "argv", ["vibeharness", "-t", str(tmp_path), "-m", "mock", "-o", str(tmp_path / "r.md")])
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+    assert exit_info.value.code == code
+    err = capsys.readouterr().err
+    if isinstance(outcome, KeyboardInterrupt):
+        assert "Interrupted" in err and "Traceback" not in err
+    if type(outcome) is RuntimeError:
+        assert "Traceback" in err and "crashed unexpectedly" in err
+    if getattr(outcome, "overall_status", None) == "WHATEVER":
+        assert "failing closed" in err
+
+
+def test_cli_rejects_unwritable_output_and_a_directory_as_output(monkeypatch, tmp_path):
+    from vibeharness import cli
+    for bad in (str(tmp_path / "missing" / "r.md"), str(tmp_path)):
+        monkeypatch.setattr(sys, "argv", ["vibeharness", "-t", str(tmp_path), "-m", "mock", "-o", bad])
+        with pytest.raises(SystemExit) as exit_info:
+            cli.main()
+        assert exit_info.value.code == cli.USAGE_ERROR_EXIT_CODE
+    monkeypatch.setattr(sys, "argv", ["vibeharness", "-t", str(tmp_path), "-m", "mock", "--sarif", str(tmp_path / "no" / "x.sarif")])
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+    assert exit_info.value.code == cli.USAGE_ERROR_EXIT_CODE
+
+
+def test_root_main_py_is_a_launcher_for_the_cli():
+    import main
+    from vibeharness import cli
+    assert main.main is cli.main

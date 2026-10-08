@@ -2,8 +2,8 @@
 import json
 import os
 
-from core.llm_gateway import LLMGateway, PROVENANCE_KEY
-from core.models import (
+from vibeharness.core.llm_gateway import LLMGateway, PROVENANCE_KEY
+from vibeharness.core.models import (
     AgentCallRecord,
     CodeSymbol,
     FindingSeverity,
@@ -16,17 +16,17 @@ from core.models import (
     ThreatModelReport,
     VibeHarnessSummary,
 )
-from agents.whitebox.ast_extractor import ASTExtractor
-from agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
-from agents.whitebox.debater import MultiModelDebater
-from agents.whitebox.test_generator import WhiteboxTestGenerator
-from agents.blackbox.threat_modeler import AutomatedThreatModeler, DEFAULT_TRUST_BOUNDARIES, DEFAULT_ASSETS
-from agents.blackbox.scenario_builder import ThreatScenarioBuilder
-from reports.report_generator import ReportGenerator
-from core.harness import VibeHarnessCommander
+from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
+from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
+from vibeharness.agents.whitebox.debater import MultiModelDebater
+from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
+from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler, DEFAULT_TRUST_BOUNDARIES, DEFAULT_ASSETS
+from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
+from vibeharness.reports.report_generator import ReportGenerator
+from vibeharness.core.harness import VibeHarnessCommander
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG = os.path.join(REPO_ROOT, "config", "agents_config.yaml")
+CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
 
 
 def _finding(fid="A", model="claude"):
@@ -108,7 +108,7 @@ def test_large_targets_are_threat_modeled_in_batches():
 
 
 def test_invalid_batch_does_not_kill_threat_modeling():
-    from core.llm_gateway import PROVENANCE_KEY
+    from vibeharness.core.llm_gateway import PROVENANCE_KEY
     gw = LLMGateway(CONFIG, execution_mode="mock")
     responses = [
         {PROVENANCE_KEY: {"mode": "invalid", "model": "m", "reason": "bad json"}},
@@ -448,8 +448,8 @@ def test_garbage_json_object_is_recorded_as_invalid_call(fake_live):
 def test_reports_carry_run_metadata_and_a_schema_version(tmp_path):
     """A report read later must say which harness version, mode and target revision produced it."""
     import json
-    from core import __version__
-    from core.harness import VibeHarnessCommander
+    from vibeharness import __version__
+    from vibeharness.core.harness import VibeHarnessCommander
     target = tmp_path / "t"
     target.mkdir()
     (target / "m.py").write_text("def f(x):\n    return x\n")

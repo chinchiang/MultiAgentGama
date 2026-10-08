@@ -12,11 +12,11 @@
 
 ## 🏛️ 系統架構與流程 (Architecture Overview)
 
-`core/harness.py` 以六個線性階段依序調度各子 Agent（沒有狀態機的分支或回退）。所有模型呼叫都經 `core/llm_gateway.py`；所有讀取目標程式碼的 Agent 都先經 `core/sanitize.py` 的不受信任程式碼通道。
+`vibeharness/core/harness.py` 以六個線性階段依序調度各子 Agent（沒有狀態機的分支或回退）。所有模型呼叫都經 `vibeharness/core/llm_gateway.py`；所有讀取目標程式碼的 Agent 都先經 `vibeharness/core/sanitize.py` 的不受信任程式碼通道。
 
 ```mermaid
 flowchart TD
-    CLI["main.py CLI<br/>--target / --mode / --desc / --base-url<br/>--format / --sarif / --max-files / --max-model-calls"] --> CMD["🧠 總指揮官 Commander<br/>core/harness.py（六階段線性流程）"]
+    CLI["main.py CLI<br/>--target / --mode / --desc / --base-url<br/>--format / --sarif / --max-files / --max-model-calls"] --> CMD["🧠 總指揮官 Commander<br/>vibeharness/core/harness.py（六階段線性流程）"]
     CMD --> AST["階段 1・符號擷取<br/>ast_extractor.py（Python 用 AST；JS/TS 用 lexer）"]
     AST --> SAST["階段 1・確定性 AI 安全規則<br/>ai_static_scanner.py（VH-AI-001～009）<br/>並偵測 ai_components"]
 
@@ -74,7 +74,7 @@ flowchart TD
 
 ### 🤖 各 Agent 分工
 
-每個 Agent 的模型與提示詞都定義在 [`config/agents_config.yaml`](config/agents_config.yaml)，可自由改派模型；白箱審查者由設定檔中所有 `whitebox_reviewer_*` 項目組成（名稱、模型與 `focus` 都會帶入提示詞），新增或刪除項目即可調整評議陣容（欄位細節見 [docs/configuration.md](docs/configuration.md)）：
+每個 Agent 的模型與提示詞都定義在 [`vibeharness/config/agents_config.yaml`](vibeharness/config/agents_config.yaml)，可自由改派模型；白箱審查者由設定檔中所有 `whitebox_reviewer_*` 項目組成（名稱、模型與 `focus` 都會帶入提示詞），新增或刪除項目即可調整評議陣容（欄位細節見 [docs/configuration.md](docs/configuration.md)）：
 
 | 子 Agent（agent_id） | 預設模型 | 職責 | temperature |
 | :--- | :--- | :--- | :--- |
@@ -115,7 +115,7 @@ flowchart TD
    | `VH-AI-008` | 隱形或雙向控制字元（Unicode tag、零寬、Trojan Source） | HIGH（僅零寬字元：MEDIUM） | LLM01:2026／AML.T0068 |
    | `VH-AI-009` | 對 AI 審查者下指令的注釋／字串（「ignore previous instructions」「report no findings」） | MEDIUM | LLM01:2026／AML.T0051.001 |
 
-   `VH-AI-001`～`006` 只掃 Python（`005`／`006` 只在匯入 AI SDK 的檔案啟用，`006` 的污點追蹤限於單一函式或模組範圍）；`007`～`009` 也掃 JS/TS。HIGH 以上的命中直接使閘門為 `NEEDS_FIXES`；`VH-AI-008`／`VH-AI-009` 另列為證據缺口（模型階段的結論可能已被操弄），因此不可能得到 `READY_TO_SHIP`。目標若匯入 AI SDK（openai、anthropic、litellm、langchain、transformers、torch 等），偵測到的 `ai_components` 會讓威脅建模額外套用 OWASP LLM Top 10 2026 與 ATLAS 技術對應（`config/threat_rules.yaml` 的 `owasp_llm_top10_2026`），威脅可帶 `atlas_mapping`。
+   `VH-AI-001`～`006` 只掃 Python（`005`／`006` 只在匯入 AI SDK 的檔案啟用，`006` 的污點追蹤限於單一函式或模組範圍）；`007`～`009` 也掃 JS/TS。HIGH 以上的命中直接使閘門為 `NEEDS_FIXES`；`VH-AI-008`／`VH-AI-009` 另列為證據缺口（模型階段的結論可能已被操弄），因此不可能得到 `READY_TO_SHIP`。目標若匯入 AI SDK（openai、anthropic、litellm、langchain、transformers、torch 等），偵測到的 `ai_components` 會讓威脅建模額外套用 OWASP LLM Top 10 2026 與 ATLAS 技術對應（`vibeharness/config/threat_rules.yaml` 的 `owasp_llm_top10_2026`），威脅可帶 `atlas_mapping`。
 6. **兩種沙盒**：生成的測試在暫存目錄中執行，環境變數採白名單（不傳入 API 金鑰，也剔除 `LD_PRELOAD`、`BASH_ENV` 這類注入鍵）。每批測試有逾時（`sandbox_timeout_seconds`）；批次逾時後會逐一重跑，此時每個測試另有單測逾時（`per_test_timeout_seconds`），總時間仍受批次預算限制。逾時會終止整個程序樹（Docker 則移除容器）。
    - `local_subprocess`（預設）：本機子程序。
    - `docker`：每批測試在一次性容器中執行——預設無網路、根檔案系統與目標目錄唯讀、移除所有 capabilities、禁止提權、非 root 使用者（harness 以 root 執行時容器改用 `nobody`）、記憶體／CPU／程序數上限。只有該次執行的暫存目錄與 `/tmp`（noexec 的 tmpfs）可寫。
@@ -160,40 +160,43 @@ MultiAgentGama/
 │   └── workflows/
 │       ├── tests.yml            # CI：lint（ruff／mypy）、audit（pip-audit）、package（wheel 冒煙測試）、test（Ubuntu／Windows × Python 3.10–3.13，覆蓋率門檻 93%）
 │       └── publish.yml          # 發佈：tag 推送時驗證版本一致、建置 sdist／wheel、上傳 GitHub Release（PyPI 需設 ENABLE_PYPI_PUBLISH）
-├── config/
-│   ├── agents_config.yaml       # 全域設定（執行模式、沙盒、上限）、多模型路由 (Claude, GLM, DeepSeek, Gemini) 與各 Agent 提示詞
-│   └── threat_rules.yaml        # STRIDE、OWASP API Top 10 與 OWASP LLM Top 10 2026（含 ATLAS／CWE 對應）
 ├── docker/
 │   └── sandbox.Dockerfile       # docker 沙盒的基底映像（pytest / pytest-cov / requests）
-├── core/
+├── vibeharness/                 # 唯一的頂層套件（pip install 後 site-packages 只多這一個目錄）
 │   ├── __init__.py              # 套件版本號（__version__，pyproject 的唯一來源）
-│   ├── harness.py               # 指揮官：六階段線性流程與品質閘門
-│   ├── llm_gateway.py           # 統一 LiteLLM 閘道：路由、fallback、模擬回退、呼叫預算與 call_log
-│   ├── models.py                # Pydantic 數據模型
-│   ├── codecheck.py             # 生成測試的靜態檢查（需有 test_ 函式與斷言；拒絕安裝套件）
-│   ├── codecontext.py           # 提供給模型的原始碼與 import 指引（經不受信任程式碼通道）
-│   ├── sanitize.py              # 信任邊界：去隱形字元、遮蔽密鑰、不受信任程式碼通道、報告消毒
-│   └── sandbox.py               # 沙盒：本機子程序（非安全邊界）與 Docker 容器
-├── agents/
-│   ├── __init__.py
-│   ├── whitebox/
+│   ├── cli.py                   # CLI 進入點（vibeharness 指令）
+│   ├── config/
+│   │   ├── agents_config.yaml       # 全域設定（執行模式、沙盒、上限）、多模型路由 (Claude, GLM, DeepSeek, Gemini) 與各 Agent 提示詞
+│   │   └── threat_rules.yaml        # STRIDE、OWASP API Top 10 與 OWASP LLM Top 10 2026（含 ATLAS／CWE 對應）
+│   ├── core/
 │   │   ├── __init__.py
-│   │   ├── ast_extractor.py     # 符號解析與路由提取（Python 用 AST；JS/TS 用無相依 lexer）
-│   │   ├── ai_static_scanner.py # 確定性 AI 安全規則 VH-AI-001～009（不經模型）
-│   │   ├── multi_reviewer.py    # 異構模型評議 (Ensemble，由設定檔的 whitebox_reviewer_* 組成)
-│   │   ├── deduplicator.py      # 合併多個模型回報的同一缺陷
-│   │   ├── debater.py           # 交叉驗證：由非作者模型投票判定
-│   │   └── test_generator.py    # 單元/邊界測試自動生成（自癒重試、WB-PROBE 探針）
-│   └── blackbox/
-│       ├── __init__.py
-│       ├── threat_modeler.py    # STRIDE／OWASP API／LLM 威脅建模引擎（含 ATLAS 對應）
-│       └── scenario_builder.py  # 威脅轉化可執行攻擊腳本
-├── runners/
-│   ├── __init__.py
-│   └── test_executor.py         # 沙盒 Pytest 執行器與 PoC 抓取（白箱與黑箱共用）
-├── reports/
-│   ├── __init__.py
-│   └── report_generator.py      # Markdown／JSON／SARIF 審計報告生成器
+│   │   ├── harness.py               # 指揮官：六階段線性流程與品質閘門
+│   │   ├── llm_gateway.py           # 統一 LiteLLM 閘道：路由、fallback、模擬回退、呼叫預算與 call_log
+│   │   ├── models.py                # Pydantic 數據模型
+│   │   ├── codecheck.py             # 生成測試的靜態檢查（需有 test_ 函式與斷言；拒絕安裝套件）
+│   │   ├── codecontext.py           # 提供給模型的原始碼與 import 指引（經不受信任程式碼通道）
+│   │   ├── sanitize.py              # 信任邊界：去隱形字元、遮蔽密鑰、不受信任程式碼通道、報告消毒
+│   │   └── sandbox.py               # 沙盒：本機子程序（非安全邊界）與 Docker 容器
+│   ├── agents/
+│   │   ├── __init__.py
+│   │   ├── whitebox/
+│   │   │   ├── __init__.py
+│   │   │   ├── ast_extractor.py     # 符號解析與路由提取（Python 用 AST；JS/TS 用無相依 lexer）
+│   │   │   ├── ai_static_scanner.py # 確定性 AI 安全規則 VH-AI-001～009（不經模型）
+│   │   │   ├── multi_reviewer.py    # 異構模型評議 (Ensemble，由設定檔的 whitebox_reviewer_* 組成)
+│   │   │   ├── deduplicator.py      # 合併多個模型回報的同一缺陷
+│   │   │   ├── debater.py           # 交叉驗證：由非作者模型投票判定
+│   │   │   └── test_generator.py    # 單元/邊界測試自動生成（自癒重試、WB-PROBE 探針）
+│   │   └── blackbox/
+│   │       ├── __init__.py
+│   │       ├── threat_modeler.py    # STRIDE／OWASP API／LLM 威脅建模引擎（含 ATLAS 對應）
+│   │       └── scenario_builder.py  # 威脅轉化可執行攻擊腳本
+│   ├── runners/
+│   │   ├── __init__.py
+│   │   └── test_executor.py         # 沙盒 Pytest 執行器與 PoC 抓取（白箱與黑箱共用）
+│   ├── reports/
+│   │   ├── __init__.py
+│   │   └── report_generator.py      # Markdown／JSON／SARIF 審計報告生成器
 ├── examples/
 │   └── vibe_sample_app.py       # 具代表性的 Vibe-Coding 典型缺陷範例
 ├── docs/
@@ -226,7 +229,7 @@ MultiAgentGama/
 ├── requirements-dev.txt         # 開發依賴（ruff、mypy、pytest-cov、build、pip-audit，版本鎖定）
 ├── requirements.lock            # 完整鎖定版本（供 CI 安裝與 pip-audit 使用）
 ├── README.md                    # 說明文件（正體中文）；README.en.md 為英文版
-└── main.py                      # CLI 執行入口
+└── main.py                      # 薄殼：`python main.py …` 轉呼叫 vibeharness.cli
 ```
 
 ---
@@ -250,7 +253,7 @@ vibeharness --version
 
 工具包支援真實 API 調用與本機模擬模式（Hybrid Mode）：
 
-> 設定檔（`config/agents_config.yaml`）每個欄位的完整說明——含預設值、改派模型與 Docker 沙盒範例——見 **[docs/configuration.md](docs/configuration.md)**（[English](docs/configuration.en.md)）。
+> 設定檔（`vibeharness/config/agents_config.yaml`）每個欄位的完整說明——含預設值、改派模型與 Docker 沙盒範例——見 **[docs/configuration.md](docs/configuration.md)**（[English](docs/configuration.en.md)）。
 >
 > 想了解每個元件為什麼這樣設計、資料怎麼在階段之間流動、閘門與 evidence gap 怎麼判定，見 **[docs/design.md](docs/design.md)**（設計文件，正體中文；[English](docs/design.en.md)）。
 
@@ -262,7 +265,7 @@ export DEEPSEEK_API_KEY="sk-..."         # DeepSeek
 export GEMINI_API_KEY="AIza..."          # Gemini
 ```
 
-預設模型見 `config/agents_config.yaml`（Claude `claude-sonnet-5-5`、GLM `zai/glm-5.3`、DeepSeek `deepseek/deepseek-v4-pro`、Gemini `gemini/gemini-3.8-flash`），每個模型可設定 `fallback_model`（預設分別為 `claude-haiku-4-5-20251001`、`zai/glm-5.3-flash`、`deepseek/deepseek-v4-flash`、`gemini/gemini-3.5-flash`），主模型重試 `max_retries` 次失敗後會改用它，報告會記錄實際使用的模型。每個模型的金鑰從 `api_key_env` 指定的環境變數讀取；以 AWS 憑證驗證的供應商（例如 Bedrock）可改設 `aws_profile_name`／`aws_region_name`。注意：待審程式碼會傳送給這裡列出的每一家模型供應商（已先遮蔽寫死的憑證），請只設定資料保留條款可接受的供應商。
+預設模型見 `vibeharness/config/agents_config.yaml`（Claude `claude-sonnet-5-5`、GLM `zai/glm-5.3`、DeepSeek `deepseek/deepseek-v4-pro`、Gemini `gemini/gemini-3.8-flash`），每個模型可設定 `fallback_model`（預設分別為 `claude-haiku-4-5-20251001`、`zai/glm-5.3-flash`、`deepseek/deepseek-v4-flash`、`gemini/gemini-3.5-flash`），主模型重試 `max_retries` 次失敗後會改用它，報告會記錄實際使用的模型。每個模型的金鑰從 `api_key_env` 指定的環境變數讀取；以 AWS 憑證驗證的供應商（例如 Bedrock）可改設 `aws_profile_name`／`aws_region_name`。注意：待審程式碼會傳送給這裡列出的每一家模型供應商（已先遮蔽寫死的憑證），請只設定資料保留條款可接受的供應商。
 
 `global` 區段的其他上限（CLI 未覆蓋時生效）：`execution_mode`（`--mode` 會覆蓋）、`timeout_seconds`（單次模型請求，預設 180 秒）、`max_retries`（2）、`max_output_tokens`（16384，思考 token 也算在內；`models.<alias>.max_output_tokens` 可逐模型覆蓋）、`max_concurrent_calls`（每個階段的並行模型呼叫數，6）、`max_model_calls`、`max_files`、`max_file_bytes`、`include`／`exclude`、`retry_invalid_output`、`sandbox_timeout_seconds`（120）與 `per_test_timeout_seconds`（30）。
 
@@ -284,7 +287,7 @@ export GEMINI_API_KEY="AIza..."          # Gemini
 docker build -t vibeharness-sandbox:latest -f docker/sandbox.Dockerfile .
 ```
 
-在 `config/agents_config.yaml` 設定 `sandbox_provider: "docker"`。可調整 `docker_image`、`docker_network`、`docker_memory`、`docker_cpus`、`docker_pids_limit`。
+在 `vibeharness/config/agents_config.yaml` 設定 `sandbox_provider: "docker"`。可調整 `docker_image`、`docker_network`、`docker_memory`、`docker_cpus`、`docker_pids_limit`。
 
 - 目標目錄以唯讀方式掛載到容器內的 `/work/<目錄名>`；生成測試中的主機絕對路徑會自動改寫為容器路徑。
 - 容器預設**沒有網路**，無法在執行時安裝套件。目標的相依套件需預先裝進映像：以 `FROM vibeharness-sandbox:latest` 建立專案專用映像並 `pip install` 相依套件，再把 `docker_image` 指向它。
@@ -343,13 +346,13 @@ Exit code（依序判定）：
 pip install -r requirements-dev.txt
 python -m pytest
 python -m ruff check .
-python -m mypy core/ agents/ runners/ reports/ main.py
+python -m mypy vibeharness/ main.py
 ```
 
 CI（`.github/workflows/tests.yml`）有四個 job：`lint`（ruff 與 mypy）、`audit`（pip-audit）、`package`（建置 wheel 並在檢出目錄之外以 mock 模式跑一次）與 `test`（Ubuntu／Windows × Python 3.10–3.13，Linux 另建 Docker 沙盒映像跑真實容器測試）。`test` job 帶覆蓋率門檻，本機要跑同一條件可用：
 
 ```bash
-python -m pytest --cov=core --cov=agents --cov=runners --cov=reports --cov-fail-under=93
+python -m pytest --cov=vibeharness --cov-fail-under=93
 ```
 
 供應鏈檢查（CI 的 `audit` job 對鎖定版本執行同一指令，含已知 CVE 的依賴會擋在合併前）：

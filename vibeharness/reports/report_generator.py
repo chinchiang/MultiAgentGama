@@ -4,7 +4,7 @@ import json
 import os
 import re
 from typing import Dict, List, Optional, Tuple
-from core.models import (
+from vibeharness.core.models import (
     CodeSymbol,
     MultiModelDebateResult,
     ReviewFinding,
@@ -17,7 +17,7 @@ from core.models import (
     FindingSeverity,
     StaticFinding
 )
-from core.sanitize import clean_model_text, markdown_safe
+from vibeharness.core.sanitize import clean_model_text, markdown_safe
 
 # Windows drive paths ("C:\...") count as absolute even on POSIX hosts, so a SARIF produced
 # on Windows relativizes identically when re-processed by a Linux CI runner.
@@ -285,7 +285,7 @@ class ReportGenerator:
         symbol their threat's attack vector names, when one can be resolved).
         URIs are relative to the enclosing git repository (%SRCROOT%), else to the target.
         """
-        from core import __version__
+        from vibeharness import __version__
         root = self._sarif_root(target_path)
 
         rules: List[Dict[str, object]] = []
@@ -584,7 +584,7 @@ class ReportGenerator:
         """Appendix with every executed test's code next to its outcome. A model-written test that "passes"
         may be asserting the defect itself (e.g. `pytest.raises(KeyError)`), so the code must be reviewable;
         the JSON report keeps it verbatim, here control characters are removed for safe rendering."""
-        from runners.test_executor import TestSuiteExecutor
+        from vibeharness.runners.test_executor import TestSuiteExecutor
         if not whitebox_tests and not blackbox_tests:
             return []
         md = ["\n## 6. 🧪 Generated Test Code (audit trail)",

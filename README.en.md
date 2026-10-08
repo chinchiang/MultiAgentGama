@@ -12,11 +12,11 @@ Designed for the failure modes of today's **Vibe Coding (natural-language-prompt
 
 ## 🏛️ Architecture & Pipeline Overview
 
-`core/harness.py` drives the sub-agents through six linear phases (no state-machine branching or rollback). Every model call goes through `core/llm_gateway.py`, and every agent that reads target code first passes it through the untrusted-code channel in `core/sanitize.py`.
+`vibeharness/core/harness.py` drives the sub-agents through six linear phases (no state-machine branching or rollback). Every model call goes through `vibeharness/core/llm_gateway.py`, and every agent that reads target code first passes it through the untrusted-code channel in `vibeharness/core/sanitize.py`.
 
 ```mermaid
 flowchart TD
-    CLI["main.py CLI<br/>--target / --mode / --desc / --base-url<br/>--format / --sarif / --max-files / --max-model-calls"] --> CMD["🧠 Commander<br/>core/harness.py (six linear phases)"]
+    CLI["main.py CLI<br/>--target / --mode / --desc / --base-url<br/>--format / --sarif / --max-files / --max-model-calls"] --> CMD["🧠 Commander<br/>vibeharness/core/harness.py (six linear phases)"]
     CMD --> AST["Phase 1 · Symbol extraction<br/>ast_extractor.py (AST for Python; lexer for JS/TS)"]
     AST --> SAST["Phase 1 · Deterministic AI-security rules<br/>ai_static_scanner.py (VH-AI-001..009)<br/>also detects ai_components"]
 
@@ -74,7 +74,7 @@ flowchart TD
 
 ### 🤖 Agent Responsibilities
 
-Every agent's model and prompt live in [`config/agents_config.yaml`](config/agents_config.yaml) and can be reassigned freely. The reviewer roster is config-driven: every `whitebox_reviewer_*` entry is used with its own `name`, `model_alias`, `temperature`, and `focus` (the focus text goes into its prompt), so adding or removing an entry changes the ensemble (field details in [docs/configuration.en.md](docs/configuration.en.md)):
+Every agent's model and prompt live in [`vibeharness/config/agents_config.yaml`](vibeharness/config/agents_config.yaml) and can be reassigned freely. The reviewer roster is config-driven: every `whitebox_reviewer_*` entry is used with its own `name`, `model_alias`, `temperature`, and `focus` (the focus text goes into its prompt), so adding or removing an entry changes the ensemble (field details in [docs/configuration.en.md](docs/configuration.en.md)):
 
 | Sub-agent (agent_id) | Default model | Responsibility | temperature |
 | :--- | :--- | :--- | :--- |
@@ -115,7 +115,7 @@ Every agent's model and prompt live in [`config/agents_config.yaml`](config/agen
    | `VH-AI-008` | Invisible or bidirectional-control characters (Unicode tags, zero-width, Trojan Source) | HIGH (zero-width only: MEDIUM) | LLM01:2026 / AML.T0068 |
    | `VH-AI-009` | Comments/strings addressed to AI reviewers ("ignore previous instructions", "report no findings") | MEDIUM | LLM01:2026 / AML.T0051.001 |
 
-   `VH-AI-001`–`006` scan Python only (`005`/`006` only in files that import an AI SDK; `006` tracks taint within a single function or module scope); `007`–`009` also scan JS/TS. HIGH+ hits make the verdict `NEEDS_FIXES`. `VH-AI-008`/`009` hits also add an evidence gap (the model-driven phases may have been manipulated), so such a run can never be `READY_TO_SHIP`. If the target imports an AI SDK (`openai`, `anthropic`, `litellm`, `langchain`, `transformers`, `torch`, ...), the detected `ai_components` switch on the OWASP LLM Top 10 2026 checklist and ATLAS mapping in threat modeling (`owasp_llm_top10_2026` in `config/threat_rules.yaml`), and threats can carry an `atlas_mapping`.
+   `VH-AI-001`–`006` scan Python only (`005`/`006` only in files that import an AI SDK; `006` tracks taint within a single function or module scope); `007`–`009` also scan JS/TS. HIGH+ hits make the verdict `NEEDS_FIXES`. `VH-AI-008`/`009` hits also add an evidence gap (the model-driven phases may have been manipulated), so such a run can never be `READY_TO_SHIP`. If the target imports an AI SDK (`openai`, `anthropic`, `litellm`, `langchain`, `transformers`, `torch`, ...), the detected `ai_components` switch on the OWASP LLM Top 10 2026 checklist and ATLAS mapping in threat modeling (`owasp_llm_top10_2026` in `vibeharness/config/threat_rules.yaml`), and threats can carry an `atlas_mapping`.
 6. **Two sandboxes**: generated tests run in a temp directory with an environment-variable allowlist (API keys are never passed in, and injection keys such as `LD_PRELOAD` and `BASH_ENV` are dropped). Each batch has a timeout (`sandbox_timeout_seconds`); a timed-out batch is re-run test by test, where each test gets its own timeout (`per_test_timeout_seconds`) while the batch budget still caps the total. On timeout the whole process tree is killed (Docker removes the container instead).
    - `local_subprocess` (default): a local subprocess.
    - `docker`: each test batch runs in a disposable container — no network by default, read-only root filesystem and target mount, all capabilities dropped, no privilege escalation, non-root user (when the harness itself runs as root the container runs as `nobody`), and memory/CPU/process limits. Only the run's temp directory and `/tmp` (a noexec tmpfs) are writable.
@@ -160,40 +160,43 @@ MultiAgentGama/
 │   └── workflows/
 │       ├── tests.yml            # CI: lint (ruff / mypy), audit (pip-audit), package (wheel smoke test), test (Ubuntu / Windows × Python 3.10–3.13, 93% coverage floor)
 │       └── publish.yml          # Release: on tag push, verify the version matches, build sdist / wheel, upload to the GitHub Release (PyPI needs ENABLE_PYPI_PUBLISH)
-├── config/
-│   ├── agents_config.yaml       # Global settings (execution mode, sandbox, limits), multi-model routing (Claude, GLM, DeepSeek, Gemini), per-agent prompts
-│   └── threat_rules.yaml        # STRIDE, OWASP API Top 10 and OWASP LLM Top 10 2026 (with ATLAS / CWE mapping)
 ├── docker/
 │   └── sandbox.Dockerfile       # Base image for the docker sandbox (pytest / pytest-cov / requests)
-├── core/
-│   ├── __init__.py              # Package version (__version__, the single source for pyproject)
-│   ├── harness.py               # Commander: six linear phases and the quality gate
-│   ├── llm_gateway.py           # Unified LiteLLM gateway: routing, fallback, simulation fallback, call budget and call_log
-│   ├── models.py                # Pydantic data models
-│   ├── codecheck.py             # Static checks on generated tests (needs test_ functions and assertions; refuses package installs)
-│   ├── codecontext.py           # Source code and import guidance handed to the models (through the untrusted-code channel)
-│   ├── sanitize.py              # Trust-boundary hygiene: invisible chars, secret redaction, untrusted-code channel, output sanitizing
-│   └── sandbox.py               # Sandboxes: local subprocess (not a security boundary) and Docker containers
-├── agents/
-│   ├── __init__.py
-│   ├── whitebox/
+├── vibeharness/                 # the only top-level package (the sole directory a pip install adds to site-packages)
+│   ├── __init__.py              # package version (__version__, pyproject's single source)
+│   ├── cli.py                   # CLI entry point (the vibeharness command)
+│   ├── config/
+│   │   ├── agents_config.yaml       # Global settings (execution mode, sandbox, limits), multi-model routing (Claude, GLM, DeepSeek, Gemini), per-agent prompts
+│   │   └── threat_rules.yaml        # STRIDE, OWASP API Top 10 and OWASP LLM Top 10 2026 (with ATLAS / CWE mapping)
+│   ├── core/
 │   │   ├── __init__.py
-│   │   ├── ast_extractor.py     # Symbol parsing and route extraction (AST for Python; dependency-free lexer for JS/TS)
-│   │   ├── ai_static_scanner.py # Deterministic AI-security rules VH-AI-001..009 (no model involved)
-│   │   ├── multi_reviewer.py    # Heterogeneous model ensemble review (built from the whitebox_reviewer_* entries)
-│   │   ├── deduplicator.py      # Merges the same defect reported by multiple models
-│   │   ├── debater.py           # Cross-verification: ruled on by non-author models
-│   │   └── test_generator.py    # Automatic unit/boundary test generation (self-repair, WB-PROBE probes)
-│   └── blackbox/
-│       ├── __init__.py
-│       ├── threat_modeler.py    # STRIDE / OWASP API / LLM threat-modeling engine (with ATLAS mapping)
-│       └── scenario_builder.py  # Turns threats into executable attack scripts
-├── runners/
-│   ├── __init__.py
-│   └── test_executor.py         # Sandboxed pytest executor with PoC capture (shared by white-box and black-box)
-├── reports/
-│   ├── __init__.py
-│   └── report_generator.py      # Markdown / JSON / SARIF audit report generator
+│   │   ├── harness.py               # Commander: six linear phases and the quality gate
+│   │   ├── llm_gateway.py           # Unified LiteLLM gateway: routing, fallback, simulation fallback, call budget and call_log
+│   │   ├── models.py                # Pydantic data models
+│   │   ├── codecheck.py             # Static checks on generated tests (needs test_ functions and assertions; refuses package installs)
+│   │   ├── codecontext.py           # Source code and import guidance handed to the models (through the untrusted-code channel)
+│   │   ├── sanitize.py              # Trust-boundary hygiene: invisible chars, secret redaction, untrusted-code channel, output sanitizing
+│   │   └── sandbox.py               # Sandboxes: local subprocess (not a security boundary) and Docker containers
+│   ├── agents/
+│   │   ├── __init__.py
+│   │   ├── whitebox/
+│   │   │   ├── __init__.py
+│   │   │   ├── ast_extractor.py     # Symbol parsing and route extraction (AST for Python; dependency-free lexer for JS/TS)
+│   │   │   ├── ai_static_scanner.py # Deterministic AI-security rules VH-AI-001..009 (no model involved)
+│   │   │   ├── multi_reviewer.py    # Heterogeneous model ensemble review (built from the whitebox_reviewer_* entries)
+│   │   │   ├── deduplicator.py      # Merges the same defect reported by multiple models
+│   │   │   ├── debater.py           # Cross-verification: ruled on by non-author models
+│   │   │   └── test_generator.py    # Automatic unit/boundary test generation (self-repair, WB-PROBE probes)
+│   │   └── blackbox/
+│   │       ├── __init__.py
+│   │       ├── threat_modeler.py    # STRIDE / OWASP API / LLM threat-modeling engine (with ATLAS mapping)
+│   │       └── scenario_builder.py  # Turns threats into executable attack scripts
+│   ├── runners/
+│   │   ├── __init__.py
+│   │   └── test_executor.py         # Sandboxed pytest executor with PoC capture (shared by white-box and black-box)
+│   ├── reports/
+│   │   ├── __init__.py
+│   │   └── report_generator.py      # Markdown / JSON / SARIF audit report generator
 ├── examples/
 │   └── vibe_sample_app.py       # A representative sample of typical Vibe-Coding defects
 ├── docs/
@@ -226,7 +229,7 @@ MultiAgentGama/
 ├── requirements-dev.txt         # Development dependencies (ruff, mypy, pytest-cov, build, pip-audit; pinned)
 ├── requirements.lock            # Fully locked versions (used by CI installs and pip-audit)
 ├── README.md                    # Documentation (Traditional Chinese); README.en.md is the English version
-└── main.py                      # CLI entry point
+└── main.py                      # thin launcher: `python main.py …` calls vibeharness.cli
 ```
 
 ---
@@ -250,7 +253,7 @@ vibeharness --version
 
 The toolkit supports real API calls and an offline simulation mode (Hybrid Mode):
 
-> For a complete reference to every field in `config/agents_config.yaml` — defaults, model reassignment, and Docker sandbox examples — see **[docs/configuration.en.md](docs/configuration.en.md)** ([正體中文](docs/configuration.md)).
+> For a complete reference to every field in `vibeharness/config/agents_config.yaml` — defaults, model reassignment, and Docker sandbox examples — see **[docs/configuration.en.md](docs/configuration.en.md)** ([正體中文](docs/configuration.md)).
 >
 > For why each component is designed the way it is, how data flows between phases, and how the gate and evidence gaps are decided, see **[docs/design.en.md](docs/design.en.md)** (design document; [正體中文](docs/design.md)).
 
@@ -262,7 +265,7 @@ export DEEPSEEK_API_KEY="sk-..."         # DeepSeek
 export GEMINI_API_KEY="AIza..."          # Gemini
 ```
 
-Default models are in `config/agents_config.yaml` (Claude `claude-sonnet-5-5`, GLM `zai/glm-5.3`, DeepSeek `deepseek/deepseek-v4-pro`, Gemini `gemini/gemini-3.8-flash`). Each model can set a `fallback_model` (defaults: `claude-haiku-4-5-20251001`, `zai/glm-5.3-flash`, `deepseek/deepseek-v4-flash`, `gemini/gemini-3.5-flash`); after the primary model fails `max_retries` times the fallback is tried, and the report records which model was actually used. Each model's key is read from the environment variable named in `api_key_env`; providers that authenticate with AWS credentials (e.g. Bedrock) can set `aws_profile_name` / `aws_region_name` instead. Target code is sent to every configured provider (with hard-coded credentials redacted first), so only configure providers whose data-retention terms you accept.
+Default models are in `vibeharness/config/agents_config.yaml` (Claude `claude-sonnet-5-5`, GLM `zai/glm-5.3`, DeepSeek `deepseek/deepseek-v4-pro`, Gemini `gemini/gemini-3.8-flash`). Each model can set a `fallback_model` (defaults: `claude-haiku-4-5-20251001`, `zai/glm-5.3-flash`, `deepseek/deepseek-v4-flash`, `gemini/gemini-3.5-flash`); after the primary model fails `max_retries` times the fallback is tried, and the report records which model was actually used. Each model's key is read from the environment variable named in `api_key_env`; providers that authenticate with AWS credentials (e.g. Bedrock) can set `aws_profile_name` / `aws_region_name` instead. Target code is sent to every configured provider (with hard-coded credentials redacted first), so only configure providers whose data-retention terms you accept.
 
 Other limits in the `global` section (effective unless overridden from the CLI): `execution_mode` (overridden by `--mode`), `timeout_seconds` (per model request, default 180 s), `max_retries` (2), `max_output_tokens` (16384, reasoning tokens count against it; `models.<alias>.max_output_tokens` overrides it per model), `max_concurrent_calls` (parallel model calls per phase, 6), `max_model_calls`, `max_files`, `max_file_bytes`, `include` / `exclude`, `retry_invalid_output`, `sandbox_timeout_seconds` (120) and `per_test_timeout_seconds` (30).
 
@@ -284,7 +287,7 @@ In simulation mode, white-box tests use deterministic None-input robustness prob
 docker build -t vibeharness-sandbox:latest -f docker/sandbox.Dockerfile .
 ```
 
-Set `sandbox_provider: "docker"` in `config/agents_config.yaml`. Tunables: `docker_image`, `docker_network`, `docker_memory`, `docker_cpus`, `docker_pids_limit`.
+Set `sandbox_provider: "docker"` in `vibeharness/config/agents_config.yaml`. Tunables: `docker_image`, `docker_network`, `docker_memory`, `docker_cpus`, `docker_pids_limit`.
 
 - The target directory is mounted read-only into the container at `/work/<dir name>`; host absolute paths inside generated tests are rewritten to container paths automatically.
 - Containers have **no network** by default, so packages cannot be installed at run time. Pre-install the target's dependencies into the image: build a project-specific image `FROM vibeharness-sandbox:latest`, `pip install` the dependencies, and point `docker_image` at it.
@@ -343,13 +346,13 @@ Exit codes (evaluated in order):
 pip install -r requirements-dev.txt
 python -m pytest
 python -m ruff check .
-python -m mypy core/ agents/ runners/ reports/ main.py
+python -m mypy vibeharness/ main.py
 ```
 
 CI (`.github/workflows/tests.yml`) has four jobs: `lint` (ruff and mypy), `audit` (pip-audit), `package` (builds the wheel and runs it once in mock mode outside the checkout) and `test` (Ubuntu / Windows × Python 3.10–3.13; the Linux job also builds the Docker sandbox image and runs the real-container tests). The `test` job enforces a coverage floor; to run the same check locally:
 
 ```bash
-python -m pytest --cov=core --cov=agents --cov=runners --cov=reports --cov-fail-under=93
+python -m pytest --cov=vibeharness --cov-fail-under=93
 ```
 
 Supply-chain check (the CI `audit` job runs the same command against the locked set; a dependency with a known CVE fails before merge):

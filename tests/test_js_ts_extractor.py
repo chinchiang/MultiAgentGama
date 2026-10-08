@@ -1,7 +1,7 @@
 """JS/TS extractor: real brace matching, literal/comment masking, arrows, class methods, routes."""
 import os
 
-from agents.whitebox.ast_extractor import ASTExtractor
+from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

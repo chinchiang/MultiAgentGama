@@ -5,11 +5,11 @@ import re
 import textwrap
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional, Set, Tuple
-from core.models import ReviewFinding, GeneratedTest, CodeSymbol, text_or
-from core.llm_gateway import LLMGateway, LLMGatewayError
-from core.codecheck import check_test_code, strip_code_fences
-from core.codecontext import file_source, fence_language, import_instructions, module_import_name, truncate_to_tokens
-from core.sanitize import UNTRUSTED_CODE_POLICY, prepare_untrusted_code, untrusted_block
+from vibeharness.core.models import ReviewFinding, GeneratedTest, CodeSymbol, text_or
+from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
+from vibeharness.core.codecheck import check_test_code, strip_code_fences
+from vibeharness.core.codecontext import file_source, fence_language, import_instructions, module_import_name, truncate_to_tokens
+from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, prepare_untrusted_code, untrusted_block
 
 logger = logging.getLogger("VibeHarness.TestGenerator")
 

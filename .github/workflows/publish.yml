@@ -25,9 +25,9 @@ jobs:
       - name: Verify tag matches the package version
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
-          PKG_VERSION="$(python -c 'from core import __version__; print(__version__)')"
+          PKG_VERSION="$(python -c 'from vibeharness import __version__; print(__version__)')"
           if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
-            echo "::error::Tag v$TAG_VERSION does not match package version $PKG_VERSION (core/__init__.py)"
+            echo "::error::Tag v$TAG_VERSION does not match package version $PKG_VERSION (vibeharness/__init__.py)"
             exit 1
           fi
 

@@ -2,7 +2,7 @@
 
 English (US) ｜ [正體中文（臺灣）](configuration.md)
 
-This document covers every field in `config/agents_config.yaml`: semantics, defaults, and what actually takes effect (as implemented).
+This document covers every field in `vibeharness/config/agents_config.yaml`: semantics, defaults, and what actually takes effect (as implemented).
 
 The file has three top-level sections: **`global`** (execution and sandbox parameters), **`models`** (provider definitions), and **`agents`** (per-agent model routing). A missing or invalid-YAML config file fails loudly (`ConfigError`; the CLI exits with code 5); the harness never runs on an empty configuration.
 
@@ -188,9 +188,9 @@ An agent without `model_alias`, or whose `model_alias` names an alias missing fr
 
 ---
 
-## Related: `config/threat_rules.yaml`
+## Related: `vibeharness/config/threat_rules.yaml`
 
-The threat modeler reads a few fields of `config/threat_rules.yaml` as prompt guidance; everything else in that file (`code`, `target_components`, `cwe`, `atlas_tactics`, ...) is documentation and has no runtime effect.
+The threat modeler reads a few fields of `vibeharness/config/threat_rules.yaml` as prompt guidance; everything else in that file (`code`, `target_components`, `cwe`, `atlas_tactics`, ...) is documentation and has no runtime effect.
 
 | Section | Fields the code reads | When it is used |
 | :--- | :--- | :--- |

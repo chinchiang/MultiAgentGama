@@ -5,7 +5,7 @@ import os
 import re
 from bisect import bisect_right
 from typing import Iterable, List, Optional, Tuple, Union
-from core.models import CodeSymbol
+from vibeharness.core.models import CodeSymbol
 
 logger = logging.getLogger("VibeHarness.ASTExtractor")
 

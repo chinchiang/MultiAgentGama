@@ -8,8 +8,8 @@ import urllib.parse
 from typing import Dict, Any, Optional, List
 import yaml
 
-from core.models import AgentCallRecord
-from core.sanitize import clean_model_text, redact_secrets
+from vibeharness.core.models import AgentCallRecord
+from vibeharness.core.sanitize import clean_model_text, redact_secrets
 
 try:
     import litellm

@@ -8,8 +8,8 @@ from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 
-from core import __version__
-from core.models import (
+from vibeharness import __version__
+from vibeharness.core.models import (
     RunMetadata,
     VibeHarnessSummary,
     FindingSeverity,
@@ -19,18 +19,18 @@ from core.models import (
     TestExecutionResult,
     StaticFinding
 )
-from core.llm_gateway import LLMGateway, DEFAULT_CONFIG_PATH
-from core.sandbox import LocalSubprocessSandbox, DockerSandbox, DEFAULT_DOCKER_IMAGE
-from agents.whitebox.ast_extractor import ASTExtractor, DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES
-from agents.whitebox.ai_static_scanner import AISecurityStaticScanner
-from agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
-from agents.whitebox.debater import MultiModelDebater
-from agents.whitebox.deduplicator import deduplicate_findings
-from agents.whitebox.test_generator import WhiteboxTestGenerator
-from agents.blackbox.threat_modeler import AutomatedThreatModeler
-from agents.blackbox.scenario_builder import ThreatScenarioBuilder
-from runners.test_executor import TestSuiteExecutor
-from reports.report_generator import ReportGenerator
+from vibeharness.core.llm_gateway import LLMGateway, DEFAULT_CONFIG_PATH
+from vibeharness.core.sandbox import LocalSubprocessSandbox, DockerSandbox, DEFAULT_DOCKER_IMAGE
+from vibeharness.agents.whitebox.ast_extractor import ASTExtractor, DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES
+from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
+from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
+from vibeharness.agents.whitebox.debater import MultiModelDebater
+from vibeharness.agents.whitebox.deduplicator import deduplicate_findings
+from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
+from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
+from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
+from vibeharness.runners.test_executor import TestSuiteExecutor
+from vibeharness.reports.report_generator import ReportGenerator
 
 logger = logging.getLogger("VibeHarness.Commander")
 

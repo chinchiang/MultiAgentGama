@@ -5,8 +5,8 @@ import os
 import textwrap
 from typing import Iterable, List, Optional
 
-from core.models import CodeSymbol
-from core.sanitize import prepare_untrusted_code
+from vibeharness.core.models import CodeSymbol
+from vibeharness.core.sanitize import prepare_untrusted_code
 
 _FENCE_LANG = {".py": "python", ".js": "javascript", ".jsx": "jsx", ".ts": "typescript", ".tsx": "tsx"}
 # Rough tokenizer-free estimate: code averages ~3.5 characters per token; non-ASCII (e.g. CJK) is ~1 token each.

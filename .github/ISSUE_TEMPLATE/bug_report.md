@@ -13,7 +13,7 @@ labels: bug
 
 ### 重現步驟／Steps to reproduce
 
-指令（含 `--mode`、`--target` 的型態：目錄／單檔／套件）、`config/agents_config.yaml` 的非預設設定、沙盒 provider：
+指令（含 `--mode`、`--target` 的型態：目錄／單檔／套件）、`vibeharness/config/agents_config.yaml` 的非預設設定、沙盒 provider：
 
 ```bash
 vibeharness --target ... --mode mock

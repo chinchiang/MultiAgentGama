@@ -7,7 +7,7 @@
 VibeHarness-MAS 本身是一個 LLM 應用，而且會執行模型生成的程式碼，所以我們特別重視下列幾類問題：
 
 - 沙盒逃逸或隔離失效（`docker` provider 的容器強化參數、`local_subprocess` 的環境變數白名單）
-- 待審程式碼或模型輸出對 harness 的提示注入，繞過 `core/sanitize.py` 的信任邊界控制
+- 待審程式碼或模型輸出對 harness 的提示注入，繞過 `vibeharness/core/sanitize.py` 的信任邊界控制
 - 報告（Markdown／JSON／SARIF）中的輸出處理缺陷（可載入外部資源、跳脫程式碼區塊、ANSI／控制序列）
 - 憑證外洩：API 金鑰出現在報告、日誌、沙盒環境或送往模型的提示中
 - 生成測試可安裝套件或連到 `--base-url` 以外的主機
@@ -30,7 +30,7 @@ VibeHarness-MAS 本身是一個 LLM 應用，而且會執行模型生成的程�
 ## 使用上的安全提醒
 
 - `sandbox_provider: local_subprocess` **不是安全邊界**：模型生成的測試以你的使用者權限執行。對不信任的目標請用 `docker`。
-- 待審程式碼會送到 `config/agents_config.yaml` 列出的每一家模型供應商（寫死的憑證會先遮蔽）。
+- 待審程式碼會送到 `vibeharness/config/agents_config.yaml` 列出的每一家模型供應商（寫死的憑證會先遮蔽）。
 - 依賴的已知弱點由 CI 的 `audit` job（pip-audit）與 Dependabot 追蹤。
 
 ---
@@ -39,7 +39,7 @@ VibeHarness-MAS 本身是一個 LLM 應用，而且會執行模型生成的程�
 
 ### Reporting a vulnerability
 
-VibeHarness-MAS is itself an LLM application that executes model-generated code, so we care especially about: sandbox escapes or isolation failures, prompt injection from the audited code or model output that bypasses the trust-boundary controls in `core/sanitize.py`, output-handling defects in the Markdown / JSON / SARIF reports, credential leakage into reports, logs, the sandbox or prompts, generated tests that install packages or reach hosts other than `--base-url`, and anything that tricks the quality gate into `READY_TO_SHIP`.
+VibeHarness-MAS is itself an LLM application that executes model-generated code, so we care especially about: sandbox escapes or isolation failures, prompt injection from the audited code or model output that bypasses the trust-boundary controls in `vibeharness/core/sanitize.py`, output-handling defects in the Markdown / JSON / SARIF reports, credential leakage into reports, logs, the sandbox or prompts, generated tests that install packages or reach hosts other than `--base-url`, and anything that tricks the quality gate into `READY_TO_SHIP`.
 
 **Please do not open a public issue for a vulnerability.** Use GitHub's private reporting: the repository's **Security** tab → **Report a vulnerability**. If that is unavailable, open an issue saying only "security contact requested" and a maintainer will reach out privately.
 

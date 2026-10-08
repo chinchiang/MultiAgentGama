@@ -28,6 +28,9 @@
 - **不支援的取樣參數改為丟棄而非失敗**（live 實測發現）：Bedrock 上的 Claude Opus 5.5 只接受 `temperature=1`，過去每次呼叫都失敗並退回備援模型；改傳 `drop_params`。另外 Bedrock 等以 AWS 憑證驗證的模型可設 `aws_profile_name`／`aws_region_name` 取代 `api_key_env`；空白回應會記錄 `finish_reason`（例如安全過濾的 `content_filter`）
 - **報告保存生成的測試程式碼**（稽核軌跡）：Markdown 新增附錄「Generated Test Code」，以可收合區塊列出每個白箱／黑箱測試的程式碼、來源發現／威脅與執行結果；JSON 新增 `generated_tests`／`blackbox_generated_tests`，原封不動保存程式碼。live 實測發現部分「通過」的測試其實是在斷言缺陷本身，沒有程式碼就無法稽核。程式碼區塊的 fence 會依內容中最長的反引號自動加長（原本 PoC 區塊遇到四個反引號會被跳出，一併修正）
 
+### 變更（破壞性：打包命名空間）
+- **所有程式搬進單一頂層套件 `vibeharness/`**：`core`、`agents`、`runners`、`reports`、`config` 與 `main` 過去是各自的頂層套件／模組，`pip install` 後直接進 site-packages，會與其他同名套件互撞（`core`、`config` 尤其常見），也會遮蔽使用者專案自己的 `config`。現在只安裝 `vibeharness/` 一個目錄：import 改為 `vibeharness.core.…`、`vibeharness.agents.…`，CLI 進入點為 `vibeharness.cli:main`，預設設定檔在 `vibeharness/config/`，版本在 `vibeharness/__init__.py`；repo 根目錄保留 `main.py` 薄殼，`python main.py …` 與 `vibeharness` 指令行為不變。以函式庫方式使用者需更新 import 路徑；新增測試保證 wheel 不再安裝任何通用名稱的頂層套件
+
 ### 新增（功能改善）
 - **模型回應無法使用時先重問**：非 JSON、缺欄位或空回應的 live 回應過去直接記 `invalid`、整輪 INCONCLUSIVE；現在依 `global.retry_invalid_output`（預設 1）重問，提示會說明上次的問題並要求只回 JSON。第一次嘗試記為 `retried`（報告 Execution Provenance 顯示「unusable, re-asked」，不是證據缺口），仍失敗才記 `invalid`；每次重問都是真實呼叫、計入 `max_model_calls`，預算用完就不重問；`json_output=False` 的修復呼叫不重問
 - **`models.<alias>.extra_params`**：原封不動傳給 litellm 的參數（例如 `thinking: {type: disabled}`、`reasoning_effort: low`），可讓推理模型不要把 `max_output_tokens` 全花在思考（live 實測 GLM 的主要失敗原因）；啟動時驗證為 mapping

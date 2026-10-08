@@ -3,17 +3,17 @@ import json
 import os
 import re
 
-from core.codecontext import (
+from vibeharness.core.codecontext import (
     estimate_tokens, truncate_to_tokens, class_skeleton, render_symbols, batch_symbols
 )
-from core.llm_gateway import LLMGateway
-from core.models import ReviewFinding, FindingSeverity
-from agents.whitebox.ast_extractor import ASTExtractor
-from agents.whitebox.deduplicator import deduplicate_findings
-from agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
+from vibeharness.core.llm_gateway import LLMGateway
+from vibeharness.core.models import ReviewFinding, FindingSeverity
+from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
+from vibeharness.agents.whitebox.deduplicator import deduplicate_findings
+from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG = os.path.join(REPO_ROOT, "config", "agents_config.yaml")
+CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
 
 
 def _finding(fid, reviewer, title, root_cause="", symbol="get_order", file_path="app.py", severity="HIGH"):
@@ -69,7 +69,7 @@ def test_unattributed_findings_merge_only_on_identical_title():
 
 
 def test_plural_stems_are_handled_without_mangling():
-    from agents.whitebox.deduplicator import _stem
+    from vibeharness.agents.whitebox.deduplicator import _stem
     assert _stem("classes") == "class"
     assert _stem("labels") == "label"
     assert _stem("address") == "address"   # ends in 'ss' — no strip
@@ -170,7 +170,7 @@ def test_reviewer_batches_by_tokens_and_reviews_every_symbol(fake_live, tmp_path
 # --- Verifier findings listing stays within its token budget --------------------------------------
 
 def test_debater_listing_clips_fields_and_keeps_every_index():
-    from agents.whitebox.debater import MultiModelDebater
+    from vibeharness.agents.whitebox.debater import MultiModelDebater
 
     debater = MultiModelDebater(LLMGateway(CONFIG, execution_mode="mock"))
     findings = [
@@ -189,7 +189,7 @@ def test_debater_listing_clips_fields_and_keeps_every_index():
 
 
 def test_debater_listing_keeps_short_fields_intact():
-    from agents.whitebox.debater import MultiModelDebater
+    from vibeharness.agents.whitebox.debater import MultiModelDebater
 
     debater = MultiModelDebater(LLMGateway(CONFIG, execution_mode="mock"))
     findings = [_finding(f"WB-CLA-{i:02d}", "Claude", f"defect {i}") for i in range(3)]
@@ -201,7 +201,7 @@ def test_debater_listing_keeps_short_fields_intact():
 # --- Symbol matching and finding ids ---------------------------------------------------
 
 def test_match_symbol_prefers_exact_and_never_guesses_for_unnamed_findings(tmp_path):
-    from core.models import CodeSymbol
+    from vibeharness.core.models import CodeSymbol
 
     def sym(name):
         return CodeSymbol(name=name, symbol_type="function", file_path="app.py",
@@ -217,7 +217,7 @@ def test_match_symbol_prefers_exact_and_never_guesses_for_unnamed_findings(tmp_p
 
 
 def test_finding_ids_stay_unique_when_two_agents_share_a_model_alias(fake_live):
-    from core.models import CodeSymbol
+    from vibeharness.core.models import CodeSymbol
     import json as jsonlib
     import tempfile
 

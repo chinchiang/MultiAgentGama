@@ -15,8 +15,8 @@ import os
 import re
 from typing import Dict, Iterable, List, Optional, Set
 
-from core.models import FindingSeverity, StaticFinding
-from core.sanitize import clean_model_text, find_injection_markers, find_invisible, find_secrets
+from vibeharness.core.models import FindingSeverity, StaticFinding
+from vibeharness.core.sanitize import clean_model_text, find_injection_markers, find_invisible, find_secrets
 
 logger = logging.getLogger("VibeHarness.AIStaticScanner")
 

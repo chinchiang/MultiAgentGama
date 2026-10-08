@@ -7,11 +7,11 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 import os
-from core.models import ThreatItem, GeneratedTest, CodeSymbol, text_or
-from core.llm_gateway import LLMGateway, LLMGatewayError
-from core.codecheck import check_test_code, strip_code_fences
-from core.codecontext import render_symbols, import_instructions
-from core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
+from vibeharness.core.models import ThreatItem, GeneratedTest, CodeSymbol, text_or
+from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
+from vibeharness.core.codecheck import check_test_code, strip_code_fences
+from vibeharness.core.codecontext import render_symbols, import_instructions
+from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
 
 logger = logging.getLogger("VibeHarness.ScenarioBuilder")
 

@@ -29,7 +29,7 @@ jobs:
       # Same pinned lint tools as local development (requirements-dev.txt), not unpinned latest
       - run: python -m pip install -r requirements-dev.txt
       - run: ruff check .
-      - run: mypy core/ agents/ runners/ reports/ main.py
+      - run: mypy vibeharness/ main.py
 
   # Known-vulnerability audit of the exact locked dependency set; runs on every PR so a
   # dependency bump that introduces a CVE fails before merge
@@ -94,4 +94,4 @@ jobs:
           echo "VIBEHARNESS_REQUIRE_DOCKER=1" >> "$GITHUB_ENV"
       # Hermetic: the suite uses mock mode and a fake litellm, so no API keys are needed
       # Floor is the measured total minus headroom for OS matrix variance; raise as coverage grows
-      - run: python -m pytest -q --cov=core --cov=agents --cov=runners --cov=reports --cov-report=term-missing --cov-fail-under=93
+      - run: python -m pytest -q --cov=vibeharness --cov-report=term-missing --cov-fail-under=93

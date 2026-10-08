@@ -6,18 +6,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.codecontext import module_import_name, import_instructions, render_symbols
-from core.llm_gateway import LLMGateway
-from core.models import ReviewFinding, FindingSeverity, TestStatus
-from core.sandbox import LocalSubprocessSandbox
-from agents.whitebox.ast_extractor import ASTExtractor
-from agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
-from agents.whitebox.test_generator import WhiteboxTestGenerator
-from agents.blackbox.threat_modeler import AutomatedThreatModeler
-from runners.test_executor import TestSuiteExecutor
+from vibeharness.core.codecontext import module_import_name, import_instructions, render_symbols
+from vibeharness.core.llm_gateway import LLMGateway
+from vibeharness.core.models import ReviewFinding, FindingSeverity, TestStatus
+from vibeharness.core.sandbox import LocalSubprocessSandbox
+from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
+from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
+from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
+from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
+from vibeharness.runners.test_executor import TestSuiteExecutor
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG = os.path.join(REPO_ROOT, "config", "agents_config.yaml")
+CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
 
 
 # --- codecontext --------------------------------------------------------------
@@ -50,12 +50,12 @@ def test_package_target_is_imported_through_its_package(tmp_path):
 
 
 def test_offline_probe_imports_a_package_module_by_name(tmp_path):
-    from agents.whitebox.ast_extractor import ASTExtractor
-    from agents.whitebox.test_generator import WhiteboxTestGenerator
-    from core.llm_gateway import LLMGateway
-    from core.sandbox import LocalSubprocessSandbox
-    from runners.test_executor import TestSuiteExecutor
-    from core.models import TestStatus
+    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
+    from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.core.sandbox import LocalSubprocessSandbox
+    from vibeharness.runners.test_executor import TestSuiteExecutor
+    from vibeharness.core.models import TestStatus
     pkg = tmp_path / "shop"
     pkg.mkdir()
     (pkg / "__init__.py").write_text("")
@@ -206,7 +206,7 @@ def test_gateway_passes_call_options_and_uses_fallback_model(fake_live, monkeypa
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"findings": []}'))])
 
     fake_live(lambda s, u: "")
-    monkeypatch.setattr("core.llm_gateway.litellm", SimpleNamespace(completion=completion))
+    monkeypatch.setattr("vibeharness.core.llm_gateway.litellm", SimpleNamespace(completion=completion))
     gateway = LLMGateway(CONFIG, execution_mode="live")
     resp = gateway.generate("whitebox_reviewer_claude", "sys", "prompt", required_keys=["findings"])
 
@@ -219,7 +219,7 @@ def test_gateway_passes_call_options_and_uses_fallback_model(fake_live, monkeypa
 
 
 def test_missing_config_fails_loudly(tmp_path):
-    from core.llm_gateway import ConfigError
+    from vibeharness.core.llm_gateway import ConfigError
     with pytest.raises(ConfigError):
         LLMGateway(str(tmp_path / "nope.yaml"))
 

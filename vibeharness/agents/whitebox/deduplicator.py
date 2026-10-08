@@ -2,7 +2,7 @@ import logging
 import re
 from typing import Dict, List, Set
 
-from core.models import ReviewFinding, FindingSeverity
+from vibeharness.core.models import ReviewFinding, FindingSeverity
 
 logger = logging.getLogger("VibeHarness.Deduplicator")
 

@@ -5,9 +5,9 @@ import time
 import logging
 import xml.etree.ElementTree as ET
 from typing import List, Tuple, Optional, Dict, Set
-from core.models import GeneratedTest, TestExecutionResult, TestStatus
-from core.sandbox import LocalSubprocessSandbox, TIMEOUT_EXIT_CODE
-from core.codecheck import check_test_code
+from vibeharness.core.models import GeneratedTest, TestExecutionResult, TestStatus
+from vibeharness.core.sandbox import LocalSubprocessSandbox, TIMEOUT_EXIT_CODE
+from vibeharness.core.codecheck import check_test_code
 
 logger = logging.getLogger("VibeHarness.TestExecutor")
 

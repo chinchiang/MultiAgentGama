@@ -2,7 +2,7 @@
 
 [English](configuration.en.md) ｜ 正體中文（臺灣）
 
-本文完整說明 `config/agents_config.yaml` 的每一個欄位：語義、預設值與實際生效範圍（以程式碼行為為準）。
+本文完整說明 `vibeharness/config/agents_config.yaml` 的每一個欄位：語義、預設值與實際生效範圍（以程式碼行為為準）。
 
 設定檔分三大區段：**`global`**（執行與沙盒參數）、**`models`**（模型提供者定義）、**`agents`**（各 Agent 的模型路由）。找不到設定檔或 YAML 損壞會直接報錯（`ConfigError`，CLI 以 exit code 5 中止），不會默默用空設定執行。
 
@@ -188,9 +188,9 @@ agent 沒有 `model_alias`，或 `model_alias` 指向 `models` 區段不存在�
 
 ---
 
-## 相關檔案：`config/threat_rules.yaml`
+## 相關檔案：`vibeharness/config/threat_rules.yaml`
 
-威脅建模器會把 `config/threat_rules.yaml` 中的少數欄位當作提示詞指引讀取；其餘內容（`code`、`target_components`、`cwe`、`atlas_tactics` 等）僅供說明，修改不影響執行。
+威脅建模器會把 `vibeharness/config/threat_rules.yaml` 中的少數欄位當作提示詞指引讀取；其餘內容（`code`、`target_components`、`cwe`、`atlas_tactics` 等）僅供說明，修改不影響執行。
 
 | 區段 | 程式讀取的欄位 | 使用時機 |
 | :--- | :--- | :--- |
