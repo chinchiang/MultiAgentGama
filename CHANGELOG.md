@@ -26,6 +26,10 @@
 - **不支援的取樣參數改為丟棄而非失敗**（live 實測發現）：Bedrock 上的 Claude Opus 5.5 只接受 `temperature=1`，過去每次呼叫都失敗並退回備援模型；改傳 `drop_params`。另外 Bedrock 等以 AWS 憑證驗證的模型可設 `aws_profile_name`／`aws_region_name` 取代 `api_key_env`；空白回應會記錄 `finish_reason`（例如安全過濾的 `content_filter`）
 - **報告保存生成的測試程式碼**（稽核軌跡）：Markdown 新增附錄「Generated Test Code」，以可收合區塊列出每個白箱／黑箱測試的程式碼、來源發現／威脅與執行結果；JSON 新增 `generated_tests`／`blackbox_generated_tests`，原封不動保存程式碼。live 實測發現部分「通過」的測試其實是在斷言缺陷本身，沒有程式碼就無法稽核。程式碼區塊的 fence 會依內容中最長的反引號自動加長（原本 PoC 區塊遇到四個反引號會被跳出，一併修正）
 
+### 文件
+- 新增設計文件 `docs/design.md`：架構與元件職責、六階段資料流、資料模型、LLM gateway 模式決策、白箱／黑箱子系統、確定性規則、沙盒安全模型、品質閘門的 15 項證據缺口與判定順序、報告格式、信任邊界、設定擴充點、並行與成本模型、測試策略、已知限制與設計決策紀錄（引用 commit `f087dfb` 的檔案行號）
+- 修正文件與程式不一致：`docs/configuration.md` 的單一金鑰範例把 `blackbox_test_synthesizer` 原值寫成 `glm`（實為 `deepseek`）；`threat_rules.yaml` 檔頭與 `docs/configuration.md` 宣稱 `stride_categories.<key>.description` 會進提示詞，實際只讀 `name` 與 `common_vibe_bugs`
+
 ## [0.2.0] - 2026-10-07
 
 深度審查後的打包、模型輸出韌性、執行正確性與 SARIF 修正，以及測試合成平行化與成本護欄；第二輪驗證補上執行歸因誠實度、閘門防誘餌與工程收斂；第三輪強化涵蓋 mypy 加嚴、CI 供應鏈防護與覆蓋率門檻上調。

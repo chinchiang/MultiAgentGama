@@ -115,7 +115,7 @@ agents:
   whitebox_reviewer_deepseek:
     model_alias: "gemini"      # was deepseek
   whitebox_reviewer_glm:
-    model_alias: "gemini"      # was glm
+    model_alias: "gemini"      # was deepseek
   whitebox_reviewer_gemini:
     model_alias: "gemini"      # already gemini
   whitebox_verifier_claude:
@@ -131,7 +131,7 @@ agents:
   blackbox_threat_modeler:
     model_alias: "gemini"      # was claude
   blackbox_test_synthesizer:
-    model_alias: "gemini"      # was glm
+    model_alias: "gemini"      # was deepseek
 ```
 
 > Note: with a single model family, **cross-model verification cannot run**: every finding comes from `gemini`, and verifiers never rule on their own model's findings, so no finding gets a vote (none are filtered, and the agreement ratio shows N/A). The console warns "Fewer than two distinct reviewer models". The four reviewers still contribute their different `focus` areas, but agreement among copies of one model is consistency, not corroboration (OWASP LLM07:2026).
@@ -189,7 +189,7 @@ The threat modeler reads a few fields of `config/threat_rules.yaml` as prompt gu
 
 | Section | Fields the code reads | When it is used |
 | :--- | :--- | :--- |
-| `stride_categories.<key>` | `name` / `description` / `common_vibe_bugs` | Always |
+| `stride_categories.<key>` | `name` / `common_vibe_bugs` | Always (`description` is documentation only; it is not sent in the prompt) |
 | `owasp_api_top10[*]` | `id` / `name` | Always; ids are suggested for `owasp_mapping` |
 | `owasp_llm_top10_2026[*]` | `id` / `name` / `common_vibe_bugs` / `atlas_techniques` | Only when the target imports an AI/LLM SDK (`openai`, `anthropic`, `litellm`, `langchain`, `transformers`, `@ai-sdk/*`, ...), detected deterministically and listed as `ai_components` in the report |
 
