@@ -6,7 +6,7 @@
 
 ## [Unreleased]
 
-深度審查後的打包、模型輸出韌性、執行正確性與 SARIF 修正，以及測試合成平行化與成本護欄；第二輪驗證補上執行歸因誠實度、閘門防誘餌與工程收斂；第三輪強化涵蓋 mypy 加嚴、CI 供應鏈防護與覆蓋率門檻上調；第四輪依 OWASP LLM Top 10 2026 與 MITRE ATLAS 修正設計：評議陣容改為 Claude／DeepSeek／GLM／Gemini，並加上確定性 AI 安全規則與信任邊界防護。
+依 OWASP Top 10 for LLM Applications 2026 與 MITRE ATLAS 修正設計：白箱評議陣容改為 Claude／DeepSeek／GLM／Gemini，並加上確定性 AI 安全規則與信任邊界防護。
 
 ### 變更（依 OWASP LLM Top 10 2026／MITRE ATLAS 修正設計）
 - **白箱評議陣容改為 Claude／DeepSeek／GLM／Gemini**：移除 Nemotron 與 ChatGPT（`nemotron`／`chatgpt` 模型別名、`NVIDIA_API_KEY`／`OPENAI_API_KEY` 不再使用）。DeepSeek 接手防禦與資源審查、GLM 接手規格與合約審查並負責黑箱攻擊合成、DeepSeek 負責白箱測試生成；新增 **Gemini「AI 整合與供應鏈審查」**，依 OWASP LLM01～LLM10:2026 審查呼叫模型的程式。交叉驗證者同步為四位。預設模型改用帶版本號的 id（`claude-sonnet-5-5`、`zai/glm-5.3`、`deepseek/deepseek-v4-pro`），供應商端的模型替換會在報告中可見
@@ -22,6 +22,10 @@
 - **生成測試禁止安裝套件**（slopsquatting，LLM04:2026、AML.T0060）：`pip install`、`import pip` 等一律被靜態閘門拒絕
 - **模型端點只允許 https**（http 僅限 loopback），設定錯誤在啟動時以 `ConfigError` 失敗；每次模型呼叫記錄 `prompt_sha256` 供稽核追溯
 - 審查者可回報選填的 `owasp_mapping`；報告列出審查模型與偵測到的 AI 元件
+
+## [0.2.0] - 2026-10-07
+
+深度審查後的打包、模型輸出韌性、執行正確性與 SARIF 修正，以及測試合成平行化與成本護欄；第二輪驗證補上執行歸因誠實度、閘門防誘餌與工程收斂；第三輪強化涵蓋 mypy 加嚴、CI 供應鏈防護與覆蓋率門檻上調。
 
 ### 新增
 - **白箱測試生成與黑箱攻擊合成改為平行**：與審查／驗證階段相同以 thread pool 並行呼叫模型，輸出順序（test id、報告）維持確定；單一 finding／threat 失敗不再拖垮其他項目（live 模式仍大聲失敗）

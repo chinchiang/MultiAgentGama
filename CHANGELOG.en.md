@@ -6,7 +6,7 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
-Packaging, model-output robustness, execution correctness and SARIF fixes from a deep review, plus parallel test synthesis and a cost guard; a second verification round adds execution-attribution honesty, gate decoy protection and engineering convergence; a third hardening round covers stricter mypy, CI supply-chain protection and a higher coverage floor; a fourth round corrects the design against the OWASP LLM Top 10 2026 and MITRE ATLAS: the ensemble becomes Claude / DeepSeek / GLM / Gemini, with deterministic AI-security rules and trust-boundary controls.
+Design corrections against the OWASP Top 10 for LLM Applications 2026 and MITRE ATLAS: the white-box ensemble becomes Claude / DeepSeek / GLM / Gemini, with deterministic AI-security rules and trust-boundary controls.
 
 ### Changed (design corrections per OWASP LLM Top 10 2026 / MITRE ATLAS)
 - **White-box ensemble is now Claude / DeepSeek / GLM / Gemini**: Nemotron and ChatGPT were removed (the `nemotron` / `chatgpt` model aliases and `NVIDIA_API_KEY` / `OPENAI_API_KEY` are no longer used). DeepSeek takes over defensive & resource review and white-box test generation, GLM takes over specification & contract review and black-box attack synthesis, and the new **Gemini "AI Integration & Supply-Chain Reviewer"** audits model-calling code against OWASP LLM01–LLM10:2026. The verifiers follow (four of them). Default models use versioned ids (`claude-sonnet-5-5`, `zai/glm-5.3`, `deepseek/deepseek-v4-pro`) so a provider-side swap shows up in reports
@@ -22,6 +22,10 @@ Packaging, model-output robustness, execution correctness and SARIF fixes from a
 - **Generated tests may not install packages** (slopsquatting, LLM04:2026, AML.T0060): `pip install`, `import pip` and the like are refused by the static gate
 - **Model endpoints must be https** (plain http only for loopback); a bad `api_base` fails at startup with `ConfigError`. Every model call records a `prompt_sha256` for audit traceability
 - Reviewers may report an optional `owasp_mapping`; reports list the reviewer models and the detected AI components
+
+## [0.2.0] - 2026-10-07
+
+Packaging, model-output robustness, execution correctness and SARIF fixes from a deep review, plus parallel test synthesis and a cost guard; a second verification round adds execution-attribution honesty, gate decoy protection and engineering convergence; a third hardening round covers stricter mypy, CI supply-chain protection and a higher coverage floor.
 
 ### Added
 - **Parallel white-box test generation and black-box attack synthesis**: model calls fan out on a thread pool like the review/verification phases, with deterministic output order (test ids, reports); one failing finding/threat no longer takes down the others (live mode still fails loudly)
