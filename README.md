@@ -239,7 +239,7 @@ python main.py --target examples --output vibe_harness_report.md
 
 規模與成本上限可從 CLI 直接覆蓋設定檔：`--max-files`（單次分析的檔案數上限，預設 50，其餘檔案列為 skipped）與 `--max-model-calls`（單次執行的模型呼叫數上限，預設不限制；用完時 hybrid 退回模擬並列為證據缺口、live 直接失敗）。詳見 [`docs/configuration.md`](docs/configuration.md)。
 
-報告格式可用 `--format md`（預設）或 `--format json`（機器可讀，含完整的 findings、威脅模型與測試結果，適合接 CI/CD）：
+報告格式可用 `--format md`（預設）或 `--format json`（機器可讀，含完整的 findings、威脅模型與測試結果，適合接 CI/CD）。兩種格式都會保存每個生成測試的程式碼：Markdown 附錄「Generated Test Code」以可收合區塊列出程式碼與其執行結果（已去除控制字元）；JSON 的 `generated_tests`／`blackbox_generated_tests` 則原封不動保存，可用來稽核或重跑。模型寫的測試也只是假設——「通過」的測試可能是在斷言缺陷本身（例如 `pytest.raises(KeyError)`），請一併檢查斷言是否描述正確的行為：
 
 ```bash
 python main.py --target examples --output report.json --format json

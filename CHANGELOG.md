@@ -24,6 +24,7 @@
 - 審查者可回報選填的 `owasp_mapping`；報告列出審查模型與偵測到的 AI 元件
 - **依模型設定輸出上限**（live 實測發現）：`models.<alias>.max_output_tokens` 覆蓋全域值；全域預設由 4096 提高為 `16384`：思考 token 也算在上限內，4096 會讓 Gemini 3 的測試生成回應空白或被截斷，也會截斷 Claude 的威脅模型 JSON（上限只是封頂，成本仍由 `max_model_calls` 管控）；單次模型請求逾時 `timeout_seconds` 也由 60 秒提高為 180 秒，因為 Opus 產出長威脅模型 JSON 時超過 60 秒。被截斷的回應改記錄為「output truncated at the max_output_tokens limit」而非籠統的「not valid JSON」
 - **不支援的取樣參數改為丟棄而非失敗**（live 實測發現）：Bedrock 上的 Claude Opus 5.5 只接受 `temperature=1`，過去每次呼叫都失敗並退回備援模型；改傳 `drop_params`。另外 Bedrock 等以 AWS 憑證驗證的模型可設 `aws_profile_name`／`aws_region_name` 取代 `api_key_env`；空白回應會記錄 `finish_reason`（例如安全過濾的 `content_filter`）
+- **報告保存生成的測試程式碼**（稽核軌跡）：Markdown 新增附錄「Generated Test Code」，以可收合區塊列出每個白箱／黑箱測試的程式碼、來源發現／威脅與執行結果；JSON 新增 `generated_tests`／`blackbox_generated_tests`，原封不動保存程式碼。live 實測發現部分「通過」的測試其實是在斷言缺陷本身，沒有程式碼就無法稽核。程式碼區塊的 fence 會依內容中最長的反引號自動加長（原本 PoC 區塊遇到四個反引號會被跳出，一併修正）
 
 ## [0.2.0] - 2026-10-07
 

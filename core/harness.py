@@ -377,10 +377,12 @@ class VibeHarnessCommander:
             blackbox_results=bb_results,
             target_path=target_dir
         )
+        # The tests' code is part of the audit trail (md / json); SARIF carries findings only
+        test_args: Dict[str, Any] = dict(whitebox_tests=wb_tests, blackbox_tests=bb_tests)
         if output_format == "json":
-            md_content = self.reporter.generate_json_report(**report_args)
+            md_content = self.reporter.generate_json_report(**report_args, **test_args)
         else:
-            md_content = self.reporter.generate_markdown_report(**report_args)
+            md_content = self.reporter.generate_markdown_report(**report_args, **test_args)
 
         with open(output_report_path, "w", encoding="utf-8") as f:
             f.write(md_content)
