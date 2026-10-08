@@ -2,7 +2,7 @@
 
 [English](design.en.md) ｜ 正體中文（臺灣）
 
-本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`core/__init__.py` 的 `0.2.0` 加上 `CHANGELOG.md` 的 `[Unreleased]` 段落（2026-10-08，含本文第 16 章原先列出的六項缺口修正）。文中的 `path:line` 引用以同一個 commit 的檔案為準。
+本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`core/__init__.py` 的 `0.3.0`（`CHANGELOG.md` 的 `[0.3.0]`，2026-10-09，含本文第 16 章原先列出的六項缺口修正與深入審視的五項修正）。文中的 `path:line` 引用以同一個 commit 的檔案為準。
 
 與其他文件的分工：
 
@@ -623,6 +623,8 @@ console 輸出另外用 `rich.markup.escape`（`core/harness.py:6`）。
 
 ### 15.1 測試套件（`tests/`，約 290 個測試）
 
+開發流程與提交前檢查見 `CONTRIBUTING.md`；弱點通報見 `SECURITY.md`。
+
 整個套件是 hermetic 的：mock 模式加 `conftest.py` 的 `fake_live` fixture（設假金鑰、用 `_FakeLiteLLM` 替換 `core.llm_gateway.litellm`），不需要網路或真實金鑰就能跑 live 路徑。
 
 | 檔案 | 涵蓋 |
@@ -688,8 +690,7 @@ mutation testing、DAST／fuzzing、hypothesis、e2b 沙盒、JS/TS 測試執行
 
 ### 16.4 交付與工程
 
-- `publish.yml` 的 `pypi-publish` 重新 build 一次，不沿用 Release 上的 artifacts，兩邊產物不保證位元相同；`build-and-upload` 沒有 `timeout-minutes`。
-- pre-commit 只有 ruff，沒有 mypy hook。
+- （已於 0.3.0 處理）`pypi-publish` 改下載 `build-and-upload` 的產物；兩個 job 都有 `timeout-minutes`；pre-commit 加了 mypy hook；Dependabot 追蹤 Actions 與鎖定檔。
 - README 給目標專案的範例用 `codeql-action/upload-sarif@v3`（tag），與本 repo 的 SHA 釘版做法不一致。
 - v0.1.0 的 CHANGELOG 日期寫 2026-10-03，tag commit 是 2026-10-02。
 

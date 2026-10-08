@@ -153,6 +153,10 @@ VibeHarness-MAS is itself an LLM application: the target's code is untrusted inp
 ```text
 MultiAgentGama/
 ├── .github/
+│   ├── CODEOWNERS               # default reviewers
+│   ├── dependabot.yml           # weekly update proposals for Actions and requirements.lock
+│   ├── ISSUE_TEMPLATE/          # bug report / feature request templates
+│   ├── PULL_REQUEST_TEMPLATE.md
 │   └── workflows/
 │       ├── tests.yml            # CI: lint (ruff / mypy), audit (pip-audit), package (wheel smoke test), test (Ubuntu / Windows × Python 3.10–3.13, 93% coverage floor)
 │       └── publish.yml          # Release: on tag push, verify the version matches, build sdist / wheel, upload to the GitHub Release (PyPI needs ENABLE_PYPI_PUBLISH)
@@ -211,13 +215,15 @@ MultiAgentGama/
 │   ├── test_parallel_and_budgets.py    # Parallel test generation, model-call budget, file / worker caps
 │   ├── test_prompt_context.py          # Live mode: prompts carry real code and import paths, gateway call robustness
 │   └── test_quality_fixes.py           # Packaging, model-output robustness, execution and SARIF fix regressions
-├── .pre-commit-config.yaml      # pre-commit: ruff before every commit
+├── .pre-commit-config.yaml      # pre-commit: ruff and mypy before every commit
 ├── CHANGELOG.md                 # Changelog (Traditional Chinese); CHANGELOG.en.md is the English version
+├── CONTRIBUTING.md              # Contributing guide: setup, pre-push checks, principles, release steps
 ├── LICENSE                      # MIT license
+├── SECURITY.md                  # Security policy: private vulnerability reporting
 ├── MANIFEST.in                  # Extra README / CHANGELOG / docs / config files included in the sdist
 ├── pyproject.toml               # Package metadata, the vibeharness entry point, pytest / ruff / mypy settings
 ├── requirements.txt             # Runtime dependencies
-├── requirements-dev.txt         # Development dependencies (ruff, mypy, pytest-cov, build; pinned)
+├── requirements-dev.txt         # Development dependencies (ruff, mypy, pytest-cov, build, pip-audit; pinned)
 ├── requirements.lock            # Fully locked versions (used by CI installs and pip-audit)
 ├── README.md                    # Documentation (Traditional Chinese); README.en.md is the English version
 └── main.py                      # CLI entry point
@@ -352,7 +358,7 @@ pip install pip-audit
 python -m pip_audit -r requirements.lock --disable-pip --no-deps
 ```
 
-Optional: install [pre-commit](https://pre-commit.com/) to run ruff automatically before every `git commit`:
+Optional: install [pre-commit](https://pre-commit.com/) to run ruff and mypy automatically before every `git commit` (see [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and [SECURITY.md](SECURITY.md) for vulnerability reporting):
 
 ```bash
 pip install pre-commit

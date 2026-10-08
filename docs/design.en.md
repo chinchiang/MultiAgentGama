@@ -2,7 +2,7 @@
 
 English ｜ [正體中文（臺灣）](design.md)
 
-This document describes the design of VibeHarness-MAS: why it is built the way it is, how each component works, how data flows between phases, how the quality gate decides, the sandbox security model, and the known limitations. It corresponds to `core/__init__.py` version `0.2.0` plus the `[Unreleased]` section of `CHANGELOG.md` (2026-10-08, including the six gap fixes originally listed in chapter 16 of this document). Every `path:line` reference is to the files at that same commit.
+This document describes the design of VibeHarness-MAS: why it is built the way it is, how each component works, how data flows between phases, how the quality gate decides, the sandbox security model, and the known limitations. It corresponds to `core/__init__.py` version `0.3.0` (`[0.3.0]` in `CHANGELOG.md`, 2026-10-09, including the six gaps this document's chapter 16 originally listed and the five deep-review fixes). Every `path:line` reference is to the files at that same commit.
 
 How this document relates to the others:
 
@@ -623,6 +623,8 @@ Other determinism measures: sorted detected languages, sorted `ai_components`, s
 
 ### 15.1 The test suite (`tests/`, about 290 tests)
 
+The development workflow and pre-push checks are in `CONTRIBUTING.md`; vulnerability reporting in `SECURITY.md`.
+
 The suite is hermetic: mock mode plus the `fake_live` fixture in `conftest.py` (fake keys, `_FakeLiteLLM` substituted for `core.llm_gateway.litellm`) exercises the live paths without network or real keys.
 
 | File | Covers |
@@ -688,8 +690,7 @@ Six items were fixed on 2026-10-08 (see `[Unreleased]` in `CHANGELOG.md`): crash
 
 ### 16.4 Delivery and engineering
 
-- `publish.yml`'s `pypi-publish` rebuilds instead of reusing the Release artifacts, so the two sets are not guaranteed bit-identical; `build-and-upload` has no `timeout-minutes`.
-- pre-commit runs only ruff, no mypy hook.
+- (Addressed in 0.3.0) `pypi-publish` now downloads `build-and-upload`'s artifacts; both jobs have `timeout-minutes`; pre-commit has a mypy hook; Dependabot tracks the Actions and the lock.
 - The README's example for target projects uses `codeql-action/upload-sarif@v3` (a tag), unlike this repo's SHA pinning.
 - The CHANGELOG dates v0.1.0 as 2026-10-03; the tag commit is 2026-10-02.
 

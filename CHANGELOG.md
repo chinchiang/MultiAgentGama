@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-09
+
 依 OWASP Top 10 for LLM Applications 2026 與 MITRE ATLAS 修正設計：白箱評議陣容改為 Claude／DeepSeek／GLM／Gemini，並加上確定性 AI 安全規則與信任邊界防護。
 
 ### 變更（依 OWASP LLM Top 10 2026／MITRE ATLAS 修正設計）
@@ -25,6 +27,13 @@
 - **依模型設定輸出上限**（live 實測發現）：`models.<alias>.max_output_tokens` 覆蓋全域值；全域預設由 4096 提高為 `16384`：思考 token 也算在上限內，4096 會讓 Gemini 3 的測試生成回應空白或被截斷，也會截斷 Claude 的威脅模型 JSON（上限只是封頂，成本仍由 `max_model_calls` 管控）；單次模型請求逾時 `timeout_seconds` 也由 60 秒提高為 180 秒，因為 Opus 產出長威脅模型 JSON 時超過 60 秒。被截斷的回應改記錄為「output truncated at the max_output_tokens limit」而非籠統的「not valid JSON」
 - **不支援的取樣參數改為丟棄而非失敗**（live 實測發現）：Bedrock 上的 Claude Opus 5.5 只接受 `temperature=1`，過去每次呼叫都失敗並退回備援模型；改傳 `drop_params`。另外 Bedrock 等以 AWS 憑證驗證的模型可設 `aws_profile_name`／`aws_region_name` 取代 `api_key_env`；空白回應會記錄 `finish_reason`（例如安全過濾的 `content_filter`）
 - **報告保存生成的測試程式碼**（稽核軌跡）：Markdown 新增附錄「Generated Test Code」，以可收合區塊列出每個白箱／黑箱測試的程式碼、來源發現／威脅與執行結果；JSON 新增 `generated_tests`／`blackbox_generated_tests`，原封不動保存程式碼。live 實測發現部分「通過」的測試其實是在斷言缺陷本身，沒有程式碼就無法稽核。程式碼區塊的 fence 會依內容中最長的反引號自動加長（原本 PoC 區塊遇到四個反引號會被跳出，一併修正）
+
+### 工程（治理與供應鏈）
+- 新增 `SECURITY.md`（私密通報流程、重點弱點類型、支援版本）、`CONTRIBUTING.md`（開發環境、提交前檢查、修改原則、發布步驟）、`.github/CODEOWNERS`、PR 與 issue 模板
+- 新增 `.github/dependabot.yml`：每週提議 SHA 釘版 Actions 與 `requirements.lock` 的更新（`litellm`／`pydantic` 的 major 升版除外）；過去 `audit` job 一旦遇到鎖定版本的 CVE，只能手動重新產生鎖定檔
+- `requirements-dev.txt` 全部釘版（新增 `pip-audit==2.10.1`、`build==1.6.1`，`pytest-cov` 釘到與鎖定檔相同的 7.1.0），CI 的 `audit`／`package`／`publish` job 改從此處讀取版本，不再安裝未釘版的最新版
+- `tests.yml` 加 `concurrency`（同一 PR 的新推送取消舊 run）；`publish.yml` 的 `build-and-upload` 加 `timeout-minutes`，`pypi-publish` 改下載同一份建置產物（`actions/upload-artifact`／`download-artifact`，SHA 釘版）而非重新建置，Release 與 PyPI 的檔案位元相同
+- pre-commit 新增 mypy hook（以專案環境執行，與 CI 的 lint job 同一組釘版）
 
 ### 修正（深入審視，2026-10-09）
 - **套件目標的匯入指引**：`--target` 指向本身是套件的目錄（含 `__init__.py`，模組之間用相對匯入）時，提示詞與離線探針過去指示 `from app import f`，目標一執行就丟 `attempted relative import with no known parent package`，執行器還把它歸咎於「目標壞掉」；現在 `module_import_name` 會偵測套件並改以上層目錄為基準（`from shop.app import f`，上層目錄本來就在沙盒的 sys.path），探針也改用 `importlib.import_module` 依模組名載入

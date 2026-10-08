@@ -153,6 +153,10 @@ VibeHarness 本身就是一個 LLM 應用：待審程式碼是每個審查、驗
 ```text
 MultiAgentGama/
 ├── .github/
+│   ├── CODEOWNERS               # 預設審查者
+│   ├── dependabot.yml           # 每週提議 Actions 與 requirements.lock 的更新
+│   ├── ISSUE_TEMPLATE/          # 錯誤回報／功能提議模板
+│   ├── PULL_REQUEST_TEMPLATE.md
 │   └── workflows/
 │       ├── tests.yml            # CI：lint（ruff／mypy）、audit（pip-audit）、package（wheel 冒煙測試）、test（Ubuntu／Windows × Python 3.10–3.13，覆蓋率門檻 93%）
 │       └── publish.yml          # 發佈：tag 推送時驗證版本一致、建置 sdist／wheel、上傳 GitHub Release（PyPI 需設 ENABLE_PYPI_PUBLISH）
@@ -211,13 +215,15 @@ MultiAgentGama/
 │   ├── test_parallel_and_budgets.py    # 測試生成並行、模型呼叫預算、檔案／worker 上限
 │   ├── test_prompt_context.py          # live 模式：提示帶入真實程式碼與 import 路徑、閘道呼叫健壯性
 │   └── test_quality_fixes.py           # 打包、模型輸出健壯性、執行與 SARIF 修正的回歸測試
-├── .pre-commit-config.yaml      # pre-commit：提交前執行 ruff
+├── .pre-commit-config.yaml      # pre-commit：提交前執行 ruff 與 mypy
 ├── CHANGELOG.md                 # 變更紀錄（正體中文）；CHANGELOG.en.md 為英文版
+├── CONTRIBUTING.md              # 貢獻指南：開發環境、提交前檢查、修改原則、發布步驟
 ├── LICENSE                      # MIT 授權
+├── SECURITY.md                  # 資安政策：弱點私密通報流程
 ├── MANIFEST.in                  # sdist 額外收錄的 README／CHANGELOG／docs／config 檔案
 ├── pyproject.toml               # 套件中繼資料、vibeharness 指令進入點、pytest／ruff／mypy 設定
 ├── requirements.txt             # 執行期依賴
-├── requirements-dev.txt         # 開發依賴（ruff、mypy、pytest-cov、build，版本鎖定）
+├── requirements-dev.txt         # 開發依賴（ruff、mypy、pytest-cov、build、pip-audit，版本鎖定）
 ├── requirements.lock            # 完整鎖定版本（供 CI 安裝與 pip-audit 使用）
 ├── README.md                    # 說明文件（正體中文）；README.en.md 為英文版
 └── main.py                      # CLI 執行入口
@@ -352,7 +358,7 @@ pip install pip-audit
 python -m pip_audit -r requirements.lock --disable-pip --no-deps
 ```
 
-可選：安裝 [pre-commit](https://pre-commit.com/) 讓每次 `git commit` 前自動執行 ruff 檢查：
+可選：安裝 [pre-commit](https://pre-commit.com/) 讓每次 `git commit` 前自動執行 ruff 與 mypy 檢查（貢獻流程見 [CONTRIBUTING.md](CONTRIBUTING.md)，弱點通報見 [SECURITY.md](SECURITY.md)）：
 
 ```bash
 pip install pre-commit
