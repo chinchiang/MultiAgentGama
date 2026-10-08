@@ -12,46 +12,64 @@
 
 ## 🏛️ 系統架構與流程 (Architecture Overview)
 
+`core/harness.py` 以六個線性階段依序調度各子 Agent（沒有狀態機的分支或回退）。所有模型呼叫都經 `core/llm_gateway.py`；所有讀取目標程式碼的 Agent 都先經 `core/sanitize.py` 的不受信任程式碼通道。
+
 ```mermaid
 flowchart TD
-    CLI["main.py CLI<br/>(--target / --mode / --format / --sarif)"] --> CMD["🧠 總指揮官 Commander Harness<br/>core/harness.py"]
-    CMD --> AST["階段 1・AST 符號擷取<br/>ast_extractor.py"]
-    AST --> SAST["階段 1・確定性 AI 安全規則<br/>ai_static_scanner.py（VH-AI-001～009）"]
-    AST --> SAN["不受信任程式碼通道<br/>sanitize.py：去隱形字元／遮蔽密鑰"]
+    CLI["main.py CLI<br/>--target / --mode / --desc / --base-url<br/>--format / --sarif / --max-files / --max-model-calls"] --> CMD["🧠 總指揮官 Commander<br/>core/harness.py（六階段線性流程）"]
+    CMD --> AST["階段 1・符號擷取<br/>ast_extractor.py（Python 用 AST；JS/TS 用 lexer）"]
+    AST --> SAST["階段 1・確定性 AI 安全規則<br/>ai_static_scanner.py（VH-AI-001～009）<br/>並偵測 ai_components"]
 
-    subgraph WB ["階段 2–3・白箱：多模型評議 → 交叉驗證 → 沙盒實測"]
+    GW["LLM 閘道 llm_gateway.py<br/>LiteLLM 路由、fallback_model、模擬回退<br/>max_model_calls、max_concurrent_calls、call_log"]
+    SAN["不受信任程式碼通道 sanitize.py<br/>去隱形字元／遮蔽密鑰／&lt;untrusted_target_code&gt;<br/>所有讀取目標程式碼的 Agent 都經過"]
+
+    subgraph WB ["階段 2–3・白箱：多模型評議 → 交叉驗證 → 沙盒實測（模型呼叫平行）"]
         R1["邏輯與狀態審查<br/>Claude"]
         R2["防禦與資源審查<br/>DeepSeek"]
         R3["規格與合約審查<br/>GLM"]
         R4["AI 整合與供應鏈審查<br/>Gemini（OWASP LLM Top 10 2026）"]
         DEDUP["去重合併<br/>deduplicator.py"]
         DEB["交叉驗證：非作者模型投票<br/>confirm / reject / unsure"]
-        GEN["白箱測試生成<br/>test_generator.py"]
-        SBX["沙盒執行<br/>local_subprocess / docker"]
+        GEN["白箱測試生成 test_generator.py<br/>無效測試自癒重試 2 次；<br/>無可用測試時補 WB-PROBE 探針"]
+        SBX["沙盒執行（含行覆蓋率）<br/>test_executor.py → local_subprocess / docker"]
         R1 --> DEDUP
         R2 --> DEDUP
         R3 --> DEDUP
         R4 --> DEDUP
-        DEDUP --> DEB --> GEN --> SBX
+        DEDUP --> DEB
+        DEB -- "確認＋同票保留" --> GEN --> SBX
     end
 
+    AST --> SAN
     SAN --> R1
     SAN --> R2
     SAN --> R3
     SAN --> R4
-    SAST --> GATE
+    SAN --> DEB
+    SAN --> GEN
 
-    subgraph BB ["階段 4–5・黑箱：威脅建模驅動的攻擊測試"]
-        TM["STRIDE / OWASP API／LLM 威脅建模<br/>（+ MITRE ATLAS 對應）threat_modeler.py"]
+    subgraph BB ["階段 4–5・黑箱：威脅建模驅動的攻擊測試（模型呼叫平行）"]
+        TM["STRIDE / OWASP API／LLM 威脅建模<br/>（+ MITRE ATLAS 對應）threat_modeler.py<br/>符號分批送審、跨批次去重"]
         ATK["攻擊腳本生成<br/>scenario_builder.py"]
-        BEX["黑箱測試執行<br/>HTTP / in-process"]
+        BEX["黑箱測試執行<br/>test_executor.py → 同一沙盒；HTTP / in-process"]
         TM --> ATK --> BEX
     end
 
-    SBX --> TM
+    AST -- "路由與符號" --> TM
+    SAST -- "ai_components" --> TM
+    CLI -- "--desc" --> TM
+    SAN --> TM
+    SAN --> ATK
+
+    GATE["階段 6・品質門禁<br/>READY_TO_SHIP / NEEDS_FIXES /<br/>INCONCLUSIVE / BLOCKED_CRITICAL_RISK"]
+    SAST --> GATE
     SBX --> GATE
-    BEX --> GATE["階段 6・品質門禁<br/>READY_TO_SHIP / NEEDS_FIXES /<br/>INCONCLUSIVE / BLOCKED_CRITICAL_RISK"]
-    GATE --> OUT["審計報告<br/>md / json / SARIF"]
+    BEX --> GATE
+    GW -- "call_log：模擬、invalid、預算用盡" --> GATE
+    GATE --> OUT["審計報告 report_generator.py<br/>md / json / SARIF"]
+
+    WB -. "所有模型呼叫" .-> GW
+    BB -. "所有模型呼叫" .-> GW
 ```
 
 ### 🤖 各 Agent 分工
@@ -63,7 +81,7 @@ flowchart TD
 | 邏輯與狀態審查（`whitebox_reviewer_claude`） | claude | 深度邏輯邊界、未處理例外、狀態不一致、空指標／型別缺陷 | 0.2 |
 | 防禦與資源審查（`whitebox_reviewer_deepseek`） | deepseek | 輸入清洗、注入（SQL／命令／路徑）、防禦護欄、資源耗盡、並行安全 | 0.1 |
 | 規格與合約審查（`whitebox_reviewer_glm`） | glm | API 簽章合規、業務規格、契約違反、授權檢查（BOLA／BFLA） | 0.2 |
-| AI 整合與供應鏈審查（`whitebox_reviewer_gemini`） | gemini | 依 OWASP Top 10 for LLM Applications 2026 審查呼叫模型的程式：提示注入、提示／日誌中的密鑰、工具越權、模型與套件供應鏈、無上限消耗、未驗證的模型輸出 | 0.2 |
+| AI 整合與供應鏈審查（`whitebox_reviewer_gemini`） | gemini | 依 OWASP Top 10 for LLM Applications 2026 審查呼叫模型的程式（LLM01～LLM08、LLM10）：提示注入、提示／日誌中的密鑰、工具越權、模型與套件供應鏈、無上限消耗、未驗證的模型輸出；另查寫死的憑證與未固定版本的第三方依賴 | 0.2 |
 | 交叉驗證投票（`whitebox_verifier_*` ×4） | claude／deepseek／glm／gemini | 只對「別的模型」回報的發現投票：confirm／reject／unsure | 0.0 |
 | 白箱測試生成器（`whitebox_test_generator`） | deepseek | 針對確認缺陷生成可執行的 pytest 測試 | 0.3 |
 | STRIDE 威脅建模師（`blackbox_threat_modeler`） | claude | 擷取信任邊界與資產、建立 STRIDE＋OWASP（API；AI 目標另加 LLM Top 10 2026）攻擊矩陣，並標註 MITRE ATLAS 技術 | 0.2 |
@@ -73,50 +91,50 @@ flowchart TD
 
 ## 🚀 核心特性
 
-1. **AI Harness 總指揮官**：掌控全域狀態機，自動依序調度白箱與黑箱各子 Agent，並執行最後的品質閘門（Quality Gate）仲裁。
+1. **AI Harness 總指揮官**：以六個線性階段依序調度白箱與黑箱各子 Agent，並執行最後的品質閘門（Quality Gate）仲裁。
 2. **多模型異構消除偏差（De-biasing）**：白箱審查階段平行指派至四個不同模型家族的 LLM，彼此的盲點不重疊：
    - **Claude**：專精複雜邊界條件、非空指針假設與狀態機漏洞。
    - **DeepSeek**：專精輸入清洗、注入、資源消耗上限（DoS 防禦）與並行安全護欄。
-   - **GLM**：專精 API 協定契約遵守、規範一致性與授權檢查。
-   - **Gemini**：專精 AI／LLM 整合安全——依 OWASP Top 10 for LLM Applications 2026 檢查 LLM01～LLM10（提示注入、敏感資訊、過度代理、供應鏈、資料投毒、無上限消耗、錯誤資訊、隱藏上下文、向量弱點、輸出處理）。
-   - 少於兩個不同模型時，交叉驗證無法進行：終端機會提示，並列為證據缺口（判定不會是 `READY_TO_SHIP`；同一模型的「共識」只是一致性，不是佐證；OWASP LLM07:2026）。
-   - **交叉驗證（Cross-Model Verification）**：不設單一仲裁模型。每筆發現由「沒有回報它」的其他模型各自獨立判定 confirm／reject／unsure，模型不會評審自己的發現；其他模型也回報了同一缺陷（去重合併時記錄）則算一票確認。確認票多於否決票即確認、否決票較多列為爭議（不生成測試）、同票則保留交給測試決定。共識率依實際票數計算。沒有任何真實有效的票時不過濾任何發現，報告標示為 N/A。
-3. **黑箱強制威脅建模先行（Threat-Modeling First）**：拒絕盲目暴力測試，先依據 STRIDE（S 仿冒、T 竄改、R 否認、I 資訊洩漏、D 拒絕服務、E 越權）與 OWASP API Security Top 10 建立攻擊矩陣，再針對性生成攻擊測試。與白箱審查相同，目標符號會分批送審（以 token 預算切分），確保每個符號都進入威脅模型的視野；各批產出的威脅合併並去重編號。
-4. **以執行結果為準的品質閘門**：模型發現與威脅僅是假設；只有實際執行的測試或確定性規則能讓閘門失敗或封鎖。無斷言的空測試、無效的模型輸出（非 JSON／缺欄位，記錄為 `invalid`）、未測試的威脅、以及「失敗但未分類為 exploit」的黑箱攻擊測試，都列為證據缺口。
+   - **GLM**：專精 API 協定契約遵守、規範一致性與授權檢查（BOLA／BFLA）。
+   - **Gemini**：專精 AI／LLM 整合安全——依 OWASP Top 10 for LLM Applications 2026 檢查呼叫模型的程式：不受信任輸入拼進提示詞（LLM01）、提示／日誌中的密鑰（LLM02／LLM08）、工具或 Agent 無允許清單（LLM03）、未固定或不安全載入的模型與套件（LLM04／LLM05）、無上限的 token 與花費（LLM06）、模型輸出未驗證即採信（LLM07）或流入 eval／exec／shell／SQL／HTML（LLM10）；LLM09 向量弱點未列入審查焦點。審查者可在發現上標註 `owasp_mapping`（例如 `LLM01:2026`）。
+   - 審查者少於兩個模型家族時列為證據缺口（判定不會是 `READY_TO_SHIP`；同一模型的「共識」只是一致性，不是佐證；OWASP LLM07:2026）。驗證者從不評審自己模型回報的發現，所以單一模型家族時沒有任何驗證票，發現不經過濾，報告標示為 N/A。
+   - **交叉驗證（Cross-Model Verification）**：不設單一仲裁模型。每筆發現由「沒有回報它」的其他模型各自獨立判定 confirm／reject／unsure；其他模型也回報了同一缺陷（去重合併時記錄）則算一票確認。確認票多於否決票即確認、否決票較多列為爭議（不生成測試）、同票則保留交給測試決定。共識率依實際票數計算。
+3. **黑箱強制威脅建模先行（Threat-Modeling First）**：拒絕盲目暴力測試，先依據 STRIDE（S 仿冒、T 竄改、R 否認、I 資訊洩漏、D 拒絕服務、E 越權）與 OWASP API Security Top 10 建立攻擊矩陣，再針對性生成攻擊測試。威脅建模的輸入是 `--desc`（或預設描述）、階段 1 擷取的路由與符號，以及確定性規則偵測到的 `ai_components`，不依賴白箱結果。與白箱審查相同，目標符號會分批送審（以 token 預算切分），確保每個符號都進入威脅模型的視野；各批產出的威脅合併並去重編號。
+4. **以執行結果為準的品質閘門**：模型發現與威脅僅是假設；只有實際執行的測試或確定性規則能讓閘門失敗或封鎖。黑箱測試只有以 `AssertionError`、裸 `assert` 或 `pytest.fail` 失敗才算確認突破。無斷言的空測試、無效的模型輸出（非 JSON／缺欄位，或審查／驗證批次在閘道之外崩潰，皆記錄為 `invalid`）、未測試的威脅、以及「失敗但未分類為 exploit」的黑箱攻擊測試，都列為證據缺口。
 5. **確定性 AI 安全規則（不經模型）**：在任何模型看到程式碼之前，先以 AST／文字規則掃描目標，結果無法被提示注入說服：
 
    | 規則 | 偵測內容 | 嚴重度 | 對應 |
    | :--- | :--- | :--- | :--- |
    | `VH-AI-001` | `trust_remote_code=True`（執行模型倉庫附帶的程式碼） | HIGH | LLM04:2026／AML.T0010.003、AML.T0011.000／CWE-494 |
    | `VH-AI-002` | `torch.load` 未設 `weights_only=True` | HIGH | LLM04:2026／AML.T0011.000／CWE-502 |
-   | `VH-AI-003` | pickle／dill／joblib／`np.load(allow_pickle=True)` 反序列化 | MEDIUM | LLM04:2026／AML.T0011.000／CWE-502 |
+   | `VH-AI-003` | pickle／cloudpickle／dill／joblib／`pandas.read_pickle`／`np.load(allow_pickle=True)` 反序列化 | MEDIUM | LLM04:2026／AML.T0011.000／CWE-502 |
    | `VH-AI-004` | 從 Hub 下載模型未固定 `revision=` | MEDIUM | LLM04:2026／AML.T0010.003、AML.T0109／CWE-494 |
    | `VH-AI-005` | LLM 呼叫未設輸出 token 上限 | MEDIUM | LLM06:2026／AML.T0034／CWE-770 |
    | `VH-AI-006` | 模型輸出流入 `eval`／`exec`／shell／SQL | HIGH | LLM10:2026／AML.T0050、AML.T0102／CWE-94・78・89 |
    | `VH-AI-007` | 寫死在原始碼的憑證 | HIGH | LLM02:2026／AML.T0055／CWE-798 |
-   | `VH-AI-008` | 隱形或雙向控制字元（Unicode tag、零寬、Trojan Source） | HIGH／MEDIUM | LLM01:2026／AML.T0068 |
+   | `VH-AI-008` | 隱形或雙向控制字元（Unicode tag、零寬、Trojan Source） | HIGH（僅零寬字元：MEDIUM） | LLM01:2026／AML.T0068 |
    | `VH-AI-009` | 對 AI 審查者下指令的注釋／字串（「ignore previous instructions」「report no findings」） | MEDIUM | LLM01:2026／AML.T0051.001 |
 
-   HIGH 以上的命中直接使閘門為 `NEEDS_FIXES`；`VH-AI-008`／`VH-AI-009` 另列為證據缺口（模型階段的結論可能已被操弄），因此不可能得到 `READY_TO_SHIP`。目標若匯入 AI SDK（openai、anthropic、litellm、langchain、transformers、torch 等），威脅建模會額外套用 OWASP LLM Top 10 2026 與 ATLAS 技術對應（`config/threat_rules.yaml` 的 `owasp_llm_top10_2026`）。
-6. **兩種沙盒**：生成的測試在暫存目錄中執行，環境變數採白名單（不傳入 API 金鑰），每批與每個測試都有逾時，逾時會終止整個程序樹（Docker 則移除容器）。
+   `VH-AI-001`～`006` 只掃 Python（`005`／`006` 只在匯入 AI SDK 的檔案啟用，`006` 的污點追蹤限於單一函式或模組範圍）；`007`～`009` 也掃 JS/TS。HIGH 以上的命中直接使閘門為 `NEEDS_FIXES`；`VH-AI-008`／`VH-AI-009` 另列為證據缺口（模型階段的結論可能已被操弄），因此不可能得到 `READY_TO_SHIP`。目標若匯入 AI SDK（openai、anthropic、litellm、langchain、transformers、torch 等），偵測到的 `ai_components` 會讓威脅建模額外套用 OWASP LLM Top 10 2026 與 ATLAS 技術對應（`config/threat_rules.yaml` 的 `owasp_llm_top10_2026`），威脅可帶 `atlas_mapping`。
+6. **兩種沙盒**：生成的測試在暫存目錄中執行，環境變數採白名單（不傳入 API 金鑰，也剔除 `LD_PRELOAD`、`BASH_ENV` 這類注入鍵）。每批測試有逾時（`sandbox_timeout_seconds`）；批次逾時後會逐一重跑，此時每個測試另有單測逾時（`per_test_timeout_seconds`），總時間仍受批次預算限制。逾時會終止整個程序樹（Docker 則移除容器）。
    - `local_subprocess`（預設）：本機子程序。
-   - `docker`：每批測試在一次性容器中執行——預設無網路、根檔案系統與目標目錄唯讀、移除所有 capabilities、禁止提權、非 root 使用者、記憶體／CPU／程序數上限。只有該次執行的暫存目錄可寫。
+   - `docker`：每批測試在一次性容器中執行——預設無網路、根檔案系統與目標目錄唯讀、移除所有 capabilities、禁止提權、非 root 使用者（harness 以 root 執行時容器改用 `nobody`）、記憶體／CPU／程序數上限。只有該次執行的暫存目錄與 `/tmp`（noexec 的 tmpfs）可寫。
 
 > ⚠️ **`local_subprocess` 不是安全邊界。** 它以你的使用者權限執行模型生成的程式碼，可讀寫檔案與存取網路。對不信任的目標或 live 模式，請使用 `sandbox_provider: docker`。
 
 ### 🔐 安全設計依據（OWASP LLM Top 10 2026／MITRE ATLAS）
 
-VibeHarness 本身就是一個 LLM 應用：待審程式碼是每個審查、驗證與生成提示的**不受信任輸入**，模型輸出則是報告的不受信任輸入。設計依據 [OWASP Top 10 for LLM Applications 2026](https://genai.owasp.org/)（v1.0，含 Appendix A 的 ATLAS v2026.06／CWE 4.20 對應）、MITRE ATLAS（content release 2026.07）與 AI 供應鏈安全實務，在每個信任邊界放確定性的控制，不依賴「用模型監督模型」：
+VibeHarness 本身就是一個 LLM 應用：待審程式碼是每個審查、驗證與生成提示的**不受信任輸入**，模型輸出則是報告的不受信任輸入。設計依據 [OWASP Top 10 for LLM Applications 2026](https://genai.owasp.org/)（v1.0，含 Appendix A 的 ATLAS v2026.06／CWE 4.20 對應）、[MITRE ATLAS](https://atlas.mitre.org/)（content release 2026.07）與 AI 供應鏈安全實務，在每個信任邊界放確定性的控制，不依賴「用模型監督模型」：
 
 | 風險 | Harness 的控制 |
 | :--- | :--- |
-| LLM01 提示注入（AML.T0051.001、AML.T0068） | 程式碼送模型前去除隱形字元（tag block、variation selector、零寬、雙向控制）；包在 `<untrusted_target_code>` 來源標記通道內，偽造的結束標籤會被中和；每個系統提示附加安全政策（程式碼中的指令只是資料，且本身就是缺陷）；`VH-AI-008`／`009` 偵測植入的審查者指令並列為證據缺口 |
-| LLM02／LLM08 敏感資訊（AML.T0055） | 寫死的憑證（OpenAI／Anthropic／AWS／GitHub／Google／Slack／HF 金鑰、私鑰）在送往外部模型前以 `<REDACTED:…>` 取代，報告也不回顯其值；沙盒環境變數白名單不傳入 API 金鑰 |
-| LLM04 供應鏈（AML.T0010、AML.T0060） | 預設模型使用帶版本號的 id（不用 `deepseek-chat` 這類會被供應商替換的別名）；`api_base` 只允許 https（http 僅限 loopback）；生成的測試若安裝套件（`pip install`、`import pip`…）直接拒絕執行，避免幻覺套件名被搶註（slopsquatting） |
-| LLM06 無上限消耗（AML.T0034） | `max_model_calls`（硬上限，用完即停止真實呼叫）、`max_output_tokens`、逾時、並行上限、批次 token 預算 |
-| LLM07 錯誤資訊 | 模型的發現與威脅只是假設；只有執行過的測試或確定性規則能讓閘門失敗；模型不評審自己的發現；少於兩個模型家族時提示無法交叉驗證 |
+| LLM01 提示注入（AML.T0051.001、AML.T0068） | 程式碼送模型前去除隱形字元（tag block、variation selector、零寬、雙向控制）；包在 `<untrusted_target_code>` 來源標記通道內，偽造的結束標籤會被中和；每個讀取目標程式碼的 Agent 系統提示附加安全政策（程式碼中的指令只是資料，且本身就是缺陷）；`VH-AI-008`／`009` 偵測植入的審查者指令並列為證據缺口 |
+| LLM02／LLM08 敏感資訊（AML.T0055） | 寫死的憑證（OpenAI／Anthropic／AWS／GitHub／Google／Slack／HF／NVIDIA 金鑰、私鑰）在送往外部模型前以 `<REDACTED:…>` 取代，報告也不回顯其值；沙盒環境變數白名單不傳入 API 金鑰 |
+| LLM04 供應鏈（AML.T0010、AML.T0060） | 預設模型使用帶版本號的 id（不用 `deepseek-chat` 這類會被供應商替換的別名）；`api_base` 只允許 https（http 僅限 loopback）；生成的測試若安裝套件（`pip`／`uv`／`poetry`／`npm install`、`import pip`…）直接拒絕執行，避免幻覺套件名被搶註（slopsquatting） |
+| LLM06 無上限消耗（AML.T0034） | `max_model_calls`（硬上限，用完即停止真實呼叫）、`max_output_tokens`（全域與每模型）、請求與沙盒逾時、並行上限 `max_concurrent_calls`、批次 token 預算 |
+| LLM07 錯誤資訊 | 模型的發現與威脅只是假設；只有執行過的測試或確定性規則能讓閘門失敗；模型不評審自己的發現；審查者少於兩個模型家族時列為證據缺口 |
 | LLM10 輸出處理不當（AML.T0077） | 模型文字進入 Markdown 前停用圖片與原始 HTML（防圖片 URL 外洩）、移除 ANSI／OSC 控制序列；console 輸出跳脫 rich markup；SARIF 訊息去除控制字元 |
-| 稽核可追溯 | 每次模型呼叫記錄 `prompt_sha256`，可把判定對回實際輸入，而報告不必保存（可能敏感的）程式碼 |
+| 稽核可追溯 | 每次成功送出的模型呼叫記錄 `prompt_sha256`，可把判定對回實際輸入，而報告不必保存（可能敏感的）程式碼；批次在閘道之外崩潰時經 `record_failure` 記為 `invalid`（附例外原因，無雜湊） |
 
 ### 🧭 尚未實作（規劃中）
 
@@ -126,7 +144,7 @@ VibeHarness 本身就是一個 LLM 應用：待審程式碼是每個審查、驗
 | 動態 DAST／Fuzzing 代理 | 未實作；黑箱測試由威脅模型逐項生成 pytest 攻擊腳本 |
 | Hypothesis 性質測試 | 未內建；模型可自行生成，但需目標環境已安裝 `hypothesis` |
 | `e2b` 沙盒 | 未實作；`sandbox_provider` 支援 `local_subprocess` 與 `docker`，其他值會直接報錯 |
-| JS/TS 測試執行 | 僅做啟發式符號擷取供審查與威脅建模；生成與執行的測試只支援 Python |
+| JS/TS 測試執行 | 符號擷取為無相依的 lexer（真正的括號配對，供審查與威脅建模）；生成與執行的測試只支援 Python，JS/TS 目標一律列為「只做靜態審查」的證據缺口 |
 
 ---
 
@@ -134,43 +152,74 @@ VibeHarness 本身就是一個 LLM 應用：待審程式碼是每個審查、驗
 
 ```text
 MultiAgentGama/
+├── .github/
+│   └── workflows/
+│       ├── tests.yml            # CI：lint（ruff／mypy）、audit（pip-audit）、package（wheel 冒煙測試）、test（Ubuntu／Windows × Python 3.10–3.13，覆蓋率門檻 93%）
+│       └── publish.yml          # 發佈：tag 推送時驗證版本一致、建置 sdist／wheel、上傳 GitHub Release（PyPI 需設 ENABLE_PYPI_PUBLISH）
 ├── config/
-│   ├── agents_config.yaml       # 多模型路由 (Claude, GLM, DeepSeek, Gemini)
+│   ├── agents_config.yaml       # 全域設定（執行模式、沙盒、上限）、多模型路由 (Claude, GLM, DeepSeek, Gemini) 與各 Agent 提示詞
 │   └── threat_rules.yaml        # STRIDE、OWASP API Top 10 與 OWASP LLM Top 10 2026（含 ATLAS／CWE 對應）
 ├── docker/
-│   └── sandbox.Dockerfile       # docker 沙盒的基底映像（pytest / pytest-cov）
+│   └── sandbox.Dockerfile       # docker 沙盒的基底映像（pytest / pytest-cov / requests）
 ├── core/
-│   ├── harness.py               # 指揮官狀態機 (Commander Orchestrator)
-│   ├── llm_gateway.py           # 統一 LiteLLM 閘道與模擬回退引擎
+│   ├── __init__.py              # 套件版本號（__version__，pyproject 的唯一來源）
+│   ├── harness.py               # 指揮官：六階段線性流程與品質閘門
+│   ├── llm_gateway.py           # 統一 LiteLLM 閘道：路由、fallback、模擬回退、呼叫預算與 call_log
 │   ├── models.py                # Pydantic 數據模型
-│   ├── codecheck.py             # 生成測試的靜態檢查（需有 test_ 函式與斷言）
-│   ├── codecontext.py           # 提供給模型的原始碼與 import 指引
+│   ├── codecheck.py             # 生成測試的靜態檢查（需有 test_ 函式與斷言；拒絕安裝套件）
+│   ├── codecontext.py           # 提供給模型的原始碼與 import 指引（經不受信任程式碼通道）
 │   ├── sanitize.py              # 信任邊界：去隱形字元、遮蔽密鑰、不受信任程式碼通道、報告消毒
 │   └── sandbox.py               # 沙盒：本機子程序（非安全邊界）與 Docker 容器
 ├── agents/
+│   ├── __init__.py
 │   ├── whitebox/
-│   │   ├── ast_extractor.py     # AST 符號解析與路由提取
+│   │   ├── __init__.py
+│   │   ├── ast_extractor.py     # 符號解析與路由提取（Python 用 AST；JS/TS 用無相依 lexer）
 │   │   ├── ai_static_scanner.py # 確定性 AI 安全規則 VH-AI-001～009（不經模型）
 │   │   ├── multi_reviewer.py    # 異構模型評議 (Ensemble，由設定檔的 whitebox_reviewer_* 組成)
 │   │   ├── deduplicator.py      # 合併多個模型回報的同一缺陷
 │   │   ├── debater.py           # 交叉驗證：由非作者模型投票判定
-│   │   └── test_generator.py    # 單元/邊界測試自動生成
+│   │   └── test_generator.py    # 單元/邊界測試自動生成（自癒重試、WB-PROBE 探針）
 │   └── blackbox/
+│       ├── __init__.py
 │       ├── threat_modeler.py    # STRIDE／OWASP API／LLM 威脅建模引擎（含 ATLAS 對應）
 │       └── scenario_builder.py  # 威脅轉化可執行攻擊腳本
 ├── runners/
-│   └── test_executor.py         # 沙盒 Pytest 執行器與 PoC 抓取
+│   ├── __init__.py
+│   └── test_executor.py         # 沙盒 Pytest 執行器與 PoC 抓取（白箱與黑箱共用）
 ├── reports/
-│   └── report_generator.py      # Markdown 審計報告生成器
+│   ├── __init__.py
+│   └── report_generator.py      # Markdown／JSON／SARIF 審計報告生成器
 ├── examples/
 │   └── vibe_sample_app.py       # 具代表性的 Vibe-Coding 典型缺陷範例
 ├── docs/
-│   ├── sample_report.md          # mock 模式產生的範例報告
-│   ├── configuration.md          # 設定檔欄位完整參考（正體中文）
-│   ├── design.md                 # 設計文件：架構、資料流、閘門判定、沙盒安全模型（正體中文）
-│   ├── design.en.md              # Design document (English)
-│   └── configuration.en.md       # Configuration reference (English)
+│   ├── sample_report.md         # mock 模式產生的範例報告
+│   ├── configuration.md         # 設定檔欄位完整參考（正體中文）
+│   ├── configuration.en.md      # Configuration reference (English)
+│   ├── design.md                # 設計文件：架構、資料流、閘門判定、沙盒安全模型（正體中文）
+│   └── design.en.md             # Design document (English)
 ├── tests/                       # 工具包本身之測試（離線、不需 API 金鑰）
+│   ├── conftest.py              # 共用 fixture：以假 litellm 讓 live 路徑離線執行
+│   ├── test_ai_security.py      # OWASP LLM Top 10 2026／ATLAS 控制與確定性 AI 安全規則
+│   ├── test_cross_verification.py      # 交叉驗證：模型不評審自己的發現、依票數判定
+│   ├── test_dedup_and_budget.py        # 重複發現合併與 token 預算內的提示上下文
+│   ├── test_docker_sandbox.py          # Docker 沙盒：路徑映射、容器強化參數、實際執行（有 Docker 時）
+│   ├── test_harness_components.py      # 各元件於 mock 模式下的整合測試
+│   ├── test_js_ts_extractor.py         # JS/TS 擷取器：括號配對、字面值／註解遮蔽、箭頭函式、路由
+│   ├── test_model_output_robustness.py # 模型輸出異常時優雅降級、探針回退的揭露
+│   ├── test_p0_regressions.py          # 執行器正確性、自我修復與結果來源誠實性的回歸測試
+│   ├── test_parallel_and_budgets.py    # 測試生成並行、模型呼叫預算、檔案／worker 上限
+│   ├── test_prompt_context.py          # live 模式：提示帶入真實程式碼與 import 路徑、閘道呼叫健壯性
+│   └── test_quality_fixes.py           # 打包、模型輸出健壯性、執行與 SARIF 修正的回歸測試
+├── .pre-commit-config.yaml      # pre-commit：提交前執行 ruff
+├── CHANGELOG.md                 # 變更紀錄（正體中文）；CHANGELOG.en.md 為英文版
+├── LICENSE                      # MIT 授權
+├── MANIFEST.in                  # sdist 額外收錄的 README／CHANGELOG／docs／config 檔案
+├── pyproject.toml               # 套件中繼資料、vibeharness 指令進入點、pytest／ruff／mypy 設定
+├── requirements.txt             # 執行期依賴
+├── requirements-dev.txt         # 開發依賴（ruff、mypy、pytest-cov、build，版本鎖定）
+├── requirements.lock            # 完整鎖定版本（供 CI 安裝與 pip-audit 使用）
+├── README.md                    # 說明文件（正體中文）；README.en.md 為英文版
 └── main.py                      # CLI 執行入口
 ```
 
@@ -206,9 +255,12 @@ export ZAI_API_KEY="..."                 # GLM（智譜 Z.AI）
 export DEEPSEEK_API_KEY="sk-..."         # DeepSeek
 export GEMINI_API_KEY="AIza..."          # Gemini
 ```
-預設模型見 `config/agents_config.yaml`（Claude `claude-sonnet-5-5`、GLM `zai/glm-5.3`、DeepSeek `deepseek/deepseek-v4-pro`、Gemini `gemini/gemini-3.8-flash`），每個模型可設定 `fallback_model`，主模型重試失敗後會改用它，報告會記錄實際使用的模型。注意：待審程式碼會傳送給這裡列出的每一家模型供應商（已先遮蔽寫死的憑證），請只設定資料保留條款可接受的供應商。
 
-任何 agent 都可透過 `model_alias` 指向任一已定義的模型。手上只有一組金鑰也能跑 live 模式——例如只有 Gemini key 時，把 `agents` 區段中所有 `model_alias` 改成 `gemini` 即可（註：`gemini-2.5-flash` 已不再供新申請的 Google API 金鑰使用，請使用 3.x 版本）。但單一模型家族無法交叉驗證（每筆發現的作者與驗證者是同一模型），結果僅供參考。
+預設模型見 `config/agents_config.yaml`（Claude `claude-sonnet-5-5`、GLM `zai/glm-5.3`、DeepSeek `deepseek/deepseek-v4-pro`、Gemini `gemini/gemini-3.8-flash`），每個模型可設定 `fallback_model`（預設分別為 `claude-haiku-4-5-20251001`、`zai/glm-5.3-flash`、`deepseek/deepseek-v4-flash`、`gemini/gemini-3.5-flash`），主模型重試 `max_retries` 次失敗後會改用它，報告會記錄實際使用的模型。每個模型的金鑰從 `api_key_env` 指定的環境變數讀取；以 AWS 憑證驗證的供應商（例如 Bedrock）可改設 `aws_profile_name`／`aws_region_name`。注意：待審程式碼會傳送給這裡列出的每一家模型供應商（已先遮蔽寫死的憑證），請只設定資料保留條款可接受的供應商。
+
+`global` 區段的其他上限（CLI 未覆蓋時生效）：`execution_mode`（`--mode` 會覆蓋）、`timeout_seconds`（單次模型請求，預設 180 秒）、`max_retries`（2）、`max_output_tokens`（16384，思考 token 也算在內；`models.<alias>.max_output_tokens` 可逐模型覆蓋）、`max_concurrent_calls`（每個階段的並行模型呼叫數，6）、`max_model_calls`、`max_files`、`sandbox_timeout_seconds`（120）與 `per_test_timeout_seconds`（30）。
+
+任何 agent 都可透過 `model_alias` 指向任一已定義的模型；缺少 `model_alias` 的 agent 會解析為 `unconfigured`（hybrid 模式改用模擬，live 直接失敗）。手上只有一組金鑰也能跑 live 模式——例如只有 Gemini key 時，把 `agents` 區段中所有 `model_alias` 改成 `gemini` 即可（註：`gemini-2.5-flash` 已不再供新申請的 Google API 金鑰使用，請使用 3.x 版本）。但單一模型家族時驗證者不會評審自己模型的發現，沒有任何驗證票、發現不經過濾，且審查者少於兩個模型家族列為證據缺口，判定最好只到 `INCONCLUSIVE`（exit code 3），結果僅供參考。
 
 *註：若未配置 API 金鑰，`hybrid` 模式會退回模擬引擎（Simulation Engine）以便離線體驗工作流。模擬引擎回傳的是**與目標程式碼無關的固定範本**，報告會以 `[SIMULATED]` 與「Execution Provenance」表明確標示，且品質閘門不會因此給出 `READY_TO_SHIP`。*
 
@@ -218,7 +270,7 @@ export GEMINI_API_KEY="AIza..."          # Gemini
 | `hybrid`（預設） | 能呼叫就呼叫，否則退回模擬並在報告中標示 |
 | `mock` | 全部使用模擬引擎 |
 
-模擬模式下，白箱測試改用由目標函式自動推導的 None 輸入健壯性探針（`WB-PROBE-*`）；黑箱威脅若無可執行測試，會列為「Threats Not Tested」，不會捏造測試結果。
+模擬模式下，白箱測試改用由目標函式自動推導的 None 輸入健壯性探針（`WB-PROBE-*`）；任何模式下，確認的發現若沒有可用的模型生成測試，也會補上探針並列為證據缺口。黑箱威脅若無可執行測試，會列為「Threats Not Tested」，不會捏造測試結果。
 
 ### 3. 使用 Docker 沙盒（建議用於不信任的目標）
 
@@ -239,9 +291,9 @@ docker build -t vibeharness-sandbox:latest -f docker/sandbox.Dockerfile .
 python main.py --target examples --output vibe_harness_report.md
 ```
 
-`--target` 可為目錄或單一檔案。黑箱測試預設以 in-process 方式直接 import 目標呼叫；只有明確指定 `--base-url`（例如 `--base-url http://localhost:8000`）且該位址有服務回應時，才會改發真實 HTTP 請求。不會自動探測任何預設位址，以免攻擊腳本打到本機上無關的服務。範例輸出見 [`docs/sample_report.md`](docs/sample_report.md)。
+`--target`（`-t`，預設 `examples`）可為目錄或單一檔案；`--output`（`-o`）預設 `vibe_harness_report.md`。`--desc`（`-d`）可提供系統的高階描述供威脅建模參考；`--config`（`-c`）指定其他設定檔；`--verbose`（`-v`）開啟除錯日誌。黑箱測試預設以 in-process 方式直接 import 目標呼叫；只有明確指定 `--base-url`（`-u`，例如 `--base-url http://localhost:8000`）且該位址有服務回應時，才會改發真實 HTTP 請求。不會自動探測任何預設位址，以免攻擊腳本打到本機上無關的服務；live HTTP 模式下，攻擊程式碼若指向 `--base-url` 以外的主機會被靜態拒絕。範例輸出見 [`docs/sample_report.md`](docs/sample_report.md)。
 
-規模與成本上限可從 CLI 直接覆蓋設定檔：`--max-files`（單次分析的檔案數上限，預設 50，其餘檔案列為 skipped）與 `--max-model-calls`（單次執行的模型呼叫數上限，預設不限制；用完時 hybrid 退回模擬並列為證據缺口、live 直接失敗）。詳見 [`docs/configuration.md`](docs/configuration.md)。
+規模與成本上限可從 CLI 直接覆蓋設定檔：`--max-files`（單次分析的檔案數上限，預設 50，須 ≥ 1；其餘檔案列為 skipped 並記為證據缺口）與 `--max-model-calls`（單次執行的模型呼叫數上限，預設不限制，`0` 亦表示不限制，負數為用法錯誤；重試與 fallback 不另計次；用完時 hybrid 退回模擬並列為證據缺口、live 直接失敗）。詳見 [`docs/configuration.md`](docs/configuration.md)。
 
 報告格式可用 `--format md`（預設）或 `--format json`（機器可讀，含完整的 findings、威脅模型與測試結果，適合接 CI/CD）。兩種格式都會保存每個生成測試的程式碼：Markdown 附錄「Generated Test Code」以可收合區塊列出程式碼與其執行結果（已去除控制字元）；JSON 的 `generated_tests`／`blackbox_generated_tests` 則原封不動保存，可用來稽核或重跑。模型寫的測試也只是假設——「通過」的測試可能是在斷言缺陷本身（例如 `pytest.raises(KeyError)`），請一併檢查斷言是否描述正確的行為：
 
@@ -253,7 +305,7 @@ python main.py --target examples --output report.json --format json
 
 ```yaml
 # 目標專案的 .github/workflows/security.yml 範例
-- run: pip install vibeharness-mas   # 或從原始碼安裝
+- run: pip install vibeharness-mas   # 若已發佈至 PyPI；否則從 GitHub Release 的 wheel 或原始碼安裝
 - run: vibeharness --target src --output report.md --sarif vibeharness.sarif
   env:
     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -273,10 +325,10 @@ Exit code（依序判定）：
 | :--- | :--- | :--- |
 | `2` | BLOCKED_CRITICAL_RISK | 至少一個黑箱攻擊測試確認防禦被突破 |
 | `1` | NEEDS_FIXES | 至少一個白箱測試失敗（暴露缺陷），或確定性 AI 安全規則有 HIGH 以上的命中；此碼專屬於此判定，harness 自身的錯誤不會使用它 |
-| `3` | INCONCLUSIVE | 無失敗，但有證據缺口：使用模擬引擎、模型輸出無效、測試錯誤／未執行、威脅未測試、檔案解析失敗、目標中植入了對 AI 審查者的指令或隱形字元等；未知的判定字串也以此碼 fail closed |
+| `3` | INCONCLUSIVE | 無失敗，但有證據缺口：使用模擬引擎、模型輸出無效或批次崩潰、`max_model_calls` 用盡、沒有審查者或審查者少於兩個模型家族、`max_files` 略過了檔案、非 Python 程式碼只做靜態審查、測試錯誤／未執行、確認的發現沒有模型生成的測試、威脅未測試、黑箱測試失敗但未分類為 exploit、檔案解析失敗、目標中植入了對 AI 審查者的指令或隱形字元（`VH-AI-008`／`009`）等；未知的判定字串也以此碼 fail closed |
 | `0` | READY_TO_SHIP | 以上皆無 |
 | `4` | — | live 模式模型呼叫失敗 |
-| `5` | — | harness 設定或使用錯誤：`--target` 不存在、config 檔缺失或 YAML 損壞、沙盒不可用、CLI 用法錯誤、或未預期的內部錯誤（崩潰不會誤報成 verdict） |
+| `5` | — | harness 設定或使用錯誤：`--target` 不存在、config 檔缺失或 YAML 損壞、`max_files`／`max_model_calls`／`max_concurrent_calls` 值不合法、沙盒不可用、CLI 用法錯誤、或未預期的內部錯誤（崩潰不會誤報成 verdict） |
 
 ### 5. 運行工具包本身單元測試與靜態檢查
 
@@ -285,6 +337,12 @@ pip install -r requirements-dev.txt
 python -m pytest
 python -m ruff check .
 python -m mypy core/ agents/ runners/ reports/ main.py
+```
+
+CI（`.github/workflows/tests.yml`）有四個 job：`lint`（ruff 與 mypy）、`audit`（pip-audit）、`package`（建置 wheel 並在檢出目錄之外以 mock 模式跑一次）與 `test`（Ubuntu／Windows × Python 3.10–3.13，Linux 另建 Docker 沙盒映像跑真實容器測試）。`test` job 帶覆蓋率門檻，本機要跑同一條件可用：
+
+```bash
+python -m pytest --cov=core --cov=agents --cov=runners --cov=reports --cov-fail-under=93
 ```
 
 供應鏈檢查（CI 的 `audit` job 對鎖定版本執行同一指令，含已知 CVE 的依賴會擋在合併前）：

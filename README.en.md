@@ -12,110 +12,129 @@ Designed for the failure modes of today's **Vibe Coding (natural-language-prompt
 
 ## 🏛️ Architecture & Pipeline Overview
 
+`core/harness.py` drives the sub-agents through six linear phases (no state-machine branching or rollback). Every model call goes through `core/llm_gateway.py`, and every agent that reads target code first passes it through the untrusted-code channel in `core/sanitize.py`.
+
 ```mermaid
 flowchart TD
-    CLI["main.py CLI<br/>(--target / --mode / --format / --sarif)"] --> CMD["🧠 Commander Harness<br/>core/harness.py"]
-    CMD --> AST["Phase 1 · AST symbol extraction<br/>ast_extractor.py"]
-    AST --> AIR["Phase 1 · Deterministic AI-security rules<br/>VH-AI-001..009 · ai_static_scanner.py"]
+    CLI["main.py CLI<br/>--target / --mode / --desc / --base-url<br/>--format / --sarif / --max-files / --max-model-calls"] --> CMD["🧠 Commander<br/>core/harness.py (six linear phases)"]
+    CMD --> AST["Phase 1 · Symbol extraction<br/>ast_extractor.py (AST for Python; lexer for JS/TS)"]
+    AST --> SAST["Phase 1 · Deterministic AI-security rules<br/>ai_static_scanner.py (VH-AI-001..009)<br/>also detects ai_components"]
 
-    subgraph WB ["Phases 2–3 · White-box: multi-model review → cross-verification → sandboxed execution"]
+    GW["LLM gateway llm_gateway.py<br/>LiteLLM routing, fallback_model, simulation fallback<br/>max_model_calls, max_concurrent_calls, call_log"]
+    SAN["Untrusted-code channel sanitize.py<br/>strip invisible chars / redact secrets / &lt;untrusted_target_code&gt;<br/>every agent that reads target code goes through it"]
+
+    subgraph WB ["Phases 2–3 · White-box: multi-model review → cross-verification → sandboxed execution (model calls in parallel)"]
         R1["Logic & State Reviewer<br/>Claude"]
         R2["Safety & Defensive Reviewer<br/>DeepSeek"]
         R3["Specification & Contract Reviewer<br/>GLM"]
-        R4["AI Integration & Supply-Chain Reviewer<br/>Gemini"]
+        R4["AI Integration & Supply-Chain Reviewer<br/>Gemini (OWASP LLM Top 10 2026)"]
         DEDUP["Deduplication<br/>deduplicator.py"]
         DEB["Cross-verification: votes from non-author models<br/>confirm / reject / unsure"]
-        GEN["White-box test generation<br/>test_generator.py"]
-        SBX["Sandboxed execution<br/>local_subprocess / docker"]
+        GEN["White-box test generation test_generator.py<br/>invalid tests repaired up to 2 times;<br/>WB-PROBE probes when no usable test"]
+        SBX["Sandboxed execution (with line coverage)<br/>test_executor.py → local_subprocess / docker"]
         R1 --> DEDUP
         R2 --> DEDUP
         R3 --> DEDUP
         R4 --> DEDUP
-        DEDUP --> DEB --> GEN --> SBX
+        DEDUP --> DEB
+        DEB -- "confirmed + ties" --> GEN --> SBX
     end
 
-    AST --> R1
-    AST --> R2
-    AST --> R3
-    AST --> R4
+    AST --> SAN
+    SAN --> R1
+    SAN --> R2
+    SAN --> R3
+    SAN --> R4
+    SAN --> DEB
+    SAN --> GEN
 
-    subgraph BB ["Phases 4–5 · Black-box: threat-model-driven attack testing"]
-        TM["STRIDE / OWASP threat modeling<br/>threat_modeler.py"]
+    subgraph BB ["Phases 4–5 · Black-box: threat-model-driven attack testing (model calls in parallel)"]
+        TM["STRIDE / OWASP API/LLM threat modeling<br/>(+ MITRE ATLAS mapping) threat_modeler.py<br/>symbols sent in batches, cross-batch dedup"]
         ATK["Attack script generation<br/>scenario_builder.py"]
-        BEX["Black-box test execution<br/>HTTP / in-process"]
+        BEX["Black-box test execution<br/>test_executor.py → same sandbox; HTTP / in-process"]
         TM --> ATK --> BEX
     end
 
-    SBX --> TM
+    AST -- "routes & symbols" --> TM
+    SAST -- "ai_components" --> TM
+    CLI -- "--desc" --> TM
+    SAN --> TM
+    SAN --> ATK
+
+    GATE["Phase 6 · Quality gate<br/>READY_TO_SHIP / NEEDS_FIXES /<br/>INCONCLUSIVE / BLOCKED_CRITICAL_RISK"]
+    SAST --> GATE
     SBX --> GATE
-    AIR --> GATE
-    BEX --> GATE["Phase 6 · Quality gate<br/>READY_TO_SHIP / NEEDS_FIXES /<br/>INCONCLUSIVE / BLOCKED_CRITICAL_RISK"]
-    GATE --> OUT["Audit report<br/>md / json / SARIF"]
+    BEX --> GATE
+    GW -- "call_log: simulated, invalid, budget exhausted" --> GATE
+    GATE --> OUT["Audit report report_generator.py<br/>md / json / SARIF"]
+
+    WB -. "all model calls" .-> GW
+    BB -. "all model calls" .-> GW
 ```
 
 ### 🤖 Agent Responsibilities
 
-Every agent's model and prompt live in [`config/agents_config.yaml`](config/agents_config.yaml) and can be reassigned freely (field details in [docs/configuration.en.md](docs/configuration.en.md)):
+Every agent's model and prompt live in [`config/agents_config.yaml`](config/agents_config.yaml) and can be reassigned freely. The reviewer roster is config-driven: every `whitebox_reviewer_*` entry is used with its own `name`, `model_alias`, `temperature`, and `focus` (the focus text goes into its prompt), so adding or removing an entry changes the ensemble (field details in [docs/configuration.en.md](docs/configuration.en.md)):
 
 | Sub-agent (agent_id) | Default model | Responsibility | temperature |
 | :--- | :--- | :--- | :--- |
 | Logic & State Reviewer (`whitebox_reviewer_claude`) | claude | Deep logical edge cases, unhandled exceptions, state inconsistencies, null-pointer/type bugs | 0.2 |
 | Safety & Defensive Reviewer (`whitebox_reviewer_deepseek`) | deepseek | Input sanitization, injection (SQL/command/path), defensive guards, resource exhaustion, unsafe concurrency | 0.1 |
 | Specification & Contract Reviewer (`whitebox_reviewer_glm`) | glm | API signature compliance, business-spec adherence, contract violations, authorization checks (BOLA/BFLA) | 0.2 |
-| AI Integration & Supply-Chain Reviewer (`whitebox_reviewer_gemini`) | gemini | OWASP Top 10 for LLM Applications 2026 (LLM01–LLM10) in code that calls models; hard-coded credentials, unpinned dependencies | 0.2 |
+| AI Integration & Supply-Chain Reviewer (`whitebox_reviewer_gemini`) | gemini | OWASP Top 10 for LLM Applications 2026 (LLM01–LLM08, LLM10) in code that calls models: prompt injection, secrets in prompts/logs, unchecked tool agency, model and package supply chain, unbounded consumption, unvalidated model output; also hard-coded credentials and unpinned third-party dependencies | 0.2 |
 | Cross-verification votes (`whitebox_verifier_*` ×4) | claude / deepseek / glm / gemini | Vote only on findings reported by *other* models: confirm / reject / unsure | 0.0 |
 | White-box test generator (`whitebox_test_generator`) | deepseek | Generates executable pytest tests targeting confirmed defects | 0.3 |
-| STRIDE threat modeler (`blackbox_threat_modeler`) | claude | Extracts trust boundaries and assets; builds the STRIDE + OWASP API (and, for AI-integrated targets, OWASP LLM) attack matrix | 0.2 |
+| STRIDE threat modeler (`blackbox_threat_modeler`) | claude | Extracts trust boundaries and assets; builds the STRIDE + OWASP API (and, for AI-integrated targets, OWASP LLM Top 10 2026) attack matrix and tags MITRE ATLAS techniques | 0.2 |
 | Attack scenario synthesizer (`blackbox_test_synthesizer`) | deepseek | Turns threat scenarios into black-box attack scripts (BOLA, injection, rate limiting, prompt injection) | 0.2 |
-
-The reviewer roster is config-driven: every `whitebox_reviewer_*` entry is used with its own `name`, `model_alias`, `temperature`, and `focus` (the focus text goes into its prompt), so adding or removing an entry changes the ensemble.
 
 ---
 
 ## 🚀 Key Features
 
-1. **AI Harness Commander**: owns the global state machine, schedules the white-box and black-box sub-agents in order, and arbitrates the final Quality Gate.
+1. **AI Harness Commander**: schedules the white-box and black-box sub-agents through six linear phases and arbitrates the final Quality Gate.
 2. **Heterogeneous multi-model de-biasing**: the white-box review stage fans out to four LLM families with different training lineages, so their blind spots do not overlap:
    - **Claude**: complex boundary conditions, non-null-pointer assumptions, and state-machine flaws.
    - **DeepSeek**: input sanitization, injection, defensive guards, resource-exhaustion limits (DoS defense), and unsafe concurrency.
    - **GLM**: API contract compliance, specification consistency, and authorization checks (BOLA/BFLA).
-   - **Gemini**: AI-integration and supply-chain security — prompts built from untrusted input, secrets in prompts, unchecked tool agency, unpinned models and packages, uncapped spend, and model output reaching `eval`/shell/SQL/HTML (OWASP Top 10 for LLM Applications 2026). Reviewers may tag findings with an `owasp_mapping` such as `LLM01:2026`.
-   - **Cross-model verification**: no single arbiter model. Each finding is ruled on independently by every model that did *not* report it — models never judge their own findings. If another model also reported the same defect (recorded when duplicates are merged), that counts as one confirm vote. More confirms than rejects → confirmed; more rejects → disputed (no test is generated); a tie → kept and left to the test to decide. The agreement ratio is computed from the actual votes. With no real, usable votes, no findings are filtered and the report shows N/A.
-3. **Mandatory threat-modeling first**: no blind brute-force testing. A STRIDE (Spoofing, Tampering, Repudiation, Information disclosure, Denial of service, Elevation of privilege) and OWASP API Security Top 10 attack matrix is built first, then attack tests are generated against it. Like the white-box reviewers, target symbols are sent in batches (split by token budget) so every symbol is visible to the threat model; threats from all batches are merged and deduplicated.
-4. **Deterministic AI-security rules**: before any model sees the code, `ai_static_scanner.py` runs rules that cannot be prompt-injected, each mapped to OWASP LLM Top 10 2026, MITRE ATLAS, and CWE:
+   - **Gemini**: AI-integration and supply-chain security per OWASP Top 10 for LLM Applications 2026 — untrusted input concatenated into prompts (LLM01), secrets in prompts and logs (LLM02/LLM08), tools or agents acting without allowlists (LLM03), unpinned or unsafely loaded models and packages (LLM04/LLM05), uncapped tokens and spend (LLM06), model output trusted unvalidated (LLM07) or reaching `eval`/`exec`/shell/SQL/HTML (LLM10); LLM09 (vector weaknesses) is not in its focus. Reviewers may tag findings with an `owasp_mapping` such as `LLM01:2026`.
+   - Fewer than two distinct reviewer model families is an evidence gap (the verdict can never be `READY_TO_SHIP`; "consensus" from one model is consistency, not corroboration; OWASP LLM07:2026). Verifiers never rule on findings from their own model, so with a single family there are no votes at all, no findings are filtered, and the report shows N/A.
+   - **Cross-model verification**: no single arbiter model. Each finding is ruled on independently by every model that did *not* report it. If another model also reported the same defect (recorded when duplicates are merged), that counts as one confirm vote. More confirms than rejects → confirmed; more rejects → disputed (no test is generated); a tie → kept and left to the test to decide. The agreement ratio is computed from the actual votes.
+3. **Mandatory threat-modeling first**: no blind brute-force testing. A STRIDE (Spoofing, Tampering, Repudiation, Information disclosure, Denial of service, Elevation of privilege) and OWASP API Security Top 10 attack matrix is built first, then attack tests are generated against it. The threat modeler's inputs are `--desc` (or a default description), the routes and symbols from Phase 1, and the `ai_components` detected by the deterministic rules — it does not depend on white-box results. Like the white-box reviewers, target symbols are sent in batches (split by token budget) so every symbol is visible to the threat model; threats from all batches are merged and deduplicated.
+4. **An execution-based quality gate**: model findings and threats are only hypotheses; only tests that actually ran (or the deterministic rules below) can fail or block the gate. A black-box test counts as a confirmed breach only when it fails with `AssertionError`, a bare `assert`, or `pytest.fail`. Assertion-free empty tests, unusable model output (non-JSON / missing fields, or a review/verification batch that crashed outside the gateway — all recorded as `invalid`), untested threats, and black-box attack tests that failed without being classified as an exploit are all listed as evidence gaps.
+5. **Deterministic AI-security rules (no model involved)**: before any model sees the code, AST/text rules scan the target; their results cannot be prompt-injected:
 
-   | Rule | Severity | Detects | OWASP / ATLAS |
+   | Rule | Detects | Severity | Mapping |
    | :--- | :--- | :--- | :--- |
-   | `VH-AI-001` | HIGH | `trust_remote_code=True` (remote model code execution) | LLM04 / AML.T0010.003, AML.T0011.000 |
-   | `VH-AI-002` | HIGH | `torch.load` without `weights_only=True` | LLM04 / AML.T0011.000 |
-   | `VH-AI-003` | MEDIUM | Pickle-based deserialization of data or model artifacts | LLM04 / AML.T0011.000 |
-   | `VH-AI-004` | MEDIUM | Hub model download without a pinned `revision=` | LLM04 / AML.T0010.003, AML.T0109 |
-   | `VH-AI-005` | MEDIUM | LLM call without an output-token cap | LLM06 / AML.T0034 |
-   | `VH-AI-006` | HIGH | Model output flowing into a code, shell, or SQL execution sink | LLM10 / AML.T0050, AML.T0102 |
-   | `VH-AI-007` | HIGH | Hard-coded credential in source | LLM02 / AML.T0055 |
-   | `VH-AI-008` | HIGH (zero-width only: MEDIUM) | Invisible or bidirectional-control characters | LLM01 / AML.T0068 |
-   | `VH-AI-009` | MEDIUM | Instructions addressed to AI reviewers embedded in the code | LLM01 / AML.T0051.001 |
+   | `VH-AI-001` | `trust_remote_code=True` (executes code shipped with the model repo) | HIGH | LLM04:2026 / AML.T0010.003, AML.T0011.000 / CWE-494 |
+   | `VH-AI-002` | `torch.load` without `weights_only=True` | HIGH | LLM04:2026 / AML.T0011.000 / CWE-502 |
+   | `VH-AI-003` | pickle / cloudpickle / dill / joblib / `pandas.read_pickle` / `np.load(allow_pickle=True)` deserialization | MEDIUM | LLM04:2026 / AML.T0011.000 / CWE-502 |
+   | `VH-AI-004` | Hub model download without a pinned `revision=` | MEDIUM | LLM04:2026 / AML.T0010.003, AML.T0109 / CWE-494 |
+   | `VH-AI-005` | LLM call without an output-token cap | MEDIUM | LLM06:2026 / AML.T0034 / CWE-770 |
+   | `VH-AI-006` | Model output flowing into `eval` / `exec` / shell / SQL | HIGH | LLM10:2026 / AML.T0050, AML.T0102 / CWE-94, 78, 89 |
+   | `VH-AI-007` | Hard-coded credential in source | HIGH | LLM02:2026 / AML.T0055 / CWE-798 |
+   | `VH-AI-008` | Invisible or bidirectional-control characters (Unicode tags, zero-width, Trojan Source) | HIGH (zero-width only: MEDIUM) | LLM01:2026 / AML.T0068 |
+   | `VH-AI-009` | Comments/strings addressed to AI reviewers ("ignore previous instructions", "report no findings") | MEDIUM | LLM01:2026 / AML.T0051.001 |
 
-   HIGH+ hits make the verdict `NEEDS_FIXES`. `VH-AI-008`/`009` hits also add an evidence gap (the model-driven phases may have been manipulated), so such a run can never be `READY_TO_SHIP`. If the target imports an AI SDK (`openai`, `anthropic`, `litellm`, `langchain`, `transformers`, ...), the detected `ai_components` switch on the OWASP LLM Top 10 2026 checklist in threat modeling, and threats can carry an `atlas_mapping`.
-5. **An execution-based quality gate**: model findings and threats are only hypotheses; only tests that actually ran (or the deterministic rules above) can fail or block the gate. Assertion-free empty tests, unusable model output (non-JSON / missing fields, recorded as `invalid`), untested threats, and black-box attack tests that failed without being classified as an exploit are all listed as evidence gaps.
-6. **Two sandboxes**: generated tests run in a temp directory with an environment-variable allowlist (API keys are never passed in), per-batch and per-test timeouts, and the whole process tree is killed on timeout (Docker removes the container instead).
+   `VH-AI-001`–`006` scan Python only (`005`/`006` only in files that import an AI SDK; `006` tracks taint within a single function or module scope); `007`–`009` also scan JS/TS. HIGH+ hits make the verdict `NEEDS_FIXES`. `VH-AI-008`/`009` hits also add an evidence gap (the model-driven phases may have been manipulated), so such a run can never be `READY_TO_SHIP`. If the target imports an AI SDK (`openai`, `anthropic`, `litellm`, `langchain`, `transformers`, `torch`, ...), the detected `ai_components` switch on the OWASP LLM Top 10 2026 checklist and ATLAS mapping in threat modeling (`owasp_llm_top10_2026` in `config/threat_rules.yaml`), and threats can carry an `atlas_mapping`.
+6. **Two sandboxes**: generated tests run in a temp directory with an environment-variable allowlist (API keys are never passed in, and injection keys such as `LD_PRELOAD` and `BASH_ENV` are dropped). Each batch has a timeout (`sandbox_timeout_seconds`); a timed-out batch is re-run test by test, where each test gets its own timeout (`per_test_timeout_seconds`) while the batch budget still caps the total. On timeout the whole process tree is killed (Docker removes the container instead).
    - `local_subprocess` (default): a local subprocess.
-   - `docker`: each test batch runs in a disposable container — no network by default, read-only root filesystem and target mount, all capabilities dropped, no privilege escalation, non-root user, and memory/CPU/process limits. Only the run's temp directory is writable.
+   - `docker`: each test batch runs in a disposable container — no network by default, read-only root filesystem and target mount, all capabilities dropped, no privilege escalation, non-root user (when the harness itself runs as root the container runs as `nobody`), and memory/CPU/process limits. Only the run's temp directory and `/tmp` (a noexec tmpfs) are writable.
 
 > ⚠️ **`local_subprocess` is not a security boundary.** It executes model-generated code with your user's permissions, with file and network access. For untrusted targets or live mode, use `sandbox_provider: docker`.
 
-### 🔐 Security design basis
+### 🔐 Security design basis (OWASP LLM Top 10 2026 / MITRE ATLAS)
 
-VibeHarness-MAS is itself an LLM application: the target's code is untrusted input to its models, and model output is untrusted input to its reports. Its controls map to the [OWASP Top 10 for LLM Applications 2026](https://genai.owasp.org/) and [MITRE ATLAS](https://atlas.mitre.org/):
+VibeHarness-MAS is itself an LLM application: the target's code is untrusted input to every review, verification, and generation prompt, and model output is untrusted input to its reports. The design follows the [OWASP Top 10 for LLM Applications 2026](https://genai.owasp.org/) (v1.0, with the Appendix A mapping to ATLAS v2026.06 / CWE 4.20), [MITRE ATLAS](https://atlas.mitre.org/) (content release 2026.07), and AI supply-chain practice, placing a deterministic control at every trust boundary instead of relying on "a model supervising a model":
 
 | Risk | Harness control |
 | :--- | :--- |
-| LLM01 Prompt Injection (AML.T0051.001, AML.T0068) | Target code is passed in a provenance-labeled `<untrusted_target_code>` channel with a security policy appended to every system prompt; invisible Unicode (tag block, variation selectors, zero-width, bidi controls) is stripped first; planted reviewer-directed instructions and invisible characters are detected by `VH-AI-008`/`009` |
-| LLM02 Sensitive Information Disclosure (AML.T0055) | Hard-coded secrets are redacted to `<REDACTED:kind>` before any code reaches a model; call records keep only a `prompt_sha256`, not the prompt |
-| LLM04 Supply Chain (AML.T0060) | `api_base` must be https (http only for loopback); pinned, versioned model ids; generated tests that install packages (`pip`/`uv`/`poetry`/`npm install`, `import pip`) are refused (slopsquatting) |
-| LLM06 Unbounded Consumption | `max_model_calls`, `max_output_tokens`, request and sandbox timeouts |
-| LLM07 Misinformation | Verdicts come only from executed tests or deterministic rules, never from a model's "nothing found"; a warning is printed when fewer than two distinct reviewer models are configured (monoculture) |
-| LLM10 Improper Output Handling (AML.T0077) | Model text is sanitized per sink: Markdown (images and raw HTML defanged), SARIF and console (rich markup escaped, ANSI/OSC sequences stripped) |
+| LLM01 Prompt Injection (AML.T0051.001, AML.T0068) | Invisible Unicode (tag block, variation selectors, zero-width, bidi controls) is stripped before code reaches a model; code is passed in a provenance-labeled `<untrusted_target_code>` channel where forged closing tags are neutralized; every agent that reads target code has a security policy appended to its system prompt (instructions inside code are data, and a defect in themselves); `VH-AI-008`/`009` detect planted reviewer-directed instructions and list them as an evidence gap |
+| LLM02 / LLM08 Sensitive Information (AML.T0055) | Hard-coded secrets (OpenAI / Anthropic / AWS / GitHub / Google / Slack / HF / NVIDIA keys, private keys) are replaced with `<REDACTED:…>` before any code reaches an external model, and reports never echo their values; the sandbox environment allowlist never passes API keys |
+| LLM04 Supply Chain (AML.T0010, AML.T0060) | Default models use versioned ids (not moving aliases like `deepseek-chat` that a provider can swap); `api_base` must be https (http only for loopback); generated tests that install packages (`pip`/`uv`/`poetry`/`npm install`, `import pip`, ...) are refused, so hallucinated package names cannot be slopsquatted |
+| LLM06 Unbounded Consumption (AML.T0034) | `max_model_calls` (a hard cap: live calls stop when it is spent), `max_output_tokens` (global and per model), request and sandbox timeouts, the `max_concurrent_calls` parallelism cap, and per-batch token budgets |
+| LLM07 Misinformation | Model findings and threats are hypotheses only; only executed tests or deterministic rules can fail the gate; models never judge their own findings; fewer than two distinct reviewer model families is an evidence gap |
+| LLM10 Improper Output Handling (AML.T0077) | Model text has images and raw HTML disabled before it enters Markdown (no image-URL exfiltration) and ANSI/OSC control sequences removed; console output escapes rich markup; SARIF messages have control characters stripped |
+| Audit trail | Every successfully sent model call records a `prompt_sha256`, so a verdict can be traced back to its actual input without the report having to store (possibly sensitive) code; a batch that crashes outside the gateway is booked through `record_failure` as `invalid` (with the exception, no hash) |
 
 ### 🧭 Not yet implemented (planned)
 
@@ -125,7 +144,7 @@ VibeHarness-MAS is itself an LLM application: the target's code is untrusted inp
 | Dynamic DAST / fuzzing agent | Not implemented; black-box tests are generated per threat as pytest attack scripts |
 | Hypothesis property-based testing | Not built in; models may generate it, but the target environment needs `hypothesis` installed |
 | `e2b` sandbox | Not implemented; `sandbox_provider` supports `local_subprocess` and `docker`, anything else fails fast |
-| JS/TS test execution | Heuristic symbol extraction only (for review and threat modeling); generated and executed tests support Python only |
+| JS/TS test execution | Symbol extraction is a dependency-free lexer with real brace matching (for review and threat modeling); generated and executed tests support Python only, and JS/TS targets always carry a "reviewed statically only" evidence gap |
 
 ---
 
@@ -133,43 +152,74 @@ VibeHarness-MAS is itself an LLM application: the target's code is untrusted inp
 
 ```text
 MultiAgentGama/
+├── .github/
+│   └── workflows/
+│       ├── tests.yml            # CI: lint (ruff / mypy), audit (pip-audit), package (wheel smoke test), test (Ubuntu / Windows × Python 3.10–3.13, 93% coverage floor)
+│       └── publish.yml          # Release: on tag push, verify the version matches, build sdist / wheel, upload to the GitHub Release (PyPI needs ENABLE_PYPI_PUBLISH)
 ├── config/
-│   ├── agents_config.yaml       # Multi-model routing (Claude, GLM, DeepSeek, Gemini)
-│   └── threat_rules.yaml        # STRIDE, OWASP API and OWASP LLM Top 10 2026 baseline rules
+│   ├── agents_config.yaml       # Global settings (execution mode, sandbox, limits), multi-model routing (Claude, GLM, DeepSeek, Gemini), per-agent prompts
+│   └── threat_rules.yaml        # STRIDE, OWASP API Top 10 and OWASP LLM Top 10 2026 (with ATLAS / CWE mapping)
 ├── docker/
-│   └── sandbox.Dockerfile       # Base image for the docker sandbox (pytest / pytest-cov)
+│   └── sandbox.Dockerfile       # Base image for the docker sandbox (pytest / pytest-cov / requests)
 ├── core/
-│   ├── harness.py               # Commander state machine (orchestrator)
-│   ├── llm_gateway.py           # Unified LiteLLM gateway with simulation fallback
+│   ├── __init__.py              # Package version (__version__, the single source for pyproject)
+│   ├── harness.py               # Commander: six linear phases and the quality gate
+│   ├── llm_gateway.py           # Unified LiteLLM gateway: routing, fallback, simulation fallback, call budget and call_log
 │   ├── models.py                # Pydantic data models
-│   ├── codecheck.py             # Static checks on generated tests (needs test_ functions and assertions)
-│   ├── codecontext.py           # Source code and import guidance handed to the models
+│   ├── codecheck.py             # Static checks on generated tests (needs test_ functions and assertions; refuses package installs)
+│   ├── codecontext.py           # Source code and import guidance handed to the models (through the untrusted-code channel)
 │   ├── sanitize.py              # Trust-boundary hygiene: invisible chars, secret redaction, untrusted-code channel, output sanitizing
 │   └── sandbox.py               # Sandboxes: local subprocess (not a security boundary) and Docker containers
 ├── agents/
+│   ├── __init__.py
 │   ├── whitebox/
-│   │   ├── ast_extractor.py     # AST symbol parsing and route extraction
-│   │   ├── ai_static_scanner.py # Deterministic AI-security rules (VH-AI-001..009)
-│   │   ├── multi_reviewer.py    # Heterogeneous model ensemble review
+│   │   ├── __init__.py
+│   │   ├── ast_extractor.py     # Symbol parsing and route extraction (AST for Python; dependency-free lexer for JS/TS)
+│   │   ├── ai_static_scanner.py # Deterministic AI-security rules VH-AI-001..009 (no model involved)
+│   │   ├── multi_reviewer.py    # Heterogeneous model ensemble review (built from the whitebox_reviewer_* entries)
 │   │   ├── deduplicator.py      # Merges the same defect reported by multiple models
 │   │   ├── debater.py           # Cross-verification: ruled on by non-author models
-│   │   └── test_generator.py    # Automatic unit/boundary test generation
+│   │   └── test_generator.py    # Automatic unit/boundary test generation (self-repair, WB-PROBE probes)
 │   └── blackbox/
-│       ├── threat_modeler.py    # STRIDE threat-modeling engine
+│       ├── __init__.py
+│       ├── threat_modeler.py    # STRIDE / OWASP API / LLM threat-modeling engine (with ATLAS mapping)
 │       └── scenario_builder.py  # Turns threats into executable attack scripts
 ├── runners/
-│   └── test_executor.py         # Sandboxed pytest executor with PoC capture
+│   ├── __init__.py
+│   └── test_executor.py         # Sandboxed pytest executor with PoC capture (shared by white-box and black-box)
 ├── reports/
-│   └── report_generator.py      # Markdown/JSON/SARIF audit report generator
+│   ├── __init__.py
+│   └── report_generator.py      # Markdown / JSON / SARIF audit report generator
 ├── examples/
 │   └── vibe_sample_app.py       # A representative sample of typical Vibe-Coding defects
 ├── docs/
 │   ├── sample_report.md         # Sample report produced in mock mode
 │   ├── configuration.md         # Configuration reference (Traditional Chinese)
+│   ├── configuration.en.md      # Configuration reference (English)
 │   ├── design.md                # Design document: architecture, data flow, gate verdicts, sandbox security model (Traditional Chinese)
-│   ├── design.en.md             # Design document (English)
-│   └── configuration.en.md      # Configuration reference (English)
+│   └── design.en.md             # Design document (English)
 ├── tests/                       # The toolkit's own tests (offline, no API keys needed)
+│   ├── conftest.py              # Shared fixtures: a fake litellm so the live paths run offline
+│   ├── test_ai_security.py      # OWASP LLM Top 10 2026 / ATLAS controls and the deterministic AI-security rules
+│   ├── test_cross_verification.py      # Cross-verification: models never judge their own findings, vote tallies
+│   ├── test_dedup_and_budget.py        # Duplicate-finding merge and prompt context within the token budget
+│   ├── test_docker_sandbox.py          # Docker sandbox: path mapping, hardening flags, real execution (when Docker is present)
+│   ├── test_harness_components.py      # Component integration tests in mock mode
+│   ├── test_js_ts_extractor.py         # JS/TS extractor: brace matching, literal/comment masking, arrow functions, routes
+│   ├── test_model_output_robustness.py # Graceful degradation on malformed model output, probe-fallback disclosure
+│   ├── test_p0_regressions.py          # Executor correctness, self-repair and result-provenance honesty regressions
+│   ├── test_parallel_and_budgets.py    # Parallel test generation, model-call budget, file / worker caps
+│   ├── test_prompt_context.py          # Live mode: prompts carry real code and import paths, gateway call robustness
+│   └── test_quality_fixes.py           # Packaging, model-output robustness, execution and SARIF fix regressions
+├── .pre-commit-config.yaml      # pre-commit: ruff before every commit
+├── CHANGELOG.md                 # Changelog (Traditional Chinese); CHANGELOG.en.md is the English version
+├── LICENSE                      # MIT license
+├── MANIFEST.in                  # Extra README / CHANGELOG / docs / config files included in the sdist
+├── pyproject.toml               # Package metadata, the vibeharness entry point, pytest / ruff / mypy settings
+├── requirements.txt             # Runtime dependencies
+├── requirements-dev.txt         # Development dependencies (ruff, mypy, pytest-cov, build; pinned)
+├── requirements.lock            # Fully locked versions (used by CI installs and pip-audit)
+├── README.md                    # Documentation (Traditional Chinese); README.en.md is the English version
 └── main.py                      # CLI entry point
 ```
 
@@ -200,15 +250,17 @@ The toolkit supports real API calls and an offline simulation mode (Hybrid Mode)
 
 ```bash
 # To use live models:
-export ANTHROPIC_API_KEY="sk-ant-..."
-export ZAI_API_KEY="..."
-export DEEPSEEK_API_KEY="sk-..."
-export GEMINI_API_KEY="AIza..."
+export ANTHROPIC_API_KEY="sk-ant-..."   # Claude
+export ZAI_API_KEY="..."                 # GLM (Zhipu Z.AI)
+export DEEPSEEK_API_KEY="sk-..."         # DeepSeek
+export GEMINI_API_KEY="AIza..."          # Gemini
 ```
 
-Default models are in `config/agents_config.yaml` (Claude `claude-sonnet-5-5`, GLM `zai/glm-5.3`, DeepSeek `deepseek/deepseek-v4-pro`, Gemini `gemini/gemini-3.8-flash`; versioned ids rather than moving aliases). Target code is sent to every configured provider, so only configure providers whose data-retention terms you accept. Each model can set a `fallback_model`; after the primary model exhausts its retries the fallback is tried, and the report records which model was actually used.
+Default models are in `config/agents_config.yaml` (Claude `claude-sonnet-5-5`, GLM `zai/glm-5.3`, DeepSeek `deepseek/deepseek-v4-pro`, Gemini `gemini/gemini-3.8-flash`). Each model can set a `fallback_model` (defaults: `claude-haiku-4-5-20251001`, `zai/glm-5.3-flash`, `deepseek/deepseek-v4-flash`, `gemini/gemini-3.5-flash`); after the primary model fails `max_retries` times the fallback is tried, and the report records which model was actually used. Each model's key is read from the environment variable named in `api_key_env`; providers that authenticate with AWS credentials (e.g. Bedrock) can set `aws_profile_name` / `aws_region_name` instead. Target code is sent to every configured provider (with hard-coded credentials redacted first), so only configure providers whose data-retention terms you accept.
 
-Any agent can point at any defined model via `model_alias`. A single API key is enough to run live mode — for example, with only a Gemini key, change every `model_alias` in the `agents` section to `gemini`; with a single model family, cross-model verification cannot run (note: `gemini-2.5-flash` is no longer available to newly issued Google API keys; use a 3.x version).
+Other limits in the `global` section (effective unless overridden from the CLI): `execution_mode` (overridden by `--mode`), `timeout_seconds` (per model request, default 180 s), `max_retries` (2), `max_output_tokens` (16384, reasoning tokens count against it; `models.<alias>.max_output_tokens` overrides it per model), `max_concurrent_calls` (parallel model calls per phase, 6), `max_model_calls`, `max_files`, `sandbox_timeout_seconds` (120) and `per_test_timeout_seconds` (30).
+
+Any agent can point at any defined model via `model_alias`; an agent without a `model_alias` resolves to `unconfigured` (simulated in hybrid mode, a hard failure in live mode). A single API key is enough to run live mode — for example, with only a Gemini key, change every `model_alias` in the `agents` section to `gemini` (note: `gemini-2.5-flash` is no longer available to newly issued Google API keys; use a 3.x version). With a single model family, though, verifiers never rule on their own model's findings, so there are no verification votes, no findings are filtered, and fewer than two reviewer families is an evidence gap: the best possible verdict is `INCONCLUSIVE` (exit code 3), so treat the result as indicative only.
 
 *Note: without API keys, `hybrid` mode falls back to the simulation engine so you can experience the workflow offline. The simulation returns **fixed templates unrelated to the target code**; the report marks them with `[SIMULATED]` and an "Execution Provenance" section, and the quality gate will never yield `READY_TO_SHIP` because of them.*
 
@@ -218,7 +270,7 @@ Any agent can point at any defined model via `model_alias`. A single API key is 
 | `hybrid` (default) | Calls live models when possible; otherwise falls back to simulation, disclosed in the report |
 | `mock` | Simulation engine only |
 
-In simulation mode, white-box tests use deterministic None-input robustness probes derived automatically from the target functions (`WB-PROBE-*`); black-box threats without an executable test are listed under "Threats Not Tested" instead of fabricating results.
+In simulation mode, white-box tests use deterministic None-input robustness probes derived automatically from the target functions (`WB-PROBE-*`); in any mode, a confirmed finding that ends up without a usable model-generated test also gets a probe and is listed as an evidence gap. Black-box threats without an executable test are listed under "Threats Not Tested" instead of fabricating results.
 
 ### 3. Use the Docker sandbox (recommended for untrusted targets)
 
@@ -239,9 +291,9 @@ Set `sandbox_provider: "docker"` in `config/agents_config.yaml`. Tunables: `dock
 python main.py --target examples --output vibe_harness_report.md
 ```
 
-`--target` accepts a directory or a single file. Black-box tests import the target in-process by default; they send real HTTP requests only when you pass `--base-url` explicitly (e.g. `--base-url http://localhost:8000`) and a service answers there. No default address is ever probed, so attack scripts cannot hit an unrelated local service. See [`docs/sample_report.md`](docs/sample_report.md) for example output.
+`--target` (`-t`, default `examples`) accepts a directory or a single file; `--output` (`-o`) defaults to `vibe_harness_report.md`. `--desc` (`-d`) gives the threat modeler a high-level description of the system; `--config` (`-c`) points at another config file; `--verbose` (`-v`) enables debug logging. Black-box tests import the target in-process by default; they send real HTTP requests only when you pass `--base-url` (`-u`, e.g. `--base-url http://localhost:8000`) explicitly and a service answers there. No default address is ever probed, so attack scripts cannot hit an unrelated local service, and in live HTTP mode attack code aimed at any host other than `--base-url` is rejected statically. See [`docs/sample_report.md`](docs/sample_report.md) for example output.
 
-Scale and cost limits can be overridden from the CLI: `--max-files` (number of source files analyzed per run, default 50; the rest are reported as skipped) and `--max-model-calls` (cap on model invocations per run, unlimited by default; when exhausted, hybrid falls back to simulation and lists an evidence gap, live fails). See [`docs/configuration.md`](docs/configuration.md).
+Scale and cost limits can be overridden from the CLI: `--max-files` (number of source files analyzed per run, default 50, must be ≥ 1; the rest are reported as skipped and listed as an evidence gap) and `--max-model-calls` (cap on model invocations per run, unlimited by default; `0` also means unlimited and a negative value is a usage error; retries and the fallback are not counted separately; when exhausted, hybrid falls back to simulation and lists an evidence gap, live fails). See [`docs/configuration.en.md`](docs/configuration.en.md).
 
 Report formats: `--format md` (default) or `--format json` (machine-readable, with the complete findings, threat model, and test results — suited to CI/CD). Both keep every generated test's code: the Markdown appendix "Generated Test Code" lists each test's code next to its outcome in collapsible blocks (control characters removed), and the JSON `generated_tests` / `blackbox_generated_tests` keep it verbatim for audits or re-runs. Model-written tests are hypotheses too — a "passing" test may be asserting the defect itself (e.g. `pytest.raises(KeyError)`), so check that the assertions describe the correct behaviour:
 
@@ -253,7 +305,7 @@ You can also pass `--sarif <path>` to emit a [SARIF 2.1.0](https://docs.oasis-op
 
 ```yaml
 # Example .github/workflows/security.yml for the target project
-- run: pip install vibeharness-mas   # or install from source
+- run: pip install vibeharness-mas   # if published to PyPI; otherwise install the wheel from the GitHub Release or from source
 - run: vibeharness --target src --output report.md --sarif vibeharness.sarif
   env:
     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -273,10 +325,10 @@ Exit codes (evaluated in order):
 | :--- | :--- | :--- |
 | `2` | BLOCKED_CRITICAL_RISK | At least one black-box attack test confirmed a defense was breached |
 | `1` | NEEDS_FIXES | At least one white-box test failed (exposed a defect), or a HIGH+ deterministic AI-security rule hit; this code is exclusive to that verdict — harness errors never use it |
-| `3` | INCONCLUSIVE | No failures, but evidence gaps exist: simulation engine used, unusable model output, test errors / not run, untested threats, file parse failures, planted reviewer-directed instructions or invisible characters (`VH-AI-008`/`009`), no reviewers configured, etc.; an unknown verdict string also fails closed with this code |
+| `3` | INCONCLUSIVE | No failures, but evidence gaps exist: simulation engine used, unusable model output or a crashed batch, `max_model_calls` exhausted, no reviewers or fewer than two reviewer model families, files skipped by `max_files`, non-Python code reviewed statically only, test errors / not run, confirmed findings without a model-generated test, untested threats, black-box tests that failed without being classified as an exploit, file parse failures, planted reviewer-directed instructions or invisible characters (`VH-AI-008`/`009`), etc.; an unknown verdict string also fails closed with this code |
 | `0` | READY_TO_SHIP | None of the above |
 | `4` | — | Live-mode model invocation failed |
-| `5` | — | Harness configuration or usage error: `--target` missing, config file absent or invalid YAML, sandbox unavailable, CLI usage error, or an unexpected internal error (a crash is never misreported as a verdict) |
+| `5` | — | Harness configuration or usage error: `--target` missing, config file absent or invalid YAML, an invalid `max_files` / `max_model_calls` / `max_concurrent_calls` value, sandbox unavailable, CLI usage error, or an unexpected internal error (a crash is never misreported as a verdict) |
 
 ### 5. Run the toolkit's own tests and linters
 
@@ -285,6 +337,12 @@ pip install -r requirements-dev.txt
 python -m pytest
 python -m ruff check .
 python -m mypy core/ agents/ runners/ reports/ main.py
+```
+
+CI (`.github/workflows/tests.yml`) has four jobs: `lint` (ruff and mypy), `audit` (pip-audit), `package` (builds the wheel and runs it once in mock mode outside the checkout) and `test` (Ubuntu / Windows × Python 3.10–3.13; the Linux job also builds the Docker sandbox image and runs the real-container tests). The `test` job enforces a coverage floor; to run the same check locally:
+
+```bash
+python -m pytest --cov=core --cov=agents --cov=runners --cov=reports --cov-fail-under=93
 ```
 
 Supply-chain check (the CI `audit` job runs the same command against the locked set; a dependency with a known CVE fails before merge):
