@@ -115,7 +115,7 @@ agents:
   whitebox_reviewer_deepseek:
     model_alias: "gemini"      # 原為 deepseek
   whitebox_reviewer_glm:
-    model_alias: "gemini"      # 原為 glm
+    model_alias: "gemini"      # 原為 deepseek
   whitebox_reviewer_gemini:
     model_alias: "gemini"      # 原本就是 gemini
   whitebox_verifier_claude:
@@ -131,7 +131,7 @@ agents:
   blackbox_threat_modeler:
     model_alias: "gemini"      # 原為 claude
   blackbox_test_synthesizer:
-    model_alias: "gemini"      # 原為 glm
+    model_alias: "gemini"      # 原為 deepseek
 ```
 
 > 註：只有單一模型家族時，**跨模型驗證無法執行**：所有發現都來自 `gemini`，而驗證者不評審自家模型的發現，因此沒有任何發現會得到投票（不會被過濾，共識率顯示 N/A），終端機也會警告「Fewer than two distinct reviewer models」。四位審查者仍會各自依不同的 `focus` 審查，但同一顆模型的多份副本彼此同意只是一致，不是佐證（OWASP LLM07:2026）。
@@ -189,7 +189,7 @@ agent 沒有 `model_alias`，或 `model_alias` 指向 `models` 區段不存在�
 
 | 區段 | 程式讀取的欄位 | 使用時機 |
 | :--- | :--- | :--- |
-| `stride_categories.<key>` | `name`／`description`／`common_vibe_bugs` | 一律使用 |
+| `stride_categories.<key>` | `name`／`common_vibe_bugs` | 一律使用（`description` 僅供說明，不進提示詞） |
 | `owasp_api_top10[*]` | `id`／`name` | 一律使用；id 供 `owasp_mapping` 引用 |
 | `owasp_llm_top10_2026[*]` | `id`／`name`／`common_vibe_bugs`／`atlas_techniques` | 僅在目標匯入 AI／LLM SDK（`openai`、`anthropic`、`litellm`、`langchain`、`transformers`、`@ai-sdk/*` 等）時使用；由確定性規則偵測，並在報告中列為 `ai_components` |
 
