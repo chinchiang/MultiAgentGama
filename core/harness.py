@@ -1,12 +1,16 @@
+import datetime as _dt
 import logging
 import os
+import subprocess
 import sys
 from typing import Any, Dict, Optional, List
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 
+from core import __version__
 from core.models import (
+    RunMetadata,
     VibeHarnessSummary,
     FindingSeverity,
     TestStatus,
@@ -17,7 +21,7 @@ from core.models import (
 )
 from core.llm_gateway import LLMGateway, DEFAULT_CONFIG_PATH
 from core.sandbox import LocalSubprocessSandbox, DockerSandbox, DEFAULT_DOCKER_IMAGE
-from agents.whitebox.ast_extractor import ASTExtractor, DEFAULT_MAX_FILES
+from agents.whitebox.ast_extractor import ASTExtractor, DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES
 from agents.whitebox.ai_static_scanner import AISecurityStaticScanner
 from agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
 from agents.whitebox.debater import MultiModelDebater
@@ -75,6 +79,60 @@ class VibeHarnessCommander:
         self.reporter = ReportGenerator()
         # Validated like the other limits (a negative or non-integer value is a ConfigError); 0/null keep the default
         self.max_files = LLMGateway._positive_int(global_cfg.get("max_files"), "max_files") or DEFAULT_MAX_FILES
+        self.max_file_bytes = LLMGateway._positive_int(global_cfg.get("max_file_bytes"), "max_file_bytes") or DEFAULT_MAX_FILE_BYTES
+        self.config_path = os.path.abspath(config_path)
+        self.sandbox_provider = str(global_cfg.get("sandbox_provider", "local_subprocess"))
+        # File selection (CLI --include/--exclude override the config lists; --changed-since adds only_files)
+        self.include_patterns: List[str] = self._pattern_list(global_cfg.get("include"), "include")
+        self.exclude_patterns: List[str] = self._pattern_list(global_cfg.get("exclude"), "exclude")
+        self.changed_since: Optional[str] = None
+
+    @staticmethod
+    def _pattern_list(value: Any, key: str) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
+            raise ValueError(f"global.{key} must be a list of glob patterns, got {value!r}")
+        return [v.strip() for v in value]
+
+    @staticmethod
+    def _git(args: List[str], cwd: str) -> Optional[str]:
+        """stdout of a git command run in cwd, or None when git/the repository is unavailable."""
+        try:
+            result = subprocess.run(
+                ["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return result.stdout if result.returncode == 0 else None
+
+    def _target_revision(self, target_dir: str) -> tuple:
+        """(commit, dirty) of the repository containing the target; (None, None) outside a repository."""
+        cwd = target_dir if os.path.isdir(target_dir) else os.path.dirname(os.path.abspath(target_dir))
+        head = self._git(["rev-parse", "HEAD"], cwd)
+        if head is None:
+            return None, None
+        status = self._git(["status", "--porcelain", "--", os.path.abspath(target_dir)], cwd)
+        return head.strip(), (bool(status.strip()) if status is not None else None)
+
+    def changed_files(self, target_dir: str, since_ref: str) -> List[str]:
+        """Absolute paths of files under the target that differ from `since_ref` (committed, staged,
+        unstaged and untracked), for --changed-since. Raises ValueError when the ref cannot be resolved."""
+        cwd = target_dir if os.path.isdir(target_dir) else os.path.dirname(os.path.abspath(target_dir))
+        top = self._git(["rev-parse", "--show-toplevel"], cwd)
+        if top is None:
+            raise ValueError(f"--changed-since needs the target to be inside a git repository: {target_dir}")
+        root = top.strip()
+        if self._git(["rev-parse", "--verify", "--quiet", f"{since_ref}^{{commit}}"], cwd) is None:
+            raise ValueError(f"--changed-since: git ref {since_ref!r} cannot be resolved in {root}")
+        spec = os.path.abspath(target_dir)
+        # Both commands run from the repository root so their output paths are root-relative
+        diff = self._git(["diff", "--name-only", "--diff-filter=ACMR", since_ref, "--", spec], root) or ""
+        untracked = self._git(["ls-files", "--others", "--exclude-standard", "--", spec], root) or ""
+        paths = {os.path.join(root, line.strip()) for line in (diff + untracked).splitlines() if line.strip()}
+        return sorted(p for p in paths if os.path.isfile(p))
 
     @staticmethod
     def _build_sandbox(global_cfg: dict) -> LocalSubprocessSandbox:
@@ -132,7 +190,22 @@ class VibeHarnessCommander:
         self.console.print("\n[bold blue]=== Phase 1: AST Ingestion & Semantic Extraction ===[/bold blue]")
         # A single-file target runs its tests from the containing directory
         work_dir = target_dir if os.path.isdir(target_dir) else os.path.dirname(os.path.abspath(target_dir))
-        symbols = self.ast_extractor.parse_directory(target_dir, max_files=self.max_files)
+        only_files: Optional[List[str]] = None
+        filters: List[str] = []
+        if self.changed_since:
+            only_files = self.changed_files(target_dir, self.changed_since)
+            filters.append(f"changed-since={self.changed_since} ({len(only_files)} file(s))")
+        if self.include_patterns:
+            filters.append("include=" + ",".join(self.include_patterns))
+        if self.exclude_patterns:
+            filters.append("exclude=" + ",".join(self.exclude_patterns))
+        symbols = self.ast_extractor.parse_directory(
+            target_dir, max_files=self.max_files, include=self.include_patterns or None,
+            exclude=self.exclude_patterns or None, only_files=only_files, max_file_bytes=self.max_file_bytes
+        )
+        if filters:
+            self.console.print(f"[+] File selection: {escape('; '.join(filters))} "
+                               f"({self.ast_extractor.filtered_out} source file(s) left out by request)")
         routes = [s.name for s in symbols if s.symbol_type == "route"]
         # Sorted so the reported stack is deterministic regardless of set iteration order
         detected_langs = sorted(self.ast_extractor.detected_languages) or ["Python"]
@@ -304,6 +377,11 @@ class VibeHarnessCommander:
             inconclusive_reasons.append(
                 f"{len(self.ast_extractor.parse_failures)} source file(s) could not be parsed and were not analyzed"
             )
+        if self.ast_extractor.oversized_files:
+            inconclusive_reasons.append(
+                f"{len(self.ast_extractor.oversized_files)} source file(s) exceed max_file_bytes ({self.max_file_bytes}) and were "
+                f"not analyzed: {', '.join(os.path.basename(p) for p in self.ast_extractor.oversized_files[:5])}"
+            )
         if self.ast_extractor.skipped_files:
             inconclusive_reasons.append(
                 f"{len(self.ast_extractor.skipped_files)} source file(s) were skipped by the max_files limit ({self.max_files})"
@@ -352,8 +430,21 @@ class VibeHarnessCommander:
             wb_results, bb_results, threat_report, untested_threats, inconclusive_reasons, static_blocking
         )
 
+        commit, dirty = self._target_revision(target_dir)
+        run_meta = RunMetadata(
+            generated_at=_dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+            harness_version=__version__,
+            execution_mode=self.gateway.execution_mode,
+            config_path=self.config_path,
+            sandbox_provider=self.sandbox_provider,
+            target_path=os.path.abspath(target_dir),
+            target_git_commit=commit,
+            target_git_dirty=dirty,
+            file_filters=filters,
+        )
         summary = VibeHarnessSummary(
             overall_status=overall_status,
+            run=run_meta,
             total_whitebox_findings=len(raw_findings),
             distinct_whitebox_findings=len(findings),
             confirmed_whitebox_bugs=len(debate_result.confirmed_findings) - debate_result.undecided_count,

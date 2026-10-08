@@ -71,7 +71,7 @@ flowchart TD
     EXE1 --> TM
     SAST --> GATE
     EXE1 --> GATE
-    EXE2 --> GATE["Phase 6 Quality Gate<br/>16 evidence-gap checks<br/>BLOCKED / NEEDS_FIXES / INCONCLUSIVE / READY"]
+    EXE2 --> GATE["Phase 6 Quality Gate<br/>17 evidence-gap checks<br/>BLOCKED / NEEDS_FIXES / INCONCLUSIVE / READY"]
     GATE --> OUT["ReportGenerator<br/>Markdown / JSON / SARIF 2.1.0"]
 ```
 
@@ -141,7 +141,7 @@ Every model call goes through `LLMGateway.generate`; every generated test goes t
 
 ### Phase 6: gate and reports (`core/harness.py:255-415`)
 
-- Collect the 16 evidence gaps (chapter 10), decide, build recommendations, assemble `VibeHarnessSummary`, write Markdown or JSON, optionally SARIF.
+- Collect the 17 evidence gaps (chapter 10), decide, build recommendations, assemble `VibeHarnessSummary`, write Markdown or JSON, optionally SARIF.
 - SARIF carries no test code (`core/harness.py:389-390`); Markdown and JSON do.
 
 ### The shared failure-handling pattern
@@ -491,6 +491,7 @@ Any one of these rules out `READY_TO_SHIP`:
 | 8 | 301-302 | no symbols extracted | Phase 1 |
 | 9 | 303-306 | a file failed to parse | `parse_failures` |
 | 10 | 307-310 | files skipped by `max_files` | `skipped_files` |
+| 10b | — | files above `max_file_bytes` not analyzed (new in 0.3.0; see the current code for lines) | `oversized_files` |
 | 11 | 311-315 | white-box or black-box tests ERROR, SKIPPED or not run | `wb_errored + bb_errored` |
 | 12 | 316-321 | a non-Python language was only reviewed statically (the sandbox runs Python) | `detected_langs` |
 | 13 | 322-327 | a black-box test FAILED without matching the exploit predicate (ambiguous evidence) | `bb_failed_unclassified` |
@@ -507,7 +508,8 @@ Any one of these rules out `READY_TO_SHIP`:
 | 2 | BLOCKED_CRITICAL_RISK |
 | 3 | INCONCLUSIVE, and any unrecognized verdict string (fail closed) |
 | 4 | a live-mode model call failed (`LLMGatewayError`) |
-| 5 | configuration or usage error: missing `--target`, `ConfigError`, `SandboxUnavailableError`, CLI misuse (argparse's exit 2 is remapped to 5 so it cannot collide with BLOCKED), or an unexpected crash (full traceback printed) |
+| 5 | configuration or usage error: missing `--target`, `ConfigError`, `SandboxUnavailableError`, an unwritable `--output` / `--sarif`, an unresolvable `--changed-since` ref, CLI misuse (argparse's exit 2 is remapped to 5 so it cannot collide with BLOCKED), or an unexpected crash (full traceback printed) |
+| 130 | interrupted with Ctrl-C (128 + SIGINT); no report written |
 
 ### 10.4 Recommendation order (`_build_recommendations`, `core/harness.py:417-451`)
 
@@ -672,7 +674,9 @@ Mutation testing, DAST / fuzzing, hypothesis, the e2b sandbox, JS/TS test execut
 
 ### 16.2 Behavioural gaps
 
-- The test generator's repair call uses `json_output=False` (`agents/whitebox/test_generator.py:165`), so it is never judged invalid; code that stays broken is still reported as ERROR at run time, so it never becomes a pass.
+- The test generator's repair call uses `json_output=False` (`agents/whitebox/test_generator.py:165`), so it is never judged invalid and never re-asked; code that stays broken is still reported as ERROR at run time, so it never becomes a pass.
+- An unusable answer is re-asked `retry_invalid_output` times (default 1, `generate` in `core/llm_gateway.py`): the first attempt is booked `retried` (disclosed in the report, not an evidence gap) and only a still-unusable answer is booked `invalid`; every re-ask counts against `max_model_calls`.
+- `--changed-since` uses git's change list only; a touched file is reviewed whole, not just its changed symbols. A crash still writes no partial report (only an unwritable `--output` / `--sarif` is caught before the run starts).
 - `call_log` is written in thread-completion order, so the Execution Provenance table's row order can differ between runs; which calls fall back to simulation once the budget is exhausted also depends on timing.
 - Crashed threat-modeling and attack-synthesis batches do not go through `record_failure`: the former shows up as "no threats from that batch", the latter as an untested threat; both are still evidence gaps, but the reason is not in `call_log`.
 - A Next.js route in JS/TS is reviewed twice, as a function symbol and as a route symbol (`agents/whitebox/ast_extractor.py:430-462`).
@@ -721,6 +725,8 @@ Six items were fixed on 2026-10-08 (see `[Unreleased]` in `CHANGELOG.md`): crash
 | generated test code kept in the reports | live runs showed "passing" tests asserting the defect itself | larger reports | PR #31 |
 | versioned model ids, https only, `prompt_sha256` | provider swaps must be visible; code must not go in clear text to arbitrary hosts; verdicts must trace back to their inputs | — | PR #30 |
 | crashed batches booked as `invalid` calls; a single model family is an evidence gap | a missing review must not pass as "nothing found"; copies of one model agreeing is not corroboration | more INCONCLUSIVE | 2026-10-08 |
+| re-ask an unusable answer once before booking `invalid`; `extra_params` passthrough | in live runs most unusable answers were one-off format slips or thinking eating the budget, and each one made the whole run INCONCLUSIVE | one more call; the re-ask is booked `retried` | 0.3.0 |
+| `--include` / `--exclude` / `--changed-since`, `max_file_bytes`; run metadata and `schema_version` in reports | medium-sized projects beyond `max_files` were INCONCLUSIVE forever; a report did not say which version, commit or mode produced it | filtered-out files are not evidence gaps (the user asked) | 0.3.0 |
 
 ---
 

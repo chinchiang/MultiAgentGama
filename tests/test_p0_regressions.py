@@ -506,7 +506,8 @@ def test_unparseable_live_output_is_recorded_invalid(fake_live):
     resp = gateway.generate("whitebox_reviewer_claude", "sys", "prompt", required_keys=["findings"])
     assert not gateway.is_usable(resp)
     assert "findings" not in resp
-    assert [c.mode for c in gateway.call_log] == ["invalid"]
+    # The unusable answer is re-asked once (booked as `retried`), then booked as `invalid`
+    assert [c.mode for c in gateway.call_log] == ["retried", "invalid"]
 
 
 def test_missing_required_key_is_recorded_invalid(fake_live):

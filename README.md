@@ -264,7 +264,7 @@ export GEMINI_API_KEY="AIza..."          # Gemini
 
 預設模型見 `config/agents_config.yaml`（Claude `claude-sonnet-5-5`、GLM `zai/glm-5.3`、DeepSeek `deepseek/deepseek-v4-pro`、Gemini `gemini/gemini-3.8-flash`），每個模型可設定 `fallback_model`（預設分別為 `claude-haiku-4-5-20251001`、`zai/glm-5.3-flash`、`deepseek/deepseek-v4-flash`、`gemini/gemini-3.5-flash`），主模型重試 `max_retries` 次失敗後會改用它，報告會記錄實際使用的模型。每個模型的金鑰從 `api_key_env` 指定的環境變數讀取；以 AWS 憑證驗證的供應商（例如 Bedrock）可改設 `aws_profile_name`／`aws_region_name`。注意：待審程式碼會傳送給這裡列出的每一家模型供應商（已先遮蔽寫死的憑證），請只設定資料保留條款可接受的供應商。
 
-`global` 區段的其他上限（CLI 未覆蓋時生效）：`execution_mode`（`--mode` 會覆蓋）、`timeout_seconds`（單次模型請求，預設 180 秒）、`max_retries`（2）、`max_output_tokens`（16384，思考 token 也算在內；`models.<alias>.max_output_tokens` 可逐模型覆蓋）、`max_concurrent_calls`（每個階段的並行模型呼叫數，6）、`max_model_calls`、`max_files`、`sandbox_timeout_seconds`（120）與 `per_test_timeout_seconds`（30）。
+`global` 區段的其他上限（CLI 未覆蓋時生效）：`execution_mode`（`--mode` 會覆蓋）、`timeout_seconds`（單次模型請求，預設 180 秒）、`max_retries`（2）、`max_output_tokens`（16384，思考 token 也算在內；`models.<alias>.max_output_tokens` 可逐模型覆蓋）、`max_concurrent_calls`（每個階段的並行模型呼叫數，6）、`max_model_calls`、`max_files`、`max_file_bytes`、`include`／`exclude`、`retry_invalid_output`、`sandbox_timeout_seconds`（120）與 `per_test_timeout_seconds`（30）。
 
 任何 agent 都可透過 `model_alias` 指向任一已定義的模型；缺少 `model_alias` 的 agent 會解析為 `unconfigured`（hybrid 模式改用模擬，live 直接失敗）。手上只有一組金鑰也能跑 live 模式——例如只有 Gemini key 時，把 `agents` 區段中所有 `model_alias` 改成 `gemini` 即可（註：`gemini-2.5-flash` 已不再供新申請的 Google API 金鑰使用，請使用 3.x 版本）。但單一模型家族時驗證者不會評審自己模型的發現，沒有任何驗證票、發現不經過濾，且審查者少於兩個模型家族列為證據缺口，判定最好只到 `INCONCLUSIVE`（exit code 3），結果僅供參考。
 
@@ -299,7 +299,7 @@ python main.py --target examples --output vibe_harness_report.md
 
 `--target`（`-t`，預設 `examples`）可為目錄或單一檔案；`--output`（`-o`）預設 `vibe_harness_report.md`。`--desc`（`-d`）可提供系統的高階描述供威脅建模參考；`--config`（`-c`）指定其他設定檔；`--verbose`（`-v`）開啟除錯日誌。黑箱測試預設以 in-process 方式直接 import 目標呼叫；只有明確指定 `--base-url`（`-u`，例如 `--base-url http://localhost:8000`；只接受含主機名的 `http://`／`https://`，其他 scheme 為用法錯誤）且該位址有服務回應時，才會改發真實 HTTP 請求。不會自動探測任何預設位址，以免攻擊腳本打到本機上無關的服務；live HTTP 模式下，攻擊程式碼若指向 `--base-url` 以外的主機會被靜態拒絕。範例輸出見 [`docs/sample_report.md`](docs/sample_report.md)。
 
-規模與成本上限可從 CLI 直接覆蓋設定檔：`--max-files`（單次分析的檔案數上限，預設 50，須 ≥ 1；其餘檔案列為 skipped 並記為證據缺口）與 `--max-model-calls`（單次執行的模型呼叫數上限，預設不限制，`0` 亦表示不限制，負數為用法錯誤；重試與 fallback 不另計次；用完時 hybrid 退回模擬並列為證據缺口、live 直接失敗）。詳見 [`docs/configuration.md`](docs/configuration.md)。
+規模與成本上限可從 CLI 直接覆蓋設定檔：`--max-files`（單次分析的檔案數上限，預設 50，須 ≥ 1；其餘檔案列為 skipped 並記為證據缺口）與 `--max-model-calls`（單次執行的模型呼叫數上限，預設不限制，`0` 亦表示不限制，負數為用法錯誤；重試與 fallback 不另計次；用完時 hybrid 退回模擬並列為證據缺口、live 直接失敗）。檔案篩選：`--include GLOB`／`--exclude GLOB`（可重複，比對相對於 `--target` 的路徑或檔名，例如 `--exclude 'tests/*' --exclude '*.min.js'`；會覆蓋設定檔的 `include`／`exclude`），以及 `--changed-since <git ref>`（只分析相對該 ref 有變更的檔案，含未暫存與未追蹤，適合 PR 檢查：`--changed-since origin/main`）。超過 `max_file_bytes`（預設 1 MB）的檔案不分析並列為證據缺口。模型回應無法使用時會先重問一次（`retry_invalid_output`）再記為 `invalid`。`--output`／`--sarif` 的目錄不可寫時在任何模型呼叫前就以 exit 5 結束。詳見 [`docs/configuration.md`](docs/configuration.md)。
 
 報告格式可用 `--format md`（預設）或 `--format json`（機器可讀，含完整的 findings、威脅模型與測試結果，適合接 CI/CD）。兩種格式都會保存每個生成測試的程式碼：Markdown 附錄「Generated Test Code」以可收合區塊列出程式碼與其執行結果（已去除控制字元）；JSON 的 `generated_tests`／`blackbox_generated_tests` 則原封不動保存，可用來稽核或重跑。模型寫的測試也只是假設——「通過」的測試可能是在斷言缺陷本身（例如 `pytest.raises(KeyError)`），請一併檢查斷言是否描述正確的行為：
 
@@ -331,10 +331,11 @@ Exit code（依序判定）：
 | :--- | :--- | :--- |
 | `2` | BLOCKED_CRITICAL_RISK | 至少一個黑箱攻擊測試確認防禦被突破 |
 | `1` | NEEDS_FIXES | 至少一個白箱測試失敗（暴露缺陷），或確定性 AI 安全規則有 HIGH 以上的命中；此碼專屬於此判定，harness 自身的錯誤不會使用它 |
-| `3` | INCONCLUSIVE | 無失敗，但有證據缺口：使用模擬引擎、模型輸出無效或批次崩潰、`max_model_calls` 用盡、沒有審查者或審查者少於兩個模型家族、`max_files` 略過了檔案、非 Python 程式碼只做靜態審查、測試錯誤／未執行、確認的發現沒有模型生成的測試、威脅未測試、黑箱測試失敗但未分類為 exploit、檔案解析失敗、目標中植入了對 AI 審查者的指令或隱形字元（`VH-AI-008`／`009`）等；未知的判定字串也以此碼 fail closed |
+| `3` | INCONCLUSIVE | 無失敗，但有證據缺口：使用模擬引擎、模型輸出無效或批次崩潰、`max_model_calls` 用盡、沒有審查者或審查者少於兩個模型家族、`max_files` 略過了檔案、檔案超過 `max_file_bytes`、非 Python 程式碼只做靜態審查、測試錯誤／未執行、確認的發現沒有模型生成的測試、威脅未測試、黑箱測試失敗但未分類為 exploit、檔案解析失敗、目標中植入了對 AI 審查者的指令或隱形字元（`VH-AI-008`／`009`）等；未知的判定字串也以此碼 fail closed |
 | `0` | READY_TO_SHIP | 以上皆無 |
 | `4` | — | live 模式模型呼叫失敗 |
-| `5` | — | harness 設定或使用錯誤：`--target` 不存在、config 檔缺失或 YAML 損壞、`max_files`／`max_model_calls`／`max_concurrent_calls` 值不合法、沙盒不可用、CLI 用法錯誤、或未預期的內部錯誤（崩潰不會誤報成 verdict） |
+| `5` | — | harness 設定或使用錯誤：`--target` 不存在、config 檔缺失或 YAML 損壞、`max_files`／`max_model_calls`／`max_concurrent_calls` 等值不合法、沙盒不可用、`--output`／`--sarif` 不可寫、`--changed-since` 的 ref 無法解析、CLI 用法錯誤、或未預期的內部錯誤（崩潰不會誤報成 verdict） |
+| `130` | — | 被 Ctrl-C 中斷，未寫出報告 |
 
 ### 5. 運行工具包本身單元測試與靜態檢查
 

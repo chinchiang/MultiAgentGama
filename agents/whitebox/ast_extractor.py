@@ -1,14 +1,20 @@
 import ast
+import fnmatch
 import logging
 import os
 import re
 from bisect import bisect_right
-from typing import List, Optional, Tuple, Union
+from typing import Iterable, List, Optional, Tuple, Union
 from core.models import CodeSymbol
 
 logger = logging.getLogger("VibeHarness.ASTExtractor")
 
 DEFAULT_MAX_FILES = 50
+# A single source file above this size is skipped (reported as an evidence gap): minified bundles and
+# generated code are not reviewable, and the JS/TS lexer is a character-by-character Python loop
+DEFAULT_MAX_FILE_BYTES = 1_000_000
+# Directory names never descended into (plus any name starting with '.')
+SKIPPED_DIRS = {"venv", "__pycache__", "node_modules", "dist", "build", "site-packages"}
 SOURCE_EXTENSIONS = (".py", ".js", ".jsx", ".ts", ".tsx")
 # FastAPI/Starlette verbs plus Flask/Quart route decorators
 ROUTE_DECORATORS = {"get", "post", "put", "delete", "patch", "route", "api_route", "websocket"}
@@ -38,6 +44,11 @@ class ASTExtractor:
         # Files that could not be read/parsed, and files left out by the max_files cap
         self.parse_failures: List[str] = []
         self.skipped_files: List[str] = []
+        # Files left out because they exceed max_file_bytes
+        self.oversized_files: List[str] = []
+        # Source files dropped by include/exclude patterns or the only_files filter (not evidence gaps:
+        # the user asked for them to be left out)
+        self.filtered_out: int = 0
         # Source files within the max_files cap (the static AI-security rules scan exactly these)
         self.analyzed_files: List[str] = []
 
@@ -54,17 +65,50 @@ class ASTExtractor:
             return self._parse_js_ts_file(file_path)
         return []
 
-    def parse_directory(self, dir_path: str, max_files: int = DEFAULT_MAX_FILES) -> List[CodeSymbol]:
-        """Parses a directory tree (up to max_files source files) or a single source file."""
+    def parse_directory(
+        self,
+        dir_path: str,
+        max_files: int = DEFAULT_MAX_FILES,
+        include: Optional[List[str]] = None,
+        exclude: Optional[List[str]] = None,
+        only_files: Optional[Iterable[str]] = None,
+        max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+    ) -> List[CodeSymbol]:
+        """Parses a directory tree (up to max_files source files) or a single source file.
+
+        `include` / `exclude` are glob patterns matched against the path relative to dir_path (forward
+        slashes; `**` is not special, fnmatch's `*` already crosses directories), e.g. `src/**/*.py`
+        or `tests/*`. `only_files` restricts the walk to those absolute paths (e.g. the files a git diff
+        touched). Files larger than max_file_bytes are listed in `oversized_files` and not parsed.
+        """
         self.parse_failures, self.skipped_files, self.analyzed_files = [], [], []
+        self.oversized_files, self.filtered_out = [], 0
         if os.path.isfile(dir_path):
             if dir_path.lower().endswith(SOURCE_EXTENSIONS):
+                if self._too_large(dir_path, max_file_bytes):
+                    self.oversized_files = [dir_path]
+                    return []
                 self.analyzed_files = [dir_path]
             return self.parse_file(dir_path)
         source_files: List[str] = []
+        wanted = {os.path.normcase(os.path.abspath(p)) for p in only_files} if only_files is not None else None
         for root, dirs, files in os.walk(dir_path):
-            dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in ["venv", "__pycache__", "node_modules", "dist", "build"])
-            source_files.extend(os.path.join(root, f) for f in sorted(files) if f.lower().endswith(SOURCE_EXTENSIONS))
+            dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in SKIPPED_DIRS)
+            for f in sorted(files):
+                if not f.lower().endswith(SOURCE_EXTENSIONS):
+                    continue
+                full = os.path.join(root, f)
+                rel = os.path.relpath(full, dir_path).replace(os.sep, "/")
+                if (wanted is not None and os.path.normcase(os.path.abspath(full)) not in wanted) \
+                        or not self._selected(rel, include, exclude):
+                    self.filtered_out += 1
+                    continue
+                if self._too_large(full, max_file_bytes):
+                    self.oversized_files.append(full)
+                    continue
+                source_files.append(full)
+        if self.oversized_files:
+            logger.warning(f"{len(self.oversized_files)} source file(s) exceed max_file_bytes ({max_file_bytes}) and were skipped.")
 
         self.skipped_files = source_files[max_files:]
         if self.skipped_files:
@@ -74,6 +118,24 @@ class ASTExtractor:
         for full_path in self.analyzed_files:
             all_symbols.extend(self.parse_file(full_path))
         return all_symbols
+
+    @staticmethod
+    def _selected(rel_path: str, include: Optional[List[str]], exclude: Optional[List[str]]) -> bool:
+        """include patterns (if any) must match the relative path or its basename; exclude patterns win."""
+        name = rel_path.rsplit("/", 1)[-1]
+        if include and not any(fnmatch.fnmatch(rel_path, p) or fnmatch.fnmatch(name, p) for p in include):
+            return False
+        if exclude and any(fnmatch.fnmatch(rel_path, p) or fnmatch.fnmatch(name, p)
+                           or fnmatch.fnmatch(rel_path, p.rstrip("/") + "/*") for p in exclude):
+            return False
+        return True
+
+    @staticmethod
+    def _too_large(path: str, max_file_bytes: int) -> bool:
+        try:
+            return max_file_bytes > 0 and os.path.getsize(path) > max_file_bytes
+        except OSError:
+            return False
 
     def _parse_python_file(self, file_path: str) -> List[CodeSymbol]:
         try:

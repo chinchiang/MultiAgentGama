@@ -31,6 +31,14 @@ DEFAULT_MAX_OUTPUT_TOKENS = 16384
 
 
 BUDGET_EXHAUSTED_REASON = "max_model_calls budget exhausted"
+# How many times an unusable live answer (not JSON, missing keys, empty) is re-asked before it is
+# booked as `invalid`; each re-ask is a real call that counts against max_model_calls
+DEFAULT_RETRY_INVALID_OUTPUT = 1
+# Appended to the user prompt of a re-ask so the model knows what was wrong with its first answer
+_RETRY_SUFFIX = (
+    "\n\nYour previous answer could not be used ({reason}). Answer again with ONLY the JSON object described "
+    "in the instructions: no prose, no code fence, and include every required key."
+)
 
 # Agents missing from the config resolve to this alias, which has no model and no key: hybrid mode
 # simulates them and live mode fails loudly, instead of silently routing them to some real provider
@@ -80,6 +88,8 @@ class LLMGateway:
         ) or DEFAULT_MAX_CONCURRENT_CALLS
         self.live_calls_attempted = 0
         self._budget_lock = threading.Lock()
+        retries = global_cfg.get("retry_invalid_output", DEFAULT_RETRY_INVALID_OUTPUT)
+        self.retry_invalid_output = 0 if retries is None else retries
         self._validate_endpoints()
         self._validate_settings()
 
@@ -119,6 +129,11 @@ class LLMGateway:
         for agent_id, meta in self.agents_config.items():
             if isinstance(meta, dict) and meta.get("temperature") is not None:
                 self._number(meta["temperature"], f"agents.{agent_id}.temperature", minimum=0, maximum=2)
+        self._number(self.retry_invalid_output, "global.retry_invalid_output", minimum=0, maximum=5, integer=True)
+        for alias, info in self.models_config.items():
+            extra = info.get("extra_params") if isinstance(info, dict) else None
+            if extra is not None and (not isinstance(extra, dict) or not all(isinstance(k, str) for k in extra)):
+                raise ConfigError(f"models.{alias}.extra_params must be a mapping of litellm parameter names, got {extra!r}")
 
     @staticmethod
     def _number(value: Any, key: str, minimum: float, maximum: Optional[float] = None, integer: bool = False) -> None:
@@ -162,6 +177,11 @@ class LLMGateway:
     @property
     def invalid_calls(self) -> List[AgentCallRecord]:
         return [rec for rec in self.call_log if rec.mode == "invalid"]
+
+    @property
+    def retried_calls(self) -> List[AgentCallRecord]:
+        """First attempts whose answer was unusable and that were re-asked (disclosed, not an evidence gap)."""
+        return [rec for rec in self.call_log if rec.mode == "retried"]
 
     @staticmethod
     def is_simulated(resp: Dict[str, Any]) -> bool:
@@ -229,18 +249,25 @@ class LLMGateway:
 
         if fallback_reason is None:
             logger.info(f"Dispatching [{agent_id}] to Live LLM: {model_name} (Alias: {model_alias})")
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ]
-            try:
-                raw_text, model_name, finish_reason = self._complete(model_info, model_name, messages, temperature)
-            except Exception as e:
-                fallback_reason = f"live invocation failed: {self._safe_reason(str(e))}"
-                if self.execution_mode == "live":
-                    raise LLMGatewayError(f"[{agent_id}] {model_name}: {fallback_reason}") from e
-                logger.warning(f"Live invocation failed for {agent_id} ({model_name}): {fallback_reason}. Falling back to simulation logic.")
-            else:
+            # An unusable answer (prose instead of JSON, a missing key, an empty response from a safety
+            # filter) is re-asked up to retry_invalid_output times, naming the problem, before it is
+            # booked as `invalid`: in live runs most such answers are one-off format slips, and each
+            # one used to turn the whole run INCONCLUSIVE. Re-asks are real calls against the budget.
+            attempt = 0
+            prompt_text = user_prompt
+            while True:
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt_text}
+                ]
+                try:
+                    raw_text, model_name, finish_reason = self._complete(model_info, model_name, messages, temperature)
+                except Exception as e:
+                    fallback_reason = f"live invocation failed: {self._safe_reason(str(e))}"
+                    if self.execution_mode == "live":
+                        raise LLMGatewayError(f"[{agent_id}] {model_name}: {fallback_reason}") from e
+                    logger.warning(f"Live invocation failed for {agent_id} ({model_name}): {fallback_reason}. Falling back to simulation logic.")
+                    break
                 # Only the network call is guarded above: a bug in parsing/validation/booking
                 # must fail loudly instead of being masked as a fallback to simulation.
                 result = self._clean_and_parse_json(raw_text) if json_output else {"raw": raw_text}
@@ -259,6 +286,12 @@ class LLMGateway:
                         f"output truncated at the max_output_tokens limit ({self._max_output_tokens(model_info)}); "
                         f"{reason}. Raise max_output_tokens for this model (reasoning tokens count against it)"
                     )
+                if json_output and attempt < self.retry_invalid_output and self._reserve_live_call():
+                    attempt += 1
+                    logger.warning(f"[{agent_id}] {model_name} returned unusable output ({reason}); re-asking ({attempt}/{self.retry_invalid_output})")
+                    self._record(agent_id, model_alias, model_name, "retried", reason, prompt_sha256=prompt_hash)
+                    prompt_text = user_prompt + _RETRY_SUFFIX.format(reason=reason)
+                    continue
                 logger.error(f"[{agent_id}] {model_name} returned unusable output: {reason}")
                 self._record(agent_id, model_alias, model_name, "invalid", reason, prompt_sha256=prompt_hash)
                 return {PROVENANCE_KEY: {"mode": "invalid", "model": model_name, "reason": reason}}
@@ -306,6 +339,9 @@ class LLMGateway:
                 kwargs["aws_region_name"] = model_info["aws_region_name"]
         if model_info.get("api_base"):
             kwargs["api_base"] = model_info["api_base"]
+        # Per-model litellm passthrough, e.g. {thinking: {type: disabled}} or {reasoning_effort: low} so a
+        # reasoning model does not spend the whole output budget thinking (validated as a mapping at start-up)
+        kwargs.update(model_info.get("extra_params") or {})
 
         candidates = [model_name] + ([model_info["fallback_model"]] if model_info.get("fallback_model") else [])
         last_error: Optional[Exception] = None

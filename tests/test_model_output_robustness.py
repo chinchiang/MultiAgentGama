@@ -443,3 +443,30 @@ def test_garbage_json_object_is_recorded_as_invalid_call(fake_live):
     assert gw.call_log[-1].mode == "invalid"
     assert "none of the expected" in gw.call_log[-1].reason
 
+
+
+def test_reports_carry_run_metadata_and_a_schema_version(tmp_path):
+    """A report read later must say which harness version, mode and target revision produced it."""
+    import json
+    from core import __version__
+    from core.harness import VibeHarnessCommander
+    target = tmp_path / "t"
+    target.mkdir()
+    (target / "m.py").write_text("def f(x):\n    return x\n")
+    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
+    summary = commander.run_full_pipeline(
+        target_dir=str(target), output_report_path=str(tmp_path / "r.json"), output_format="json",
+        output_sarif_path=str(tmp_path / "r.sarif"),
+    )
+    run = summary.run
+    assert run and run.harness_version == __version__ and run.execution_mode == "mock"
+    assert run.sandbox_provider == "local_subprocess" and run.config_path == os.path.abspath(CONFIG)
+    assert run.generated_at.endswith("+00:00")
+    payload = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "1" and payload["summary"]["run"]["harness_version"] == __version__
+    sarif = json.loads((tmp_path / "r.sarif").read_text(encoding="utf-8"))
+    assert sarif["runs"][0]["properties"]["execution_mode"] == "mock" and "generated_at" in sarif["runs"][0]["properties"]
+    commander.run_full_pipeline(target_dir=str(target), output_report_path=str(tmp_path / "r.md"))
+    md = (tmp_path / "r.md").read_text(encoding="utf-8")
+    assert f"by VibeHarness-MAS {__version__} (mode `mock`, sandbox `local_subprocess`)" in md
+    assert "**Target revision**:" in md and "**Config**:" in md

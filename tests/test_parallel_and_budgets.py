@@ -337,3 +337,151 @@ def test_cli_rejects_invalid_limits_with_the_usage_exit_code(monkeypatch, tmp_pa
     with pytest.raises(SystemExit) as exit_info:
         main.main()
     assert exit_info.value.code == main.USAGE_ERROR_EXIT_CODE
+
+
+# --- Re-asking after an unusable answer -------------------------------------------------------
+
+def test_unusable_answer_is_re_asked_once_and_the_retry_can_succeed(fake_live):
+    """One-off format slips (prose around the JSON, a missing key) used to turn the whole run
+    INCONCLUSIVE; the gateway now re-asks once, naming the problem, before booking `invalid`."""
+    answers = iter(["Sure! Here is my analysis without any JSON.", '{"findings": []}'])
+    prompts = []
+
+    def responder(system, user):
+        prompts.append(user)
+        return next(answers)
+
+    fake = fake_live(responder)
+    gw = LLMGateway(CONFIG, execution_mode="live")
+    resp = gw.generate("whitebox_reviewer_claude", "sys", "audit this", required_keys=["findings"])
+    assert gw.is_usable(resp) and resp["findings"] == []
+    assert [c.mode for c in gw.call_log] == ["retried", "live"]
+    assert "could not be used (response is not valid JSON)" in prompts[1] and prompts[1].startswith("audit this")
+    assert len(fake.calls) == 2 and gw.live_calls_attempted == 2
+    assert not gw.invalid_calls and len(gw.retried_calls) == 1
+
+
+def test_re_ask_respects_the_call_budget_and_is_configurable(fake_live, tmp_path):
+    fake = fake_live(lambda s, u: "not json")
+    gw = LLMGateway(CONFIG, execution_mode="hybrid")
+    gw.max_model_calls = 1
+    gw.generate("whitebox_reviewer_claude", "sys", "u", required_keys=["findings"])
+    # No budget left for a re-ask: booked invalid after the single attempt
+    assert [c.mode for c in gw.call_log] == ["invalid"] and len(fake.calls) == 1
+    gw = LLMGateway(_config(tmp_path, retry_invalid_output=0), execution_mode="hybrid")
+    gw.generate("whitebox_reviewer_claude", "sys", "u", required_keys=["findings"])
+    assert [c.mode for c in gw.call_log] == ["invalid"]
+    gw = LLMGateway(_config(tmp_path, retry_invalid_output=2), execution_mode="hybrid")
+    gw.generate("whitebox_reviewer_claude", "sys", "u", required_keys=["findings"])
+    assert [c.mode for c in gw.call_log] == ["retried", "retried", "invalid"]
+    # Non-JSON calls (the test-generator heal prompt) are never re-asked
+    gw = LLMGateway(CONFIG, execution_mode="live")
+    gw.generate("whitebox_test_generator", "sys", "u", json_output=False)
+    assert [c.mode for c in gw.call_log] == ["live"]
+    with pytest.raises(ConfigError, match="retry_invalid_output"):
+        LLMGateway(_config(tmp_path, retry_invalid_output="twice"))
+
+
+def test_extra_params_are_passed_to_litellm_and_validated(fake_live, tmp_path):
+    with open(CONFIG, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    claude = dict(cfg["models"]["claude"], extra_params={"thinking": {"type": "disabled"}, "reasoning_effort": "low"})
+    good = dict(cfg, models=dict(cfg["models"], claude=claude))
+    path = tmp_path / "good.yaml"
+    path.write_text(yaml.safe_dump(good), encoding="utf-8")
+    fake = fake_live(lambda s, u: '{"findings": []}')
+    LLMGateway(str(path), execution_mode="live").generate("whitebox_reviewer_claude", "s", "u", required_keys=["findings"])
+    assert fake.calls[0]["thinking"] == {"type": "disabled"} and fake.calls[0]["reasoning_effort"] == "low"
+    bad = dict(cfg, models=dict(cfg["models"], claude=dict(cfg["models"]["claude"], extra_params=["thinking"])))
+    path.write_text(yaml.safe_dump(bad), encoding="utf-8")
+    with pytest.raises(ConfigError, match="extra_params"):
+        LLMGateway(str(path), execution_mode="mock")
+
+
+# --- File selection ---------------------------------------------------------------------------
+
+def _tree(tmp_path):
+    for rel in ("src/app.py", "src/util.py", "tests/test_app.py", "vendor/lib.py"):
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f"def f_{p.stem}(x):\n    return x\n")
+    return tmp_path
+
+
+def test_include_and_exclude_globs_select_files(tmp_path):
+    from agents.whitebox.ast_extractor import ASTExtractor
+    root = _tree(tmp_path)
+    ex = ASTExtractor()
+    names = lambda: sorted(os.path.relpath(f, root).replace(os.sep, "/") for f in ex.analyzed_files)  # noqa: E731
+    ex.parse_directory(str(root), include=["src/*"])
+    assert names() == ["src/app.py", "src/util.py"] and ex.filtered_out == 2
+    ex.parse_directory(str(root), exclude=["tests/*", "vendor"])
+    assert names() == ["src/app.py", "src/util.py"]
+    ex.parse_directory(str(root), include=["*.py"], exclude=["test_*.py"])
+    assert names() == ["src/app.py", "src/util.py", "vendor/lib.py"]
+    ex.parse_directory(str(root), only_files=[str(root / "src" / "util.py")])
+    assert names() == ["src/util.py"] and ex.filtered_out == 3
+
+
+def test_oversized_files_are_skipped_and_disclosed(tmp_path):
+    from agents.whitebox.ast_extractor import ASTExtractor
+    root = _tree(tmp_path)
+    (root / "src" / "bundle.min.js").write_text("var a=1;" * 2000)
+    ex = ASTExtractor()
+    ex.parse_directory(str(root), max_file_bytes=1000)
+    assert [os.path.basename(p) for p in ex.oversized_files] == ["bundle.min.js"]
+    assert "bundle.min.js" not in {os.path.basename(p) for p in ex.analyzed_files}
+    from core.harness import VibeHarnessCommander
+    commander = VibeHarnessCommander(config_path=_config(tmp_path, max_file_bytes=1000), execution_mode="mock")
+    summary = commander.run_full_pipeline(target_dir=str(root), output_report_path=str(tmp_path / "r.md"))
+    assert any("exceed max_file_bytes" in r and "bundle.min.js" in r for r in summary.inconclusive_reasons)
+    with pytest.raises(ConfigError, match="max_file_bytes"):
+        VibeHarnessCommander(config_path=_config(tmp_path, max_file_bytes=-5), execution_mode="mock")
+
+
+def test_cli_file_filters_override_config(monkeypatch, tmp_path):
+    import main
+    seen = {}
+
+    def run(self, **kwargs):
+        seen.update(include=self.include_patterns, exclude=self.exclude_patterns, since=self.changed_since)
+        from core.models import VibeHarnessSummary
+        return VibeHarnessSummary(
+            overall_status="INCONCLUSIVE", total_whitebox_findings=0, confirmed_whitebox_bugs=0,
+            whitebox_tests_passed=0, whitebox_tests_failed=0, total_threats_modeled=0,
+            critical_threats_count=0, blackbox_tests_passed=0, blackbox_security_breaches=0,
+        )
+
+    monkeypatch.setattr(main.VibeHarnessCommander, "run_full_pipeline", run)
+    cfg = _config(tmp_path, include=["src/*"], exclude=["vendor/*"])
+    monkeypatch.setattr(sys, "argv", ["vibeharness", "-t", str(tmp_path), "-m", "mock", "-c", cfg,
+                                      "--exclude", "tests/*", "--exclude", "*.min.js", "--changed-since", "HEAD~1"])
+    with pytest.raises(SystemExit):
+        main.main()
+    assert seen == {"include": ["src/*"], "exclude": ["tests/*", "*.min.js"], "since": "HEAD~1"}
+
+
+def test_changed_since_selects_git_changes_and_rejects_bad_refs(tmp_path):
+    import subprocess
+    from core.harness import VibeHarnessCommander
+    root = _tree(tmp_path)
+    git = lambda *a: subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)  # noqa: E731
+    git("init", "-q", ".")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "add", "-A")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "base")
+    (root / "src" / "app.py").write_text("def f_app(x, y):\n    return x + y\n")  # modified, unstaged
+    (root / "src" / "new.py").write_text("def g(x):\n    return x\n")             # untracked
+    (root / "vendor" / "lib.py").write_text("def h(x):\n    return x\n")           # modified, outside target
+    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
+    changed = commander.changed_files(str(root / "src"), "HEAD")
+    assert [os.path.basename(p) for p in changed] == ["app.py", "new.py"]
+    commander.changed_since = "HEAD"
+    summary = commander.run_full_pipeline(target_dir=str(root / "src"), output_report_path=str(tmp_path / "r.md"))
+    assert summary.run is not None and summary.run.file_filters == ["changed-since=HEAD (2 file(s))"]
+    assert summary.run.target_git_commit and summary.run.target_git_dirty is True
+    with pytest.raises(ValueError, match="cannot be resolved"):
+        commander.changed_files(str(root / "src"), "no-such-ref")
+    with pytest.raises(ValueError, match="inside a git repository"):
+        no_repo = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
+        no_repo._git = lambda args, cwd: None  # type: ignore[method-assign]
+        no_repo.changed_files(str(root / "src"), "HEAD")

@@ -71,7 +71,7 @@ flowchart TD
     EXE1 --> TM
     SAST --> GATE
     EXE1 --> GATE
-    EXE2 --> GATE["Phase 6 Quality Gate<br/>16 項 evidence gap 檢查<br/>BLOCKED / NEEDS_FIXES / INCONCLUSIVE / READY"]
+    EXE2 --> GATE["Phase 6 Quality Gate<br/>17 項 evidence gap 檢查<br/>BLOCKED / NEEDS_FIXES / INCONCLUSIVE / READY"]
     GATE --> OUT["ReportGenerator<br/>Markdown / JSON / SARIF 2.1.0"]
 ```
 
@@ -141,7 +141,7 @@ flowchart TD
 
 ### Phase 6：閘門與報告（`core/harness.py:255-415`）
 
-- 收集 16 項 evidence gap（第 10 章），判定，產生建議，組 `VibeHarnessSummary`，寫出 Markdown 或 JSON，另可寫 SARIF。
+- 收集 17 項 evidence gap（第 10 章），判定，產生建議，組 `VibeHarnessSummary`，寫出 Markdown 或 JSON，另可寫 SARIF。
 - SARIF 不帶測試程式碼（`core/harness.py:389-390`）；Markdown 與 JSON 會。
 
 ### 失敗處理的共同模式
@@ -491,6 +491,7 @@ flowchart TD
 | 8 | 301-302 | 沒有抽到任何符號 | Phase 1 |
 | 9 | 303-306 | 有檔案解析失敗 | `parse_failures` |
 | 10 | 307-310 | 有檔案超過 `max_files` 被跳過 | `skipped_files` |
+| 10b | — | 有檔案超過 `max_file_bytes` 未分析（0.3.0 新增；行號見目前程式碼） | `oversized_files` |
 | 11 | 311-315 | 白箱或黑箱測試 ERROR、SKIPPED 或沒跑 | `wb_errored + bb_errored` |
 | 12 | 316-321 | 有非 Python 語言，只做了靜態審查（沙盒只執行 Python） | `detected_langs` |
 | 13 | 322-327 | 黑箱測試 FAILED 但不符合 exploit 判定（證據模糊） | `bb_failed_unclassified` |
@@ -507,7 +508,8 @@ flowchart TD
 | 2 | BLOCKED_CRITICAL_RISK |
 | 3 | INCONCLUSIVE，以及任何不認得的判定字串（fail closed） |
 | 4 | live 模式模型呼叫失敗（`LLMGatewayError`） |
-| 5 | 設定或用法錯誤：`--target` 不存在、`ConfigError`、`SandboxUnavailableError`、CLI 誤用（argparse 的 exit 2 被改成 5，避免與 BLOCKED 撞號）、未預期的崩潰（印完整 traceback） |
+| 5 | 設定或用法錯誤：`--target` 不存在、`ConfigError`、`SandboxUnavailableError`、`--output`／`--sarif` 不可寫、`--changed-since` 的 ref 無法解析、CLI 誤用（argparse 的 exit 2 被改成 5，避免與 BLOCKED 撞號）、未預期的崩潰（印完整 traceback） |
+| 130 | Ctrl-C 中斷（128 + SIGINT），未寫出報告 |
 
 ### 10.4 建議的排序（`_build_recommendations`，`core/harness.py:417-451`）
 
@@ -672,7 +674,9 @@ mutation testing、DAST／fuzzing、hypothesis、e2b 沙盒、JS/TS 測試執行
 
 ### 16.2 行為上的缺口
 
-- 測試生成的修復呼叫用 `json_output=False`（`agents/whitebox/test_generator.py:165`），永遠不會被判 invalid；修不好的程式碼仍會在執行時報 ERROR，所以不會變成「通過」。
+- 測試生成的修復呼叫用 `json_output=False`（`agents/whitebox/test_generator.py:165`），永遠不會被判 invalid，也不會被重問；修不好的程式碼仍會在執行時報 ERROR，所以不會變成「通過」。
+- 模型回應無法使用時會重問 `retry_invalid_output` 次（預設 1，`core/llm_gateway.py` 的 `generate`）：第一次嘗試記為 `retried`（報告揭露、不是 evidence gap），仍失敗才記 `invalid`；每次重問都扣 `max_model_calls`。
+- `--changed-since` 只看 git 的變更清單；被改到的檔案會整個送審，不會只送變更的符號。崩潰時仍不會寫出部分報告（只有 `--output`／`--sarif` 不可寫會在開跑前擋下）。
 - `call_log` 依執行緒完成順序寫入，Execution Provenance 表的列序每次可能不同；預算用完時哪幾次呼叫改走模擬也取決於時序。
 - 威脅建模與攻擊合成的批次崩潰不經 `record_failure`：前者的缺席以「該批沒有威脅」呈現，後者以 untested 威脅呈現，都仍是 evidence gap，但原因不會寫進 `call_log`。
 - JS/TS 的 Next.js route 會同時以 function 與 route 兩個符號送審（`agents/whitebox/ast_extractor.py:430-462`）。
@@ -721,6 +725,8 @@ mutation testing、DAST／fuzzing、hypothesis、e2b 沙盒、JS/TS 測試執行
 | 報告保存生成測試的程式碼 | live 實測發現「通過」的測試在斷言缺陷本身 | 報告變大 | PR #31 |
 | 帶版本號的模型 id、https-only、`prompt_sha256` | 供應商換模型要可見；程式碼不能明文送到任意主機；判定要能對回輸入 | — | PR #30 |
 | 批次崩潰記成 `invalid` 呼叫；單一模型家族是 evidence gap | 缺席的審查不能以「沒有發現」通過；同一模型的副本彼此同意不是佐證 | 更多 INCONCLUSIVE | 2026-10-08 |
+| 無法使用的回應先重問一次再記 `invalid`；`extra_params` 透傳 | live 實測中多數無效回應是一次性的格式失誤或思考吃光額度，每一次都讓整輪 INCONCLUSIVE | 多一次呼叫的成本；重問紀錄為 `retried` | 0.3.0 |
+| `--include`／`--exclude`／`--changed-since`、`max_file_bytes`；報告帶 run metadata 與 `schema_version` | 中型以上專案超過 `max_files` 就永遠 INCONCLUSIVE；報告讀起來不知道是哪個版本、哪個 commit、哪種模式產生的 | 篩掉的檔案不算 evidence gap（使用者明示） | 0.3.0 |
 
 ---
 

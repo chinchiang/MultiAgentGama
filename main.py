@@ -14,6 +14,8 @@ from agents.blackbox.scenario_builder import validate_base_url
 # Exit codes reserved for harness/usage problems. Verdict codes (0/1/2/3/4) are documented in
 # the README; these must never collide with them, or CI would misread a crashed run as a verdict.
 USAGE_ERROR_EXIT_CODE = 5
+# Ctrl-C: the conventional 128 + SIGINT, distinct from every verdict and usage code
+INTERRUPTED_EXIT_CODE = 130
 
 
 class _UsageErrorParser(argparse.ArgumentParser):
@@ -54,6 +56,16 @@ def verdict_exit_code(overall_status: str) -> int:
         return 0
     # INCONCLUSIVE and any unrecognized status
     return 3
+
+
+def _writable_location(path: str) -> bool:
+    """True when `path` can be created or overwritten: its directory exists and is writable."""
+    target = os.path.abspath(path)
+    if os.path.isdir(target):
+        return False
+    if os.path.exists(target):
+        return os.access(target, os.W_OK)
+    return os.access(os.path.dirname(target) or os.curdir, os.W_OK)
 
 
 def main():
@@ -106,6 +118,29 @@ def main():
         help="Override global.max_model_calls: cost guard on live model invocations per run (0 = unlimited)"
     )
     parser.add_argument(
+        "--include",
+        action="append",
+        metavar="GLOB",
+        default=None,
+        help="Only analyze source files whose path (relative to --target) or name matches this glob; "
+             "repeatable. Overrides global.include from the config"
+    )
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        metavar="GLOB",
+        default=None,
+        help="Skip source files whose path or name matches this glob (e.g. 'tests/*', 'vendor/*'); "
+             "repeatable. Overrides global.exclude from the config"
+    )
+    parser.add_argument(
+        "--changed-since",
+        metavar="GIT_REF",
+        default=None,
+        help="Only analyze files under --target that changed since this git ref (committed, staged, "
+             "unstaged or untracked), e.g. 'origin/main' in a PR check; the target must be inside a git repo"
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable debug logging"
@@ -145,12 +180,22 @@ def main():
             args.base_url = validate_base_url(args.base_url)
         except ValueError as e:
             parser.error(f"--base-url: {e}")
+    # Fail before any model call is paid for, not after the whole pipeline ran
+    for flag, path in (("--output", args.output), ("--sarif", args.sarif)):
+        if path is not None and not _writable_location(path):
+            parser.error(f"{flag}: cannot write to '{path}' (directory missing or not writable)")
     try:
         commander = VibeHarnessCommander(config_path=args.config, execution_mode=args.mode)
         if args.max_files is not None:
             commander.max_files = args.max_files
         if args.max_model_calls is not None:
             commander.gateway.max_model_calls = args.max_model_calls or None
+        if args.include is not None:
+            commander.include_patterns = args.include
+        if args.exclude is not None:
+            commander.exclude_patterns = args.exclude
+        if args.changed_since:
+            commander.changed_since = args.changed_since
     except (ConfigError, ValueError, SandboxUnavailableError) as e:
         print(f"Error: harness configuration problem: {e}", file=sys.stderr)
         sys.exit(USAGE_ERROR_EXIT_CODE)
@@ -166,6 +211,13 @@ def main():
     except LLMGatewayError as e:
         print(f"Error: live model invocation failed in strict 'live' mode: {e}", file=sys.stderr)
         sys.exit(4)
+    except ValueError as e:
+        # e.g. an unresolvable --changed-since ref: a usage problem found once the run started
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(USAGE_ERROR_EXIT_CODE)
+    except KeyboardInterrupt:
+        print("Interrupted; no report was written (in-flight model calls may take a moment to stop).", file=sys.stderr)
+        sys.exit(INTERRUPTED_EXIT_CODE)
     except Exception as e:
         # A crashed run must never fall through to exit code 1, which CI reads as NEEDS_FIXES
         traceback.print_exc(file=sys.stderr)

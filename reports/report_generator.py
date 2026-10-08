@@ -30,6 +30,8 @@ SARIF_RULE_WHITEBOX = "vibeharness/whitebox-finding"
 SARIF_RULE_BLACKBOX = "vibeharness/blackbox-breach"
 # Deterministic AI-security rules keep their own stable ids: vibeharness/VH-AI-001, ...
 SARIF_RULE_STATIC_PREFIX = "vibeharness/"
+# Version of the JSON report layout (summary / whitebox / threat_model / blackbox_* keys)
+JSON_SCHEMA_VERSION = "1"
 
 
 class ReportGenerator:
@@ -56,6 +58,17 @@ class ReportGenerator:
         md.append(f"**Target System Path**: `{os.path.abspath(target_path)}`  ")
         md.append("**Orchestrator**: Commander Harness Agent  ")
         md.append(f"**Overall Status**: `{summary.overall_status}`  ")
+        if summary.run:
+            run = summary.run
+            revision = run.target_git_commit or "not a git repository"
+            if run.target_git_commit and run.target_git_dirty:
+                revision += " (uncommitted changes)"
+            md.append(f"**Generated**: {run.generated_at} by VibeHarness-MAS {run.harness_version} "
+                      f"(mode `{run.execution_mode}`, sandbox `{run.sandbox_provider}`)  ")
+            md.append(f"**Target revision**: `{self._cell(revision)}`  ")
+            md.append(f"**Config**: `{self._cell(run.config_path)}`  ")
+            if run.file_filters:
+                md.append(f"**File selection**: {self._code_span('; '.join(run.file_filters))}  ")
         md.append("\n---\n")
 
         simulated_calls = [c for c in summary.agent_calls if c.mode == "simulated"]
@@ -123,7 +136,8 @@ class ReportGenerator:
                 key = (c.agent_id, c.model_name, c.mode, c.reason or "")
                 grouped[key] = grouped.get(key, 0) + 1
             for (agent_id, model_name, mode, reason), count in grouped.items():
-                mode_label = {"live": "🟢 live", "simulated": "🟡 simulated"}.get(mode, "🔴 invalid output")
+                mode_label = {"live": "🟢 live", "simulated": "🟡 simulated",
+                              "retried": "🟠 unusable, re-asked"}.get(mode, "🔴 invalid output")
                 md.append(f"| `{self._cell(agent_id)}` | `{self._cell(model_name)}` | {mode_label} | {count} | {self._cell(reason) or '-'} |")
         else:
             md.append("No agent invocations were recorded.")
@@ -240,6 +254,8 @@ class ReportGenerator:
         Generated test code is stored verbatim, so a run can be audited and its tests re-executed."""
         payload = {
             "tool": "vibeharness-mas",
+            # Bump when a field is renamed/removed or its meaning changes; additions keep the version
+            "schema_version": JSON_SCHEMA_VERSION,
             "target_path": os.path.abspath(target_path),
             "summary": summary.model_dump(),
             "whitebox": {
@@ -396,6 +412,8 @@ class ReportGenerator:
                 "properties": {
                     "overall_status": summary.overall_status,
                     "target": os.path.abspath(target_path),
+                    **({"generated_at": summary.run.generated_at, "execution_mode": summary.run.execution_mode,
+                        "target_git_commit": summary.run.target_git_commit or ""} if summary.run else {}),
                 },
             }],
         }

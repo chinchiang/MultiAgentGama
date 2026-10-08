@@ -178,9 +178,24 @@ class StaticFinding(BaseModel):
     affects_review_integrity: bool = False
 
 
+class RunMetadata(BaseModel):
+    """What produced this report: needed to tie a verdict back to a harness version, a mode and a
+    revision of the target when the report is read later (audit trail)."""
+    generated_at: str  # ISO 8601, UTC
+    harness_version: str
+    execution_mode: str  # live / hybrid / mock
+    config_path: str
+    sandbox_provider: str
+    target_path: str
+    target_git_commit: Optional[str] = None  # HEAD of the repository containing the target, if any
+    target_git_dirty: Optional[bool] = None  # uncommitted changes under the target at run time
+    file_filters: List[str] = Field(default_factory=list)  # include/exclude/changed-since actually applied
+
+
 class VibeHarnessSummary(BaseModel):
     """Top-level assessment summary produced by the Commander Harness."""
     overall_status: str  # "READY_TO_SHIP", "NEEDS_FIXES", "BLOCKED_CRITICAL_RISK", "INCONCLUSIVE"
+    run: Optional[RunMetadata] = None
     total_whitebox_findings: int  # raw reviewer reports, before duplicates are merged
     distinct_whitebox_findings: Optional[int] = None
     confirmed_whitebox_bugs: int

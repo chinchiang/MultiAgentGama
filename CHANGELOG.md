@@ -28,6 +28,14 @@
 - **不支援的取樣參數改為丟棄而非失敗**（live 實測發現）：Bedrock 上的 Claude Opus 5.5 只接受 `temperature=1`，過去每次呼叫都失敗並退回備援模型；改傳 `drop_params`。另外 Bedrock 等以 AWS 憑證驗證的模型可設 `aws_profile_name`／`aws_region_name` 取代 `api_key_env`；空白回應會記錄 `finish_reason`（例如安全過濾的 `content_filter`）
 - **報告保存生成的測試程式碼**（稽核軌跡）：Markdown 新增附錄「Generated Test Code」，以可收合區塊列出每個白箱／黑箱測試的程式碼、來源發現／威脅與執行結果；JSON 新增 `generated_tests`／`blackbox_generated_tests`，原封不動保存程式碼。live 實測發現部分「通過」的測試其實是在斷言缺陷本身，沒有程式碼就無法稽核。程式碼區塊的 fence 會依內容中最長的反引號自動加長（原本 PoC 區塊遇到四個反引號會被跳出，一併修正）
 
+### 新增（功能改善）
+- **模型回應無法使用時先重問**：非 JSON、缺欄位或空回應的 live 回應過去直接記 `invalid`、整輪 INCONCLUSIVE；現在依 `global.retry_invalid_output`（預設 1）重問，提示會說明上次的問題並要求只回 JSON。第一次嘗試記為 `retried`（報告 Execution Provenance 顯示「unusable, re-asked」，不是證據缺口），仍失敗才記 `invalid`；每次重問都是真實呼叫、計入 `max_model_calls`，預算用完就不重問；`json_output=False` 的修復呼叫不重問
+- **`models.<alias>.extra_params`**：原封不動傳給 litellm 的參數（例如 `thinking: {type: disabled}`、`reasoning_effort: low`），可讓推理模型不要把 `max_output_tokens` 全花在思考（live 實測 GLM 的主要失敗原因）；啟動時驗證為 mapping
+- **檔案篩選**：CLI `--include GLOB`／`--exclude GLOB`（可重複，覆蓋設定檔的 `global.include`／`exclude`）與 `--changed-since <git ref>`（只分析相對該 ref 有變更的檔案，含暫存、未暫存與未追蹤；ref 無法解析或目標不在 git repo 內為 exit 5）；篩掉的檔案不算證據缺口。目錄排除清單新增 `site-packages`
+- **`global.max_file_bytes`**（預設 1 MB）：超過的檔案（minified bundle、產生碼）不分析並列為證據缺口；過去 JS/TS lexer 逐字元掃描會在大檔上耗時數分鐘
+- **報告中繼資料**：`summary.run` 新增 `generated_at`（UTC）、`harness_version`、`execution_mode`、`config_path`、`sandbox_provider`、`target_path`、`target_git_commit`／`target_git_dirty`、`file_filters`；Markdown 標頭、JSON 與 SARIF `properties` 都帶出；JSON 新增 `schema_version`（`"1"`）
+- **提早失敗與中斷**：`--output`／`--sarif` 的目錄不存在或不可寫時在任何模型呼叫前就 exit 5（過去整輪跑完才在寫檔時崩潰，模型花費全部白費）；Ctrl-C 改為 exit 130 並明確說明未寫出報告，不再印 traceback
+
 ### 工程（治理與供應鏈）
 - 新增 `SECURITY.md`（私密通報流程、重點弱點類型、支援版本）、`CONTRIBUTING.md`（開發環境、提交前檢查、修改原則、發布步驟）、`.github/CODEOWNERS`、PR 與 issue 模板
 - 新增 `.github/dependabot.yml`：每週提議 SHA 釘版 Actions 與 `requirements.lock` 的更新（`litellm`／`pydantic` 的 major 升版除外）；過去 `audit` job 一旦遇到鎖定版本的 CVE，只能手動重新產生鎖定檔

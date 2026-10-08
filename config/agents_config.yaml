@@ -11,6 +11,13 @@ global:
                                   # hybrid falls back to simulation (never READY_TO_SHIP), live fails
   max_concurrent_calls: 6         # parallel model calls per agent phase
   max_files: 50                   # source files analyzed per run; the rest are reported as skipped
+  max_file_bytes: 1000000         # a single source file above this size is skipped (evidence gap): bundles, generated code
+  # include / exclude: glob patterns against the path relative to --target (or the file name); CLI --include/--exclude
+  # override these lists, --changed-since <git ref> further restricts the run to files that changed
+  include: []                     # e.g. ["src/*"]; empty = everything
+  exclude: []                     # e.g. ["tests/*", "vendor/*", "*.min.js"]
+  retry_invalid_output: 1         # re-ask a model this many times when its answer is unusable (not JSON, missing keys,
+                                  # empty) before booking it `invalid`; each re-ask is a real call against max_model_calls
   sandbox_provider: "local_subprocess"  # "local_subprocess" (NOT a security boundary) or "docker" (isolated container); e2b is planned
   # docker provider only; build the image first: docker build -t vibeharness-sandbox:latest -f docker/sandbox.Dockerfile .
   docker_image: "vibeharness-sandbox:latest"  # must contain pytest, pytest-cov and the target's dependencies
@@ -26,6 +33,9 @@ models:
   # fallback_model is tried once when the primary model still fails after max_retries.
   # Any agent can point at any model below via its `model_alias` — e.g. with only a Gemini key,
   # set every agent's model_alias to "gemini" (that is how the Gemini live smoke test runs).
+  # Optional per model: `max_output_tokens` (overrides the global cap) and `extra_params`, a mapping passed
+  # straight to litellm, e.g. {thinking: {type: disabled}} or {reasoning_effort: low} so a reasoning model
+  # does not spend the whole output budget thinking.
   # Supply chain (OWASP LLM04:2026): target source code is sent to every provider listed here, so only
   # configure providers whose data-retention terms you accept; api_base must be https (loopback excepted).
   claude:
