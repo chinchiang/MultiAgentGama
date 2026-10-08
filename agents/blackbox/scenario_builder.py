@@ -19,6 +19,23 @@ logger = logging.getLogger("VibeHarness.ScenarioBuilder")
 CODE_CONTEXT_TOKENS = 4000
 
 
+def validate_base_url(base_url: str) -> str:
+    """The base URL of a live target, or a ValueError naming what is wrong with it.
+
+    urllib opens ``file:``, ``ftp:`` and ``data:`` URLs too, so an unchecked ``--base-url
+    file:///etc/hostname`` once counted as a live server and switched every attack script into
+    Live HTTP mode. Only http(s) URLs with a host name an attack can be aimed at are accepted.
+    """
+    try:
+        parts = urllib.parse.urlsplit(base_url.strip())
+        host = parts.hostname
+    except ValueError as e:
+        raise ValueError(f"base URL {base_url!r} is not a valid URL: {e}") from e
+    if parts.scheme not in ("http", "https") or not host:
+        raise ValueError(f"base URL {base_url!r} must be an http:// or https:// URL with a host name")
+    return base_url.strip()
+
+
 class ThreatScenarioBuilder:
     """
     Synthesizes executable black-box security test suites directly derived from
@@ -110,7 +127,10 @@ class ThreatScenarioBuilder:
             return []
 
         # Live HTTP attacks only run against a URL the user named explicitly: probing a default
-        # (e.g. localhost:8000) would aim attack scripts at whatever unrelated service listens there
+        # (e.g. localhost:8000) would aim attack scripts at whatever unrelated service listens there.
+        # The CLI validates the URL already; this guard keeps library callers from probing file:// etc.
+        if base_url:
+            base_url = validate_base_url(base_url)
         server_is_live = self.check_server_live(base_url) if base_url else False
         mode_label = "Live HTTP" if server_is_live else "In-Process Contract"
         logger.info(f"Synthesizing threat test cases in [{mode_label}] mode against: {base_url or 'the imported target'}")

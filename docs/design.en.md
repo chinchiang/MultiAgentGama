@@ -621,7 +621,7 @@ Other determinism measures: sorted detected languages, sorted `ai_components`, s
 
 ## 15. Test strategy and CI
 
-### 15.1 The test suite (`tests/`, about 330 tests)
+### 15.1 The test suite (`tests/`, about 290 tests)
 
 The suite is hermetic: mock mode plus the `fake_live` fixture in `conftest.py` (fake keys, `_FakeLiteLLM` substituted for `core.llm_gateway.litellm`) exercises the live paths without network or real keys.
 

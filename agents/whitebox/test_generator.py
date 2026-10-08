@@ -8,7 +8,7 @@ from typing import List, Optional, Set, Tuple
 from core.models import ReviewFinding, GeneratedTest, CodeSymbol, text_or
 from core.llm_gateway import LLMGateway, LLMGatewayError
 from core.codecheck import check_test_code, strip_code_fences
-from core.codecontext import file_source, fence_language, import_instructions, truncate_to_tokens
+from core.codecontext import file_source, fence_language, import_instructions, module_import_name, truncate_to_tokens
 from core.sanitize import UNTRUSTED_CODE_POLICY, prepare_untrusted_code, untrusted_block
 
 logger = logging.getLogger("VibeHarness.TestGenerator")
@@ -71,7 +71,7 @@ class WhiteboxTestGenerator:
                 self.findings_without_model_tests.append(finding.finding_id)
 
         if self.findings_without_model_tests:
-            generated_tests.extend(self.build_offline_probes(symbols))
+            generated_tests.extend(self.build_offline_probes(symbols, root))
 
         return generated_tests
 
@@ -212,12 +212,14 @@ class WhiteboxTestGenerator:
         required_kwonly = sum(1 for d in fn.args.kw_defaults if d is None)
         return required_positional > 0 or required_kwonly > 0
 
-    def build_offline_probes(self, symbols: List[CodeSymbol]) -> List[GeneratedTest]:
+    def build_offline_probes(self, symbols: List[CodeSymbol], root_dir: Optional[str] = None) -> List[GeneratedTest]:
         """
         Deterministic None-input robustness probes for module-level synchronous Python functions
         that take at least one required argument (argument-less functions are never invoked).
         An unhandled TypeError/KeyError/AttributeError/IndexError on None inputs is reported as a failure;
         explicit rejection via other exceptions (ValueError, custom errors) counts as a defended boundary.
+        The target is imported by its module name when it has one (so a package's relative imports
+        work), else loaded from its file path.
         """
         probes: List[GeneratedTest] = []
         seen: Set[str] = set()
@@ -237,12 +239,19 @@ class WhiteboxTestGenerator:
 
             probe_no = len(probes) + 1
             safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", sym.name)
+            module = module_import_name(sym.file_path, root_dir) if root_dir else None
+            if module:
+                loader = f"import importlib\n_target = importlib.import_module({module!r})\n"
+            else:
+                loader = (
+                    f"import importlib.util\n"
+                    f"_spec = importlib.util.spec_from_file_location('vh_probe_target_{probe_no}', {os.path.abspath(sym.file_path)!r})\n"
+                    "_target = importlib.util.module_from_spec(_spec)\n"
+                    "_spec.loader.exec_module(_target)\n"
+                )
             code = (
-                "import importlib.util\n"
-                "import inspect\n\n"
-                f"_spec = importlib.util.spec_from_file_location('vh_probe_target_{probe_no}', {os.path.abspath(sym.file_path)!r})\n"
-                "_target = importlib.util.module_from_spec(_spec)\n"
-                "_spec.loader.exec_module(_target)\n\n\n"
+                f"{loader}"
+                "import inspect\n\n\n"
                 f"def test_probe_{safe_name}_none_inputs():\n"
                 f"    fn = getattr(_target, {sym.name!r})\n"
                 "    params = [p for p in inspect.signature(fn).parameters.values() if p.default is p.empty]\n"

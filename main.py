@@ -9,6 +9,7 @@ from core import __version__
 from core.harness import VibeHarnessCommander, force_utf8_stdio
 from core.llm_gateway import LLMGatewayError, ConfigError, DEFAULT_CONFIG_PATH
 from core.sandbox import SandboxUnavailableError
+from agents.blackbox.scenario_builder import validate_base_url
 
 # Exit codes reserved for harness/usage problems. Verdict codes (0/1/2/3/4) are documented in
 # the README; these must never collide with them, or CI would misread a crashed run as a verdict.
@@ -139,6 +140,11 @@ def main():
         parser.error("--max-files must be at least 1")
     if args.max_model_calls is not None and args.max_model_calls < 0:
         parser.error("--max-model-calls must not be negative")
+    if args.base_url is not None:
+        try:
+            args.base_url = validate_base_url(args.base_url)
+        except ValueError as e:
+            parser.error(f"--base-url: {e}")
     try:
         commander = VibeHarnessCommander(config_path=args.config, execution_mode=args.mode)
         if args.max_files is not None:

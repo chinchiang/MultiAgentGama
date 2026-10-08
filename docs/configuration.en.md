@@ -15,9 +15,9 @@ From the CLI, use `--config <path>` to point at a different file and `--mode` to
 | Field | Default | Description |
 | :--- | :--- | :--- |
 | `execution_mode` | `"hybrid"` | One of `live` / `hybrid` / `mock` (see table below); anything else fails at startup |
-| `timeout_seconds` | `180` | Per-LLM-request timeout in seconds, passed to litellm |
-| `max_retries` | `2` | Retry count at the litellm level (retries the same primary model; the `fallback_model` is tried once only after all retries fail) |
-| `max_output_tokens` | `16384` | Token cap per model response; `models.<alias>.max_output_tokens` overrides it per model |
+| `timeout_seconds` | `180` | Per-LLM-request timeout in seconds, passed to litellm; must be a number ≥ 1 (validated at start-up, else `ConfigError`) |
+| `max_retries` | `2` | Retry count at the litellm level (retries the same primary model; the `fallback_model` is tried once only after all retries fail); must be an integer ≥ 0 |
+| `max_output_tokens` | `16384` | Token cap per model response; `models.<alias>.max_output_tokens` overrides it per model; must be an integer ≥ 1 |
 | `max_model_calls` | `null` (unlimited) | Cost guard: real model invocations per run (litellm retries and the `fallback_model` of one invocation are not counted separately). Once exhausted, `hybrid` falls back to the simulation engine and it is listed as an evidence gap (the verdict cannot be `READY_TO_SHIP`); `live` raises `LLMGatewayError` (exit 4). Must be a non-negative integer; `0` means unlimited |
 | `max_concurrent_calls` | `6` | Concurrent model calls per agent phase (review, verification, white-box test generation, black-box attack synthesis); `1` makes everything sequential |
 | `max_files` | `50` | Source files analyzed per run; files beyond the cap are listed as an evidence gap (the verdict cannot be `READY_TO_SHIP`). Must be a non-negative integer; `0` / `null` keep the default, a negative or non-integer value fails at startup with `ConfigError` (exit 5) |
@@ -76,7 +76,7 @@ Each **key** is an `agent_id` and supports:
 | Field | Default | Description |
 | :--- | :--- | :--- |
 | `model_alias` | none (resolves to `unconfigured`) | Points at a `models` alias; **this is the field that actually routes the model**. A missing or unknown alias has no model and no key: `hybrid` simulates that agent, `live` fails with `LLMGatewayError` |
-| `temperature` | `0.2` | Sampling temperature (`0.0` recommended for verification/voting agents) |
+| `temperature` | `0.2` | Sampling temperature (`0.0` recommended for verification/voting agents); must be a number between 0 and 2 (validated at start-up) |
 | `name` | — | For `whitebox_reviewer_*`: the reviewer name used in its prompt and in the report ("Identified by ..."); descriptive only for other agents |
 | `focus` | — | For `whitebox_reviewer_*`: the review focus, **inserted into the reviewer's prompt** (default "General correctness and security defects") |
 | `role` | — | Descriptive only; not read by the code |

@@ -621,7 +621,7 @@ console 輸出另外用 `rich.markup.escape`（`core/harness.py:6`）。
 
 ## 15. 測試策略與 CI
 
-### 15.1 測試套件（`tests/`，約 330 個測試）
+### 15.1 測試套件（`tests/`，約 290 個測試）
 
 整個套件是 hermetic 的：mock 模式加 `conftest.py` 的 `fake_live` fixture（設假金鑰、用 `_FakeLiteLLM` 替換 `core.llm_gateway.litellm`），不需要網路或真實金鑰就能跑 live 路徑。
 

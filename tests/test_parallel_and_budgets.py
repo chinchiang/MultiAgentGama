@@ -216,6 +216,35 @@ def test_invalid_limits_are_config_errors(tmp_path, key, value):
         LLMGateway(_config(tmp_path, **{key: value}))
 
 
+@pytest.mark.parametrize("key,value", [
+    ("timeout_seconds", "abc"), ("timeout_seconds", 0), ("max_retries", -1), ("max_retries", 1.5),
+    ("max_output_tokens", "16k"), ("max_output_tokens", 0),
+])
+def test_invalid_numeric_settings_are_config_errors_at_startup(tmp_path, key, value):
+    """These used to be read only when a call was made: litellm rejected them, and hybrid mode booked
+    the failure as "live invocation failed" and silently ran the simulation engine instead."""
+    with pytest.raises(ConfigError, match=key):
+        LLMGateway(_config(tmp_path, **{key: value}))
+
+
+def test_invalid_per_model_tokens_and_agent_temperature_are_config_errors(tmp_path):
+    with open(CONFIG, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    bad_model = dict(cfg, models=dict(cfg["models"], claude=dict(cfg["models"]["claude"], max_output_tokens="lots")))
+    path = tmp_path / "m.yaml"
+    path.write_text(yaml.safe_dump(bad_model), encoding="utf-8")
+    with pytest.raises(ConfigError, match="models.claude.max_output_tokens"):
+        LLMGateway(str(path), execution_mode="mock")
+    reviewer = dict(cfg["agents"]["whitebox_reviewer_claude"], temperature=3)
+    bad_agent = dict(cfg, agents=dict(cfg["agents"], whitebox_reviewer_claude=reviewer))
+    path = tmp_path / "a.yaml"
+    path.write_text(yaml.safe_dump(bad_agent), encoding="utf-8")
+    with pytest.raises(ConfigError, match="whitebox_reviewer_claude.temperature"):
+        LLMGateway(str(path), execution_mode="mock")
+    # The shipped config itself is valid, and floats are fine where a number is expected
+    LLMGateway(_config(tmp_path, timeout_seconds=12.5), execution_mode="mock")
+
+
 @pytest.mark.parametrize("value", [-1, "10", True, 2.5])
 def test_invalid_max_files_in_config_is_a_config_error(tmp_path, value):
     """The CLI already rejects a bad --max-files; the config path must not quietly accept a negative

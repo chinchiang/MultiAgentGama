@@ -122,6 +122,33 @@ def test_no_base_url_means_in_process_and_no_network_probe(monkeypatch):
     assert "In-Process Contract" in prompts[0]
 
 
+@pytest.mark.parametrize("url", ["file:///etc/hostname", "ftp://host/x", "localhost:8000", "http://", "data:text/plain,hi"])
+def test_non_http_base_urls_are_rejected(monkeypatch, tmp_path, url):
+    """urllib opens file:/ftp:/data: URLs too, so `--base-url file:///etc/hostname` once counted as a
+    live server and switched every attack script into Live HTTP mode."""
+    import sys
+    import main
+    from agents.blackbox.scenario_builder import ThreatScenarioBuilder, validate_base_url
+    with pytest.raises(ValueError, match="base URL"):
+        validate_base_url(url)
+    monkeypatch.setattr(sys, "argv", ["vibeharness", "-t", str(tmp_path), "-m", "mock", "--base-url", url])
+    with pytest.raises(SystemExit) as exit_info:
+        main.main()
+    assert exit_info.value.code == main.USAGE_ERROR_EXIT_CODE
+    # Library callers are guarded too: the builder never probes such a URL
+    from core.llm_gateway import LLMGateway
+    builder = ThreatScenarioBuilder(LLMGateway(CONFIG, execution_mode="mock"))
+    monkeypatch.setattr(builder, "check_server_live", lambda *a, **k: pytest.fail("probed a non-http URL"))
+    with pytest.raises(ValueError, match="base URL"):
+        builder.build_test_cases_from_threats([_threat()], base_url=url)
+
+
+@pytest.mark.parametrize("url", ["http://localhost:8000", "https://[::1]:8443/api", "http://127.0.0.1"])
+def test_http_base_urls_are_accepted(url):
+    from agents.blackbox.scenario_builder import validate_base_url
+    assert validate_base_url(f" {url} ") == url
+
+
 def test_cli_does_not_default_to_a_live_base_url(monkeypatch, tmp_path):
     import main
     seen = {}

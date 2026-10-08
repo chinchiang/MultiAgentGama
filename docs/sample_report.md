@@ -51,7 +51,7 @@ No rule hits. Rules cover unsafe model loading and unpinned model downloads (LLM
 | `blackbox_test_synthesizer` | `deepseek/deepseek-v4-pro` | 🟡 simulated | 3 | execution_mode is 'mock' |
 
 
-## 2. 🔬 Phase 1: Heterogeneous White-Box Code Review & Debate
+## 2. 🔬 Phases 2–3: Heterogeneous White-Box Code Review, Verification & Tests
 > **De-biasing Architecture (SIMULATED)**: Reviewer and verifier outputs below are simulation templates, not real claude / deepseek / gemini / glm audits.
 
 **Debate Consensus Summary** `[SIMULATED]`: Cross-model verification not applied (simulated); findings are unfiltered reviewer hypotheses.
@@ -82,7 +82,7 @@ No rule hits. Rules cover unsafe model loading and unpinned model downloads (LLM
 | `WB-PROBE-03` | whitebox_probe | `process_payment_transfer` | ❌ FAILED | `0.001s` | AssertionError: process_payment_transfer() crashed with unhandled TypeError on None inputs: 'NoneType' object is not subscriptable |
 
 
-## 3. 🎯 Phase 2: Black-Box Threat Modeling (STRIDE & OWASP) `[SIMULATED]`
+## 3. 🎯 Phase 4: Black-Box Threat Modeling (STRIDE & OWASP) `[SIMULATED]`
 **System Description**: Vibe-coded web application and API service.  
 **Entrypoints Audited**: `REST API routes, Auth headers, User registration / management endpoints`  
 **Trust Boundaries**: `Client / Internet to Public Gateway, Public Gateway to Internal DB`
@@ -94,7 +94,7 @@ No rule hits. Rules cover unsafe model loading and unpinned model downloads (LLM
 | `THREAT-03` | **Information Disclosure** | API8:2023 - Security Misconfiguration | - | `MEDIUM` | **Stack Trace & Database Error Leakage on Malformed Input**<br>*HTTP POST with malformed syntax / SQL injection characters* |
 
 
-## 4. ⚡ Phase 3: Threat-Derived Black-Box Dynamic Test Execution
+## 4. ⚡ Phase 5: Threat-Derived Black-Box Dynamic Test Execution
 No black-box tests executed.
 
 ### ⚪ Threats Not Tested

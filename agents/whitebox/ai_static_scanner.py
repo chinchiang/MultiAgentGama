@@ -85,7 +85,7 @@ RULES: Dict[str, Dict[str, str]] = {
     "VH-AI-008": {
         "title": "Invisible or bidirectional-control characters in source",
         "severity": "HIGH", "owasp": "LLM01:2026 Prompt Injection", "atlas": "AML.T0068", "cwe": "",
-        "remediation": "Remove the characters. They can smuggle instructions to AI tools or make code read "
+        "remediation": "Remove the characters. They can smuggle hidden directives into AI tooling or make code read "
                        "differently than it executes (Trojan Source); strip them at every ingest boundary.",
     },
     "VH-AI-009": {

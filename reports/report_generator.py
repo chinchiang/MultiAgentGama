@@ -130,7 +130,7 @@ class ReportGenerator:
         md.append("\n")
 
         # 2. White-Box Multi-Model Review Findings
-        md.append("## 2. 🔬 Phase 1: Heterogeneous White-Box Code Review & Debate")
+        md.append("## 2. 🔬 Phases 2–3: Heterogeneous White-Box Code Review, Verification & Tests")
         models = " / ".join(summary.reviewer_models) or "the configured reviewer models"
         if debate_result.is_simulated or any(f.is_simulated for f in debate_result.confirmed_findings):
             md.append(f"> **De-biasing Architecture (SIMULATED)**: Reviewer and verifier outputs below are simulation templates, not real {models} audits.\n")
@@ -171,7 +171,7 @@ class ReportGenerator:
         md.append("\n")
 
         # 3. Black-Box Threat Modeling Matrix
-        md.append("## 3. 🎯 Phase 2: Black-Box Threat Modeling (STRIDE & OWASP)" + (" `[SIMULATED]`" if threat_model.is_simulated else ""))
+        md.append("## 3. 🎯 Phase 4: Black-Box Threat Modeling (STRIDE & OWASP)" + (" `[SIMULATED]`" if threat_model.is_simulated else ""))
         md.append(f"**System Description**: {markdown_safe(threat_model.system_description)}  ")
         md.append(f"**Entrypoints Audited**: {self._code_span(self._join_list(threat_model.entrypoints))}  ")
         md.append(f"**Trust Boundaries**: {self._code_span(self._join_list(threat_model.trust_boundaries))}\n")
@@ -186,7 +186,7 @@ class ReportGenerator:
         md.append("\n")
 
         # 4. Black-Box Dynamic Security Execution Results
-        md.append("## 4. ⚡ Phase 3: Threat-Derived Black-Box Dynamic Test Execution")
+        md.append("## 4. ⚡ Phase 5: Threat-Derived Black-Box Dynamic Test Execution")
         if blackbox_results:
             md.append("| Test ID | Type | Status | Latency | Outcome / Exploitation |")
             md.append("| :--- | :--- | :--- | :--- | :--- |")

@@ -26,6 +26,14 @@
 - **不支援的取樣參數改為丟棄而非失敗**（live 實測發現）：Bedrock 上的 Claude Opus 5.5 只接受 `temperature=1`，過去每次呼叫都失敗並退回備援模型；改傳 `drop_params`。另外 Bedrock 等以 AWS 憑證驗證的模型可設 `aws_profile_name`／`aws_region_name` 取代 `api_key_env`；空白回應會記錄 `finish_reason`（例如安全過濾的 `content_filter`）
 - **報告保存生成的測試程式碼**（稽核軌跡）：Markdown 新增附錄「Generated Test Code」，以可收合區塊列出每個白箱／黑箱測試的程式碼、來源發現／威脅與執行結果；JSON 新增 `generated_tests`／`blackbox_generated_tests`，原封不動保存程式碼。live 實測發現部分「通過」的測試其實是在斷言缺陷本身，沒有程式碼就無法稽核。程式碼區塊的 fence 會依內容中最長的反引號自動加長（原本 PoC 區塊遇到四個反引號會被跳出，一併修正）
 
+### 修正（深入審視，2026-10-09）
+- **套件目標的匯入指引**：`--target` 指向本身是套件的目錄（含 `__init__.py`，模組之間用相對匯入）時，提示詞與離線探針過去指示 `from app import f`，目標一執行就丟 `attempted relative import with no known parent package`，執行器還把它歸咎於「目標壞掉」；現在 `module_import_name` 會偵測套件並改以上層目錄為基準（`from shop.app import f`，上層目錄本來就在沙盒的 sys.path），探針也改用 `importlib.import_module` 依模組名載入
+- **`--base-url` 只接受 http(s)**：`urllib` 也能開 `file:`／`ftp:`／`data:`，所以 `--base-url file:///etc/hostname` 過去會被當成「伺服器存活」而切換成 Live HTTP 模式；現在 CLI 與 `ThreatScenarioBuilder` 都以 `validate_base_url` 檢查 scheme 與主機名，不合法為用法錯誤（exit 5）
+- **`VH-AI-009` 不再把裸的 `READY_TO_SHIP` 當成注入**：這條規則對本 repo 自掃會命中 27 次（都是判定常數），任何讀取 JSON 報告並比較 `overall_status` 的目標專案也會永遠被列為證據缺口；改為只匹配「要求審查者給出該判定」的句型，並新增對 harness 原始碼自掃為零命中的 dogfood 測試
+- **供應商例外訊息先遮蔽再記錄**：`live invocation failed: …` 原文會進 `call_log` 的 reason、Markdown 的 Execution Provenance、JSON 報告與 live 模式的 stderr，而 HTTP 用戶端例外可能回顯帶金鑰的 URL 或標頭；現在所有 reason 與 `LLMGatewayError` 訊息都先經 `redact_secrets` 與控制字元清除
+- **數值設定於啟動時驗證**：`timeout_seconds`、`max_retries`、`max_output_tokens`（全域與每模型）與各 agent 的 `temperature` 過去只在呼叫時讀取，寫錯（例如字串）會讓 litellm 失敗，hybrid 模式再悄悄退回模擬引擎、只留下 INCONCLUSIVE；現在一律 `ConfigError`（exit 5）
+- 文件：報告章節標題改用與 README／harness 相同的六階段編號（Phases 2–3、4、5）；設計文件的測試數更新
+
 ### 修正（設計文件列出的缺口）
 - **審查／驗證批次崩潰列為證據缺口**：reviewer 或 verifier 的批次在 gateway 之外拋出例外時，過去只記 log、該批當成空結果，`call_log` 沒有紀錄，閘門看不到缺席的審查；現在經 `LLMGateway.record_failure` 記成一筆 `invalid` 呼叫（原因附例外），證據缺口訊息逐一列出 agent 與原因
 - **單一 reviewer 模型列為證據缺口**：所有 `whitebox_reviewer_*` 都指向同一模型時，過去只在終端機警告；現在也寫入 `inconclusive_reasons`（判定不會是 `READY_TO_SHIP`；OWASP LLM07:2026）

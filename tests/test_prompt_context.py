@@ -31,6 +31,51 @@ def test_module_import_name(tmp_path):
     assert module_import_name(str(root / "app.ts"), str(root)) is None
 
 
+def test_package_target_is_imported_through_its_package(tmp_path):
+    """A target directory that is itself a package must be imported via the parent directory
+    (which the sandbox also puts on sys.path), or its own relative imports break and the executor
+    blames the target ("attempted relative import with no known parent package")."""
+    pkg = tmp_path / "src" / "shop"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "app.py").write_text("from .models import price_of\n")
+    (pkg / "models.py").write_text("def price_of(item):\n    return item['price']\n")
+    assert module_import_name(str(pkg / "app.py"), str(pkg)) == "shop.app"
+    assert module_import_name(str(pkg / "__init__.py"), str(pkg)) == "shop"
+    text = import_instructions(str(pkg / "app.py"), str(pkg), "checkout")
+    assert "from shop.app import checkout" in text and str(tmp_path / "src") in text
+    # A plain directory (no __init__.py) keeps the direct form
+    (pkg / "__init__.py").unlink()
+    assert module_import_name(str(pkg / "app.py"), str(pkg)) == "app"
+
+
+def test_offline_probe_imports_a_package_module_by_name(tmp_path):
+    from agents.whitebox.ast_extractor import ASTExtractor
+    from agents.whitebox.test_generator import WhiteboxTestGenerator
+    from core.llm_gateway import LLMGateway
+    from core.sandbox import LocalSubprocessSandbox
+    from runners.test_executor import TestSuiteExecutor
+    from core.models import TestStatus
+    pkg = tmp_path / "shop"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "models.py").write_text("def price_of(item):\n    return item['price']\n")
+    (pkg / "app.py").write_text(
+        "from .models import price_of\n\ndef checkout(cart):\n    return sum(price_of(i) for i in cart)\n"
+    )
+    symbols = [s for s in ASTExtractor().parse_directory(str(pkg)) if s.name == "checkout"]
+    gen = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="mock"))
+    probes = gen.build_offline_probes(symbols, root_dir=str(pkg))
+    assert "importlib.import_module('shop.app')" in probes[0].code
+    results, _ = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60)).execute_test_suite(
+        probes, working_dir=str(pkg)
+    )
+    # The probe reached checkout() (None cart -> TypeError): a FAILED verdict about the target,
+    # not an ERROR blaming the target's relative import
+    assert results[0].status == TestStatus.FAILED, results[0].failure_reason
+    assert "relative import" not in (results[0].failure_reason or "")
+
+
 def test_import_instructions_name_the_module_or_fall_back_to_importlib(tmp_path):
     text = import_instructions(str(tmp_path / "svc.py"), str(tmp_path), "Cart.total")
     assert "from svc import Cart" in text

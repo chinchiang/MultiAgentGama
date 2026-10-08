@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional, List
 import yaml
 
 from core.models import AgentCallRecord
+from core.sanitize import clean_model_text, redact_secrets
 
 try:
     import litellm
@@ -80,6 +81,7 @@ class LLMGateway:
         self.live_calls_attempted = 0
         self._budget_lock = threading.Lock()
         self._validate_endpoints()
+        self._validate_settings()
 
     def _validate_endpoints(self) -> None:
         """Every custom api_base must be https (plain http only to loopback): target source code and
@@ -101,6 +103,36 @@ class LLMGateway:
             raise ConfigError(
                 f"models.{alias}.api_base must be an https:// URL (http:// only for loopback hosts), got {base!r}"
             )
+
+    def _validate_settings(self) -> None:
+        """Numeric settings are checked once at start-up. They used to be read only when a call was
+        made, so a typo such as `timeout_seconds: "abc"` reached litellm, failed there, and in hybrid
+        mode was booked as "live invocation failed" and silently replaced by the simulation engine."""
+        global_cfg = self.config.get("global") or {}
+        self._number(global_cfg.get("timeout_seconds", 180), "global.timeout_seconds", minimum=1)
+        self._number(global_cfg.get("max_retries", 2), "global.max_retries", minimum=0, integer=True)
+        self._number(global_cfg.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS), "global.max_output_tokens",
+                     minimum=1, integer=True)
+        for alias, info in self.models_config.items():
+            if isinstance(info, dict) and info.get("max_output_tokens") is not None:
+                self._number(info["max_output_tokens"], f"models.{alias}.max_output_tokens", minimum=1, integer=True)
+        for agent_id, meta in self.agents_config.items():
+            if isinstance(meta, dict) and meta.get("temperature") is not None:
+                self._number(meta["temperature"], f"agents.{agent_id}.temperature", minimum=0, maximum=2)
+
+    @staticmethod
+    def _number(value: Any, key: str, minimum: float, maximum: Optional[float] = None, integer: bool = False) -> None:
+        ok = isinstance(value, (int, float)) and not isinstance(value, bool) and (not integer or isinstance(value, int))
+        if not ok or value < minimum or (maximum is not None and value > maximum):
+            kind = "an integer" if integer else "a number"
+            bounds = f">= {minimum}" if maximum is None else f"between {minimum} and {maximum}"
+            raise ConfigError(f"{key} must be {kind} {bounds}, got {value!r}")
+
+    @staticmethod
+    def _safe_reason(text: str) -> str:
+        """Provider error text as it may be logged or reported: credentials redacted (an HTTP client
+        can echo a request URL or header carrying the API key), control characters removed."""
+        return clean_model_text(redact_secrets(str(text)))
 
     @staticmethod
     def _positive_int(value: Any, key: str) -> Optional[int]:
@@ -204,10 +236,10 @@ class LLMGateway:
             try:
                 raw_text, model_name, finish_reason = self._complete(model_info, model_name, messages, temperature)
             except Exception as e:
-                fallback_reason = f"live invocation failed: {e}"
+                fallback_reason = f"live invocation failed: {self._safe_reason(str(e))}"
                 if self.execution_mode == "live":
                     raise LLMGatewayError(f"[{agent_id}] {model_name}: {fallback_reason}") from e
-                logger.warning(f"Live invocation failed for {agent_id} ({model_name}): {e}. Falling back to simulation logic.")
+                logger.warning(f"Live invocation failed for {agent_id} ({model_name}): {fallback_reason}. Falling back to simulation logic.")
             else:
                 # Only the network call is guarded above: a bug in parsing/validation/booking
                 # must fail loudly instead of being masked as a fallback to simulation.
@@ -285,7 +317,7 @@ class LLMGateway:
                 return choice.message.content or "", candidate, finish_reason if isinstance(finish_reason, str) else None
             except Exception as e:
                 last_error = e
-                logger.warning(f"Model {candidate} failed: {e}")
+                logger.warning(f"Model {candidate} failed: {self._safe_reason(str(e))}")
         if last_error is None:
             # Unreachable in practice: candidates is never empty, but never raise an Optional
             raise LLMGatewayError(f"Model {model_name}: no candidate model could be attempted")
@@ -332,7 +364,8 @@ class LLMGateway:
         reason: Optional[str] = None, prompt_sha256: Optional[str] = None
     ):
         self.call_log.append(AgentCallRecord(
-            agent_id=agent_id, model_alias=model_alias, model_name=model_name, mode=mode, reason=reason,
+            agent_id=agent_id, model_alias=model_alias, model_name=model_name, mode=mode,
+            reason=self._safe_reason(reason) if reason is not None else None,
             prompt_sha256=prompt_sha256
         ))
 
