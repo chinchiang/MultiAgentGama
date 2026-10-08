@@ -44,24 +44,26 @@ def _install(fake_live, rulings):
 
 def test_no_model_verifies_its_own_or_a_corroborated_finding(fake_live):
     shown = _install(fake_live, {})
-    findings = [_finding("A", "claude"), _finding("B", "nemotron", corroborating=["chatgpt"])]
+    findings = [_finding("A", "claude"), _finding("B", "deepseek", corroborating=["glm"])]
     MultiModelDebater(LLMGateway(CONFIG, execution_mode="live")).arbitrate(findings)
     assert sorted(shown["claude"]) == ["B"]
-    assert sorted(shown["nemotron"]) == ["A"]
-    assert sorted(shown["chatgpt"]) == ["A"]  # chatgpt already reported B, so it is not asked about B
+    assert sorted(shown["deepseek"]) == ["A"]
+    assert sorted(shown["glm"]) == ["A"]  # glm already reported B, so it is not asked about B
+    assert sorted(shown["gemini"]) == ["A", "B"]
 
 
 def test_majority_decides_and_ties_are_kept(fake_live):
     _install(fake_live, {
-        "nemotron": {"A": "reject", "B": "confirm", "C": "reject"},
-        "chatgpt": {"A": "reject", "B": "reject", "C": "unsure"},
+        "deepseek": {"A": "reject", "B": "confirm", "C": "reject"},
+        "glm": {"A": "reject", "B": "reject", "C": "unsure"},
         "claude": {"D": "reject"},
+        "gemini": {"A": "unsure", "B": "unsure", "C": "unsure", "D": "unsure"},
     })
     findings = [
         _finding("A", "claude"),                               # 0 confirm vs 2 reject -> disputed
         _finding("B", "claude"),                               # 1 vs 1 -> tie, kept
         _finding("C", "claude"),                               # 0 vs 1 -> disputed
-        _finding("D", "nemotron", corroborating=["chatgpt"]),  # corroborated vs claude reject -> tie, kept
+        _finding("D", "deepseek", corroborating=["glm"]),  # corroborated vs claude reject -> tie, kept
     ]
     result = MultiModelDebater(LLMGateway(CONFIG, execution_mode="live")).arbitrate(findings)
     assert result.arbitration_applied
@@ -73,13 +75,13 @@ def test_majority_decides_and_ties_are_kept(fake_live):
     # Agreeing decisive votes: A 2 + C 1 = 3 of 7 decisive votes (A 2, B 2, C 1, D 2)
     assert abs(result.model_agreement_ratio - 3 / 7) < 1e-9
     votes_a = {v.model_alias: v.verdict for v in result.disputed_findings[0].verification_votes}
-    assert votes_a == {"nemotron": "reject", "chatgpt": "reject"}
+    assert votes_a == {"deepseek": "reject", "glm": "reject", "gemini": "unsure"}
 
 
 def test_corroborated_finding_with_confirming_verifier_is_confirmed_unanimously(fake_live):
     _install(fake_live, {"claude": {"D": "confirm"}})
     result = MultiModelDebater(LLMGateway(CONFIG, execution_mode="live")).arbitrate(
-        [_finding("D", "nemotron", corroborating=["chatgpt"])]
+        [_finding("D", "deepseek", corroborating=["glm"])]
     )
     assert [f.finding_id for f in result.confirmed_findings] == ["D"]
     assert result.model_agreement_ratio == 1.0
@@ -91,13 +93,13 @@ def test_bogus_rulings_are_ignored(fake_live):
         {"index": 0, "verdict": "maybe"}, {"index": 0, "verdict": "reject"}, {"index": 0, "verdict": "confirm"},
     ]}))
     result = MultiModelDebater(LLMGateway(CONFIG, execution_mode="live")).arbitrate([_finding("A", "claude")])
-    # Only the first valid ruling per finding from each of the two verifiers counts: 2 rejects
+    # Only the first valid ruling per finding from each of the three verifiers counts: 3 rejects
     assert [f.finding_id for f in result.disputed_findings] == ["A"]
-    assert len(result.disputed_findings[0].verification_votes) == 2
+    assert len(result.disputed_findings[0].verification_votes) == 3
 
 
 def test_unusable_or_unsure_verifiers_leave_findings_unfiltered(fake_live):
-    fake_live(lambda s, u: "not json" if "nemotron" in s else json.dumps({"verdicts": [{"index": 0, "verdict": "unsure"}]}))
+    fake_live(lambda s, u: "not json" if "deepseek" in s else json.dumps({"verdicts": [{"index": 0, "verdict": "unsure"}]}))
     gateway = LLMGateway(CONFIG, execution_mode="live")
     result = MultiModelDebater(gateway).arbitrate([_finding("A", "claude")])
     assert not result.arbitration_applied
@@ -119,7 +121,7 @@ def test_verifiers_see_the_code_of_the_finding(fake_live, tmp_path):
 
 def test_report_shows_votes_and_agreement(fake_live):
     from core.models import ThreatModelReport, VibeHarnessSummary
-    _install(fake_live, {"nemotron": {"A": "reject"}, "chatgpt": {"A": "reject"}})
+    _install(fake_live, {"deepseek": {"A": "reject"}, "glm": {"A": "reject"}})
     result = MultiModelDebater(LLMGateway(CONFIG, execution_mode="live")).arbitrate([_finding("A", "claude")])
     summary = VibeHarnessSummary(
         overall_status="INCONCLUSIVE", total_whitebox_findings=1, confirmed_whitebox_bugs=0,
@@ -129,4 +131,4 @@ def test_report_shows_votes_and_agreement(fake_live):
     threat_model = ThreatModelReport(system_description="", entrypoints=[], trust_boundaries=[], assets=[], threats=[])
     md = ReportGenerator().generate_markdown_report(summary, result, threat_model, [], [], "app")
     assert "Cross-Model Agreement** | `100.0%`" in md
-    assert "nemotron: reject (nemotron on A)" in md
+    assert "deepseek: reject (deepseek on A)" in md

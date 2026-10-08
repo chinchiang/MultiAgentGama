@@ -6,7 +6,22 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
-Packaging, model-output robustness, execution correctness and SARIF fixes from a deep review, plus parallel test synthesis and a cost guard; a second verification round adds execution-attribution honesty, gate decoy protection and engineering convergence; a third hardening round covers stricter mypy, CI supply-chain protection and a higher coverage floor.
+Packaging, model-output robustness, execution correctness and SARIF fixes from a deep review, plus parallel test synthesis and a cost guard; a second verification round adds execution-attribution honesty, gate decoy protection and engineering convergence; a third hardening round covers stricter mypy, CI supply-chain protection and a higher coverage floor; a fourth round corrects the design against the OWASP LLM Top 10 2026 and MITRE ATLAS: the ensemble becomes Claude / DeepSeek / GLM / Gemini, with deterministic AI-security rules and trust-boundary controls.
+
+### Changed (design corrections per OWASP LLM Top 10 2026 / MITRE ATLAS)
+- **White-box ensemble is now Claude / DeepSeek / GLM / Gemini**: Nemotron and ChatGPT were removed (the `nemotron` / `chatgpt` model aliases and `NVIDIA_API_KEY` / `OPENAI_API_KEY` are no longer used). DeepSeek takes over defensive & resource review and white-box test generation, GLM takes over specification & contract review and black-box attack synthesis, and the new **Gemini "AI Integration & Supply-Chain Reviewer"** audits model-calling code against OWASP LLM01–LLM10:2026. The verifiers follow (four of them). Default models use versioned ids (`claude-sonnet-5-5`, `zai/glm-5.3`, `deepseek/deepseek-v4-pro`) so a provider-side swap shows up in reports
+- **Reviewers are config-driven**: every `whitebox_reviewer_*` entry is used, and its name, model and `focus` actually reach the prompt (the roster used to be hard-coded at three and the config `focus` was ignored); no configured reviewer is an evidence gap. Fewer than two model families triggers a warning that cross-verification cannot run (LLM07:2026)
+- **Unconfigured agents are no longer silently routed to `gpt-4o`**: they resolve to an `unconfigured` alias; hybrid simulates, live fails loudly
+- **Quality gate**: a HIGH+ hit of a deterministic AI-security rule makes the verdict `NEEDS_FIXES` (exit 1)
+
+### Added (security design)
+- **Deterministic AI-security rules `VH-AI-001`–`009`** (`agents/whitebox/ai_static_scanner.py`, no model involved): `trust_remote_code=True`, `torch.load` without `weights_only=True`, pickle-style deserialization, hub models without a pinned `revision`, LLM calls without an output cap, model output flowing into `eval`/`exec`/shell/SQL, hard-coded credentials, invisible/bidi control characters, and comments addressing AI reviewers. Each rule carries its OWASP LLM 2026 entry, MITRE ATLAS technique and CWE, and appears in Markdown / JSON / SARIF (`vibeharness/VH-AI-00x`)
+- **Untrusted-code channel (LLM01:2026, AML.T0051.001)**: code shown to any model has invisible characters stripped and secrets redacted (LLM02:2026, AML.T0055), is wrapped in `<untrusted_target_code>` (a forged closing tag is neutralized), and every code-reading agent's system prompt carries a security policy; planted reviewer instructions or invisible characters are an evidence gap, so such a run can never be `READY_TO_SHIP`
+- **OWASP LLM Top 10 2026 threat modeling**: `threat_rules.yaml` gains `owasp_llm_top10_2026` (ATLAS tactic/technique and CWE mappings); it is applied automatically when the target imports an AI SDK, threats gain an `atlas_mapping` field, and the report's threat table a MITRE ATLAS column
+- **Report output sanitization (LLM10:2026, AML.T0077)**: model text is rendered into Markdown with images and raw HTML defanged and ANSI/OSC sequences removed; console output escapes rich markup; SARIF messages drop control characters
+- **Generated tests may not install packages** (slopsquatting, LLM04:2026, AML.T0060): `pip install`, `import pip` and the like are refused by the static gate
+- **Model endpoints must be https** (plain http only for loopback); a bad `api_base` fails at startup with `ConfigError`. Every model call records a `prompt_sha256` for audit traceability
+- Reviewers may report an optional `owasp_mapping`; reports list the reviewer models and the detected AI components
 
 ### Added
 - **Parallel white-box test generation and black-box attack synthesis**: model calls fan out on a thread pool like the review/verification phases, with deterministic output order (test ids, reports); one failing finding/threat no longer takes down the others (live mode still fails loudly)

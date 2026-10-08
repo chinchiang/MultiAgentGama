@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Optional
 from core.models import ThreatItem, ThreatModelReport, STRIDECategory, FindingSeverity, CodeSymbol
 from core.llm_gateway import LLMGateway, LLMGatewayError
 from core.codecontext import render_symbols, batch_symbols
+from core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
 
 DEFAULT_RULES_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config", "threat_rules.yaml")
 
@@ -96,12 +97,35 @@ class AutomatedThreatModeler:
             text += "Use these OWASP API Top 10 ids for owasp_mapping: " + ", ".join(owasp_entries) + "\n\n"
         return text
 
+    def _llm_rules_guidance(self, ai_components: Optional[List[str]]) -> str:
+        """OWASP Top 10 for LLM Applications 2026 checklist, only for targets that import an AI SDK
+        (a plain CRUD service would otherwise get LLM threats invented for it)."""
+        entries = self.rules.get("owasp_llm_top10_2026")
+        if not ai_components or not isinstance(entries, list):
+            return ""
+        lines = []
+        for e in entries:
+            if not isinstance(e, dict) or not isinstance(e.get("id"), str):
+                continue
+            bugs = e.get("common_vibe_bugs")
+            bug_list = "; ".join(b for b in bugs if isinstance(b, str)) if isinstance(bugs, list) else ""
+            techniques = e.get("atlas_techniques")
+            atlas = ", ".join(t for t in techniques if isinstance(t, str)) if isinstance(techniques, list) else ""
+            lines.append(f"- {e['id']} {e.get('name', '')}: {bug_list}" + (f" [ATLAS: {atlas}]" if atlas else ""))
+        if not lines:
+            return ""
+        return (
+            f"The target integrates AI/LLM components ({', '.join(ai_components)}). Also model threats from the "
+            "OWASP Top 10 for LLM Applications 2026; use its ids for owasp_mapping and the listed MITRE ATLAS "
+            "technique ids for atlas_mapping:\n" + "\n".join(lines) + "\n\n"
+        )
+
     @staticmethod
     def _code_guidance(symbols: Optional[List[CodeSymbol]], root_dir: Optional[str]) -> str:
         if not symbols:
             return ""
         root = root_dir or os.path.dirname(os.path.abspath(symbols[0].file_path))
-        return f"Target source code:\n{render_symbols(symbols, root, max_tokens=BATCH_MAX_TOKENS)}\n\n"
+        return f"Target source code:\n{untrusted_block(render_symbols(symbols, root, max_tokens=BATCH_MAX_TOKENS))}\n\n"
 
     def _model_batch(
         self,
@@ -110,13 +134,15 @@ class AutomatedThreatModeler:
         system_description: str,
         entrypoints_summary: str,
         routes_summary: str,
-        root_dir: Optional[str]
+        root_dir: Optional[str],
+        ai_components: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         user_prompt = (
             f"System Description: {system_description}\n"
             f"Entrypoints: {entrypoints_summary}\n"
             f"Detected Routes: {routes_summary}\n\n"
             f"{self._rules_guidance()}"
+            f"{self._llm_rules_guidance(ai_components)}"
             f"{self._code_guidance(batch, root_dir)}"
             f"Perform comprehensive threat modeling identifying vibe-coding vulnerabilities. "
             f"Only include threats that are plausible for the code shown, and name the concrete function/route in attack_vector."
@@ -131,12 +157,14 @@ class AutomatedThreatModeler:
         entrypoints: List[str],
         detected_routes: Optional[List[str]] = None,
         symbols: Optional[List[CodeSymbol]] = None,
-        root_dir: Optional[str] = None
+        root_dir: Optional[str] = None,
+        ai_components: Optional[List[str]] = None
     ) -> ThreatModelReport:
         """
         Executes STRIDE threat modeling against the target system.
         Symbols are verified in batches so the model sees all of them; the threats of every
         batch are merged into one report (duplicate threat_ids are renumbered).
+        `ai_components` (AI SDKs the target imports) adds the OWASP LLM Top 10 2026 checklist.
         """
         routes_summary = ", ".join(detected_routes) if detected_routes else "General RESTful APIs"
         entrypoints_summary = ", ".join(entrypoints) if entrypoints else "HTTP/REST Endpoints"
@@ -156,6 +184,7 @@ class AutomatedThreatModeler:
             '      "threat_id": "THREAT-01",\n'
             '      "stride_category": "Elevation of Privilege",\n'
             '      "owasp_mapping": "API1:2023 - BOLA",\n'
+            '      "atlas_mapping": "MITRE ATLAS technique id(s) for AI-specific threats, else empty",\n'
             '      "title": "Clear threat title",\n'
             '      "description": "Mechanics of the threat",\n'
             '      "asset_at_risk": "Target data/asset",\n'
@@ -167,6 +196,7 @@ class AutomatedThreatModeler:
             "    }\n"
             "  ]\n"
             "}"
+            f"{UNTRUSTED_CODE_POLICY}"
         )
 
         ordered = sorted(symbols or [], key=lambda s: s.symbol_type != "route")
@@ -183,7 +213,8 @@ class AutomatedThreatModeler:
                     system_description,
                     entrypoints_summary,
                     routes_summary,
-                    root_dir
+                    root_dir,
+                    ai_components
                 )
                 for batch in batches
             ]
@@ -280,11 +311,13 @@ class AutomatedThreatModeler:
             used_ids.add(threat_id)
 
             owasp_mapping = item.get("owasp_mapping")
+            atlas_mapping = item.get("atlas_mapping")
             try:
                 threat_items.append(ThreatItem(
                     threat_id=threat_id,
                     stride_category=category,
                     owasp_mapping=owasp_mapping if isinstance(owasp_mapping, str) and owasp_mapping.strip() else None,
+                    atlas_mapping=atlas_mapping if isinstance(atlas_mapping, str) and atlas_mapping.strip() else None,
                     title=_text(item.get("title"), "Unclassified Threat"),
                     description=_text(item.get("description"), ""),
                     asset_at_risk=_text(item.get("asset_at_risk"), "Application Data"),

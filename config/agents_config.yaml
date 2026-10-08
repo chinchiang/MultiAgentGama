@@ -25,24 +25,27 @@ models:
   # fallback_model is tried once when the primary model still fails after max_retries.
   # Any agent can point at any model below via its `model_alias` — e.g. with only a Gemini key,
   # set every agent's model_alias to "gemini" (that is how the Gemini live smoke test runs).
+  # Supply chain (OWASP LLM04:2026): target source code is sent to every provider listed here, so only
+  # configure providers whose data-retention terms you accept; api_base must be https (loopback excepted).
   claude:
-    model: "claude-sonnet-5"
+    model: "claude-sonnet-5-5"
     api_key_env: "ANTHROPIC_API_KEY"
     fallback_model: "claude-haiku-4-5-20251001"
     provider: "anthropic"
 
-  nemotron:
-    model: "nvidia_nim/nvidia/nemotron-4-340b-instruct"
-    api_key_env: "NVIDIA_API_KEY"
-    api_base: "https://integrate.api.nvidia.com/v1"
-    fallback_model: "nvidia_nim/meta/llama-3.3-70b-instruct"
-    provider: "nvidia"
+  glm:
+    # Zhipu AI / Z.AI GLM via litellm's zai provider
+    model: "zai/glm-5.3"
+    api_key_env: "ZAI_API_KEY"
+    fallback_model: "zai/glm-5.3-flash"
+    provider: "zhipu"
 
-  chatgpt:
-    model: "gpt-4o"
-    api_key_env: "OPENAI_API_KEY"
-    fallback_model: "gpt-4o-mini"
-    provider: "openai"
+  deepseek:
+    # Versioned ids rather than the moving deepseek-chat alias, so a provider-side swap is visible in reports
+    model: "deepseek/deepseek-v4-pro"
+    api_key_env: "DEEPSEEK_API_KEY"
+    fallback_model: "deepseek/deepseek-v4-flash"
+    provider: "deepseek"
 
   gemini:
     # gemini-2.5-flash is no longer available to new Google API users; use 3.x instead
@@ -53,23 +56,37 @@ models:
 
 agents:
   # 1. White-Box Agents (Multi-Model Ensemble to eliminate bias)
+  # Every whitebox_reviewer_* entry is used, with its own model, name and focus; add or remove entries
+  # to change the ensemble. Four different model families keep their blind spots from overlapping.
   whitebox_reviewer_claude:
     name: "Logic & State Reviewer (Claude)"
     model_alias: "claude"
     temperature: 0.2
     focus: "Deep logical edge cases, unhandled exception states, state inconsistencies, hidden null-pointer/type bugs"
 
-  whitebox_reviewer_nemotron:
-    name: "Safety & Defensive Reviewer (Nemotron)"
-    model_alias: "nemotron"
+  whitebox_reviewer_deepseek:
+    name: "Safety & Defensive Reviewer (DeepSeek)"
+    model_alias: "deepseek"
     temperature: 0.1
-    focus: "Input sanitization, defensive guards, resource exhaustion, unsafe memory/buffer/concurrency"
+    focus: "Input sanitization, injection (SQL/command/path), defensive guards, resource exhaustion, unsafe concurrency"
 
-  whitebox_reviewer_chatgpt:
-    name: "Specification & Contract Reviewer (ChatGPT)"
-    model_alias: "chatgpt"
+  whitebox_reviewer_glm:
+    name: "Specification & Contract Reviewer (GLM)"
+    model_alias: "glm"
     temperature: 0.2
-    focus: "API signature compliance, business specification adherence, contract violations, standard test coverage"
+    focus: "API signature compliance, business specification adherence, contract violations, authorization checks (BOLA/BFLA)"
+
+  whitebox_reviewer_gemini:
+    name: "AI Integration & Supply-Chain Reviewer (Gemini)"
+    model_alias: "gemini"
+    temperature: 0.2
+    focus: >-
+      OWASP Top 10 for LLM Applications 2026 in code that calls models: untrusted input or retrieved content
+      concatenated into prompts (LLM01), secrets or PII in prompts and logs (LLM02/LLM08), tools or agents
+      acting without allowlists or human confirmation (LLM03), unpinned or unsafely loaded models and
+      packages (LLM04/LLM05), uncapped tokens, loops and spend (LLM06), model output used unvalidated to
+      decide or act (LLM07) or passed to eval/exec/shell/SQL/HTML (LLM10); also hard-coded credentials and
+      unpinned third-party dependencies
 
   # Cross-model verification: each finding is ruled on by every verifier whose model did NOT report it,
   # so no model judges its own finding. Every whitebox_verifier_* entry is used; remove one to drop that model.
@@ -78,19 +95,24 @@ agents:
     model_alias: "claude"
     temperature: 0.0
 
-  whitebox_verifier_nemotron:
-    name: "Finding Verifier (Nemotron)"
-    model_alias: "nemotron"
+  whitebox_verifier_deepseek:
+    name: "Finding Verifier (DeepSeek)"
+    model_alias: "deepseek"
     temperature: 0.0
 
-  whitebox_verifier_chatgpt:
-    name: "Finding Verifier (ChatGPT)"
-    model_alias: "chatgpt"
+  whitebox_verifier_glm:
+    name: "Finding Verifier (GLM)"
+    model_alias: "glm"
+    temperature: 0.0
+
+  whitebox_verifier_gemini:
+    name: "Finding Verifier (Gemini)"
+    model_alias: "gemini"
     temperature: 0.0
 
   whitebox_test_generator:
     name: "Property & Unit Test Generator"
-    model_alias: "chatgpt"
+    model_alias: "deepseek"
     temperature: 0.3
     role: "Generates executable Pytest test modules targeting identified blindspots"
 
@@ -99,12 +121,12 @@ agents:
     name: "STRIDE Threat Modeler Agent"
     model_alias: "claude"
     temperature: 0.2
-    role: "Extracts trust boundaries, assets, and builds STRIDE & OWASP risk matrix"
+    role: "Extracts trust boundaries, assets, and builds STRIDE, OWASP API and (for AI-integrated targets) OWASP LLM risk matrix"
 
   blackbox_test_synthesizer:
     name: "Security Scenario & Exploit Test Generator"
-    model_alias: "chatgpt"
+    model_alias: "glm"
     temperature: 0.2
-    role: "Translates threat scenarios into automated black-box tests (BOLA, Injection, Rate-limit)"
+    role: "Translates threat scenarios into automated black-box tests (BOLA, Injection, Rate-limit, Prompt injection)"
 
   # Planned (not yet implemented): a dynamic fuzzing / DAST runner agent.

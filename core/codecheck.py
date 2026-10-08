@@ -80,6 +80,9 @@ def check_test_code(code: str) -> Tuple[bool, Optional[str]]:
     except (SyntaxError, ValueError, RecursionError) as e:
         # ValueError: source with null bytes; RecursionError: absurdly deep nesting
         return False, f"syntax error: {e}"
+    installer = _package_install_call(tree)
+    if installer:
+        return False, f"test installs packages at run time ({installer}); refused (slopsquatting / OWASP LLM04:2026)"
     tests = _top_level_test_nodes(tree)
     if not tests:
         return False, "no top-level test_ function defined"
@@ -87,6 +90,29 @@ def check_test_code(code: str) -> Tuple[bool, Optional[str]]:
     if vacuous:
         return False, f"test function(s) without any assertion: {', '.join(vacuous)}"
     return True, None
+
+
+_INSTALLER_RE = re.compile(r"\b(?:pip3?|uv|poetry|conda|mamba|npm|pnpm|yarn|ensurepip)\b")
+_INSTALL_VERB_RE = re.compile(r"\b(?:install|add)\b")
+
+
+def _package_install_call(tree: ast.Module) -> Optional[str]:
+    """A call that installs packages (`pip install`, `subprocess.run([sys.executable, '-m', 'pip', 'install', ...])`,
+    `pip.main(['install', ...])`), or None. Generated code must not pull packages a model may have hallucinated
+    (and an attacker may have registered under that name: MITRE ATLAS AML.T0060)."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import) and any(a.name.split(".")[0] in ("pip", "ensurepip") for a in node.names):
+            return f"import {node.names[0].name}"
+        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] in ("pip", "ensurepip"):
+            return f"from {node.module} import ..."
+        if not isinstance(node, ast.Call):
+            continue
+        words = " ".join(
+            c.value for c in ast.walk(node) if isinstance(c, ast.Constant) and isinstance(c.value, str)
+        ).lower()
+        if _INSTALLER_RE.search(words) and _INSTALL_VERB_RE.search(words):
+            return words[:60]
+    return None
 
 
 def _test_has_assertion(test_node: _TestNode) -> bool:

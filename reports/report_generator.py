@@ -12,8 +12,10 @@ from core.models import (
     TestExecutionResult,
     VibeHarnessSummary,
     TestStatus,
-    FindingSeverity
+    FindingSeverity,
+    StaticFinding
 )
+from core.sanitize import clean_model_text, markdown_safe
 
 # Windows drive paths ("C:\...") count as absolute even on POSIX hosts, so a SARIF produced
 # on Windows relativizes identically when re-processed by a Linux CI runner.
@@ -24,6 +26,8 @@ _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 # whenever the numbering shifted. The run-specific ids are kept in each result's properties.
 SARIF_RULE_WHITEBOX = "vibeharness/whitebox-finding"
 SARIF_RULE_BLACKBOX = "vibeharness/blackbox-breach"
+# Deterministic AI-security rules keep their own stable ids: vibeharness/VH-AI-001, ...
+SARIF_RULE_STATIC_PREFIX = "vibeharness/"
 
 
 class ReportGenerator:
@@ -95,7 +99,15 @@ class ReportGenerator:
         md.append(f"| **Threats Without Executable Test** | `{len(summary.untested_threat_ids)}` | 0 Untested |")
         md.append(f"| **Confirmed Black-Box Security Breaches** | `{summary.blackbox_security_breaches}` | 0 Breaches Tolerated |")
         md.append(f"| **Black-Box Tests Failed (unclassified)** | `{summary.blackbox_tests_failed}` | 0 — failing attack scripts need manual review |")
+        blocking = sum(1 for f in summary.static_findings if f.severity in (FindingSeverity.CRITICAL, FindingSeverity.HIGH))
+        md.append(f"| **Deterministic AI-Security Rule Hits** | `{len(summary.static_findings)}` ({blocking} HIGH+) | 0 HIGH+ |")
         md.append("\n")
+        if summary.reviewer_models:
+            md.append(f"**Reviewer models** ({len(summary.reviewer_models)} distinct): `{', '.join(summary.reviewer_models)}`  ")
+        if summary.ai_components:
+            md.append(f"**AI/LLM components detected**: `{', '.join(summary.ai_components)}` — OWASP Top 10 for LLM Applications 2026 applied to threat modeling  ")
+        md.append("")
+        md.extend(self._static_section(summary.static_findings))
 
         # Provenance
         md.append("### Execution Provenance")
@@ -115,11 +127,12 @@ class ReportGenerator:
 
         # 2. White-Box Multi-Model Review Findings
         md.append("## 2. 🔬 Phase 1: Heterogeneous White-Box Code Review & Debate")
+        models = " / ".join(summary.reviewer_models) or "the configured reviewer models"
         if debate_result.is_simulated or any(f.is_simulated for f in debate_result.confirmed_findings):
-            md.append("> **De-biasing Architecture (SIMULATED)**: Reviewer and verifier outputs below are simulation templates, not real Claude / Nemotron / ChatGPT audits.\n")
+            md.append(f"> **De-biasing Architecture (SIMULATED)**: Reviewer and verifier outputs below are simulation templates, not real {models} audits.\n")
         else:
-            md.append("> **De-biasing Architecture**: Findings cross-audited across Claude (Logic/Edge-cases), Nemotron (Defensive/Guardrails), and ChatGPT (Spec/Contracts).\n")
-        md.append(f"**Debate Consensus Summary**{sim_tag}: {debate_result.consensus_summary}\n")
+            md.append(f"> **De-biasing Architecture**: Findings cross-audited across {models}; no model rules on its own finding.\n")
+        md.append(f"**Debate Consensus Summary**{sim_tag}: {markdown_safe(debate_result.consensus_summary)}\n")
 
         if debate_result.confirmed_findings:
             kept = f" ({debate_result.undecided_count} undecided tie(s) kept for testing)" if debate_result.undecided_count else ""
@@ -127,10 +140,11 @@ class ReportGenerator:
             for f in debate_result.confirmed_findings:
                 tag = " `[SIMULATED]`" if f.is_simulated else ""
                 also = f"; also reported by {', '.join(f.corroborated_by)}" if f.corroborated_by else ""
-                md.append(f"- **[{f.severity.value}] {f.title}**{tag} (Identified by {f.reviewer_name}{also})")
-                md.append(f"  - **Root Cause**: {f.root_cause}")
-                md.append(f"  - **Vibe-Coding Flaw**: {f.suspected_vibe_flaw}")
-                md.append(f"  - **Suggested Scenario**: `{f.suggested_test_scenario}`")
+                mapping = f" `{self._cell(f.owasp_mapping)}`" if f.owasp_mapping else ""
+                md.append(f"- **[{f.severity.value}] {markdown_safe(f.title)}**{mapping}{tag} (Identified by {f.reviewer_name}{also})")
+                md.append(f"  - **Root Cause**: {markdown_safe(f.root_cause)}")
+                md.append(f"  - **Vibe-Coding Flaw**: {markdown_safe(f.suspected_vibe_flaw)}")
+                md.append(f"  - **Suggested Scenario**: {self._code_span(f.suggested_test_scenario)}")
                 if f.verification_votes:
                     md.append(f"  - **Verification**: {self._votes(f)}")
         else:
@@ -139,7 +153,7 @@ class ReportGenerator:
         if debate_result.disputed_findings:
             md.append("\n### Disputed Findings (rejected by a cross-model majority, not tested):")
             for f in debate_result.disputed_findings:
-                md.append(f"- [{f.severity.value}] {f.title} (Identified by {f.reviewer_name}) — {self._votes(f)}")
+                md.append(f"- [{f.severity.value}] {markdown_safe(f.title)} (Identified by {f.reviewer_name}) — {self._votes(f)}")
 
         md.append("\n### White-Box Test Execution Results")
         if whitebox_results:
@@ -154,15 +168,16 @@ class ReportGenerator:
 
         # 3. Black-Box Threat Modeling Matrix
         md.append("## 3. 🎯 Phase 2: Black-Box Threat Modeling (STRIDE & OWASP)" + (" `[SIMULATED]`" if threat_model.is_simulated else ""))
-        md.append(f"**System Description**: {threat_model.system_description}  ")
-        md.append(f"**Entrypoints Audited**: `{self._join_list(threat_model.entrypoints)}`  ")
-        md.append(f"**Trust Boundaries**: `{self._join_list(threat_model.trust_boundaries)}`\n")
+        md.append(f"**System Description**: {markdown_safe(threat_model.system_description)}  ")
+        md.append(f"**Entrypoints Audited**: {self._code_span(self._join_list(threat_model.entrypoints))}  ")
+        md.append(f"**Trust Boundaries**: {self._code_span(self._join_list(threat_model.trust_boundaries))}\n")
 
-        md.append("| Threat ID | STRIDE Category | OWASP Mapping | Severity | Threat Title & Attack Vector |")
-        md.append("| :--- | :--- | :--- | :--- | :--- |")
+        md.append("| Threat ID | STRIDE Category | OWASP Mapping | MITRE ATLAS | Severity | Threat Title & Attack Vector |")
+        md.append("| :--- | :--- | :--- | :--- | :--- | :--- |")
         for t in threat_model.threats:
             owasp = self._cell(t.owasp_mapping) or "N/A"
-            md.append(f"| `{self._cell(t.threat_id)}` | **{t.stride_category.value}** | {owasp} | `{t.severity.value}` | **{self._cell(t.title)}**<br>*{self._cell(t.attack_vector)}* |")
+            atlas = self._cell(t.atlas_mapping) or "-"
+            md.append(f"| `{self._cell(t.threat_id)}` | **{t.stride_category.value}** | {owasp} | {atlas} | `{t.severity.value}` | **{self._cell(t.title)}**<br>*{self._cell(t.attack_vector)}* |")
 
         md.append("\n")
 
@@ -199,7 +214,7 @@ class ReportGenerator:
         # 5. Key Recommendations for Vibe Coder
         md.append("## 5. 💡 Actionable Next Steps for Vibe Coder")
         for rec in summary.key_recommendations:
-            md.append(f"- {rec}")
+            md.append(f"- {markdown_safe(rec)}")
 
         md.append("\n---\n*Generated automatically by VibeHarness-MAS Harness Commander.*")
 
@@ -263,6 +278,26 @@ class ReportGenerator:
                 })
             return rule_index[rule_id]
 
+        # 0. Deterministic AI-security rule hits (no model involved)
+        for sf in summary.static_findings:
+            rule_id = SARIF_RULE_STATIC_PREFIX + sf.rule_id
+            idx = add_rule(rule_id, sf.title, sf.remediation, self._sarif_level(sf.severity))
+            tags = [t for t in (sf.owasp_mapping, sf.atlas_mapping, sf.cwe) if t]
+            rules[idx].setdefault("properties", {"tags": ["security", *tags]})
+            uri = self._sarif_uri(sf.file_path, root)
+            static_result: Dict[str, object] = {
+                "ruleId": rule_id,
+                "ruleIndex": idx,
+                "level": self._sarif_level(sf.severity),
+                "message": {"text": f"{sf.title}: {clean_model_text(sf.evidence)}" if sf.evidence else sf.title},
+                "partialFingerprints": {"vibeharness/v1": self._fingerprint(uri or "", sf.rule_id, str(sf.line_number))},
+                "properties": {"severity": sf.severity.value, "owasp": sf.owasp_mapping or "",
+                               "atlas": sf.atlas_mapping or "", "cwe": sf.cwe or "", "deterministic": True},
+            }
+            if uri:
+                static_result["locations"] = [self._location(uri, sf.line_number)]
+            results.append(static_result)
+
         add_rule(
             SARIF_RULE_WHITEBOX, "Confirmed white-box defect hypothesis",
             "A defect reported by a reviewer model and confirmed (or left undecided) by cross-model verification.",
@@ -278,6 +313,7 @@ class ReportGenerator:
                 desc += f"\n\nRoot cause: {f.root_cause}"
             if f.suggested_test_scenario:
                 desc += f"\n\nSuggested test: {f.suggested_test_scenario}"
+            desc = clean_model_text(desc)
             uri = self._sarif_uri(f.file_path, root)
             result: Dict[str, object] = {
                 "ruleId": SARIF_RULE_WHITEBOX,
@@ -319,7 +355,7 @@ class ReportGenerator:
                 "ruleId": SARIF_RULE_BLACKBOX,
                 "ruleIndex": rule_index[SARIF_RULE_BLACKBOX],
                 "level": "error",
-                "message": {"text": text},
+                "message": {"text": clean_model_text(text)},
                 "partialFingerprints": {"vibeharness/v1": self._fingerprint(
                     *((threat.stride_category.value, self._normalize(threat.title), self._normalize(threat.attack_vector))
                       if threat else (r.test_id, r.source_ref or ""))
@@ -472,11 +508,11 @@ class ReportGenerator:
 
     @staticmethod
     def _votes(finding: ReviewFinding) -> str:
-        """e.g. `nemotron: reject (checked before use); chatgpt: corroborated`"""
+        """e.g. `deepseek: reject (checked before use); glm: corroborated`"""
         if not finding.verification_votes:
             return "no usable verifier votes"
         return "; ".join(
-            f"{v.model_alias}: {v.verdict}" + (f" ({v.reason})" if v.reason else "")
+            f"{v.model_alias}: {v.verdict}" + (f" ({markdown_safe(v.reason)})" if v.reason else "")
             for v in finding.verification_votes
         )
 
@@ -489,5 +525,39 @@ class ReportGenerator:
 
     @staticmethod
     def _cell(text: Optional[str]) -> str:
-        """Makes free text safe for a single Markdown table cell."""
-        return (text or "").replace("|", "\\|").replace("\n", " ")
+        """Makes free text safe for a single Markdown table cell (and defangs images / raw HTML)."""
+        return markdown_safe(text or "").replace("|", "\\|").replace("\n", " ")
+
+    @staticmethod
+    def _code_span(text: Optional[str]) -> str:
+        """Inline code for model text: control characters removed and the fence widened past any
+        backtick run inside, so the text cannot break out of the span."""
+        body = clean_model_text(text or "").replace("\n", " ")
+        if not body.strip():
+            return "`-`"
+        longest = max((len(run) for run in re.findall(r"`+", body)), default=0)
+        fence = "`" * (longest + 1)
+        pad = " " if body.startswith("`") or body.endswith("`") else ""
+        return f"{fence}{pad}{body}{pad}{fence}"
+
+    def _static_section(self, findings: List[StaticFinding]) -> List[str]:
+        """Deterministic AI-security rule hits (OWASP LLM Top 10 2026 / MITRE ATLAS mapped)."""
+        md = ["### Deterministic AI-Security Rules (no model involved)"]
+        if not findings:
+            md.append("No rule hits. Rules cover unsafe model loading and unpinned model downloads (LLM04), model output "
+                      "reaching exec/shell/SQL sinks (LLM10), uncapped model calls (LLM06), hard-coded credentials "
+                      "(LLM02) and reviewer-directed prompt injection or invisible characters (LLM01).\n")
+            return md
+        md.append("HIGH+ hits fail the gate (`NEEDS_FIXES`); prompt-injection and invisible-character hits also mark "
+                  "the model-driven phases as possibly manipulated.\n")
+        md.append("| Rule | Severity | Location | Finding | OWASP | MITRE ATLAS | CWE |")
+        md.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
+        for f in findings:
+            evidence = f"<br>*{self._cell(f.evidence)}*" if f.evidence else ""
+            md.append(
+                f"| `{f.rule_id}` | `{f.severity.value}` | `{self._cell(os.path.basename(f.file_path))}:{f.line_number}` | "
+                f"**{self._cell(f.title)}**{evidence} | {self._cell(f.owasp_mapping) or '-'} | "
+                f"{self._cell(f.atlas_mapping) or '-'} | {self._cell(f.cwe) or '-'} |"
+            )
+        md.append("")
+        return md

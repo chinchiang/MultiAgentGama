@@ -11,6 +11,7 @@ from core.models import ThreatItem, GeneratedTest, CodeSymbol, text_or
 from core.llm_gateway import LLMGateway, LLMGatewayError
 from core.codecheck import check_test_code, strip_code_fences
 from core.codecontext import render_symbols, import_instructions
+from core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
 
 logger = logging.getLogger("VibeHarness.ScenarioBuilder")
 
@@ -64,7 +65,8 @@ class ThreatScenarioBuilder:
             relevant = sorted(symbols, key=lambda s: s.symbol_type != "route")
         files = sorted({s.file_path for s in relevant if s.file_path.endswith(".py")})
         imports = "\n".join(import_instructions(f, root) for f in files)
-        return f"How to import the target:\n{imports}\n\nRelevant target code:\n{render_symbols(relevant, root, max_tokens=CODE_CONTEXT_TOKENS)}\n\n"
+        listing = render_symbols(relevant, root, max_tokens=CODE_CONTEXT_TOKENS)
+        return f"How to import the target:\n{imports}\n\nRelevant target code:\n{untrusted_block(listing)}\n\n"
 
     # Loopback names are the same machine; targeting them is allowed when the target itself is local
     _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
@@ -165,7 +167,8 @@ class ThreatScenarioBuilder:
             "executable Python pytest module.\n\n"
             "The test must assert that defensive boundaries hold (e.g. status code is 401/403/422, "
             "or sensitive fields are uncompromised), so that an assertion failure means the attack succeeded. "
-            "If the attack cannot be expressed against the given code, return an empty code string instead of guessing.\n\n"
+            "If the attack cannot be expressed against the given code, return an empty code string instead of guessing. "
+            "Never install packages or contact hosts other than the target.\n\n"
             "Output JSON:\n"
             "{\n"
             f'  "test_id": "BB-TEST-{threat.threat_id}",\n'
@@ -174,6 +177,7 @@ class ThreatScenarioBuilder:
             '  "expected_outcome": "Defensive condition that must be met",\n'
             '  "code": "from module import handler\\n\\ndef test_security_case():\\n    result = handler(...)\\n    assert result[\\"status\\"] == \\"error\\""\n'
             "}"
+            f"{UNTRUSTED_CODE_POLICY}"
         )
 
         user_prompt = (
@@ -182,7 +186,8 @@ class ThreatScenarioBuilder:
             f"Threat ID: {threat.threat_id}\n"
             f"STRIDE Category: {threat.stride_category.value}\n"
             f"OWASP Mapping: {threat.owasp_mapping}\n"
-            f"Attack Vector: {threat.attack_vector}\n"
+            + (f"MITRE ATLAS Mapping: {threat.atlas_mapping}\n" if threat.atlas_mapping else "")
+            + f"Attack Vector: {threat.attack_vector}\n"
             f"Attack Scenario: {threat.attack_scenario}\n"
             f"Defense Verification Goal: {threat.test_verification_goal}\n\n"
             f"{self._code_context(threat, symbols, root_dir)}"

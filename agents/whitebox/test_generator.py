@@ -9,6 +9,7 @@ from core.models import ReviewFinding, GeneratedTest, CodeSymbol, text_or
 from core.llm_gateway import LLMGateway, LLMGatewayError
 from core.codecheck import check_test_code, strip_code_fences
 from core.codecontext import file_source, fence_language, import_instructions, truncate_to_tokens
+from core.sanitize import UNTRUSTED_CODE_POLICY, prepare_untrusted_code, untrusted_block
 
 logger = logging.getLogger("VibeHarness.TestGenerator")
 
@@ -84,7 +85,8 @@ class WhiteboxTestGenerator:
             "code under test and asserts correct behavior under the specified edge-case scenario.\n"
             "Rules: import the target exactly as instructed; every test_ function must assert on the "
             "target's behavior (assert / pytest.raises); a failing assertion must mean the target is defective; "
-            "do not use the network, do not write files outside tmp_path, do not mock the function under test.\n\n"
+            "do not use the network, do not write files outside tmp_path, do not mock the function under test, "
+            "and never install packages (use only the standard library, pytest and what the target imports).\n\n"
             "Respond in JSON format:\n"
             "{\n"
             f'  "test_id": "WB-TEST-{idx+1:02d}",\n'
@@ -93,6 +95,7 @@ class WhiteboxTestGenerator:
             '  "expected_outcome": "Expected assertion or exception handling",\n'
             '  "code": "import pytest\\nfrom module import func\\n\\ndef test_something():\\n    with pytest.raises(ValueError):\\n        func(None)"\n'
             "}"
+            f"{UNTRUSTED_CODE_POLICY}"
         )
 
         user_prompt = (
@@ -173,14 +176,14 @@ class WhiteboxTestGenerator:
         file_path = finding.file_path if finding.file_path not in ("", "unknown") else default_file
         symbol = next((s for s in symbols if s.name == finding.symbol_name and s.file_path == file_path), None)
         if symbol:
-            source = truncate_to_tokens(symbol.source_code, CODE_CONTEXT_TOKENS)
+            source = truncate_to_tokens(prepare_untrusted_code(symbol.source_code), CODE_CONTEXT_TOKENS)
             label = f"Source of `{symbol.name}` (lines {symbol.line_start}-{symbol.line_end})"
         else:
             source = file_source(file_path, max_tokens=CODE_CONTEXT_TOKENS)
             label = "Source of the target file"
         return (
             f"{import_instructions(file_path, root, symbol.name if symbol else None)}\n"
-            f"{label}:\n```{fence_language(file_path)}\n{source}\n```"
+            f"{label}:\n" + untrusted_block(f"```{fence_language(file_path)}\n{source}\n```")
         )
 
     @staticmethod

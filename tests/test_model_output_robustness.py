@@ -154,11 +154,11 @@ def test_malformed_reviewer_findings_are_skipped(fake_live, tmp_path):
     symbols = ASTExtractor().parse_file(str(tmp_path / "svc.py"))
 
     def responder(system, user):
-        if "Claude Logic Reviewer" in system:
+        if "(Claude)" in system:
             return '{"findings": 5}'
-        if "Nemotron" in system:
+        if "DeepSeek" in system:
             return '{"findings": ["not a dict", {"symbol_name": "f", "title": 42, "severity": "HIGH"}]}'
-        if "ChatGPT" in system:
+        if "GLM" in system:
             return '{"findings": [{"symbol_name": "f", "title": "ok", "severity": "HIGH"}]}'
         return '{"findings": []}'
 
@@ -227,7 +227,7 @@ def test_probe_fallback_is_disclosed_and_blocks_ready_to_ship(fake_live, tmp_pat
     }
 
     def responder(system, user):
-        if "Claude Logic Reviewer" in system:
+        if "(Claude)" in system:
             return json.dumps({"findings": [{
                 "symbol_name": "greet", "severity": "HIGH", "title": "None crash", "description": "d",
                 "root_cause": "r", "suspected_vibe_flaw": "v", "suggested_test_scenario": "call greet(None)",
@@ -329,7 +329,7 @@ def test_sarif_report_structure_levels_and_locations(tmp_path):
     critical = _finding("WB-CLA-01", "claude").model_copy(update={
         "severity": FindingSeverity.CRITICAL, "title": "None crash", "file_path": str(abs_file), "line_number": 7,
     })
-    medium = _finding("WB-NEM-01", "nemotron").model_copy(update={
+    medium = _finding("WB-DEE-01", "deepseek").model_copy(update={
         "severity": FindingSeverity.MEDIUM, "title": "Weak guard", "file_path": "app.py", "symbol_name": "greet",
     })
     symbols = [CodeSymbol(
@@ -349,7 +349,7 @@ def test_sarif_report_structure_levels_and_locations(tmp_path):
                            total_threats_modeled=1, critical_threats_count=1, blackbox_tests_passed=1,
                            blackbox_security_breaches=1),
         MultiModelDebateResult(consensus_summary="ok", confirmed_findings=[critical, medium],
-                               disputed_findings=[_finding("WB-CHA-99", "chatgpt")]),
+                               disputed_findings=[_finding("WB-GLM-99", "glm")]),
         ThreatModelReport(system_description="s", entrypoints=[], trust_boundaries=[], assets=[], threats=[]),
         [], [breach, defended], str(target), symbols=symbols
     ))
@@ -362,16 +362,16 @@ def test_sarif_report_structure_levels_and_locations(tmp_path):
         "vibeharness/whitebox-finding", "vibeharness/whitebox-finding", "vibeharness/blackbox-breach"
     ]
     by_id = {r["properties"].get("findingId") or r["properties"]["testId"]: r for r in run["results"]}
-    assert list(by_id) == ["WB-CLA-01", "WB-NEM-01", "BB-T1-01"]
+    assert list(by_id) == ["WB-CLA-01", "WB-DEE-01", "BB-T1-01"]
     assert by_id["WB-CLA-01"]["level"] == "error"          # CRITICAL
-    assert by_id["WB-NEM-01"]["level"] == "warning"        # MEDIUM
+    assert by_id["WB-DEE-01"]["level"] == "warning"        # MEDIUM
     assert by_id["BB-T1-01"]["level"] == "error"
     # Line from finding.line_number and from the symbol table; URI relative to the target, forward slashes
     loc1 = by_id["WB-CLA-01"]["locations"][0]["physicalLocation"]
     assert loc1["region"]["startLine"] == 7
     assert loc1["artifactLocation"]["uri"] == "app.py"
     assert loc1["artifactLocation"]["uriBaseId"] == "%SRCROOT%"
-    loc2 = by_id["WB-NEM-01"]["locations"][0]["physicalLocation"]
+    loc2 = by_id["WB-DEE-01"]["locations"][0]["physicalLocation"]
     assert loc2["region"]["startLine"] == 42
     # The breach's threat names no extracted symbol: no location (omitted, never null)
     assert "locations" not in by_id["BB-T1-01"]

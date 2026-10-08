@@ -6,7 +6,22 @@
 
 ## [Unreleased]
 
-深度審查後的打包、模型輸出韌性、執行正確性與 SARIF 修正，以及測試合成平行化與成本護欄；第二輪驗證補上執行歸因誠實度、閘門防誘餌與工程收斂；第三輪強化涵蓋 mypy 加嚴、CI 供應鏈防護與覆蓋率門檻上調。
+深度審查後的打包、模型輸出韌性、執行正確性與 SARIF 修正，以及測試合成平行化與成本護欄；第二輪驗證補上執行歸因誠實度、閘門防誘餌與工程收斂；第三輪強化涵蓋 mypy 加嚴、CI 供應鏈防護與覆蓋率門檻上調；第四輪依 OWASP LLM Top 10 2026 與 MITRE ATLAS 修正設計：評議陣容改為 Claude／DeepSeek／GLM／Gemini，並加上確定性 AI 安全規則與信任邊界防護。
+
+### 變更（依 OWASP LLM Top 10 2026／MITRE ATLAS 修正設計）
+- **白箱評議陣容改為 Claude／DeepSeek／GLM／Gemini**：移除 Nemotron 與 ChatGPT（`nemotron`／`chatgpt` 模型別名、`NVIDIA_API_KEY`／`OPENAI_API_KEY` 不再使用）。DeepSeek 接手防禦與資源審查、GLM 接手規格與合約審查並負責黑箱攻擊合成、DeepSeek 負責白箱測試生成；新增 **Gemini「AI 整合與供應鏈審查」**，依 OWASP LLM01～LLM10:2026 審查呼叫模型的程式。交叉驗證者同步為四位。預設模型改用帶版本號的 id（`claude-sonnet-5-5`、`zai/glm-5.3`、`deepseek/deepseek-v4-pro`），供應商端的模型替換會在報告中可見
+- **審查者改由設定檔驅動**：所有 `whitebox_reviewer_*` 項目都會被使用，名稱、模型與 `focus` 實際帶入提示詞（過去名單寫死三位，設定檔的 `focus` 不生效）；沒有任何審查者時列為證據缺口。少於兩個模型家族時提示無法交叉驗證（LLM07:2026）
+- **未設定的 agent 不再默默路由到 `gpt-4o`**：改解析為 `unconfigured` 別名，hybrid 模擬、live 直接失敗
+- **品質閘門**：確定性 AI 安全規則 HIGH 以上的命中會使判定為 `NEEDS_FIXES`（exit 1）
+
+### 新增（安全設計）
+- **確定性 AI 安全規則 `VH-AI-001`～`009`**（`agents/whitebox/ai_static_scanner.py`，不經模型）：`trust_remote_code=True`、`torch.load` 未設 `weights_only=True`、pickle 類反序列化、Hub 模型未固定 `revision`、LLM 呼叫無輸出上限、模型輸出流入 `eval`／`exec`／shell／SQL、寫死的憑證、隱形／雙向控制字元、對 AI 審查者下指令的注釋；每條規則標註 OWASP LLM 2026、MITRE ATLAS 技術與 CWE，並出現在 Markdown／JSON／SARIF（`vibeharness/VH-AI-00x`）
+- **不受信任程式碼通道（LLM01:2026、AML.T0051.001）**：送給任何模型的程式碼先去除隱形字元與遮蔽密鑰（LLM02:2026、AML.T0055），包在 `<untrusted_target_code>` 標記內（偽造的結束標籤會被中和），所有讀程式碼的 agent 系統提示附加安全政策；偵測到植入的審查者指令或隱形字元時列為證據缺口，不可能得到 `READY_TO_SHIP`
+- **OWASP LLM Top 10 2026 威脅建模**：`threat_rules.yaml` 新增 `owasp_llm_top10_2026`（ATLAS tactic／technique 與 CWE 對應）；目標匯入 AI SDK 時威脅建模自動套用，威脅新增 `atlas_mapping` 欄位，報告威脅表新增 MITRE ATLAS 欄
+- **報告輸出消毒（LLM10:2026、AML.T0077）**：模型文字進入 Markdown 前停用圖片與原始 HTML、移除 ANSI／OSC 控制序列；console 跳脫 rich markup；SARIF 訊息去除控制字元
+- **生成測試禁止安裝套件**（slopsquatting，LLM04:2026、AML.T0060）：`pip install`、`import pip` 等一律被靜態閘門拒絕
+- **模型端點只允許 https**（http 僅限 loopback），設定錯誤在啟動時以 `ConfigError` 失敗；每次模型呼叫記錄 `prompt_sha256` 供稽核追溯
+- 審查者可回報選填的 `owasp_mapping`；報告列出審查模型與偵測到的 AI 元件
 
 ### 新增
 - **白箱測試生成與黑箱攻擊合成改為平行**：與審查／驗證階段相同以 thread pool 並行呼叫模型，輸出順序（test id、報告）維持確定；單一 finding／threat 失敗不再拖垮其他項目（live 模式仍大聲失敗）

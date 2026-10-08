@@ -93,11 +93,11 @@ def test_reviewers_see_every_symbol_and_findings_are_attributed(fake_live, tmp_p
     findings = HeterogeneousReviewerEnsemble(LLMGateway(CONFIG, execution_mode="live")).review_symbols(
         symbols, root_dir=str(tmp_path)
     )
-    assert len(seen_by_reviewer) == 3
+    assert len(seen_by_reviewer) == 4
     assert all(names == {f"handler_{i}" for i in range(20)} for names in seen_by_reviewer.values())
-    assert len(findings) == 3
+    assert len(findings) == 4
     assert {f.file_path for f in findings} == {files[17]}
-    assert len({f.finding_id for f in findings}) == 3
+    assert len({f.finding_id for f in findings}) == 4
 
 
 # --- Test generator: the generated test must be able to import the target ----------
@@ -156,7 +156,7 @@ def test_gateway_passes_call_options_and_uses_fallback_model(fake_live, monkeypa
 
     def completion(**kwargs):
         calls.append(kwargs)
-        if kwargs["model"] == "claude-sonnet-5":
+        if kwargs["model"] == "claude-sonnet-5-5":
             raise RuntimeError("overloaded")
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"findings": []}'))])
 
@@ -165,7 +165,7 @@ def test_gateway_passes_call_options_and_uses_fallback_model(fake_live, monkeypa
     gateway = LLMGateway(CONFIG, execution_mode="live")
     resp = gateway.generate("whitebox_reviewer_claude", "sys", "prompt", required_keys=["findings"])
 
-    assert [c["model"] for c in calls] == ["claude-sonnet-5", "claude-haiku-4-5-20251001"]
+    assert [c["model"] for c in calls] == ["claude-sonnet-5-5", "claude-haiku-4-5-20251001"]
     assert calls[0]["api_key"] == "test-key"
     assert calls[0]["timeout"] == 60 and calls[0]["num_retries"] == 2 and calls[0]["max_tokens"] == 4096
     assert gateway.call_log[0].mode == "live"
