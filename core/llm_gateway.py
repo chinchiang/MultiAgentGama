@@ -317,6 +317,16 @@ class LLMGateway:
             return f"response has none of the expected key(s): {', '.join(required_keys_any)}"
         return None
 
+    def record_failure(self, agent_id: str, reason: str) -> None:
+        """Books an agent call that crashed before the gateway could answer (e.g. an exception in
+        the caller's thread-pool batch). Recorded as an `invalid` call so the quality gate sees the
+        missing result as an evidence gap instead of mistaking silence for "nothing found"."""
+        agent_meta = self.agents_config.get(agent_id) or {}
+        model_alias = agent_meta.get("model_alias") or UNCONFIGURED_ALIAS
+        model_info = self.models_config.get(model_alias) or {}
+        model_name = model_info.get("model") or f"(no model configured for alias '{model_alias}')"
+        self._record(agent_id, model_alias, model_name, "invalid", f"agent call crashed before producing output: {reason}")
+
     def _record(
         self, agent_id: str, model_alias: str, model_name: str, mode: str,
         reason: Optional[str] = None, prompt_sha256: Optional[str] = None

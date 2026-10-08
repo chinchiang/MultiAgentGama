@@ -80,7 +80,7 @@ class ReportGenerator:
         if summary.inconclusive_reasons:
             md.append("**Evidence gaps:**")
             for reason in summary.inconclusive_reasons:
-                md.append(f"- {reason}")
+                md.append(f"- {markdown_safe(reason)}")  # reasons quote model-chosen ids and failure text
             md.append("")
 
         sim_tag = " `[SIMULATED]`" if debate_result.is_simulated else ""
@@ -210,7 +210,7 @@ class ReportGenerator:
             md.append("\n### ⚪ Threats Not Tested")
             md.append("No executable test was synthesized for these threats; they are neither confirmed nor ruled out:")
             for threat_id in summary.untested_threat_ids:
-                md.append(f"- `{threat_id}`")
+                md.append(f"- {self._code_span(threat_id)}")  # a model-chosen id cannot break out of the span
 
         md.append("\n")
 

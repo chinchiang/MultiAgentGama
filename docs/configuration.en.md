@@ -20,7 +20,7 @@ From the CLI, use `--config <path>` to point at a different file and `--mode` to
 | `max_output_tokens` | `16384` | Token cap per model response; `models.<alias>.max_output_tokens` overrides it per model |
 | `max_model_calls` | `null` (unlimited) | Cost guard: real model invocations per run (litellm retries and the `fallback_model` of one invocation are not counted separately). Once exhausted, `hybrid` falls back to the simulation engine and it is listed as an evidence gap (the verdict cannot be `READY_TO_SHIP`); `live` raises `LLMGatewayError` (exit 4). Must be a non-negative integer; `0` means unlimited |
 | `max_concurrent_calls` | `6` | Concurrent model calls per agent phase (review, verification, white-box test generation, black-box attack synthesis); `1` makes everything sequential |
-| `max_files` | `50` | Source files analyzed per run; files beyond the cap are listed as an evidence gap (the verdict cannot be `READY_TO_SHIP`) |
+| `max_files` | `50` | Source files analyzed per run; files beyond the cap are listed as an evidence gap (the verdict cannot be `READY_TO_SHIP`). Must be a non-negative integer; `0` / `null` keep the default, a negative or non-integer value fails at startup with `ConfigError` (exit 5) |
 | `sandbox_provider` | `"local_subprocess"` | `local_subprocess` (local subprocess, **not a security boundary**) or `docker` (disposable isolated container); anything else fails at startup |
 | `docker_image` | `"vibeharness-sandbox:latest"` | Docker sandbox image; must ship `pytest`, `pytest-cov`, and the target's dependencies |
 | `docker_network` | `"none"` | Container network mode; `none` blocks all network. Black-box tests against a running service need network access (e.g. `host` on Linux), which reduces isolation |
@@ -134,7 +134,7 @@ agents:
     model_alias: "gemini"      # was deepseek
 ```
 
-> Note: with a single model family, **cross-model verification cannot run**: every finding comes from `gemini`, and verifiers never rule on their own model's findings, so no finding gets a vote (none are filtered, and the agreement ratio shows N/A). The console warns "Fewer than two distinct reviewer models". The four reviewers still contribute their different `focus` areas, but agreement among copies of one model is consistency, not corroboration (OWASP LLM07:2026).
+> Note: with a single model family, **cross-model verification cannot run**: every finding comes from `gemini`, and verifiers never rule on their own model's findings, so no finding gets a vote (none are filtered, and the agreement ratio shows N/A). The console warns "Fewer than two distinct reviewer models" and the run records an evidence gap (the verdict cannot be `READY_TO_SHIP`). The four reviewers still contribute their different `focus` areas, but agreement among copies of one model is consistency, not corroboration (OWASP LLM07:2026).
 
 ### Switch to the Docker sandbox
 

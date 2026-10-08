@@ -73,7 +73,8 @@ class VibeHarnessCommander:
             self.sandbox, per_test_timeout_seconds=int(global_cfg.get("per_test_timeout_seconds", 30))
         )
         self.reporter = ReportGenerator()
-        self.max_files = int(global_cfg.get("max_files") or DEFAULT_MAX_FILES)
+        # Validated like the other limits (a negative or non-integer value is a ConfigError); 0/null keep the default
+        self.max_files = LLMGateway._positive_int(global_cfg.get("max_files"), "max_files") or DEFAULT_MAX_FILES
 
     @staticmethod
     def _build_sandbox(global_cfg: dict) -> LocalSubprocessSandbox:
@@ -270,9 +271,11 @@ class VibeHarnessCommander:
             inconclusive_reasons.append(f"Simulation engine (not real models) was used for: {', '.join(simulated_agents)}")
         invalid_calls = self.gateway.invalid_calls
         if invalid_calls:
-            invalid_agents = sorted({rec.agent_id for rec in invalid_calls})
+            # One entry per agent and reason: a crashed batch reads differently from a malformed answer
+            invalid_details = sorted({f"{rec.agent_id} ({rec.reason})" if rec.reason else rec.agent_id for rec in invalid_calls})
             inconclusive_reasons.append(
-                f"{len(invalid_calls)} model call(s) returned unusable output (invalid JSON / missing fields): {', '.join(invalid_agents)}"
+                f"{len(invalid_calls)} model call(s) returned unusable output or crashed before answering "
+                f"(invalid JSON / missing fields, or an exception in the batch): {'; '.join(invalid_details)}"
             )
         unmodeled_findings = self.whitebox_test_gen.findings_without_model_tests
         if unmodeled_findings:
@@ -289,6 +292,12 @@ class VibeHarnessCommander:
             )
         if not self.multi_reviewer.reviewer_agents:
             inconclusive_reasons.append("No whitebox_reviewer_* agents are configured, so no white-box model review ran")
+        elif len(reviewer_models) < 2:
+            # Copies of one model agreeing is consistency, not corroboration (OWASP LLM07:2026)
+            inconclusive_reasons.append(
+                f"Only one distinct reviewer model ({reviewer_models[0]}) is configured, so cross-model verification "
+                "could not run; the findings are unfiltered single-model hypotheses"
+            )
         if not symbols:
             inconclusive_reasons.append("No analyzable source symbols were found in the target")
         if self.ast_extractor.parse_failures:

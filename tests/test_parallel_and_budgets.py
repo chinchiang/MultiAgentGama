@@ -216,6 +216,44 @@ def test_invalid_limits_are_config_errors(tmp_path, key, value):
         LLMGateway(_config(tmp_path, **{key: value}))
 
 
+@pytest.mark.parametrize("value", [-1, "10", True, 2.5])
+def test_invalid_max_files_in_config_is_a_config_error(tmp_path, value):
+    """The CLI already rejects a bad --max-files; the config path must not quietly accept a negative
+    slice (which analyzed all but one file) or a string (which int() happened to convert)."""
+    from core.harness import VibeHarnessCommander
+    with pytest.raises(ConfigError, match="max_files"):
+        VibeHarnessCommander(config_path=_config(tmp_path, max_files=value), execution_mode="mock")
+
+
+def test_zero_or_null_max_files_keeps_the_default(tmp_path):
+    from core.harness import VibeHarnessCommander
+    from agents.whitebox.ast_extractor import DEFAULT_MAX_FILES
+    for value in (0, None):
+        commander = VibeHarnessCommander(config_path=_config(tmp_path, max_files=value), execution_mode="mock")
+        assert commander.max_files == DEFAULT_MAX_FILES
+
+
+def test_single_reviewer_model_is_an_evidence_gap(tmp_path):
+    """Four reviewer agents on one model cannot cross-verify each other (no model rules on its own
+    findings): the run must say so in the gate, not only on the console (OWASP LLM07:2026)."""
+    from core.harness import VibeHarnessCommander
+    with open(CONFIG, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    for agent_id, meta in cfg["agents"].items():
+        if agent_id.startswith(("whitebox_reviewer_", "whitebox_verifier_")):
+            meta["model_alias"] = "gemini"
+    path = tmp_path / "single.yaml"
+    path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    target = tmp_path / "app"
+    target.mkdir()
+    (target / "app.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
+    commander = VibeHarnessCommander(config_path=str(path), execution_mode="mock")
+    assert commander.multi_reviewer.distinct_models == ["gemini"]
+    summary = commander.run_full_pipeline(target_dir=str(target), output_report_path=str(tmp_path / "r.md"))
+    assert summary.overall_status != "READY_TO_SHIP"
+    assert any("Only one distinct reviewer model (gemini)" in r for r in summary.inconclusive_reasons)
+
+
 def test_exhausted_budget_makes_the_run_inconclusive(fake_live, tmp_path):
     from core.harness import VibeHarnessCommander
     target = tmp_path / "app"

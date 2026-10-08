@@ -187,6 +187,32 @@ def test_unconfigured_agent_is_never_routed_to_a_real_provider(fake_live):
         LLMGateway(CONFIG, execution_mode="live").generate("not_an_agent", "s", "u")
 
 
+def test_reviewer_and_verifier_without_model_alias_show_as_unconfigured(tmp_path):
+    """The ensemble and the debater must resolve a missing model_alias exactly as the gateway
+    routes it (`unconfigured`), not as the agent id's suffix: otherwise the report would show a
+    model that was never called, and the debater's self-review exclusion would compare the wrong alias."""
+    from agents.whitebox.debater import MultiModelDebater
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text(
+        "models:\n  claude: {model: m1, api_key_env: ANTHROPIC_API_KEY}\n"
+        "agents:\n"
+        "  whitebox_reviewer_mystery: {name: Mystery}\n"
+        "  whitebox_reviewer_blank: {model_alias: null}\n"
+        "  whitebox_verifier_mystery: {temperature: 0.0}\n"
+        "  whitebox_verifier_claude: {model_alias: claude}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "svc.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
+    gw = LLMGateway(str(cfg), execution_mode="mock")
+    ensemble = HeterogeneousReviewerEnsemble(gw)
+    assert [r["model_alias"] for r in ensemble.reviewer_agents] == ["unconfigured", "unconfigured"]
+    assert ensemble.distinct_models == ["unconfigured"]
+    assert MultiModelDebater(gw).verifiers == {"whitebox_verifier_mystery": "unconfigured", "whitebox_verifier_claude": "claude"}
+    findings = ensemble.review_symbols(ASTExtractor().parse_file(str(tmp_path / "svc.py")), root_dir=str(tmp_path))
+    assert all(f.model_alias == "unconfigured" for f in findings)
+    assert {rec.model_alias for rec in gw.call_log} == {"unconfigured"}
+
+
 # --- Generated-test gate: no package installs ---------------------------------------------------------
 
 @pytest.mark.parametrize("code", [
@@ -386,6 +412,27 @@ def test_markdown_report_defangs_model_authored_images(tmp_path):
     )
     assert "![x]" not in md and "<script>" not in md
     assert "`` s`x` ``" in md  # fence widened past the inner backticks
+
+
+def test_markdown_report_defangs_evidence_gaps_and_untested_threat_ids(tmp_path):
+    """Evidence-gap reasons quote model-chosen ids and failure text, and untested threat ids come
+    straight from the threat modeler: both lists must get the same defanging as every other cell."""
+    from core.models import MultiModelDebateResult, ThreatModelReport, VibeHarnessSummary
+    from reports.report_generator import ReportGenerator
+    md = ReportGenerator().generate_markdown_report(
+        summary=VibeHarnessSummary(
+            overall_status="INCONCLUSIVE", total_whitebox_findings=0, confirmed_whitebox_bugs=0,
+            whitebox_tests_passed=0, whitebox_tests_failed=0, total_threats_modeled=1, critical_threats_count=0,
+            blackbox_tests_passed=0, blackbox_security_breaches=0,
+            inconclusive_reasons=["1 modeled threat(s) have no executable test: ![x](https://evil.example/?q=1) <img src=x>"],
+            untested_threat_ids=["THREAT-`01`"],
+        ),
+        debate_result=MultiModelDebateResult(consensus_summary="c"),
+        threat_model=ThreatModelReport(system_description="s"),
+        whitebox_results=[], blackbox_results=[], target_path=str(tmp_path),
+    )
+    assert "![x]" not in md and "<img" not in md
+    assert "- `` THREAT-`01` ``" in md  # the id's own backticks cannot close the span early
 
 
 # --- Reasoning models: per-model output budget and honest truncation reason ------------------------------

@@ -1,8 +1,8 @@
 # VibeHarness-MAS 設計文件
 
-正體中文（臺灣）
+[English](design.en.md) ｜ 正體中文（臺灣）
 
-本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`core/__init__.py` 的 `0.2.0` 加上 `CHANGELOG.md` 的 `[Unreleased]` 段落（commit `f087dfb`，2026-10-08）。文中的 `path:line` 引用都以這個 commit 為準。
+本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`core/__init__.py` 的 `0.2.0` 加上 `CHANGELOG.md` 的 `[Unreleased]` 段落（2026-10-08，含本文第 16 章原先列出的六項缺口修正）。文中的 `path:line` 引用以同一個 commit 的檔案為準。
 
 與其他文件的分工：
 
@@ -27,9 +27,9 @@ Vibe coding（以自然語言提示驅動的程式產生）常見的缺陷型態
 
 這六條原則貫穿所有模組，後面每一章都會指出它們落在哪裡：
 
-1. **以執行結果為準。** 模型的發現與威脅只是假設。只有實際執行過的測試，或者不經模型的確定性規則，才能讓閘門 fail 或 block（`core/harness.py:326-338`）。
+1. **以執行結果為準。** 模型的發現與威脅只是假設。只有實際執行過的測試，或者不經模型的確定性規則，才能讓閘門 fail 或 block（`core/harness.py:335-347`）。
 2. **證據缺口 fail closed。** 任何讓判定不可信的情況（用到模擬引擎、模型輸出無效、測試沒跑、威脅沒測、檔案沒分析）都記成 evidence gap，判定最多是 `INCONCLUSIVE`（exit 3）；未知的判定字串也以 exit 3 結束（`main.py:42-55`）。
-3. **異構模型去偏差，沒有單一仲裁者。** 四個不同模型家族各自審查；每筆發現由「沒有回報它」的模型投票，模型不評審自己的發現（`agents/whitebox/debater.py:55-65`）。
+3. **異構模型去偏差，沒有單一仲裁者。** 四個不同模型家族各自審查；每筆發現由「沒有回報它」的模型投票，模型不評審自己的發現（`agents/whitebox/debater.py:57-67`）。
 4. **威脅建模先行。** 黑箱測試由 STRIDE／OWASP 威脅矩陣逐項推導，不做盲目的暴力測試。
 5. **目標程式碼是不受信任的輸入。** 送進任何模型前先去隱形字元、遮蔽密鑰，並包進來源標記通道；模型輸出進報告前再消毒（`core/sanitize.py`）。
 6. **成本與規模有硬上限。** `max_model_calls`、`max_concurrent_calls`、`max_files`、token 預算、逾時。
@@ -71,7 +71,7 @@ flowchart TD
     EXE1 --> TM
     SAST --> GATE
     EXE1 --> GATE
-    EXE2 --> GATE["Phase 6 Quality Gate<br/>15 項 evidence gap 檢查<br/>BLOCKED / NEEDS_FIXES / INCONCLUSIVE / READY"]
+    EXE2 --> GATE["Phase 6 Quality Gate<br/>16 項 evidence gap 檢查<br/>BLOCKED / NEEDS_FIXES / INCONCLUSIVE / READY"]
     GATE --> OUT["ReportGenerator<br/>Markdown / JSON / SARIF 2.1.0"]
 ```
 
@@ -107,49 +107,49 @@ flowchart TD
 
 ## 3. 執行流程（Pipeline）
 
-`VibeHarnessCommander.run_full_pipeline`（`core/harness.py:97-406`）是六個線性階段，沒有狀態機的分支或回退。每個階段的輸入、輸出與失敗處理如下。
+`VibeHarnessCommander.run_full_pipeline`（`core/harness.py:98-415`）是六個線性階段，沒有狀態機的分支或回退。每個階段的輸入、輸出與失敗處理如下。
 
-### Phase 1：符號擷取與確定性規則（`core/harness.py:128-157`）
+### Phase 1：符號擷取與確定性規則（`core/harness.py:129-158`）
 
 - `ASTExtractor.parse_directory(target, max_files)` 走訪目標，排除 `.`開頭目錄與 `venv`、`__pycache__`、`node_modules`、`dist`、`build`；目錄與檔名都排序，結果確定（`agents/whitebox/ast_extractor.py:57-76`）。超過 `max_files` 的檔案進 `skipped_files`，解析失敗的進 `parse_failures`，實際分析的進 `analyzed_files`。
-- 單一檔案目標時，`work_dir` 取所在目錄（`core/harness.py:133`），測試與 import 都以這個目錄為根。
-- 偵測到的語言排序後輸出；沒有偵測到任何語言時預設 `["Python"]`（`core/harness.py:137`）。
-- `AISecurityStaticScanner.scan_files(analyzed_files)` 在任何模型看到程式碼之前執行（`core/harness.py:144-145`），結果不可能被 prompt injection 影響。它同時產出 `ai_components`（目標 import 的 AI SDK），決定後面要不要套 OWASP LLM Top 10。
+- 單一檔案目標時，`work_dir` 取所在目錄（`core/harness.py:134`），測試與 import 都以這個目錄為根。
+- 偵測到的語言排序後輸出；沒有偵測到任何語言時預設 `["Python"]`（`core/harness.py:138`）。
+- `AISecurityStaticScanner.scan_files(analyzed_files)` 在任何模型看到程式碼之前執行（`core/harness.py:145-146`），結果不可能被 prompt injection 影響。它同時產出 `ai_components`（目標 import 的 AI SDK），決定後面要不要套 OWASP LLM Top 10。
 
-### Phase 2：多模型審查、去重、交叉驗證（`core/harness.py:159-183`）
+### Phase 2：多模型審查、去重、交叉驗證（`core/harness.py:160-184`）
 
 - `review_symbols` 把符號分批，對每個「reviewer × batch」平行呼叫模型。
 - `deduplicate_findings` 合併同一缺陷的多份回報，並把其他模型記在 `corroborating_models`。
 - `MultiModelDebater.arbitrate` 讓非作者模型投票，產出 `MultiModelDebateResult`。
-- 審查者的 `distinct_models` 少於兩個時只在 console 警告（`core/harness.py:165-167`），不是 evidence gap（見第 17 章）。
+- 審查者的 `distinct_models` 少於兩個時，console 警告（`core/harness.py:166-168`）之外也是 evidence gap（第 10.2 節 #7）：同一模型的多份副本彼此同意是一致，不是佐證。
 
-### Phase 3：白箱測試生成與執行（`core/harness.py:185-203`）
+### Phase 3：白箱測試生成與執行（`core/harness.py:186-204`）
 
 - 對 `confirmed_findings`（含平手保留的 undecided）逐筆生成測試；沒有可用模型測試的發現記進 `findings_without_model_tests`，並補上離線探針。
 - `execute_test_suite(..., collect_coverage=True)` 回傳每個測試的結果與行覆蓋率。覆蓋率只是資訊，不影響判定。
-- `wb_errored` 同時計入 `ERROR` 與 `SKIPPED`（`core/harness.py:201`）。
+- `wb_errored` 同時計入 `ERROR` 與 `SKIPPED`（`core/harness.py:202`）。
 
-### Phase 4：威脅建模（`core/harness.py:205-220`）
+### Phase 4：威脅建模（`core/harness.py:206-221`）
 
 - `entrypoints` 用偵測到的 route，沒有時用 `["HTTP/REST Endpoints"]`。
 - 符號分批、route 優先、平行呼叫；各批威脅合併並去重。
 
-### Phase 5：攻擊測試合成與執行（`core/harness.py:222-252`）
+### Phase 5：攻擊測試合成與執行（`core/harness.py:223-253`）
 
-- 每個威脅合成一個測試；合成失敗、程式碼為空、或指向非目標主機的威脅不會有測試，進 `untested_threats`（`core/harness.py:245-246`）。
+- 每個威脅合成一個測試；合成失敗、程式碼為空、或指向非目標主機的威脅不會有測試，進 `untested_threats`（`core/harness.py:246-247`）。
 - 結果分四類：`bb_passed`（防禦成立）、`bb_breaches`（`is_security_exploit_confirmed`）、`bb_failed_unclassified`（FAILED 但不符合 exploit 判定）、`bb_errored`。
 
-### Phase 6：閘門與報告（`core/harness.py:254-406`）
+### Phase 6：閘門與報告（`core/harness.py:255-415`）
 
-- 收集 15 項 evidence gap（第 11 章），判定，產生建議，組 `VibeHarnessSummary`，寫出 Markdown 或 JSON，另可寫 SARIF。
-- SARIF 不帶測試程式碼（`core/harness.py:380-381`）；Markdown 與 JSON 會。
+- 收集 16 項 evidence gap（第 10 章），判定，產生建議，組 `VibeHarnessSummary`，寫出 Markdown 或 JSON，另可寫 SARIF。
+- SARIF 不帶測試程式碼（`core/harness.py:389-390`）；Markdown 與 JSON 會。
 
 ### 失敗處理的共同模式
 
-每個會呼叫模型的階段都用同一套規則（`agents/whitebox/multi_reviewer.py:61-74` 是代表）：
+每個會呼叫模型的階段都用同一套規則（`agents/whitebox/multi_reviewer.py:63-78` 是代表）：
 
 - `LLMGatewayError` 往上拋。live 模式的失敗要大聲，CLI 以 exit 4 結束。
-- 其他例外記 log，該批當成空結果，其餘批次不受影響。
+- 其他例外記 log，該批當成空結果，其餘批次不受影響。審查與驗證的批次還會呼叫 `gateway.record_failure`，把這次崩潰記成一筆 `invalid` 呼叫（`core/llm_gateway.py:320-328`），所以缺席的那批會成為 evidence gap #3，不會被當成「沒有發現」。
 - 空結果會在後續階段變成 evidence gap（沒有測試、威脅未測），不會變成「通過」。
 
 ---
@@ -177,7 +177,7 @@ flowchart TD
 
 兩個設計重點：
 
-- `confirmed_whitebox_bugs` 是 `len(confirmed_findings) - undecided_count`（`core/harness.py:350`）。平手保留的發現在 `confirmed_findings` 裡，但不算「多數確認」。
+- `confirmed_whitebox_bugs` 是 `len(confirmed_findings) - undecided_count`（`core/harness.py:359`）。平手保留的發現在 `confirmed_findings` 裡，但不算「多數確認」。
 - `text_or(value, default)`（`core/models.py:7-11`）處理模型回傳 `"title": null` 的情況：非空字串才採用，其他一律換成預設值。所有解析模型輸出的地方都用它。
 
 ---
@@ -207,15 +207,15 @@ flowchart TD
 
 - `live`：模型回了可用的 JSON。
 - `simulated`：用了模擬引擎，`reason` 說明為什麼。
-- `invalid`：模型有回，但輸出不能用。`generate` 回傳只含 `_provenance` 的 dict，呼叫端拿不到資料。`reason` 會具體到：空回應（附 `finish_reason`，例如 `content_filter`）、`finish_reason == "length"` 時標「output truncated at the max_output_tokens limit」（`core/llm_gateway.py:220-229`）。
+- `invalid`：模型有回，但輸出不能用。`generate` 回傳只含 `_provenance` 的 dict，呼叫端拿不到資料。`reason` 會具體到：空回應（附 `finish_reason`，例如 `content_filter`）、`finish_reason == "length"` 時標「output truncated at the max_output_tokens limit」（`core/llm_gateway.py:220-229`）。審查或驗證批次在 gateway 之外崩潰時，呼叫端用 `record_failure`（`:320-328`）補記一筆 `invalid`，`reason` 以「agent call crashed before producing output」開頭並附例外。
 
 `used_simulation`、`invalid_calls`、`budget_exhausted_calls` 三個屬性讓閘門直接從 `call_log` 判斷 evidence gap。
 
 ### 5.3 輸出驗證
 
 - `required_keys`：全部要在。`required_keys_any`：至少一個要在（`core/llm_gateway.py:303-318`）。目前只有測試生成器用 `required_keys_any=["tests", "code"]`。
-- `json_output=False` 時永遠不會被判 invalid（測試生成的修復呼叫用這條路徑，見第 17 章）。
-- `_clean_and_parse_json`（`core/llm_gateway.py:329-387`）四層容錯：閉合的 code fence、直接 JSON、未閉合的 fence、第一個 `{` 到最後一個 `}`（失敗再逐一試每個 `{`）。全部失敗回 `None`，不回哨兵 dict，因為模型可能剛好回出一個長得像哨兵的 dict。
+- `json_output=False` 時永遠不會被判 invalid（測試生成的修復呼叫用這條路徑，見第 16 章）。
+- `_clean_and_parse_json`（`core/llm_gateway.py:339-397`）四層容錯：閉合的 code fence、直接 JSON、未閉合的 fence、第一個 `{` 到最後一個 `}`（失敗再逐一試每個 `{`）。全部失敗回 `None`，不回哨兵 dict，因為模型可能剛好回出一個長得像哨兵的 dict。
 - try 只包住網路呼叫（`core/llm_gateway.py:204-210`）。解析與驗證的 bug 會直接崩潰（exit 5），不會被包裝成「退回模擬」。
 
 ### 5.4 真實呼叫的細節（`_complete`，`core/llm_gateway.py:243-292`）
@@ -232,7 +232,7 @@ flowchart TD
 - **`prompt_sha256`**：`sha256(system + "\x00" + user)`（`core/llm_gateway.py:184`），三種 mode 都記錄。稽核時可以把判定對回確切的輸入，而報告不必保存程式碼。
 - **`unconfigured` 別名**（`core/llm_gateway.py:34-36`、`:180`）：agent 沒有 `model_alias`，或指到不存在的別名時，沒有模型也沒有金鑰。hybrid 走模擬、live 失敗。舊版會默默改走 `gpt-4o`，這是刻意移除的行為。
 
-### 5.6 模擬引擎（`core/llm_gateway.py:389-462`）
+### 5.6 模擬引擎（`core/llm_gateway.py:399-472`）
 
 模擬回應是與目標程式碼無關的固定範本，存在的目的是讓流程能離線跑通。它刻意不捏造證據：
 
@@ -264,7 +264,7 @@ flowchart TD
 | reviewer 每批 | 10000 tokens 或 15 個符號 | `agents/whitebox/multi_reviewer.py:29-30` |
 | 威脅建模每批 | 8000 tokens 或 15 個符號 | `agents/blackbox/threat_modeler.py:20-21` |
 | verifier 的程式碼上下文 | 8000 tokens | `agents/whitebox/debater.py:28` |
-| verifier 的 finding 列表 | 6000 tokens，每欄位 `max(40, 6000 // (n*4))` | `agents/whitebox/debater.py:31`、`:206` |
+| verifier 的 finding 列表 | 6000 tokens，每欄位 `max(40, 6000 // (n*4))` | `agents/whitebox/debater.py:31`、`:210` |
 | 測試生成的程式碼上下文 | 4000 tokens | `agents/whitebox/test_generator.py:17` |
 | 攻擊合成的程式碼上下文 | 4000 tokens | `agents/blackbox/scenario_builder.py:19` |
 
@@ -272,10 +272,10 @@ flowchart TD
 
 ### 6.3 多模型審查（`agents/whitebox/multi_reviewer.py`）
 
-- 審查者由設定檔決定：所有 `whitebox_reviewer_*` 都會用上，各自帶 `model_alias`、`name`、`focus`（`:32-47`）。缺 `name`／`focus` 時用預設值。一個都沒有時回傳空清單，閘門記 evidence gap。
-- 對「reviewer × batch」用 `ThreadPoolExecutor` 平行呼叫，worker 數為 `min(max_concurrent_calls, 工作數)`；結果依提交順序收集，所以 finding id 與報告順序確定（`:61-74`）。
+- 審查者由設定檔決定：所有 `whitebox_reviewer_*` 都會用上，各自帶 `model_alias`、`name`、`focus`（`:32-49`）。缺 `name`／`focus` 時用預設值；缺 `model_alias` 時解析為 `unconfigured`，與 gateway 的路由一致（`:41`），finding id 會是 `WB-UNC-NN`。一個都沒有時回傳空清單，閘門記 evidence gap。
+- 對「reviewer × batch」用 `ThreadPoolExecutor` 平行呼叫，worker 數為 `min(max_concurrent_calls, 工作數)`；結果依提交順序收集，所以 finding id 與報告順序確定（`:63-78`）；崩潰的批次經 `record_failure` 記成 `invalid` 呼叫。
 - 輸出契約：`{"findings": [{symbol_name, severity, title, description, root_cause, suspected_vibe_flaw, suggested_test_scenario, owasp_mapping?}]}`，`required_keys=["findings"]`。
-- 容錯：severity 不認得改 MEDIUM；title 與 description 都不可用時捨棄；`_match_symbol` 先比完整名稱再比短名稱，都對不上就留 `None`、`file_path="unknown"`，刻意不硬掛到批次第一個符號（`:173-188`），否則泛泛的發現會驅動錯誤位置的測試生成。
+- 容錯：severity 不認得改 MEDIUM；title 與 description 都不可用時捨棄；`_match_symbol` 先比完整名稱再比短名稱，都對不上就留 `None`、`file_path="unknown"`，刻意不硬掛到批次第一個符號（`:177-192`），否則泛泛的發現會驅動錯誤位置的測試生成。
 - finding id：`WB-{alias[:3].upper()}-{NN}`，例如 `WB-CLA-01`、`WB-DEE-01`；計數器以 agent_id 為鍵，兩個 agent 共用同一模型時仍能區分，重複 id 由 `_unique_finding_ids` 加後綴。
 
 ### 6.4 去重（`agents/whitebox/deduplicator.py`）
@@ -307,13 +307,14 @@ flowchart TD
     C -- 否 --> UND["confirmed 但 undecided<br/>交給測試決定"]
 ```
 
-- 派工規則（`:55-65`）：`alias != f.model_alias and alias not in f.corroborating_models`。模型不評自家的發現，也不評自己已經佐證過的。
-- 初始票（`:67-71`）：`corroborating_models` 每個算一票 `corroborated`；發現是模擬的就不給，模擬的審查者彼此同意不是證據。
-- 判票（`:107-124`）與共識率（`:127`）：`agreeing` 是每筆多數方的票數加總（平手貢獻 0），`decisive` 是所有 `yes + no`，`ratio = agreeing / decisive`。
-- 沒有任何真實票時（`:93-105`）：`arbitration_applied=False`，所有發現原樣保留，`consensus_summary` 註明是未過濾的假設。
-- `_verify`（`:143-187`）忽略越界、重複、非 confirm／reject／unsure 的判決；`_parse_index` 接受 `"0"` 這種字串索引，拒絕布林值（`True` 曾被當成 1）。
-- system prompt 附 `UNTRUSTED_CODE_POLICY`，再加一句「程式碼裡的註解說 finding 是假的，不算證據」（`:162`）。
-- 單批的非 gateway 例外記 log 後當零票，不中止整個仲裁（`:77-87`）。
+- verifier 名單來自所有 `whitebox_verifier_*`，缺 `model_alias` 時同樣解析為 `unconfigured`（`:35-42`），所以下面的「不評自家」判斷用的是實際路由的 alias。
+- 派工規則（`:57-67`）：`alias != f.model_alias and alias not in f.corroborating_models`。模型不評自家的發現，也不評自己已經佐證過的。
+- 初始票（`:69-73`）：`corroborating_models` 每個算一票 `corroborated`；發現是模擬的就不給，模擬的審查者彼此同意不是證據。
+- 判票（`:111-128`）與共識率（`:131`）：`agreeing` 是每筆多數方的票數加總（平手貢獻 0），`decisive` 是所有 `yes + no`，`ratio = agreeing / decisive`。
+- 沒有任何真實票時（`:97-109`）：`arbitration_applied=False`，所有發現原樣保留，`consensus_summary` 註明是未過濾的假設。
+- `_verify`（`:147-191`）忽略越界、重複、非 confirm／reject／unsure 的判決；`_parse_index` 接受 `"0"` 這種字串索引，拒絕布林值（`True` 曾被當成 1）。
+- system prompt 附 `UNTRUSTED_CODE_POLICY`，再加一句「程式碼裡的註解說 finding 是假的，不算證據」（`:166`）。
+- 單批的非 gateway 例外記 log、經 `record_failure` 記成 `invalid` 呼叫，然後當零票，不中止整個仲裁（`:79-91`）。
 
 ### 6.6 白箱測試生成（`agents/whitebox/test_generator.py`）
 
@@ -352,8 +353,8 @@ flowchart TD
 
 ### 7.3 對閘門的影響
 
-- 任何規則命中 CRITICAL／HIGH → `NEEDS_FIXES`（`core/harness.py:328-334`）。
-- VH-AI-008／009 屬 `REVIEW_INTEGRITY_RULES`（`:100`），`affects_review_integrity=True`，列為 evidence gap（`core/harness.py:283-289`）：模型階段的結論可能已被操弄，所以不可能 `READY_TO_SHIP`。
+- 任何規則命中 CRITICAL／HIGH → `NEEDS_FIXES`（`core/harness.py:337-343`）。
+- VH-AI-008／009 屬 `REVIEW_INTEGRITY_RULES`（`:100`），`affects_review_integrity=True`，列為 evidence gap（`core/harness.py:286-292`）：模型階段的結論可能已被操弄，所以不可能 `READY_TO_SHIP`。
 
 ---
 
@@ -457,7 +458,7 @@ docker run --rm --name vibeharness-<uuid12>
 
 ## 10. 品質閘門（Quality Gate）
 
-### 10.1 判定順序（`core/harness.py:328-338`）
+### 10.1 判定順序（`core/harness.py:337-347`）
 
 ```mermaid
 flowchart TD
@@ -474,27 +475,28 @@ flowchart TD
 
 因為順序如此，mock 模式下探針 FAILED 會得到 NEEDS_FIXES（exit 1），不是 INCONCLUSIVE：探針是真的執行過的證據。
 
-### 10.2 Evidence gap 完整清單（`core/harness.py:261-324`）
+### 10.2 Evidence gap 完整清單（`core/harness.py:262-333`）
 
 出現任何一項就不可能 `READY_TO_SHIP`：
 
 | # | 行號 | 條件 | 來源 |
 | :--- | :--- | :--- | :--- |
-| 1 | 262-267 | `max_model_calls` 預算用完，之後的呼叫改走模擬 | `gateway.budget_exhausted_calls` |
-| 2 | 268-270 | 任何呼叫用了模擬引擎 | `gateway.used_simulation` |
-| 3 | 271-276 | 任何呼叫的輸出無效（非 JSON、缺欄位、空回應、被截斷） | `gateway.invalid_calls` |
-| 4 | 277-282 | 確認的 finding 沒有可用的模型測試，只由探針覆蓋 | `findings_without_model_tests` |
-| 5 | 283-289 | 目標中有對審查者的指令或隱形字元（VH-AI-008／009） | `affects_review_integrity` |
-| 6 | 290-291 | 沒有設定任何 `whitebox_reviewer_*` | `reviewer_agents` |
-| 7 | 292-293 | 沒有抽到任何符號 | Phase 1 |
-| 8 | 294-297 | 有檔案解析失敗 | `parse_failures` |
-| 9 | 298-301 | 有檔案超過 `max_files` 被跳過 | `skipped_files` |
-| 10 | 302-306 | 白箱或黑箱測試 ERROR、SKIPPED 或沒跑 | `wb_errored + bb_errored` |
-| 11 | 307-312 | 有非 Python 語言，只做了靜態審查（沙盒只執行 Python） | `detected_langs` |
-| 12 | 313-318 | 黑箱測試 FAILED 但不符合 exploit 判定（證據模糊） | `bb_failed_unclassified` |
-| 13 | 319-320 | 完全沒有執行任何白箱測試 | `wb_results` |
-| 14 | 321-322 | 威脅建模沒有產出任何威脅 | `threat_report.threats` |
-| 15 | 323-324 | 有威脅沒有對應的可執行測試 | `untested_threats` |
+| 1 | 263-268 | `max_model_calls` 預算用完，之後的呼叫改走模擬 | `gateway.budget_exhausted_calls` |
+| 2 | 269-271 | 任何呼叫用了模擬引擎 | `gateway.used_simulation` |
+| 3 | 272-279 | 任何呼叫的輸出無效（非 JSON、缺欄位、空回應、被截斷），或審查／驗證批次在 gateway 之外崩潰（`record_failure`）；訊息逐一列出 agent 與原因 | `gateway.invalid_calls` |
+| 4 | 280-285 | 確認的 finding 沒有可用的模型測試，只由探針覆蓋 | `findings_without_model_tests` |
+| 5 | 286-292 | 目標中有對審查者的指令或隱形字元（VH-AI-008／009） | `affects_review_integrity` |
+| 6 | 293-294 | 沒有設定任何 `whitebox_reviewer_*` | `reviewer_agents` |
+| 7 | 295-300 | 有審查者但只有一種模型，交叉驗證無法進行（OWASP LLM07:2026） | `distinct_models` |
+| 8 | 301-302 | 沒有抽到任何符號 | Phase 1 |
+| 9 | 303-306 | 有檔案解析失敗 | `parse_failures` |
+| 10 | 307-310 | 有檔案超過 `max_files` 被跳過 | `skipped_files` |
+| 11 | 311-315 | 白箱或黑箱測試 ERROR、SKIPPED 或沒跑 | `wb_errored + bb_errored` |
+| 12 | 316-321 | 有非 Python 語言，只做了靜態審查（沙盒只執行 Python） | `detected_langs` |
+| 13 | 322-327 | 黑箱測試 FAILED 但不符合 exploit 判定（證據模糊） | `bb_failed_unclassified` |
+| 14 | 328-329 | 完全沒有執行任何白箱測試 | `wb_results` |
+| 15 | 330-331 | 威脅建模沒有產出任何威脅 | `threat_report.threats` |
+| 16 | 332-333 | 有威脅沒有對應的可執行測試 | `untested_threats` |
 
 ### 10.3 Exit code（`main.py:42-55`、`:133-172`）
 
@@ -507,7 +509,7 @@ flowchart TD
 | 4 | live 模式模型呼叫失敗（`LLMGatewayError`） |
 | 5 | 設定或用法錯誤：`--target` 不存在、`ConfigError`、`SandboxUnavailableError`、CLI 誤用（argparse 的 exit 2 被改成 5，避免與 BLOCKED 撞號）、未預期的崩潰（印完整 traceback） |
 
-### 10.4 建議的排序（`_build_recommendations`，`core/harness.py:408-442`）
+### 10.4 建議的排序（`_build_recommendations`，`core/harness.py:417-451`）
 
 已確認的突破 → 確定性規則 HIGH 以上命中 → 白箱 FAILED → 未分類的黑箱 FAILED → 未測試的威脅 → 有 evidence gap 時的提示 → 都沒有時的預設文字。
 
@@ -518,8 +520,8 @@ flowchart TD
 ### 11.1 Markdown（`generate_markdown_report`，`:41-226`）
 
 - 只要有模擬呼叫就在最上方顯示 SIMULATED 警示，依比例標 ALL 或 SOME（`:61-69`）。
-- §1 判定、evidence gap、指標表（含「Deterministic AI-Security Rule Hits」）、reviewer models、AI components、確定性規則表、Execution Provenance 表（依 agent／model／mode／reason 分組計數）。共識率在未套用驗證時顯示「N/A (verification not applied)」（`:91-94`）。
-- §2 confirmed 與 disputed findings（含各票）、白箱結果表。§3 威脅表（含 MITRE ATLAS 欄）。§4 黑箱結果、PoC、未測試威脅。§5 建議。
+- §1 判定、evidence gap（每條經 `markdown_safe`，`:82-83`）、指標表（含「Deterministic AI-Security Rule Hits」）、reviewer models、AI components、確定性規則表、Execution Provenance 表（依 agent／model／mode／reason 分組計數）。共識率在未套用驗證時顯示「N/A (verification not applied)」（`:91-94`）。
+- §2 confirmed 與 disputed findings（含各票）、白箱結果表。§3 威脅表（含 MITRE ATLAS 欄）。§4 黑箱結果、PoC、未測試威脅（id 經 `_code_span`，`:212-213`）。§5 建議。
 - §6 Generated Test Code（`_generated_tests_section`，`:559-602`）：每個測試一個 `<details>`，程式碼與執行結果並列。live 實測發現有「通過」的測試其實在斷言缺陷本身，沒有程式碼就無法稽核。fence 依內容中最長的反引號自動加長（`_fence`，`:553-557`）。
 
 ### 11.2 JSON（`generate_json_report`，`:228-254`）
@@ -537,7 +539,7 @@ flowchart TD
 
 ### 11.4 報告消毒
 
-模型文字進報告前的處理（第 12 章的 `clean_model_text`、`markdown_safe`）：表格儲存格經 `_cell`（跳脫 `|`、去換行）、inline code 經 `_code_span`（fence 加寬到比內容中任何反引號長）、SARIF message 經 `clean_model_text`、`<summary>` 內的 id 經 `html.escape`。
+模型文字進報告前的處理（第 12 章的 `clean_model_text`、`markdown_safe`）：表格儲存格經 `_cell`（跳脫 `|`、去換行）、inline code 與未測試威脅 id 經 `_code_span`（fence 加寬到比內容中任何反引號長）、evidence gap 文字與建議經 `markdown_safe`、SARIF message 經 `clean_model_text`、`<summary>` 內的 id 經 `html.escape`。
 
 ---
 
@@ -573,7 +575,8 @@ console 輸出另外用 `rich.markup.escape`（`core/harness.py:6`）。
 
 - `global`：執行模式、逾時、重試、token 上限、`max_model_calls`、`max_concurrent_calls`、`max_files`、沙盒參數。
 - `models`：每個鍵是一個 `model_alias`，值是 litellm model string、`api_key_env`、`fallback_model`，選填 `api_base`、`aws_profile_name`／`aws_region_name`、`max_output_tokens`。預設四個別名：claude、glm、deepseek、gemini，都用帶版本號的 id，供應商端換模型時報告會看到。
-- `agents`：每個鍵是一個 `agent_id`。gateway 只讀 `model_alias` 與 `temperature`（`core/llm_gateway.py:179-181`）；`name` 與 `focus` 只有 `whitebox_reviewer_*` 讀（`agents/whitebox/multi_reviewer.py:43-44`）。`role`、`models.*.provider` 程式不讀。
+- `agents`：每個鍵是一個 `agent_id`。gateway 只讀 `model_alias` 與 `temperature`（`core/llm_gateway.py:179-181`）；`name` 與 `focus` 只有 `whitebox_reviewer_*` 讀（`agents/whitebox/multi_reviewer.py:45-46`）。`role`、`models.*.provider` 程式不讀。缺 `model_alias` 的 agent 在 gateway、reviewer 與 debater 都解析為 `unconfigured`。
+- `global` 的三個上限都經 `LLMGateway._positive_int` 驗證（`max_files` 在 `core/harness.py:77`）：負數、bool、非整數是 `ConfigError`（exit 5），0 或 null 代表「未設定」而沿用預設。
 
 ### 13.2 擴充點
 
@@ -585,7 +588,7 @@ console 輸出另外用 `rich.markup.escape`（`core/harness.py:6`）。
 | 接新供應商 | 在 `models` 加別名；任何 litellm 支援的字串都可以 |
 | 單一金鑰跑 live | 所有 `model_alias` 指向同一個別名。但同一模型家族無法交叉驗證：作者與驗證者是同一模型，沒有任何發現會得到票 |
 | 調整威脅建模指引 | 改 `threat_rules.yaml` 中會進 prompt 的欄位（第 8.1 節的表） |
-| 新沙盒 | 繼承 `LocalSubprocessSandbox`，覆寫 `_prepare_code`、`_build_command`、`_after_timeout`（`core/sandbox.py:157-194` 的 hook），並在 `_build_sandbox`（`core/harness.py:79-95`）登記 |
+| 新沙盒 | 繼承 `LocalSubprocessSandbox`，覆寫 `_prepare_code`、`_build_command`、`_after_timeout`（`core/sandbox.py:157-194` 的 hook），並在 `_build_sandbox`（`core/harness.py:80-96`）登記 |
 
 其餘 agent（`whitebox_test_generator`、`blackbox_threat_modeler`、`blackbox_test_synthesizer`）由程式以固定 agent_id 呼叫，設定只控制模型與溫度。
 
@@ -599,8 +602,8 @@ console 輸出另外用 `rich.markup.escape`（`core/harness.py:6`）。
 
 | 階段 | 工作單位 | 位置 | 單一工作失敗時 |
 | :--- | :--- | :--- | :--- |
-| 白箱審查 | reviewer × batch | `agents/whitebox/multi_reviewer.py:64-74` | 該批當 `({}, False)` |
-| 交叉驗證 | verifier × 每 15 筆 | `agents/whitebox/debater.py:77-87` | 該批零票 |
+| 白箱審查 | reviewer × batch | `agents/whitebox/multi_reviewer.py:66-78` | 該批當 `({}, False)`，並記一筆 `invalid` 呼叫 |
+| 交叉驗證 | verifier × 每 15 筆 | `agents/whitebox/debater.py:79-91` | 該批零票，並記一筆 `invalid` 呼叫 |
 | 白箱測試生成 | 每筆 finding | `agents/whitebox/test_generator.py:51-64` | 進 `findings_without_model_tests` |
 | 威脅建模 | 每批符號 | `agents/blackbox/threat_modeler.py:207-229` | 該批當 `{}` |
 | 攻擊合成 | 每個威脅 | `agents/blackbox/scenario_builder.py:129-147` | 該威脅 untested |
@@ -611,7 +614,7 @@ console 輸出另外用 `rich.markup.escape`（`core/harness.py:6`）。
 
 - `max_model_calls`：live 呼叫的硬上限，在真正呼叫前扣額度，所以失敗的呼叫也算；litellm 的重試與 `fallback_model` 不另計。用完時 hybrid 走模擬（evidence gap #1、#2），live 失敗。CLI `--max-model-calls 0` 等於不限。
 - `max_concurrent_calls`：每階段的平行度，預設 6；設 1 就完全循序。
-- `max_files`：預設 50，超出的檔案進 evidence gap #9。
+- `max_files`：預設 50，超出的檔案進 evidence gap #10；設定檔的值經 `_positive_int` 驗證。
 - 每次執行的呼叫數上限（沒有總上限時）：reviewer 數 × 批次數 + 每位 verifier `ceil(分到的 finding 數 / 15)` + confirmed finding 數 ×（1 + 最多 2 次修復）+ 威脅建模批次數 + 威脅數。
 
 ---
@@ -667,15 +670,13 @@ mutation testing、DAST／fuzzing、hypothesis、e2b 沙盒、JS/TS 測試執行
 
 ### 16.2 行為上的缺口
 
-- reviewer、verifier 批次的非 gateway 例外只記 log（`agents/whitebox/multi_reviewer.py:72-74`、`agents/whitebox/debater.py:85-87`），不寫 `call_log`，所以不會成為 evidence gap。該批的缺席會以「沒有發現」的形式出現。
-- 測試生成的修復呼叫用 `json_output=False`（`agents/whitebox/test_generator.py:165`），永遠不會被判 invalid。
-- 「reviewer 模型少於兩種」只印 console 警告（`core/harness.py:165-167`），不是 evidence gap。此時 debater 沒有工作可派，`arbitration_applied=False`，判定仍可能是 READY_TO_SHIP。
+- 測試生成的修復呼叫用 `json_output=False`（`agents/whitebox/test_generator.py:165`），永遠不會被判 invalid；修不好的程式碼仍會在執行時報 ERROR，所以不會變成「通過」。
 - `call_log` 依執行緒完成順序寫入，Execution Provenance 表的列序每次可能不同；預算用完時哪幾次呼叫改走模擬也取決於時序。
-- reviewer／debater 在缺 `model_alias` 時用 agent_id 後綴當顯示用的 alias（`agents/whitebox/multi_reviewer.py:39`、`agents/whitebox/debater.py:37`），但 gateway 實際走 `unconfigured`；報告顯示的 alias 與實際路由不一致。
+- 威脅建模與攻擊合成的批次崩潰不經 `record_failure`：前者的缺席以「該批沒有威脅」呈現，後者以 untested 威脅呈現，都仍是 evidence gap，但原因不會寫進 `call_log`。
 - JS/TS 的 Next.js route 會同時以 function 與 route 兩個符號送審（`agents/whitebox/ast_extractor.py:430-462`）。
-- `max_files` 從設定檔設 0 會退回 50，設負數沒有驗證（`core/harness.py:76`）；CLI 的 `--max-files` 有驗證。
-- Markdown 的 evidence gap 清單（`reports/report_generator.py:80-83`）與未測試威脅清單（`:209-213`）沒有經過 `markdown_safe`；它們會帶出模型給的 threat_id 與 test_id。
 - `report_generator.py:94` 的「N/A (no decisive votes)」分支實際走不到：`arbitration_applied=True` 蘊含 `real_votes > 0`，也就是 `decisive > 0`。
+
+以下六點在 2026-10-08 修正（見 `CHANGELOG.md` 的 `[Unreleased]`）：審查／驗證批次崩潰不進 `call_log`；單一 reviewer 模型只印警告；Markdown 的 evidence gap 與未測試威脅清單未消毒；缺 `model_alias` 時顯示的 alias 與實際路由不一致；root 下兩個 Docker 測試對不存在的 run_dir 做 `chmod`；設定檔 `max_files` 負數未驗證。
 
 ### 16.3 運維限制
 
@@ -689,9 +690,8 @@ mutation testing、DAST／fuzzing、hypothesis、e2b 沙盒、JS/TS 測試執行
 
 - `publish.yml` 的 `pypi-publish` 重新 build 一次，不沿用 Release 上的 artifacts，兩邊產物不保證位元相同；`build-and-upload` 沒有 `timeout-minutes`。
 - pre-commit 只有 ruff，沒有 mypy hook。
-- harness 以 root 執行時，`tests/test_docker_sandbox.py` 中兩個只組指令、不建立 run_dir 的測試（`test_run_command_is_isolated`、`test_custom_env_cannot_carry_credentials_or_injection_vectors`）會在 `DockerSandbox._build_command` 的 `os.chmod(run_dir, 0o777)`（`core/sandbox.py:421-424`）遇到 `FileNotFoundError`。CI 的 runner 不是 root，所以沒有暴露；在 root 容器內跑測試套件會看到這兩個失敗。
 - README 給目標專案的範例用 `codeql-action/upload-sarif@v3`（tag），與本 repo 的 SHA 釘版做法不一致。
-- CHANGELOG 沒有 PR #18（確定性與精度整理）與 #19（JS/TS lexer 重寫）的獨立條目；v0.1.0 的日期寫 2026-10-03，tag commit 是 2026-10-02。
+- v0.1.0 的 CHANGELOG 日期寫 2026-10-03，tag commit 是 2026-10-02。
 
 ---
 
@@ -719,6 +719,7 @@ mutation testing、DAST／fuzzing、hypothesis、e2b 沙盒、JS/TS 測試執行
 | 確定性 VH-AI 規則；不受信任程式碼通道；報告消毒 | harness 本身是 LLM 應用，每個信任邊界要有不經模型的控制 | 規則偏向特定形狀，有漏報 | PR #30 |
 | 報告保存生成測試的程式碼 | live 實測發現「通過」的測試在斷言缺陷本身 | 報告變大 | PR #31 |
 | 帶版本號的模型 id、https-only、`prompt_sha256` | 供應商換模型要可見；程式碼不能明文送到任意主機；判定要能對回輸入 | — | PR #30 |
+| 批次崩潰記成 `invalid` 呼叫；單一模型家族是 evidence gap | 缺席的審查不能以「沒有發現」通過；同一模型的副本彼此同意不是佐證 | 更多 INCONCLUSIVE | 2026-10-08 |
 
 ---
 
@@ -741,24 +742,24 @@ mutation testing、DAST／fuzzing、hypothesis、e2b 沙盒、JS/TS 測試執行
 | `PROBE_ATTEMPTS`／`PROBE_RETRY_DELAY_SEC` | 3／0.5 | `agents/blackbox/scenario_builder.py:34-35` |
 | `TIMEOUT_EXIT_CODE`／`EXECUTION_FAILURE_EXIT_CODE` | 124／125 | `core/sandbox.py:18-20` |
 | `_POST_KILL_DRAIN_SECONDS` | 5.0 | `core/sandbox.py:25` |
-| `sandbox_timeout_seconds`／`per_test_timeout_seconds`（預設） | 120／30 | `core/harness.py:73`、`:81` |
+| `sandbox_timeout_seconds`／`per_test_timeout_seconds`（預設） | 120／30 | `core/harness.py:73`、`:82` |
 | `_MAX_HITS_PER_RULE_PER_FILE` | 20 | `agents/whitebox/ai_static_scanner.py:101` |
 | `USAGE_ERROR_EXIT_CODE` | 5 | `main.py:15` |
 
 ### 18.2 關鍵函式索引
 
 - `main.py`：`verdict_exit_code` 42、`main` 58
-- `core/harness.py`：`_build_sandbox` 79、`run_full_pipeline` 97、evidence gap 261-324、判定 328-338、`_build_recommendations` 409
-- `core/llm_gateway.py`：`_validate_endpoints` 84、`_positive_int` 106、`_reserve_live_call` 114、`is_live_configured` 154、`generate` 163、`_complete` 243、`_max_output_tokens` 294、`_validate_output` 303、`_clean_and_parse_json` 329、`_generate_simulated_response` 389
+- `core/harness.py`：`_build_sandbox` 80、`run_full_pipeline` 98、evidence gap 262-333、判定 337-347、`_build_recommendations` 418
+- `core/llm_gateway.py`：`_validate_endpoints` 84、`_positive_int` 106、`_reserve_live_call` 114、`is_live_configured` 154、`generate` 163、`_complete` 243、`_max_output_tokens` 294、`_validate_output` 303、`record_failure` 320、`_clean_and_parse_json` 339、`_generate_simulated_response` 399
 - `core/codecontext.py`：`estimate_tokens` 20、`truncate_to_tokens` 25、`import_instructions` 63、`class_skeleton` 87、`symbol_source` 113、`render_symbols` 136、`batch_symbols` 167、`file_source` 189
 - `core/codecheck.py`：`strip_code_fences` 15、`_has_assertion` 36、`check_test_code` 70、`_package_install_call` 99
 - `core/sanitize.py`：`strip_invisible` 40、`find_invisible` 47、`find_secrets` 79、`redact_secrets` 88、`find_injection_markers` 114、`prepare_untrusted_code` 126、`untrusted_block` 146、`clean_model_text` 157、`markdown_safe` 168
 - `core/sandbox.py`：`filter_custom_env` 50、`build_safe_env` 65、`execute_pytest_files` 109、`_run` 210、`_kill_tree` 243、`rewrite_host_paths` 282、`DockerSandbox._verify_available` 349、`_user` 391、`DockerSandbox._build_command` 401、`_after_timeout` 457
 - `agents/whitebox/ast_extractor.py`：`parse_directory` 57、`_parse_python_file` 78、`_parse_js_ts_file` 108、`_mask_source` 133、`_extract_js_functions` 325、`_extract_js_routes` 430、`_extract_python_function` 583
 - `agents/whitebox/ai_static_scanner.py`：`scan_files` 129、`_scan_text_rules` 166、`_scan_python` 173、`_call_rules` 238、`_taint_rule` 267、`_dedupe` 321
-- `agents/whitebox/multi_reviewer.py`：`__init__` 32、`review_symbols` 54、`_review_batch` 136、`_match_symbol` 174
+- `agents/whitebox/multi_reviewer.py`：`__init__` 32、`review_symbols` 56、`_review_batch` 140、`_match_symbol` 178
 - `agents/whitebox/deduplicator.py`：`_similar` 41、`_same_location` 48、`deduplicate_findings` 55
-- `agents/whitebox/debater.py`：`arbitrate` 42、`_verify` 143、`_parse_index` 190、`_build_listing` 201、`_code_context` 219
+- `agents/whitebox/debater.py`：`arbitrate` 44、`_verify` 147、`_parse_index` 194、`_build_listing` 205、`_code_context` 223
 - `agents/whitebox/test_generator.py`：`generate_tests_for_findings` 36、`_tests_for_finding` 78、`_validate_and_heal` 143、`_has_required_params` 196、`build_offline_probes` 215
 - `agents/blackbox/threat_modeler.py`：`_rules_guidance` 71、`_llm_rules_guidance` 100、`model_system` 154、`_merge_duplicate_threats` 258、`_parse_threats` 277
 - `agents/blackbox/scenario_builder.py`：`check_server_live` 37、`_hosts_outside_base_url` 75、`build_test_cases_from_threats` 102、`_test_for_threat` 149

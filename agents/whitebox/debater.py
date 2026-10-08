@@ -3,7 +3,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
 from core.models import ReviewFinding, MultiModelDebateResult, VerificationVote, CodeSymbol
-from core.llm_gateway import LLMGateway, LLMGatewayError
+from core.llm_gateway import LLMGateway, LLMGatewayError, UNCONFIGURED_ALIAS
 from core.codecontext import render_symbols, truncate_to_tokens
 from core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
 
@@ -32,9 +32,11 @@ class MultiModelDebater:
 
     def __init__(self, gateway: LLMGateway):
         self.gateway = gateway
-        # Verifier agents come from config, e.g. whitebox_verifier_claude -> model alias "claude"
+        # Verifier agents come from config, e.g. whitebox_verifier_claude -> model alias "claude".
+        # Resolved like the gateway does: no model_alias means `unconfigured`, so the self-review
+        # exclusion below matches the alias the calls are actually routed under.
         self.verifiers: Dict[str, str] = {
-            agent_id: meta.get("model_alias", agent_id[len(VERIFIER_PREFIX):])
+            agent_id: str((meta if isinstance(meta, dict) else {}).get("model_alias") or UNCONFIGURED_ALIAS)
             for agent_id, meta in gateway.agents_config.items()
             if agent_id.startswith(VERIFIER_PREFIX)
         }
@@ -84,6 +86,8 @@ class MultiModelDebater:
                         raise
                     except Exception as e:
                         logger.error(f"Verifier batch for {job[0]} failed: {type(e).__name__}: {e}")
+                        # Booked as an invalid call: these votes are missing, not "unsure"
+                        self.gateway.record_failure(job[0], f"{type(e).__name__}: {e}")
                         results.append(([], False))
             for job_votes, simulated in results:
                 any_simulated = any_simulated or simulated

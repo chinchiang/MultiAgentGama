@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any, Optional
 from pydantic import ValidationError
 from core.models import CodeSymbol, ReviewFinding, FindingSeverity, text_or
-from core.llm_gateway import LLMGateway, LLMGatewayError
+from core.llm_gateway import LLMGateway, LLMGatewayError, UNCONFIGURED_ALIAS
 from core.codecontext import render_symbols, batch_symbols
 from core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
 
@@ -36,7 +36,9 @@ class HeterogeneousReviewerEnsemble:
             if not agent_id.startswith(REVIEWER_PREFIX):
                 continue
             meta = meta if isinstance(meta, dict) else {}
-            alias = meta.get("model_alias") or agent_id[len(REVIEWER_PREFIX):]
+            # Same resolution as the gateway: a reviewer without a model_alias is `unconfigured`
+            # (simulated in hybrid, an error in live), so the report shows where its calls really went
+            alias = meta.get("model_alias") or UNCONFIGURED_ALIAS
             self.reviewer_agents.append({
                 "agent_id": agent_id,
                 "model_alias": str(alias),
@@ -71,6 +73,8 @@ class HeterogeneousReviewerEnsemble:
                     raise
                 except Exception as e:
                     logger.error(f"Reviewer batch for {job[0]['name']} failed: {type(e).__name__}: {e}")
+                    # Booked as an invalid call: the batch's findings are missing, not absent
+                    self.gateway.record_failure(job[0]["agent_id"], f"{type(e).__name__}: {e}")
                     responses.append(({}, False))
 
         all_findings: List[ReviewFinding] = []
