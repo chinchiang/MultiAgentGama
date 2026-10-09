@@ -42,7 +42,7 @@ from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
 from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
 from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
 from vibeharness.runners.test_executor import TestSuiteExecutor
-from vibeharness.reports.report_generator import JSON_SCHEMA_VERSION, ReportGenerator
+from vibeharness.reports.report_generator import JSON_SCHEMA_VERSION, ReportGenerator, agreement_display
 
 logger = logging.getLogger("VibeHarness.Commander")
 
@@ -507,8 +507,7 @@ class VibeHarnessCommander:
             debate_result: MultiModelDebateResult = self.debater.arbitrate(findings, symbols=symbols, root_dir=work_dir)
             progress.update(debate=debate_result)
             if debate_result.arbitration_applied:
-                ratio = debate_result.model_agreement_ratio
-                ratio_display = f"{ratio * 100:.1f}%" if ratio is not None else bi("N/A（沒有決定性投票）", "N/A (no decisive votes)")
+                ratio_display = agreement_display(debate_result)
                 n_disputed = len(debate_result.disputed_findings)
                 self.console.print(f"[+] {bi('跨模型一致度', 'Cross-Model Agreement')}: [bold green]{ratio_display}[/bold green] | {bi(f'{n_disputed} 筆有爭議', f'{n_disputed} disputed')}")
             else:

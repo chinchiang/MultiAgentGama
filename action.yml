@@ -22,7 +22,7 @@ branding:
 #       ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
 #       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
 #       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-#   - uses: github/codeql-action/upload-sarif@v3
+#   - uses: github/codeql-action/upload-sarif@9f759ee644a3e7c15c1390abf49868036c00067b # v3.38.3
 #     with:
 #       sarif_file: vibeharness.sarif
 # 供應商金鑰從環境變數讀取，action 不會印出。受稽核的程式碼會送到每一家設定的供應商（寫死的密鑰會先遮蔽）。

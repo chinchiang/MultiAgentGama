@@ -41,6 +41,18 @@ SARIF_RULE_STATIC_PREFIX = "vibeharness/"
 # Version of the JSON report layout (summary / whitebox / threat_model / blackbox_* keys)
 JSON_SCHEMA_VERSION = "1"
 
+
+def agreement_display(result: MultiModelDebateResult) -> str:
+    """跨模型一致度的顯示字串，報告與 console 共用。`MultiModelDebater` 套用驗證時一定有決定性投票，
+    但結果模型也可能由其他路徑建立（例如讀回的 JSON），所以缺少比例時仍回傳 N/A 而不是出錯。
+    Display string of the cross-model agreement, shared by the report and the console. `MultiModelDebater`
+    always has decisive votes when verification is applied, but the result model can be built elsewhere
+    (e.g. JSON read back), so a missing ratio still yields N/A instead of an error."""
+    if not result.arbitration_applied:
+        return bi("N/A（未套用驗證）", "N/A (verification not applied)")
+    ratio = result.model_agreement_ratio
+    return f"{ratio * 100:.1f}%" if ratio is not None else bi("N/A（沒有決定性投票）", "N/A (no decisive votes)")
+
 # 報告中的固定標題與表頭（中文 ／ English），測試可直接匯入
 # Fixed report headings and table headers (Chinese / English), importable by tests
 REPORT_TITLE = "# 🛡️ " + bi("VibeHarness-MAS 多代理品質與資安報告", "VibeHarness-MAS Multi-Agent Quality & Security Report")
@@ -171,11 +183,7 @@ class ReportGenerator:
         md.append(METRIC_TABLE_HEADER)
         md.append("| :--- | :--- | :--- |")
         md.append(f"| **{bi('主要目標語言', 'Primary Target Language')}** | `{summary.detected_language}` | {bi('支援的技術堆疊', 'Supported Stack')} |")
-        ratio = debate_result.model_agreement_ratio
-        if not debate_result.arbitration_applied:
-            ratio_str = bi("N/A（未套用驗證）", "N/A (verification not applied)")
-        else:
-            ratio_str = f"{ratio * 100:.1f}%" if ratio is not None else bi("N/A（沒有決定性投票）", "N/A (no decisive votes)")
+        ratio_str = agreement_display(debate_result)
         md.append(f"| **{bi('跨模型一致度', 'Cross-Model Agreement')}** | `{ratio_str}`{sim_tag} | {bi('一致度 ≥ 70%', '≥ 70% Agreement')} |")
         cov_str = f"{summary.line_coverage_pct:.1f}%" if summary.line_coverage_pct is not None else "N/A"
         md.append(f"| **{bi('程式碼行涵蓋率', 'Code Line Coverage')}** | `{cov_str}` | {bi('基準 ≥ 80%', '≥ 80% Baseline')} |")
@@ -217,7 +225,10 @@ class ReportGenerator:
             for c in summary.agent_calls:
                 key = (c.agent_id, c.model_name, "cached" if c.cached else c.mode, c.reason or "")
                 grouped[key] = grouped.get(key, 0) + 1
-            for (agent_id, model_name, mode, reason), count in grouped.items():
+            # 依 agent、模型、模式排序：呼叫是並行完成的，照完成順序會讓同一次執行的報告每次列序不同
+            # Sorted by agent, model, mode: calls finish concurrently, so completion order would make the rows
+            # of the same run come out in a different order each time
+            for (agent_id, model_name, mode, reason), count in sorted(grouped.items()):
                 mode_label = {"live": "🟢 " + bi("真實", "live"), "cached": "🟢 " + bi("真實（回應快取）", "live (response cache)"),
                               "simulated": "🟡 " + bi("模擬", "simulated"),
                               "retried": "🟠 " + bi("無法使用，已重問", "unusable, re-asked")}.get(mode, "🔴 " + bi("無效輸出", "invalid output"))

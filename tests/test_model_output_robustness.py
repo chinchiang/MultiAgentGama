@@ -505,3 +505,39 @@ def test_reports_carry_run_metadata_and_a_schema_version(tmp_path):
     md = (tmp_path / "r.md").read_text(encoding="utf-8")
     assert f"by VibeHarness-MAS {__version__} (mode `mock`, sandbox `local_subprocess`)" in md
     assert "／ Target revision**:" in md and "／ Config**:" in md  # 雙語標籤，值在其後 ／ bilingual label, value after it
+
+
+def test_provenance_rows_do_not_depend_on_call_completion_order():
+    """並行呼叫的完成順序不同時，執行來源表的列序仍相同（報告可重現）。
+    The Execution Provenance rows come out in the same order whatever order the concurrent calls finished in."""
+    calls = [
+        AgentCallRecord(agent_id="whitebox_reviewer_glm", model_alias="glm", model_name="glm-x", mode="live"),
+        AgentCallRecord(agent_id="whitebox_reviewer_claude", model_alias="claude", model_name="claude-x", mode="simulated", reason="no key"),
+        AgentCallRecord(agent_id="blackbox_threat_modeler", model_alias="claude", model_name="claude-x", mode="invalid", reason="bad json"),
+        AgentCallRecord(agent_id="whitebox_reviewer_claude", model_alias="claude", model_name="claude-x", mode="simulated", reason="no key"),
+    ]
+
+    def provenance(order):
+        summary = VibeHarnessSummary(
+            overall_status="INCONCLUSIVE", total_whitebox_findings=0, confirmed_whitebox_bugs=0,
+            whitebox_tests_passed=0, whitebox_tests_failed=0, total_threats_modeled=0,
+            critical_threats_count=0, blackbox_tests_passed=0, blackbox_security_breaches=0, agent_calls=order,
+        )
+        md = ReportGenerator().generate_markdown_report(
+            summary, MultiModelDebateResult(consensus_summary="c"), ThreatModelReport(system_description="s"), [], [], "app")
+        from vibeharness.reports.report_generator import HEADING_PROVENANCE
+        start = md.index(HEADING_PROVENANCE)
+        return md[start:md.index("\n\n", start)]
+    first, second = provenance(calls), provenance(list(reversed(calls)))
+    assert first == second
+    rows = [line.split("`")[1] for line in first.splitlines() if line.startswith("| `")]
+    assert rows == sorted(rows) and rows.count("whitebox_reviewer_claude") == 1
+
+
+def test_agreement_display_covers_every_state():
+    """一致度顯示：未套用驗證、有比例、套用但缺比例（例如讀回的 JSON）都有固定文字，不會出錯。
+    The agreement display has a fixed text for not applied, a ratio, and applied without a ratio (e.g. JSON read back)."""
+    from vibeharness.reports.report_generator import agreement_display
+    assert "verification not applied" in agreement_display(MultiModelDebateResult(consensus_summary="c"))
+    assert agreement_display(MultiModelDebateResult(consensus_summary="c", arbitration_applied=True, model_agreement_ratio=0.75)) == "75.0%"
+    assert "no decisive votes" in agreement_display(MultiModelDebateResult(consensus_summary="c", arbitration_applied=True))
