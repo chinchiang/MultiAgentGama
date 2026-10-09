@@ -8,6 +8,9 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Fixed
 
+- The Markdown report's Execution Provenance table is sorted by agent, model and mode: rows of the same run no longer come out in a different order depending on when concurrent calls finished (the JSON `call_log` keeps the original order).
+- The cross-model agreement display comes from a single `agreement_display`, shared by the report and the console.
+- The SARIF upload example for target projects in the README and `action.yml` is SHA-pinned (`github/codeql-action/upload-sarif@9f759ee…` v3.38.3), matching this repo's practice.
 - The mutation-testing scratch copy now uses the same skip rules as symbol extraction (`SKIPPED_DIRS`, dot-directories) and also leaves out bytecode and symlinks to directories: `.venv`, `build` and `dist` used to be copied whole, and a directory link pointing back into the target made the copy expand until it failed. New `mutation_max_copy_mb` (default 200): the size is estimated before copying and above it the step is skipped with an evidence gap (a single-file target copies its whole directory, so it is the likely case).
 
 ## [0.5.0] - 2026-10-09

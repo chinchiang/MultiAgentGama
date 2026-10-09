@@ -8,6 +8,9 @@
 
 ### 修正
 
+- Markdown 報告的「執行來源」表改依 agent、模型、模式排序：並行呼叫的完成順序不同時，同一次執行的列序不再每次不同（JSON 的 `call_log` 保留原始順序）。
+- 跨模型一致度的顯示改由 `agreement_display` 統一產生，報告與 console 共用同一段邏輯。
+- README 與 `action.yml` 給目標專案的 SARIF 上傳範例改用 SHA 釘版（`github/codeql-action/upload-sarif@9f759ee…` v3.38.3），與本 repo 的做法一致。
 - 突變測試的暫存複本改用與符號擷取相同的略過規則（`SKIPPED_DIRS`、點開頭目錄），也略過位元組碼與指向目錄的符號連結：先前 `.venv`、`build`、`dist` 會整包複製，指向自身的目錄連結會讓複製無限展開而失敗。新增 `mutation_max_copy_mb`（預設 200）：複製前先估大小，超過就略過並列為證據缺口（單一檔案目標會複製整個所在目錄，最容易碰到）。
 
 ## [0.5.0] - 2026-10-09
