@@ -120,6 +120,10 @@ class ThreatItem(BaseModel):
     severity: FindingSeverity
     attack_scenario: str
     test_verification_goal: str
+    # 由離線模擬引擎產生時為 True：其標題／攻擊向量是 `bi()` 雙語字串，進指紋時只取英文半
+    # True when produced by the offline simulation engine: its title / attack vector are bilingual `bi()` strings
+    # and contribute their English half to fingerprints
+    is_simulated: bool = False
 
 
 class ThreatModelReport(BaseModel):

@@ -117,16 +117,20 @@ runs:
         VH_EXTRA: ${{ inputs.extra-args }}
         VH_FAIL_ON: ${{ inputs.fail-on }}
       run: |
+        # extra-args 以 shlex 規則切字（引號有效；不執行任何 shell、不展開 glob）；切不開就以 exit 5 失敗
+        # extra-args is split by shlex rules (quotes work; no shell execution, no glob expansion); unparsable input exits 5
+        # extra-args-split-begin
+        python -c 'import shlex, sys; sys.stdout.write("\0".join(shlex.split(sys.argv[1])))' "$VH_EXTRA" > "$RUNNER_TEMP/vh_extra_args" \
+          || { echo "::error::extra-args could not be parsed: $VH_EXTRA"; exit 5; }
+        extra=()
+        [ -s "$RUNNER_TEMP/vh_extra_args" ] && mapfile -d '' extra < "$RUNNER_TEMP/vh_extra_args"
+        # extra-args-split-end
         set +e
         args=(--target "$VH_TARGET" --mode "$VH_MODE" --max-model-calls "$VH_MAX_CALLS" --max-files "$VH_MAX_FILES"
               --output "$VH_OUTPUT" --format "$VH_FORMAT")
         [ -n "$VH_CHANGED_SINCE" ] && args+=(--changed-since "$VH_CHANGED_SINCE")
         [ -n "$VH_BASELINE" ] && args+=(--baseline "$VH_BASELINE")
         [ -n "$VH_SARIF" ] && args+=(--sarif "$VH_SARIF")
-        # extra-args 依 shell 規則切字（引號有效，例如 --exclude 'tests/*'），且 set -f 讓 glob 不會對 workspace 展開
-        # extra-args is split by shell rules (quotes work, e.g. --exclude 'tests/*') and set -f keeps globs from
-        # expanding against the workspace
-        set -f; eval "extra=($VH_EXTRA)"; set +f
         vibeharness "${args[@]}" "${extra[@]}"
         rc=$?
         set -e

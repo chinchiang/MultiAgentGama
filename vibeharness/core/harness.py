@@ -99,15 +99,10 @@ class VibeHarnessCommander:
         self._global_cfg = global_cfg
         self.node_bin = str(global_cfg.get("node_bin") or "node")
         self.sandbox_node_provider = str(global_cfg.get("sandbox_node_provider") or global_cfg.get("sandbox_provider", "local_subprocess"))
-        # Node 沙盒是延遲建立的，設定錯誤必須在這裡（啟動時）就失敗，而不是在第一個 JS 測試時被當成證據缺口
-        # The Node sandbox is built lazily, so its settings must fail here (start-up), not surface as an evidence
-        # gap at the first JS test
-        if self.sandbox_node_provider not in ("local_subprocess", "docker"):
-            raise ValueError(bi(
-                f"sandbox_node_provider '{self.sandbox_node_provider}' 尚未實作；支援：'local_subprocess'、'docker'",
-                f"sandbox_node_provider '{self.sandbox_node_provider}' is not implemented; supported: 'local_subprocess', 'docker'"
-            ))
-        LLMGateway._positive_int(global_cfg.get("sandbox_memory_mb", DEFAULT_SANDBOX_MEMORY_MB), "sandbox_memory_mb")
+        # Node 沙盒是延遲建立的，它用到的每個設定都在這裡（啟動時）驗證一次，之後直接取用；錯誤值 exit 5，不會在第一個 JS 測試時才炸
+        # The Node sandbox is built lazily, so every setting it uses is validated once here (start-up) and reused;
+        # a bad value exits 5 instead of surfacing at the first JS test
+        self._node_cfg = self._validate_node_settings(global_cfg, self.sandbox_node_provider)
         self.node_runtime: Optional[str] = None
         self.node_runtime_problem: Optional[str] = None
         self.node_typescript_problem: Optional[str] = None
@@ -208,6 +203,26 @@ class VibeHarnessCommander:
         paths = {os.path.join(root, line.strip()) for line in (diff + untracked).splitlines() if line.strip()}
         return sorted(p for p in paths if os.path.isfile(p))
 
+    @staticmethod
+    def _validate_node_settings(global_cfg: dict, provider: str) -> Dict[str, Any]:
+        """Node 沙盒用到的設定，啟動時驗證過的值 ／ The Node sandbox's settings, validated at start-up."""
+        if provider not in ("local_subprocess", "docker"):
+            raise ValueError(bi(
+                f"sandbox_node_provider '{provider}' 尚未實作；支援：'local_subprocess'、'docker'",
+                f"sandbox_node_provider '{provider}' is not implemented; supported: 'local_subprocess', 'docker'"
+            ))
+        timeout = LLMGateway._positive_int(global_cfg.get("sandbox_timeout_seconds", 120), "sandbox_timeout_seconds") or 120
+        memory_mb = LLMGateway._positive_int(global_cfg.get("sandbox_memory_mb", DEFAULT_SANDBOX_MEMORY_MB), "sandbox_memory_mb") or 0
+        pids_limit = LLMGateway._positive_int(global_cfg.get("docker_pids_limit", 256), "docker_pids_limit") or 256
+        image = global_cfg.get("docker_node_image", DEFAULT_DOCKER_NODE_IMAGE)
+        if not isinstance(image, str) or not image.strip():
+            raise ValueError(bi("docker_node_image 必須是非空字串", "docker_node_image must be a non-empty string"))
+        return {
+            "provider": provider, "timeout": timeout, "memory_mb": memory_mb, "pids_limit": pids_limit, "image": image.strip(),
+            "network": str(global_cfg.get("docker_network", "none")), "memory": str(global_cfg.get("docker_memory", "1g")),
+            "cpus": str(global_cfg.get("docker_cpus", "2")), "docker_bin": str(global_cfg.get("docker_bin", "docker")),
+        }
+
     def _build_node_sandbox(self) -> Optional[LocalSubprocessSandbox]:
         """供 `node:test` 模組使用的沙盒；沒有可用的 Node 執行環境時為 None（並設定 `node_runtime_problem`）：
         缺少執行環境是 JS/TS 測試的證據缺口，絕不是啟動失敗。docker provider 用映像檔自帶的 Node，
@@ -215,50 +230,43 @@ class VibeHarnessCommander:
         The sandbox for `node:test` modules, or None (with `node_runtime_problem` set) when no usable
         Node runtime exists: a missing runtime is an evidence gap for the JS/TS tests, never a start-up failure.
         The docker provider uses the image's own Node and needs no node binary on the host."""
-        cfg = self._global_cfg
-        timeout = int(cfg.get("sandbox_timeout_seconds", 120))
+        cfg = self._node_cfg
         has_ts = any(f.lower().endswith((".ts", ".tsx", ".mts", ".cts")) for f in self.ast_extractor.analyzed_files)
         sandbox: LocalSubprocessSandbox
-        if self.sandbox_node_provider == "docker":
-            image = str(cfg.get("docker_node_image", DEFAULT_DOCKER_NODE_IMAGE))
-            version = self._docker_node_version(image, str(cfg.get("docker_bin", "docker")))
-            runtime = f"docker {image}" + (f" (node v{'.'.join(map(str, version))})" if version else "")
-            # 版本查不到時假設映像檔符合需求（預設映像是 node:22-slim）；真的不支援時 Node 會回報，測試記為 ERROR
-            # When the version cannot be read the image is assumed adequate (the default image is node:22-slim);
-            # if it is not, Node reports it and the test is recorded as ERROR
-            supports_ts = version is None or version >= MIN_NODE_VERSION_TS
-            sandbox = NodeDockerSandbox(
-                timeout_seconds=timeout,
-                image=image,
-                network=cfg.get("docker_network", "none"),
-                memory=str(cfg.get("docker_memory", "1g")),
-                cpus=str(cfg.get("docker_cpus", "2")),
-                pids_limit=int(cfg.get("docker_pids_limit", 256)),
-                strip_types=has_ts and supports_ts,
-                supports_typescript=supports_ts,
+        if cfg["provider"] == "docker":
+            # 先建沙盒（確認映像檔存在），再用同一組強化旗標在容器內讀 Node 版本；絕不觸發 pull
+            # Build the sandbox first (the image must exist), then read the Node version inside the container with
+            # the same hardening flags; never trigger a pull
+            docker_sandbox = NodeDockerSandbox(
+                timeout_seconds=cfg["timeout"], image=cfg["image"], network=cfg["network"], memory=cfg["memory"],
+                cpus=cfg["cpus"], pids_limit=cfg["pids_limit"], docker_bin=cfg["docker_bin"],
             )
-        elif self.sandbox_node_provider == "local_subprocess":
+            version = self._docker_node_version(docker_sandbox)
+            runtime = f"docker {cfg['image']}" + (f" (node v{'.'.join(map(str, version))})" if version else "")
+            # 版本讀不到就不假設：TypeScript 列為未執行，JS 測試照常跑（不帶 --experimental-strip-types）
+            # No guessing when the version cannot be read: TypeScript is reported as not run, JS tests still run
+            # (without --experimental-strip-types)
+            supports_ts = version is not None and version >= MIN_NODE_VERSION_TS
+            docker_sandbox.supports_typescript = supports_ts
+            docker_sandbox.strip_types = has_ts and supports_ts
+            sandbox = docker_sandbox
+        else:
             path, version, problem = detect_node(self.node_bin)
             if path is None or version is None:
                 self.node_runtime_problem = problem
                 return None
             runtime = f"node v{'.'.join(map(str, version))}"
             supports_ts = version >= MIN_NODE_VERSION_TS
-            memory_mb = LLMGateway._positive_int(cfg.get("sandbox_memory_mb", DEFAULT_SANDBOX_MEMORY_MB), "sandbox_memory_mb") or 0
             sandbox = NodeSubprocessSandbox(
-                timeout_seconds=timeout, memory_mb=memory_mb, node_bin=self.node_bin,
+                timeout_seconds=cfg["timeout"], memory_mb=cfg["memory_mb"], node_bin=self.node_bin,
                 strip_types=has_ts and supports_ts, supports_typescript=supports_ts,
             )
-        else:
-            raise ValueError(bi(
-                f"sandbox_node_provider '{self.sandbox_node_provider}' 尚未實作；支援：'local_subprocess'、'docker'",
-                f"sandbox_node_provider '{self.sandbox_node_provider}' is not implemented; supported: 'local_subprocess', 'docker'"
-            ))
         if has_ts and not supports_ts:
             min_ts = '.'.join(map(str, MIN_NODE_VERSION_TS))
+            found = runtime if version is not None else bi(f"無法讀取 {runtime} 內的 Node 版本", f"the Node version inside {runtime} could not be read")
             self.node_typescript_problem = bi(
-                f"TypeScript 測試需要 Node >= {min_ts}（型別剝除）；找到的是 {runtime}",
-                f"TypeScript tests need Node >= {min_ts} (type stripping); found {runtime}"
+                f"TypeScript 測試需要 Node >= {min_ts}（型別剝除）；找到的是 {found}",
+                f"TypeScript tests need Node >= {min_ts} (type stripping); found {found}"
             )
         # 沙盒建立成功後才記錄執行環境：建構失敗（例如缺映像檔）時 RunMetadata 不能宣稱有 Node
         # The runtime is recorded only once the sandbox exists: after a failed construction (e.g. a missing image)
@@ -267,14 +275,16 @@ class VibeHarnessCommander:
         return sandbox
 
     @staticmethod
-    def _docker_node_version(image: str, docker_bin: str = "docker") -> Optional[Tuple[int, int, int]]:
-        """映像檔內的 Node 版本（`docker run <image> node --version`），查不到時為 None。
-        The Node version inside the image (`docker run <image> node --version`), or None when it cannot be read."""
+    def _docker_node_version(sandbox: NodeDockerSandbox) -> Optional[Tuple[int, int, int]]:
+        """映像檔內的 Node 版本（`docker run --pull=never <image> node --version`，與測試相同的強化旗標），
+        查不到時為 None。
+        The Node version inside the image (`docker run --pull=never <image> node --version` with the same
+        hardening flags as the tests), or None when it cannot be read."""
+        cmd = [sandbox.docker, "run", "--rm", "--pull=never", "--network", "none", "--read-only", "--cap-drop", "ALL",
+               "--security-opt", "no-new-privileges", "--memory", "256m", "--pids-limit", "64", sandbox.image, "node", "--version"]
         try:
-            result = subprocess.run(
-                [docker_bin, "run", "--rm", "--network", "none", image, "node", "--version"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
-            )
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+                                    env=sandbox._cli_env())
         except (OSError, subprocess.TimeoutExpired):
             return None
         return parse_node_version(result.stdout) if result.returncode == 0 else None

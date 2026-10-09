@@ -769,18 +769,22 @@ def test_harness_node_sandbox_provider_selection(tmp_path, monkeypatch):
     # docker provider：用映像檔自帶的 Node，主機沒有 node 也能建；TS 支援看映像檔的版本
     # docker provider: the image's own Node, built even without a host node; TS support follows the image's version
     monkeypatch.setattr("vibeharness.core.harness.detect_node", lambda node_bin: (None, None, "no usable Node runtime found"))
-    monkeypatch.setattr(VibeHarnessCommander, "_docker_node_version", staticmethod(lambda image, docker_bin="docker": (22, 9, 0)))
+    monkeypatch.setattr(VibeHarnessCommander, "_docker_node_version", staticmethod(lambda sandbox: (22, 9, 0)))
     commander.sandbox_node_provider = "docker"
+    commander._node_cfg = VibeHarnessCommander._validate_node_settings(commander._global_cfg, "docker")
     commander.ast_extractor.analyzed_files = ["/app/x.ts"]
     monkeypatch.setattr(NodeDockerSandbox, "_verify_available", lambda self: None)
     sandbox = commander._build_node_sandbox()
     assert isinstance(sandbox, NodeDockerSandbox) and sandbox.supports_typescript and sandbox.strip_types
     assert commander.node_runtime == f"docker {DEFAULT_DOCKER_NODE_IMAGE} (node v22.9.0)"
     assert commander.node_runtime_problem is None and commander.node_typescript_problem is None
-    # 映像檔版本查不到：假設可用；映像檔太舊：TS 列為問題 ／ unknown image version: assumed adequate; an old image: TS problem
-    monkeypatch.setattr(VibeHarnessCommander, "_docker_node_version", staticmethod(lambda image, docker_bin="docker": None))
-    assert commander._build_node_sandbox().supports_typescript and commander.node_runtime == f"docker {DEFAULT_DOCKER_NODE_IMAGE}"
-    monkeypatch.setattr(VibeHarnessCommander, "_docker_node_version", staticmethod(lambda image, docker_bin="docker": (20, 1, 0)))
+    # 映像檔版本查不到：不假設，TS 列為未執行而 JS 照跑（不帶 strip 旗標）；映像檔太舊：TS 列為問題
+    # unknown image version: no guessing, TS reported as not run while JS still runs (no strip flag); an old image: TS problem
+    monkeypatch.setattr(VibeHarnessCommander, "_docker_node_version", staticmethod(lambda sandbox: None))
+    sandbox = commander._build_node_sandbox()
+    assert not sandbox.supports_typescript and not sandbox.strip_types and commander.node_runtime == f"docker {DEFAULT_DOCKER_NODE_IMAGE}"
+    assert "could not be read" in commander.node_typescript_problem
+    monkeypatch.setattr(VibeHarnessCommander, "_docker_node_version", staticmethod(lambda sandbox: (20, 1, 0)))
     assert not commander._build_node_sandbox().supports_typescript
     assert "TypeScript tests need Node >= 22.6" in commander.node_typescript_problem
     # 映像檔缺失：建構失敗，node_runtime 不得宣稱有執行環境 ／ missing image: construction fails, node_runtime must not claim one
@@ -789,11 +793,9 @@ def test_harness_node_sandbox_provider_selection(tmp_path, monkeypatch):
     with pytest.raises(SandboxUnavailableError):
         commander._build_node_sandbox()
     assert commander.node_runtime is None
-    commander.sandbox_node_provider = "firecracker"
-    with pytest.raises(ValueError, match="not implemented"):
-        commander._build_node_sandbox()
     monkeypatch.setattr("vibeharness.core.harness.detect_node", lambda node_bin: ("/usr/bin/node", (20, 5, 0), None))
     commander.sandbox_node_provider = "local_subprocess"
+    commander._node_cfg = VibeHarnessCommander._validate_node_settings(commander._global_cfg, "local_subprocess")
     commander.ast_extractor.analyzed_files = ["/app/x.ts"]
     sandbox = commander._build_node_sandbox()
     assert isinstance(sandbox, NodeSubprocessSandbox) and not sandbox.supports_typescript and not sandbox.strip_types
@@ -806,7 +808,9 @@ def test_bad_node_settings_fail_at_start_up(tmp_path):
     evidence gap at the first JS test."""
     import yaml
     base = yaml.safe_load(open(CONFIG, encoding="utf-8"))
-    for key, value, match in (("sandbox_node_provider", "e2b", "not implemented"), ("sandbox_memory_mb", "abc", "sandbox_memory_mb")):
+    for key, value, match in (("sandbox_node_provider", "e2b", "not implemented"), ("sandbox_memory_mb", "abc", "sandbox_memory_mb"),
+                              ("docker_pids_limit", "many", "docker_pids_limit"), ("sandbox_timeout_seconds", -1, "sandbox_timeout_seconds"),
+                              ("docker_node_image", "", "docker_node_image")):
         cfg = {**base, "global": {**base["global"], key: value}}
         path = tmp_path / f"{key}.yaml"
         path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
@@ -828,17 +832,49 @@ def test_breach_whose_body_mentions_a_target_syntax_error_stays_a_breach():
     assert result.status == TestStatus.FAILED and result.is_security_exploit_confirmed
 
 
+def _action_split(tmp_path, value):
+    """執行 action.yml 兩個標記之間的 extra-args 切字區塊，回傳 (exit code, 切出的參數)。
+    Runs action.yml's extra-args splitting block (between its two markers); returns (exit code, the split arguments)."""
+    import sys
+    lines = open("action.yml", encoding="utf-8").read().splitlines()
+    begin = next(i for i, line in enumerate(lines) if "extra-args-split-begin" in line)
+    end = next(i for i, line in enumerate(lines) if "extra-args-split-end" in line)
+    block = "\n".join(line.strip() for line in lines[begin + 1:end]).replace("python -c", f'"{sys.executable}" -c')
+    script = f"set -e\n{block}\nprintf '%s\\n' \"${{extra[@]}}\""
+    out = subprocess.run([shutil.which("bash"), "-c", script], cwd=tmp_path, capture_output=True, text=True, encoding="utf-8",
+                         env={**os.environ, "VH_EXTRA": value, "RUNNER_TEMP": str(tmp_path)})
+    return out.returncode, [line for line in out.stdout.splitlines() if line]
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash unavailable")
 def test_action_extra_args_keep_quotes_and_do_not_expand_globs(tmp_path):
-    """action.yml 的 extra-args 切字：引號有效、glob 不對 workspace 展開（文件範例 --exclude 'tests/*' 必須可用）。
-    action.yml extra-args splitting: quotes work and globs are not expanded against the workspace (the documented
-    example --exclude 'tests/*' must work)."""
-    bash = shutil.which("bash")
-    if bash is None:
-        pytest.skip("bash unavailable")
+    """action.yml 的 extra-args 切字：引號有效、glob 不對 workspace 展開、不執行任何 shell、切不開就 exit 5。
+    action.yml extra-args splitting: quotes work, globs are not expanded against the workspace, no shell is executed,
+    unparsable input exits 5."""
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "a.py").write_text("", encoding="utf-8")
     (tmp_path / "tests" / "b.py").write_text("", encoding="utf-8")
-    snippet = next(line.strip() for line in open("action.yml", encoding="utf-8") if line.strip().startswith("set -f; eval"))
-    out = subprocess.run([bash, "-c", snippet + '; printf "%s\\n" "${extra[@]}"'], cwd=tmp_path, capture_output=True,
-                         text=True, encoding="utf-8", env={**os.environ, "VH_EXTRA": "--exclude 'tests/*' --cache-dir .c"})
-    assert out.stdout.splitlines() == ["--exclude", "tests/*", "--cache-dir", ".c"]
+    assert _action_split(tmp_path, "--exclude 'tests/*' --cache-dir .c") == (0, ["--exclude", "tests/*", "--cache-dir", ".c"])
+    assert _action_split(tmp_path, "") == (0, [])
+    rc, args = _action_split(tmp_path, "--max-files 5) ; touch pwned ; : ($(touch pwned2)")
+    assert rc == 0 and not (tmp_path / "pwned").exists() and not (tmp_path / "pwned2").exists()
+    assert "$(touch" in " ".join(args)  # 只是字面值 ／ a literal, never executed
+    rc, _ = _action_split(tmp_path, "--exclude 'tests/*")
+    assert rc == 5
+
+
+def test_file_level_load_failure_is_never_a_breach_even_with_noisy_stdout():
+    """載入失敗的檔案層級 case 永遠是 harness 錯誤：目標在匯入時印出的「Error: …」或 AssertionError 字樣不會讓它變成缺陷或突破。
+    A file-level load failure is always a harness error: "Error: ..." or "AssertionError" text the target printed at
+    import time cannot turn it into a defect or a breach."""
+    case = _case("test failed",
+                 "Error: cache miss, falling back\nAssertionError noise printed by the target\n"
+                 "node:internal/modules/esm/resolve:274\n    throw new ERR_MODULE_NOT_FOUND(\n\n"
+                 "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/run/missing.mjs' imported from /run/test_vh_000.mjs\n"
+                 "    at finalizeResolution (node:internal/modules/esm/resolve:274:11)\n"
+                 "[Error: test failed] { code: 'ERR_TEST_FAILURE', cause: 'test failed' }", name="/run/test_vh_000.mjs")
+    ex = TestSuiteExecutor
+    assert ex._js_is_harness_failure(case)
+    assert ex._js_exception_summary(case).startswith("Error [ERR_MODULE_NOT_FOUND]")
+    result = TestSuiteExecutor(sandbox=None)._aggregate(_js_test("BB", "x", test_type="blackbox_security"), "BB", [case])
+    assert result.status == TestStatus.ERROR and not result.is_security_exploit_confirmed

@@ -16,7 +16,7 @@ from vibeharness.core.models import (
     FindingSeverity,
     StaticFinding
 )
-from vibeharness.core.baseline import fingerprint, normalize
+from vibeharness.core.baseline import fingerprint, key_text, normalize
 from vibeharness.core.i18n import bi
 from vibeharness.core.sanitize import clean_model_text, markdown_safe
 
@@ -461,7 +461,7 @@ class ReportGenerator:
                 "level": level,
                 "message": {"text": desc},
                 "partialFingerprints": {"vibeharness/v1": fingerprint(
-                    uri or "", f.symbol_name or "", normalize(f.title)
+                    uri or "", f.symbol_name or "", normalize(key_text(f.title, f.is_simulated))
                 )},
                 "properties": {
                     "findingId": f.finding_id,
@@ -508,7 +508,8 @@ class ReportGenerator:
                 "level": "error",
                 "message": {"text": clean_model_text(text)},
                 "partialFingerprints": {"vibeharness/v1": fingerprint(
-                    *((threat.stride_category.value, normalize(threat.title), normalize(threat.attack_vector))
+                    *((threat.stride_category.value, normalize(key_text(threat.title, threat.is_simulated)),
+                       normalize(key_text(threat.attack_vector, threat.is_simulated)))
                       if threat else (r.test_id, r.source_ref or ""))
                 )},
                 "properties": {"testId": r.test_id, "threatId": r.source_ref or "", "security_breach": True,

@@ -647,6 +647,8 @@ class TestSuiteExecutor:
         # Only the exception Node reports (the cause line or the first XError line): an assertion failure's body may
         # mention a SyntaxError the target threw (e.g. assert.doesNotThrow's actual), and matching the whole body
         # would downgrade a genuine breach to a harness error
+        if _JS_FILE_CASE_RE.search(os.path.basename(case.get("name") or "")):
+            return True  # 檔案層級的失敗 = 模組沒載入，從未執行任何 test() ／ a file-level failure = the module never loaded, no test() ran
         summary = TestSuiteExecutor._js_exception_summary(case)
         if any(marker in summary for marker in _JS_HARNESS_MARKERS):
             return True
@@ -676,10 +678,16 @@ class TestSuiteExecutor:
         # 在 runner 輸出裡；跳過佔位行，取第一個有內容的 XError 行
         # A file-level failure's junit body only has the "Error: test failed" placeholder; the real error (e.g.
         # ERR_MODULE_NOT_FOUND) is in the runner output, so skip the placeholder and take the first real XError line
-        for line in _JS_ERROR_LINE_RE.finditer(details):
-            text = line.group(1).strip()
-            if not text.startswith("Error: test failed"):
+        candidates = [line.group(1).strip() for line in _JS_ERROR_LINE_RE.finditer(details)
+                      if not line.group(1).strip().startswith("Error: test failed")]
+        # 補進來的 runner 輸出可能含目標自己印的「Error: …」行：優先取帶有 harness 標記（載入錯誤）的那一行
+        # The folded runner output may contain "Error: ..." lines the target printed itself: prefer the line that
+        # carries a harness marker (a load error)
+        for text in candidates:
+            if any(marker in text for marker in _JS_HARNESS_MARKERS):
                 return text[:300]
+        if candidates:
+            return candidates[0][:300]
         return (case.get("message") or "").strip()[:300]
 
     @staticmethod

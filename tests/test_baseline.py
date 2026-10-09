@@ -229,8 +229,13 @@ def test_keys_distinguish_cjk_titles_and_ignore_the_chinese_half_of_bilingual_te
     assert bl.breach_key(breach, t1) != bl.breach_key(breach, t2)
     assert bl.normalize("大量指派管理員欄位") != "" and bl.normalize("Mass_Assignment, v2!") == "mass assignment v2"
     plain = _threat().model_copy(update={"title": "Mass assignment of admin fields"})
-    bilingual = _threat().model_copy(update={"title": bi("大量指派管理員欄位", "Mass assignment of admin fields")})
-    assert bl.breach_key(breach, plain) == bl.breach_key(breach, bilingual)
+    simulated = _threat().model_copy(update={"title": bi("大量指派管理員欄位", "Mass assignment of admin fields"), "is_simulated": True})
+    assert bl.breach_key(breach, plain) == bl.breach_key(breach, simulated)
+    # 真實模型的文字原樣進鍵，即使含有全形斜線：0.3.0 的鍵不受 bi() 的分隔符影響
+    # Real model text keys as is, even with a full-width slash: 0.3.0 keys are untouched by the bi() separator
+    real = _threat().model_copy(update={"title": bi("大量指派管理員欄位", "Mass assignment of admin fields")})
+    assert bl.breach_key(breach, real) != bl.breach_key(breach, plain)
+    assert bl.normalize('token = "abc ／ def"') == "token abc def"
 
 
 def test_sarif_fingerprints_use_the_same_helpers_as_the_baseline():

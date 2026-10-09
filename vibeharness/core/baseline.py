@@ -35,11 +35,18 @@ TOOL_NAME = "vibeharness-mas"
 
 def normalize(text: Optional[str]) -> str:
     """模型文字的不分大小寫與標點形式，讓鍵在表面措辭改寫後仍存活。任何文字的字母與數字都算
-    （中文標題各自不同，不會塌成空字串）；`bi()` 產生的雙語字串只取英文半，所以 0.3.0 的鍵不變。
+    （中文標題各自不同，不會塌成空字串）；純 ASCII 文字的結果與 0.3.0 相同。
     Case/punctuation-insensitive form of model text, so keys survive cosmetic rewording. Letters and digits of
-    any script count (Chinese titles stay distinct instead of collapsing to ""); a bilingual `bi()` string
-    contributes its English half only, so keys from 0.3.0 are unchanged."""
-    return " ".join(re.findall(r"[^\W_]+", en_only(text or "").lower()))
+    any script count (Chinese titles stay distinct instead of collapsing to ""); ASCII text keys exactly as in 0.3.0."""
+    return " ".join(re.findall(r"[^\W_]+", (text or "").lower()))
+
+
+def key_text(text: Optional[str], simulated: bool) -> str:
+    """進鍵的文字：模擬引擎的項目是 `bi()` 雙語字串，只取英文半（鍵與 0.3.0 相同）；真實模型的文字原樣使用，
+    即使含有全形斜線。
+    The text that enters a key: simulated items are bilingual `bi()` strings and contribute their English half
+    only (keys as in 0.3.0); real model text is used as is, even when it contains a full-width slash."""
+    return en_only(text or "") if simulated else (text or "")
 
 
 def fingerprint(*parts: str) -> str:
@@ -77,7 +84,8 @@ def static_key(sf: StaticFinding, target_path: str) -> str:
 
 
 def finding_key(f: ReviewFinding, target_path: str) -> str:
-    return fingerprint("finding", target_relative(f.file_path, target_path), f.symbol_name or "", normalize(f.title))
+    return fingerprint("finding", target_relative(f.file_path, target_path), f.symbol_name or "",
+                       normalize(key_text(f.title, f.is_simulated)))
 
 
 def probe_key(result: TestExecutionResult) -> str:
@@ -102,7 +110,8 @@ def breach_key(result: TestExecutionResult, threat: Optional[ThreatItem]) -> str
     A confirmed breach is identified by its threat (category, title, attack vector), not by the
     per-run test id; without a resolvable threat the test id is all there is."""
     if threat is not None:
-        return fingerprint("breach", threat.stride_category.value, normalize(threat.title), normalize(threat.attack_vector))
+        return fingerprint("breach", threat.stride_category.value, normalize(key_text(threat.title, threat.is_simulated)),
+                           normalize(key_text(threat.attack_vector, threat.is_simulated)))
     return fingerprint("breach", result.test_id, result.source_ref or "")
 
 

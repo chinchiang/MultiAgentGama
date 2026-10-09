@@ -265,7 +265,11 @@ class AutomatedThreatModeler:
                 # 報告層級欄位來自第一個產生可用答案的批次
                 # Report-level fields come from the first batch that produced a usable answer
                 report_fields = resp
-            threats.extend(self._parse_threats(resp, used_ids))
+            batch = self._parse_threats(resp, used_ids)
+            if self.gateway.is_simulated(resp):
+                for threat in batch:
+                    threat.is_simulated = True
+            threats.extend(batch)
 
         threats = self._merge_duplicate_threats(threats)
 
