@@ -38,7 +38,8 @@ models:
   # fallback_model is tried once when the primary model still fails after max_retries.
   # Any agent can point at any model below via its `model_alias` — e.g. with only a Gemini key,
   # set every agent's model_alias to "gemini" (that is how the Gemini live smoke test runs).
-  # Optional per model: `max_output_tokens` (overrides the global cap) and `extra_params`, a mapping passed
+  # Optional per model: `price_per_million_input` / `price_per_million_output` (USD; lets --estimate print a cost),
+  # `max_output_tokens` (overrides the global cap) and `extra_params`, a mapping passed
   # straight to litellm, e.g. {thinking: {type: disabled}} or {reasoning_effort: low} so a reasoning model
   # does not spend the whole output budget thinking.
   # Supply chain (OWASP LLM04:2026): target source code is sent to every provider listed here, so only

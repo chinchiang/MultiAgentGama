@@ -11,6 +11,7 @@ from vibeharness.core.llm_gateway import LLMGatewayError, ConfigError, DEFAULT_C
 from vibeharness.core.sandbox import SandboxUnavailableError
 from vibeharness.agents.blackbox.scenario_builder import validate_base_url
 from vibeharness.core.baseline import load_baseline
+from vibeharness.core.estimate import estimate_lines, estimate_run
 
 # Exit codes reserved for harness/usage problems. Verdict codes (0/1/2/3/4) are documented in
 # the README; these must never collide with them, or CI would misread a crashed run as a verdict.
@@ -150,6 +151,13 @@ def main():
              "(a .partial.json from a crashed run is refused)"
     )
     parser.add_argument(
+        "--estimate",
+        action="store_true",
+        help="Do not call any model: run Phase 1 (symbol extraction) and print the expected number of model calls "
+             "and prompt/output tokens per agent and per model (cost too when models.<alias>.price_per_million_* "
+             "is configured); with --format json the estimate is written to --output. Exit 0"
+    )
+    parser.add_argument(
         "--cache-dir",
         metavar="DIR",
         default=None,
@@ -220,6 +228,19 @@ def main():
     except (ConfigError, ValueError, SandboxUnavailableError) as e:
         print(f"Error: harness configuration problem: {e}", file=sys.stderr)
         sys.exit(USAGE_ERROR_EXIT_CODE)
+    if args.estimate:
+        try:
+            estimate = estimate_run(commander, target_path)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(USAGE_ERROR_EXIT_CODE)
+        if args.format == "json":
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write(estimate.model_dump_json(indent=2))
+            print(f"Estimate written to {args.output}")
+        else:
+            print("\n".join(estimate_lines(estimate)))
+        sys.exit(0)
     try:
         summary = commander.run_full_pipeline(
             target_dir=target_path,

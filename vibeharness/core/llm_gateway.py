@@ -185,6 +185,9 @@ class LLMGateway:
                 self._number(meta["temperature"], f"agents.{agent_id}.temperature", minimum=0, maximum=2)
         self._number(self.retry_invalid_output, "global.retry_invalid_output", minimum=0, maximum=5, integer=True)
         for alias, info in self.models_config.items():
+            for key in ("price_per_million_input", "price_per_million_output"):
+                if isinstance(info, dict) and info.get(key) is not None:
+                    self._number(info[key], f"models.{alias}.{key}", minimum=0)
             extra = info.get("extra_params") if isinstance(info, dict) else None
             if extra is not None and (not isinstance(extra, dict) or not all(isinstance(k, str) for k in extra)):
                 raise ConfigError(f"models.{alias}.extra_params must be a mapping of litellm parameter names, got {extra!r}")

@@ -4,13 +4,14 @@ import logging
 import os
 import subprocess
 import sys
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Tuple
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 
 from vibeharness import __version__
 from vibeharness.core.models import (
+    CodeSymbol,
     RunMetadata,
     VibeHarnessSummary,
     FindingSeverity,
@@ -93,6 +94,29 @@ class VibeHarnessCommander:
         self.changed_since: Optional[str] = None
         # --baseline: a previous JSON report; problems it already contains are reported but not counted
         self.baseline: Optional[Baseline] = None
+
+    @staticmethod
+    def work_dir_for(target_dir: str) -> str:
+        """The directory tests run from and imports resolve against: the target, or a single file's parent."""
+        return target_dir if os.path.isdir(target_dir) else os.path.dirname(os.path.abspath(target_dir))
+
+    def select_symbols(self, target_dir: str) -> Tuple[List[CodeSymbol], List[str]]:
+        """Phase 1 file selection and symbol extraction (no model involved): the symbols to review and a
+        description of the filters that applied. Shared by the run and by --estimate."""
+        only_files: Optional[List[str]] = None
+        filters: List[str] = []
+        if self.changed_since:
+            only_files = self.changed_files(target_dir, self.changed_since)
+            filters.append(f"changed-since={self.changed_since} ({len(only_files)} file(s))")
+        if self.include_patterns:
+            filters.append("include=" + ",".join(self.include_patterns))
+        if self.exclude_patterns:
+            filters.append("exclude=" + ",".join(self.exclude_patterns))
+        symbols = self.ast_extractor.parse_directory(
+            target_dir, max_files=self.max_files, include=self.include_patterns or None,
+            exclude=self.exclude_patterns or None, only_files=only_files, max_file_bytes=self.max_file_bytes
+        )
+        return symbols, filters
 
     @staticmethod
     def _pattern_list(value: Any, key: str) -> List[str]:
@@ -201,20 +225,8 @@ class VibeHarnessCommander:
             # -------------------------------------------------------------
             self.console.print("\n[bold blue]=== Phase 1: AST Ingestion & Semantic Extraction ===[/bold blue]")
             # A single-file target runs its tests from the containing directory
-            work_dir = target_dir if os.path.isdir(target_dir) else os.path.dirname(os.path.abspath(target_dir))
-            only_files: Optional[List[str]] = None
-            filters: List[str] = []
-            if self.changed_since:
-                only_files = self.changed_files(target_dir, self.changed_since)
-                filters.append(f"changed-since={self.changed_since} ({len(only_files)} file(s))")
-            if self.include_patterns:
-                filters.append("include=" + ",".join(self.include_patterns))
-            if self.exclude_patterns:
-                filters.append("exclude=" + ",".join(self.exclude_patterns))
-            symbols = self.ast_extractor.parse_directory(
-                target_dir, max_files=self.max_files, include=self.include_patterns or None,
-                exclude=self.exclude_patterns or None, only_files=only_files, max_file_bytes=self.max_file_bytes
-            )
+            work_dir = self.work_dir_for(target_dir)
+            symbols, filters = self.select_symbols(target_dir)
             if filters:
                 self.console.print(f"[+] File selection: {escape('; '.join(filters))} "
                                    f"({self.ast_extractor.filtered_out} source file(s) left out by request)")
