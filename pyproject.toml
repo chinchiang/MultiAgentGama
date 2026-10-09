@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vibeharness-mas"
-# Single source of truth for the version: core/__init__.py
+# Single source of truth for the version: vibeharness/__init__.py
 dynamic = ["version"]
 description = "Multi-agent white-box and threat-modeled black-box testing harness for vibe-coded projects"
 readme = "README.md"
@@ -35,21 +35,20 @@ dependencies = [
 ]
 
 [project.scripts]
-vibeharness = "main:main"
-
-[tool.setuptools]
-py-modules = ["main"]
+vibeharness = "vibeharness.cli:main"
 
 [tool.setuptools.dynamic]
-version = { attr = "core.__version__" }
+version = { attr = "vibeharness.__version__" }
 
 [tool.setuptools.packages.find]
-# `config` is a data-only namespace package: core/llm_gateway.py and the threat modeler resolve their
-# default YAML files relative to the install root, so the wheel must ship config/*.yaml beside core/
-include = ["core*", "agents*", "runners*", "reports*", "config"]
+# Everything ships under the single `vibeharness` namespace (core / agents / runners / reports / config
+# used to be top-level packages that collided with other installed packages of the same generic names).
+# `vibeharness.config` is a data-only package: the gateway and the threat modeler resolve their default
+# YAML files relative to the package, so the wheel must ship vibeharness/config/*.yaml
+include = ["vibeharness*"]
 
 [tool.setuptools.package-data]
-config = ["*.yaml"]
+"vibeharness.config" = ["*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -70,4 +69,4 @@ python_version = "3.10"
 ignore_missing_imports = true
 # Also type-check function bodies without annotations (free correctness win: no new errors surfaced)
 check_untyped_defs = true
-files = ["core", "agents", "runners", "reports", "main.py"]
+files = ["vibeharness", "main.py"]

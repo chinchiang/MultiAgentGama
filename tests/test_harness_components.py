@@ -1,13 +1,13 @@
 import os
-from core.models import STRIDECategory
-from core.llm_gateway import LLMGateway
-from core.sandbox import LocalSubprocessSandbox, TIMEOUT_EXIT_CODE
-from agents.whitebox.ast_extractor import ASTExtractor
-from agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
-from agents.whitebox.debater import MultiModelDebater
-from agents.whitebox.test_generator import WhiteboxTestGenerator
-from agents.blackbox.threat_modeler import AutomatedThreatModeler
-from agents.blackbox.scenario_builder import ThreatScenarioBuilder
+from vibeharness.core.models import STRIDECategory
+from vibeharness.core.llm_gateway import LLMGateway
+from vibeharness.core.sandbox import LocalSubprocessSandbox, TIMEOUT_EXIT_CODE
+from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
+from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
+from vibeharness.agents.whitebox.debater import MultiModelDebater
+from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
+from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
+from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
 
 # Mock mode keeps these tests hermetic even when real API keys are set in the environment
 SAMPLE_APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples", "vibe_sample_app.py")

@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-09
+
 依 OWASP Top 10 for LLM Applications 2026 與 MITRE ATLAS 修正設計：白箱評議陣容改為 Claude／DeepSeek／GLM／Gemini，並加上確定性 AI 安全規則與信任邊界防護。
 
 ### 變更（依 OWASP LLM Top 10 2026／MITRE ATLAS 修正設計）
@@ -25,6 +27,40 @@
 - **依模型設定輸出上限**（live 實測發現）：`models.<alias>.max_output_tokens` 覆蓋全域值；全域預設由 4096 提高為 `16384`：思考 token 也算在上限內，4096 會讓 Gemini 3 的測試生成回應空白或被截斷，也會截斷 Claude 的威脅模型 JSON（上限只是封頂，成本仍由 `max_model_calls` 管控）；單次模型請求逾時 `timeout_seconds` 也由 60 秒提高為 180 秒，因為 Opus 產出長威脅模型 JSON 時超過 60 秒。被截斷的回應改記錄為「output truncated at the max_output_tokens limit」而非籠統的「not valid JSON」
 - **不支援的取樣參數改為丟棄而非失敗**（live 實測發現）：Bedrock 上的 Claude Opus 5.5 只接受 `temperature=1`，過去每次呼叫都失敗並退回備援模型；改傳 `drop_params`。另外 Bedrock 等以 AWS 憑證驗證的模型可設 `aws_profile_name`／`aws_region_name` 取代 `api_key_env`；空白回應會記錄 `finish_reason`（例如安全過濾的 `content_filter`）
 - **報告保存生成的測試程式碼**（稽核軌跡）：Markdown 新增附錄「Generated Test Code」，以可收合區塊列出每個白箱／黑箱測試的程式碼、來源發現／威脅與執行結果；JSON 新增 `generated_tests`／`blackbox_generated_tests`，原封不動保存程式碼。live 實測發現部分「通過」的測試其實是在斷言缺陷本身，沒有程式碼就無法稽核。程式碼區塊的 fence 會依內容中最長的反引號自動加長（原本 PoC 區塊遇到四個反引號會被跳出，一併修正）
+
+### 變更（破壞性：打包命名空間）
+- **所有程式搬進單一頂層套件 `vibeharness/`**：`core`、`agents`、`runners`、`reports`、`config` 與 `main` 過去是各自的頂層套件／模組，`pip install` 後直接進 site-packages，會與其他同名套件互撞（`core`、`config` 尤其常見），也會遮蔽使用者專案自己的 `config`。現在只安裝 `vibeharness/` 一個目錄：import 改為 `vibeharness.core.…`、`vibeharness.agents.…`，CLI 進入點為 `vibeharness.cli:main`，預設設定檔在 `vibeharness/config/`，版本在 `vibeharness/__init__.py`；repo 根目錄保留 `main.py` 薄殼，`python main.py …` 與 `vibeharness` 指令行為不變。以函式庫方式使用者需更新 import 路徑；新增測試保證 wheel 不再安裝任何通用名稱的頂層套件
+
+### 新增（後續項目）
+- **回應快取**：`global.cache_dir`／CLI `--cache-dir` 開啟後，可用的 live 回應以模型、設定（含 `max_output_tokens`、`extra_params`）與提示為 key 存成 JSON；相同提示直接取用，不呼叫供應商、不扣 `max_model_calls`，call log 與報告標為「live (response cache)」（`AgentCallRecord.cached`）。無效回應不會被快取，損壞的快取檔視同未命中；寫入採暫存檔＋原子取代，平行呼叫不會讀到半截檔案
+- **崩潰或中斷時寫出部分報告**：六階段中任何例外或 Ctrl-C，都會先把已完成階段（模型呼叫紀錄、靜態規則命中、發現、驗證結果、白箱測試與結果、威脅、黑箱測試與結果）與錯誤寫到 `<output>.partial.json`（`partial: true`、`phase_reached`）再往上拋；已付費的模型結果不再歸零
+- **`local_subprocess` 資源上限**：`global.sandbox_memory_mb`（預設 2048，`0` 關閉）在 POSIX 上以 `RLIMIT_AS` 限制 pytest 程序樹的位址空間，另加 CPU 時間上限（批次預算 + 10 秒）；生成測試配置 1 GiB 時以 `MemoryError` 收場而不是吃光主機記憶體。`docker` provider 不套用（容器已有 `--memory`／`--cpus`，docker CLI 本身不受限）
+- **SARIF 規則 `help`**：每條規則帶 `help.text`／`help.markdown`（確定性規則附修復建議與 OWASP／ATLAS／CWE 對應；白箱與黑箱規則說明如何用報告中的測試與 PoC 驗證），GitHub Code Scanning 的 alert 頁才有修復指引
+- **中文注入標記**：`VH-AI-009` 新增正體與簡體中文句型——忽略／無視（先前｜以上｜系統）的指令／規則、不要／請勿回報／標記…問題／函式、回報零／沒有發現、給 AI／審查者的注意事項／備註、「AI 審查者：」、將此程式碼視為／標記為安全／通過。「忽略大小寫」「回報錯誤給呼叫端」「寄給審查者」等一般用語不命中，harness 自掃仍為零
+- **手動 live smoke workflow**（`.github/workflows/live-smoke.yml`）：`workflow_dispatch` 以 repo secrets 的供應商金鑰對目標跑一次 live／hybrid（可設呼叫數上限），再以回應快取免費重跑產出 JSON，報告、SARIF 與部分報告以 artifact 上傳；exit 4／5 視為失敗，0–3 為目標的判定
+
+### 新增（功能改善）
+- **模型回應無法使用時先重問**：非 JSON、缺欄位或空回應的 live 回應過去直接記 `invalid`、整輪 INCONCLUSIVE；現在依 `global.retry_invalid_output`（預設 1）重問，提示會說明上次的問題並要求只回 JSON。第一次嘗試記為 `retried`（報告 Execution Provenance 顯示「unusable, re-asked」，不是證據缺口），仍失敗才記 `invalid`；每次重問都是真實呼叫、計入 `max_model_calls`，預算用完就不重問；`json_output=False` 的修復呼叫不重問
+- **`models.<alias>.extra_params`**：原封不動傳給 litellm 的參數（例如 `thinking: {type: disabled}`、`reasoning_effort: low`），可讓推理模型不要把 `max_output_tokens` 全花在思考（live 實測 GLM 的主要失敗原因）；啟動時驗證為 mapping
+- **檔案篩選**：CLI `--include GLOB`／`--exclude GLOB`（可重複，覆蓋設定檔的 `global.include`／`exclude`）與 `--changed-since <git ref>`（只分析相對該 ref 有變更的檔案，含暫存、未暫存與未追蹤；ref 無法解析或目標不在 git repo 內為 exit 5）；篩掉的檔案不算證據缺口。目錄排除清單新增 `site-packages`
+- **`global.max_file_bytes`**（預設 1 MB）：超過的檔案（minified bundle、產生碼）不分析並列為證據缺口；過去 JS/TS lexer 逐字元掃描會在大檔上耗時數分鐘
+- **報告中繼資料**：`summary.run` 新增 `generated_at`（UTC）、`harness_version`、`execution_mode`、`config_path`、`sandbox_provider`、`target_path`、`target_git_commit`／`target_git_dirty`、`file_filters`；Markdown 標頭、JSON 與 SARIF `properties` 都帶出；JSON 新增 `schema_version`（`"1"`）
+- **提早失敗與中斷**：`--output`／`--sarif` 的目錄不存在或不可寫時在任何模型呼叫前就 exit 5（過去整輪跑完才在寫檔時崩潰，模型花費全部白費）；Ctrl-C 改為 exit 130 並明確說明未寫出報告，不再印 traceback
+
+### 工程（治理與供應鏈）
+- 新增 `SECURITY.md`（私密通報流程、重點弱點類型、支援版本）、`CONTRIBUTING.md`（開發環境、提交前檢查、修改原則、發布步驟）、`.github/CODEOWNERS`、PR 與 issue 模板
+- 新增 `.github/dependabot.yml`：每週提議 SHA 釘版 Actions 與 `requirements.lock` 的更新（`litellm`／`pydantic` 的 major 升版除外）；過去 `audit` job 一旦遇到鎖定版本的 CVE，只能手動重新產生鎖定檔
+- `requirements-dev.txt` 全部釘版（新增 `pip-audit==2.10.1`、`build==1.6.1`，`pytest-cov` 釘到與鎖定檔相同的 7.1.0），CI 的 `audit`／`package`／`publish` job 改從此處讀取版本，不再安裝未釘版的最新版
+- `tests.yml` 加 `concurrency`（同一 PR 的新推送取消舊 run）；`publish.yml` 的 `build-and-upload` 加 `timeout-minutes`，`pypi-publish` 改下載同一份建置產物（`actions/upload-artifact`／`download-artifact`，SHA 釘版）而非重新建置，Release 與 PyPI 的檔案位元相同
+- pre-commit 新增 mypy hook（以專案環境執行，與 CI 的 lint job 同一組釘版）
+
+### 修正（深入審視，2026-10-09）
+- **套件目標的匯入指引**：`--target` 指向本身是套件的目錄（含 `__init__.py`，模組之間用相對匯入）時，提示詞與離線探針過去指示 `from app import f`，目標一執行就丟 `attempted relative import with no known parent package`，執行器還把它歸咎於「目標壞掉」；現在 `module_import_name` 會偵測套件並改以上層目錄為基準（`from shop.app import f`，上層目錄本來就在沙盒的 sys.path），探針也改用 `importlib.import_module` 依模組名載入
+- **`--base-url` 只接受 http(s)**：`urllib` 也能開 `file:`／`ftp:`／`data:`，所以 `--base-url file:///etc/hostname` 過去會被當成「伺服器存活」而切換成 Live HTTP 模式；現在 CLI 與 `ThreatScenarioBuilder` 都以 `validate_base_url` 檢查 scheme 與主機名，不合法為用法錯誤（exit 5）
+- **`VH-AI-009` 不再把裸的 `READY_TO_SHIP` 當成注入**：這條規則對本 repo 自掃會命中 27 次（都是判定常數），任何讀取 JSON 報告並比較 `overall_status` 的目標專案也會永遠被列為證據缺口；改為只匹配「要求審查者給出該判定」的句型，並新增對 harness 原始碼自掃為零命中的 dogfood 測試
+- **供應商例外訊息先遮蔽再記錄**：`live invocation failed: …` 原文會進 `call_log` 的 reason、Markdown 的 Execution Provenance、JSON 報告與 live 模式的 stderr，而 HTTP 用戶端例外可能回顯帶金鑰的 URL 或標頭；現在所有 reason 與 `LLMGatewayError` 訊息都先經 `redact_secrets` 與控制字元清除
+- **數值設定於啟動時驗證**：`timeout_seconds`、`max_retries`、`max_output_tokens`（全域與每模型）與各 agent 的 `temperature` 過去只在呼叫時讀取，寫錯（例如字串）會讓 litellm 失敗，hybrid 模式再悄悄退回模擬引擎、只留下 INCONCLUSIVE；現在一律 `ConfigError`（exit 5）
+- 文件：報告章節標題改用與 README／harness 相同的六階段編號（Phases 2–3、4、5）；設計文件的測試數更新
 
 ### 修正（設計文件列出的缺口）
 - **審查／驗證批次崩潰列為證據缺口**：reviewer 或 verifier 的批次在 gateway 之外拋出例外時，過去只記 log、該批當成空結果，`call_log` 沒有紀錄，閘門看不到缺席的審查；現在經 `LLMGateway.record_failure` 記成一筆 `invalid` 呼叫（原因附例外），證據缺口訊息逐一列出 agent 與原因

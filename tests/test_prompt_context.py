@@ -6,18 +6,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.codecontext import module_import_name, import_instructions, render_symbols
-from core.llm_gateway import LLMGateway
-from core.models import ReviewFinding, FindingSeverity, TestStatus
-from core.sandbox import LocalSubprocessSandbox
-from agents.whitebox.ast_extractor import ASTExtractor
-from agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
-from agents.whitebox.test_generator import WhiteboxTestGenerator
-from agents.blackbox.threat_modeler import AutomatedThreatModeler
-from runners.test_executor import TestSuiteExecutor
+from vibeharness.core.codecontext import module_import_name, import_instructions, render_symbols
+from vibeharness.core.llm_gateway import LLMGateway
+from vibeharness.core.models import ReviewFinding, FindingSeverity, TestStatus
+from vibeharness.core.sandbox import LocalSubprocessSandbox
+from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
+from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
+from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
+from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
+from vibeharness.runners.test_executor import TestSuiteExecutor
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG = os.path.join(REPO_ROOT, "config", "agents_config.yaml")
+CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
 
 
 # --- codecontext --------------------------------------------------------------
@@ -29,6 +29,51 @@ def test_module_import_name(tmp_path):
     assert module_import_name(str(tmp_path / "elsewhere.py"), str(root)) is None
     assert module_import_name(str(root / "my-app.py"), str(root)) is None  # not importable by name
     assert module_import_name(str(root / "app.ts"), str(root)) is None
+
+
+def test_package_target_is_imported_through_its_package(tmp_path):
+    """A target directory that is itself a package must be imported via the parent directory
+    (which the sandbox also puts on sys.path), or its own relative imports break and the executor
+    blames the target ("attempted relative import with no known parent package")."""
+    pkg = tmp_path / "src" / "shop"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "app.py").write_text("from .models import price_of\n")
+    (pkg / "models.py").write_text("def price_of(item):\n    return item['price']\n")
+    assert module_import_name(str(pkg / "app.py"), str(pkg)) == "shop.app"
+    assert module_import_name(str(pkg / "__init__.py"), str(pkg)) == "shop"
+    text = import_instructions(str(pkg / "app.py"), str(pkg), "checkout")
+    assert "from shop.app import checkout" in text and str(tmp_path / "src") in text
+    # A plain directory (no __init__.py) keeps the direct form
+    (pkg / "__init__.py").unlink()
+    assert module_import_name(str(pkg / "app.py"), str(pkg)) == "app"
+
+
+def test_offline_probe_imports_a_package_module_by_name(tmp_path):
+    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
+    from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.core.sandbox import LocalSubprocessSandbox
+    from vibeharness.runners.test_executor import TestSuiteExecutor
+    from vibeharness.core.models import TestStatus
+    pkg = tmp_path / "shop"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "models.py").write_text("def price_of(item):\n    return item['price']\n")
+    (pkg / "app.py").write_text(
+        "from .models import price_of\n\ndef checkout(cart):\n    return sum(price_of(i) for i in cart)\n"
+    )
+    symbols = [s for s in ASTExtractor().parse_directory(str(pkg)) if s.name == "checkout"]
+    gen = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="mock"))
+    probes = gen.build_offline_probes(symbols, root_dir=str(pkg))
+    assert "importlib.import_module('shop.app')" in probes[0].code
+    results, _ = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60)).execute_test_suite(
+        probes, working_dir=str(pkg)
+    )
+    # The probe reached checkout() (None cart -> TypeError): a FAILED verdict about the target,
+    # not an ERROR blaming the target's relative import
+    assert results[0].status == TestStatus.FAILED, results[0].failure_reason
+    assert "relative import" not in (results[0].failure_reason or "")
 
 
 def test_import_instructions_name_the_module_or_fall_back_to_importlib(tmp_path):
@@ -161,7 +206,7 @@ def test_gateway_passes_call_options_and_uses_fallback_model(fake_live, monkeypa
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"findings": []}'))])
 
     fake_live(lambda s, u: "")
-    monkeypatch.setattr("core.llm_gateway.litellm", SimpleNamespace(completion=completion))
+    monkeypatch.setattr("vibeharness.core.llm_gateway.litellm", SimpleNamespace(completion=completion))
     gateway = LLMGateway(CONFIG, execution_mode="live")
     resp = gateway.generate("whitebox_reviewer_claude", "sys", "prompt", required_keys=["findings"])
 
@@ -174,7 +219,7 @@ def test_gateway_passes_call_options_and_uses_fallback_model(fake_live, monkeypa
 
 
 def test_missing_config_fails_loudly(tmp_path):
-    from core.llm_gateway import ConfigError
+    from vibeharness.core.llm_gateway import ConfigError
     with pytest.raises(ConfigError):
         LLMGateway(str(tmp_path / "nope.yaml"))
 

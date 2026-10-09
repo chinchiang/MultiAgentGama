@@ -5,14 +5,14 @@ import subprocess
 
 import pytest
 
-import core.sandbox as sandbox_mod
-from core.harness import VibeHarnessCommander
-from core.models import GeneratedTest, TestStatus
-from core.sandbox import (
+import vibeharness.core.sandbox as sandbox_mod
+from vibeharness.core.harness import VibeHarnessCommander
+from vibeharness.core.models import GeneratedTest, TestStatus
+from vibeharness.core.sandbox import (
     DockerSandbox, SandboxUnavailableError, TIMEOUT_EXIT_CODE, DEFAULT_DOCKER_IMAGE,
     container_target_dir, rewrite_host_paths,
 )
-from runners.test_executor import TestSuiteExecutor
+from vibeharness.runners.test_executor import TestSuiteExecutor
 
 WIN_MAP = [(r"D:\work\proj", "/work/proj"), (r"D:\work", "/work")]
 POSIX_MAP = [("/home/u/proj", "/work/proj"), ("/home/u", "/work")]

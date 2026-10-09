@@ -2,7 +2,7 @@
 
 English (US) ｜ [正體中文（臺灣）](configuration.md)
 
-This document covers every field in `config/agents_config.yaml`: semantics, defaults, and what actually takes effect (as implemented).
+This document covers every field in `vibeharness/config/agents_config.yaml`: semantics, defaults, and what actually takes effect (as implemented).
 
 The file has three top-level sections: **`global`** (execution and sandbox parameters), **`models`** (provider definitions), and **`agents`** (per-agent model routing). A missing or invalid-YAML config file fails loudly (`ConfigError`; the CLI exits with code 5); the harness never runs on an empty configuration.
 
@@ -15,11 +15,16 @@ From the CLI, use `--config <path>` to point at a different file and `--mode` to
 | Field | Default | Description |
 | :--- | :--- | :--- |
 | `execution_mode` | `"hybrid"` | One of `live` / `hybrid` / `mock` (see table below); anything else fails at startup |
-| `timeout_seconds` | `180` | Per-LLM-request timeout in seconds, passed to litellm |
-| `max_retries` | `2` | Retry count at the litellm level (retries the same primary model; the `fallback_model` is tried once only after all retries fail) |
-| `max_output_tokens` | `16384` | Token cap per model response; `models.<alias>.max_output_tokens` overrides it per model |
+| `timeout_seconds` | `180` | Per-LLM-request timeout in seconds, passed to litellm; must be a number ≥ 1 (validated at start-up, else `ConfigError`) |
+| `max_retries` | `2` | Retry count at the litellm level (retries the same primary model; the `fallback_model` is tried once only after all retries fail); must be an integer ≥ 0 |
+| `max_output_tokens` | `16384` | Token cap per model response; `models.<alias>.max_output_tokens` overrides it per model; must be an integer ≥ 1 |
 | `max_model_calls` | `null` (unlimited) | Cost guard: real model invocations per run (litellm retries and the `fallback_model` of one invocation are not counted separately). Once exhausted, `hybrid` falls back to the simulation engine and it is listed as an evidence gap (the verdict cannot be `READY_TO_SHIP`); `live` raises `LLMGatewayError` (exit 4). Must be a non-negative integer; `0` means unlimited |
 | `max_concurrent_calls` | `6` | Concurrent model calls per agent phase (review, verification, white-box test generation, black-box attack synthesis); `1` makes everything sequential |
+| `max_file_bytes` | `1000000` | Size cap (bytes) for a single source file; larger files are not analyzed and are listed as an evidence gap (minified bundles, generated code). Non-negative integer; `0` / `null` keep the default |
+| `include` | `[]` | Glob list: only files whose path relative to `--target` (or file name) matches one of them are analyzed (e.g. `["src/*"]`); empty = everything. CLI `--include` replaces the list |
+| `exclude` | `[]` | Glob list: matching files are not analyzed (e.g. `["tests/*", "vendor/*", "*.min.js"]`; `vendor` also matches the whole directory); excluded files are not an evidence gap. CLI `--exclude` replaces the list |
+| `cache_dir` | `null` (off) | Response cache directory (created if missing): usable live answers are stored as JSON keyed by model, settings and prompt, and an identical prompt later is served from it with no provider call and no `max_model_calls` spend; the Execution Provenance table shows it as "live (response cache)". CLI `--cache-dir` overrides. The directory holds raw model answers (which may quote the audited code), so treat it like the reports |
+| `retry_invalid_output` | `1` | How many times an unusable answer (not JSON, missing keys, empty) is re-asked, naming the problem, before it is booked `invalid`; every re-ask is a real call against `max_model_calls` and shows as "unusable, re-asked" in the Execution Provenance table. `0` disables; integer 0–5 |
 | `max_files` | `50` | Source files analyzed per run; files beyond the cap are listed as an evidence gap (the verdict cannot be `READY_TO_SHIP`). Must be a non-negative integer; `0` / `null` keep the default, a negative or non-integer value fails at startup with `ConfigError` (exit 5) |
 | `sandbox_provider` | `"local_subprocess"` | `local_subprocess` (local subprocess, **not a security boundary**) or `docker` (disposable isolated container); anything else fails at startup |
 | `docker_image` | `"vibeharness-sandbox:latest"` | Docker sandbox image; must ship `pytest`, `pytest-cov`, and the target's dependencies |
@@ -27,6 +32,7 @@ From the CLI, use `--config <path>` to point at a different file and `--mode` to
 | `docker_memory` | `"1g"` | Container memory limit |
 | `docker_cpus` | `"2"` | Container CPU limit |
 | `docker_pids_limit` | `256` | Container process limit |
+| `sandbox_memory_mb` | `2048` | `local_subprocess` only: caps the pytest process tree's address space with `RLIMIT_AS` (POSIX; no effect on Windows) and adds a CPU-time cap of the batch budget + 10 s. `0` disables. Not a security boundary, just a stop on runaway memory / CPU use; the `docker` provider uses `docker_memory` / `docker_cpus` instead |
 | `sandbox_timeout_seconds` | `120` | Total timeout for one batched pytest run; on timeout the whole process tree is killed / the container removed |
 | `per_test_timeout_seconds` | `30` | Per-test timeout used when a timed-out batch is re-run test by test |
 
@@ -51,6 +57,7 @@ Each **key** is a `model_alias` (referenced by the `agents` section's `model_ali
 | `fallback_model` | Optional | Litellm model string tried **once** after the primary model still fails after `max_retries`; the report records which model was actually used |
 | `api_base` | Optional | Custom API endpoint (e.g. a self-hosted OpenAI-compatible gateway at `https://llm-gateway.example.com/v1`, or a local Ollama at `http://localhost:11434`). **Must be `https://`**; plain `http://` is accepted only for loopback hosts (`localhost` / `127.0.0.1` / `::1`); anything else fails at startup with `ConfigError` (exit 5). Target source code is sent to these endpoints, so only allow-listed endpoints are accepted (OWASP LLM04:2026 Supply Chain) |
 | `aws_profile_name` / `aws_region_name` | Optional | For models that authenticate through the AWS credential chain (e.g. `bedrock/...`), use these instead of `api_key_env`: the named AWS profile (SSO included) and region; a configured profile counts as live credentials |
+| `extra_params` | Optional | Extra parameters passed verbatim to litellm (a mapping), e.g. `{thinking: {type: disabled}}` or `{reasoning_effort: low}`, so a reasoning model does not spend the whole output budget thinking; anything but a mapping is a `ConfigError` at start-up |
 | `max_output_tokens` | Optional | Overrides `global.max_output_tokens`. Reasoning models (GLM, DeepSeek, Gemini 3) count thinking tokens against this limit; too small a value yields empty or cut-off answers, reported as "output truncated at the max_output_tokens limit" |
 | `provider` | Optional | **Label only — not read by the code** (routing is determined entirely by the litellm model string) |
 
@@ -76,7 +83,7 @@ Each **key** is an `agent_id` and supports:
 | Field | Default | Description |
 | :--- | :--- | :--- |
 | `model_alias` | none (resolves to `unconfigured`) | Points at a `models` alias; **this is the field that actually routes the model**. A missing or unknown alias has no model and no key: `hybrid` simulates that agent, `live` fails with `LLMGatewayError` |
-| `temperature` | `0.2` | Sampling temperature (`0.0` recommended for verification/voting agents) |
+| `temperature` | `0.2` | Sampling temperature (`0.0` recommended for verification/voting agents); must be a number between 0 and 2 (validated at start-up) |
 | `name` | — | For `whitebox_reviewer_*`: the reviewer name used in its prompt and in the report ("Identified by ..."); descriptive only for other agents |
 | `focus` | — | For `whitebox_reviewer_*`: the review focus, **inserted into the reviewer's prompt** (default "General correctness and security defects") |
 | `role` | — | Descriptive only; not read by the code |
@@ -183,9 +190,9 @@ An agent without `model_alias`, or whose `model_alias` names an alias missing fr
 
 ---
 
-## Related: `config/threat_rules.yaml`
+## Related: `vibeharness/config/threat_rules.yaml`
 
-The threat modeler reads a few fields of `config/threat_rules.yaml` as prompt guidance; everything else in that file (`code`, `target_components`, `cwe`, `atlas_tactics`, ...) is documentation and has no runtime effect.
+The threat modeler reads a few fields of `vibeharness/config/threat_rules.yaml` as prompt guidance; everything else in that file (`code`, `target_components`, `cwe`, `atlas_tactics`, ...) is documentation and has no runtime effect.
 
 | Section | Fields the code reads | When it is used |
 | :--- | :--- | :--- |

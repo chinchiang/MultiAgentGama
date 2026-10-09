@@ -5,8 +5,8 @@ import os
 import textwrap
 from typing import Iterable, List, Optional
 
-from core.models import CodeSymbol
-from core.sanitize import prepare_untrusted_code
+from vibeharness.core.models import CodeSymbol
+from vibeharness.core.sanitize import prepare_untrusted_code
 
 _FENCE_LANG = {".py": "python", ".js": "javascript", ".jsx": "jsx", ".ts": "typescript", ".tsx": "tsx"}
 # Rough tokenizer-free estimate: code averages ~3.5 characters per token; non-ASCII (e.g. CJK) is ~1 token each.
@@ -41,15 +41,31 @@ def fence_language(file_path: str) -> str:
     return _FENCE_LANG.get(os.path.splitext(file_path)[1].lower(), "")
 
 
+def import_root(root_dir: str) -> str:
+    """The directory a generated test must have on sys.path to import the target by name.
+
+    The sandbox puts both the target directory and its parent on sys.path. When the target
+    directory is itself a package (it has an ``__init__.py``), modules in it must be imported
+    through the package (``from shop.app import checkout``): importing ``app`` directly makes the
+    package's own relative imports (``from .models import ...``) fail with "attempted relative
+    import with no known parent package", which the executor then blames on the target.
+    """
+    root = os.path.abspath(root_dir)
+    if os.path.isfile(os.path.join(root, "__init__.py")) and os.path.basename(root).isidentifier():
+        return os.path.dirname(root)
+    return root
+
+
 def module_import_name(file_path: str, root_dir: str) -> Optional[str]:
     """
-    Dotted module name for a Python file relative to root_dir (the sandbox puts root_dir on sys.path),
-    or None when the file is outside root_dir or is not Python.
+    Dotted module name for a Python file under root_dir, importable from the sandbox's sys.path
+    (root_dir, or its parent when root_dir is a package; see import_root), or None when the file
+    is outside root_dir or is not Python.
     """
     if not file_path.endswith(".py"):
         return None
     try:
-        rel = os.path.relpath(os.path.abspath(file_path), os.path.abspath(root_dir))
+        rel = os.path.relpath(os.path.abspath(file_path), import_root(root_dir))
     except ValueError:  # Windows: file and root on different drives
         return None
     if rel.startswith(".."):
@@ -76,7 +92,7 @@ def import_instructions(file_path: str, root_dir: str, symbol_name: Optional[str
     if module:
         top = (symbol_name or "").split(".")[0]
         example = f"from {module} import {top}" if top else f"import {module}"
-        lines.append(f"The directory {os.path.abspath(root_dir)} is on sys.path, so import it as: `{example}`")
+        lines.append(f"The directory {import_root(root_dir)} is on sys.path, so import it as: `{example}`")
     else:
         lines.append(
             "Load it with importlib: `spec = importlib.util.spec_from_file_location('target', r'<absolute path>')`"

@@ -2,10 +2,10 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
-from core.models import ReviewFinding, MultiModelDebateResult, VerificationVote, CodeSymbol
-from core.llm_gateway import LLMGateway, LLMGatewayError, UNCONFIGURED_ALIAS
-from core.codecontext import render_symbols, truncate_to_tokens
-from core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
+from vibeharness.core.models import ReviewFinding, MultiModelDebateResult, VerificationVote, CodeSymbol
+from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError, UNCONFIGURED_ALIAS
+from vibeharness.core.codecontext import render_symbols, truncate_to_tokens
+from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
 
 logger = logging.getLogger("VibeHarness.Debater")
 

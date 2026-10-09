@@ -4,7 +4,7 @@ import json
 import os
 import re
 from typing import Dict, List, Optional, Tuple
-from core.models import (
+from vibeharness.core.models import (
     CodeSymbol,
     MultiModelDebateResult,
     ReviewFinding,
@@ -17,7 +17,7 @@ from core.models import (
     FindingSeverity,
     StaticFinding
 )
-from core.sanitize import clean_model_text, markdown_safe
+from vibeharness.core.sanitize import clean_model_text, markdown_safe
 
 # Windows drive paths ("C:\...") count as absolute even on POSIX hosts, so a SARIF produced
 # on Windows relativizes identically when re-processed by a Linux CI runner.
@@ -30,6 +30,8 @@ SARIF_RULE_WHITEBOX = "vibeharness/whitebox-finding"
 SARIF_RULE_BLACKBOX = "vibeharness/blackbox-breach"
 # Deterministic AI-security rules keep their own stable ids: vibeharness/VH-AI-001, ...
 SARIF_RULE_STATIC_PREFIX = "vibeharness/"
+# Version of the JSON report layout (summary / whitebox / threat_model / blackbox_* keys)
+JSON_SCHEMA_VERSION = "1"
 
 
 class ReportGenerator:
@@ -56,6 +58,17 @@ class ReportGenerator:
         md.append(f"**Target System Path**: `{os.path.abspath(target_path)}`  ")
         md.append("**Orchestrator**: Commander Harness Agent  ")
         md.append(f"**Overall Status**: `{summary.overall_status}`  ")
+        if summary.run:
+            run = summary.run
+            revision = run.target_git_commit or "not a git repository"
+            if run.target_git_commit and run.target_git_dirty:
+                revision += " (uncommitted changes)"
+            md.append(f"**Generated**: {run.generated_at} by VibeHarness-MAS {run.harness_version} "
+                      f"(mode `{run.execution_mode}`, sandbox `{run.sandbox_provider}`)  ")
+            md.append(f"**Target revision**: `{self._cell(revision)}`  ")
+            md.append(f"**Config**: `{self._cell(run.config_path)}`  ")
+            if run.file_filters:
+                md.append(f"**File selection**: {self._code_span('; '.join(run.file_filters))}  ")
         md.append("\n---\n")
 
         simulated_calls = [c for c in summary.agent_calls if c.mode == "simulated"]
@@ -120,17 +133,18 @@ class ReportGenerator:
             md.append("| :--- | :--- | :--- | :--- | :--- |")
             grouped: Dict[Tuple[str, str, str, str], int] = {}
             for c in summary.agent_calls:
-                key = (c.agent_id, c.model_name, c.mode, c.reason or "")
+                key = (c.agent_id, c.model_name, "cached" if c.cached else c.mode, c.reason or "")
                 grouped[key] = grouped.get(key, 0) + 1
             for (agent_id, model_name, mode, reason), count in grouped.items():
-                mode_label = {"live": "🟢 live", "simulated": "🟡 simulated"}.get(mode, "🔴 invalid output")
+                mode_label = {"live": "🟢 live", "cached": "🟢 live (response cache)", "simulated": "🟡 simulated",
+                              "retried": "🟠 unusable, re-asked"}.get(mode, "🔴 invalid output")
                 md.append(f"| `{self._cell(agent_id)}` | `{self._cell(model_name)}` | {mode_label} | {count} | {self._cell(reason) or '-'} |")
         else:
             md.append("No agent invocations were recorded.")
         md.append("\n")
 
         # 2. White-Box Multi-Model Review Findings
-        md.append("## 2. 🔬 Phase 1: Heterogeneous White-Box Code Review & Debate")
+        md.append("## 2. 🔬 Phases 2–3: Heterogeneous White-Box Code Review, Verification & Tests")
         models = " / ".join(summary.reviewer_models) or "the configured reviewer models"
         if debate_result.is_simulated or any(f.is_simulated for f in debate_result.confirmed_findings):
             md.append(f"> **De-biasing Architecture (SIMULATED)**: Reviewer and verifier outputs below are simulation templates, not real {models} audits.\n")
@@ -171,7 +185,7 @@ class ReportGenerator:
         md.append("\n")
 
         # 3. Black-Box Threat Modeling Matrix
-        md.append("## 3. 🎯 Phase 2: Black-Box Threat Modeling (STRIDE & OWASP)" + (" `[SIMULATED]`" if threat_model.is_simulated else ""))
+        md.append("## 3. 🎯 Phase 4: Black-Box Threat Modeling (STRIDE & OWASP)" + (" `[SIMULATED]`" if threat_model.is_simulated else ""))
         md.append(f"**System Description**: {markdown_safe(threat_model.system_description)}  ")
         md.append(f"**Entrypoints Audited**: {self._code_span(self._join_list(threat_model.entrypoints))}  ")
         md.append(f"**Trust Boundaries**: {self._code_span(self._join_list(threat_model.trust_boundaries))}\n")
@@ -186,7 +200,7 @@ class ReportGenerator:
         md.append("\n")
 
         # 4. Black-Box Dynamic Security Execution Results
-        md.append("## 4. ⚡ Phase 3: Threat-Derived Black-Box Dynamic Test Execution")
+        md.append("## 4. ⚡ Phase 5: Threat-Derived Black-Box Dynamic Test Execution")
         if blackbox_results:
             md.append("| Test ID | Type | Status | Latency | Outcome / Exploitation |")
             md.append("| :--- | :--- | :--- | :--- | :--- |")
@@ -240,6 +254,8 @@ class ReportGenerator:
         Generated test code is stored verbatim, so a run can be audited and its tests re-executed."""
         payload = {
             "tool": "vibeharness-mas",
+            # Bump when a field is renamed/removed or its meaning changes; additions keep the version
+            "schema_version": JSON_SCHEMA_VERSION,
             "target_path": os.path.abspath(target_path),
             "summary": summary.model_dump(),
             "whitebox": {
@@ -269,14 +285,14 @@ class ReportGenerator:
         symbol their threat's attack vector names, when one can be resolved).
         URIs are relative to the enclosing git repository (%SRCROOT%), else to the target.
         """
-        from core import __version__
+        from vibeharness import __version__
         root = self._sarif_root(target_path)
 
         rules: List[Dict[str, object]] = []
         rule_index: Dict[str, int] = {}
         results: List[Dict[str, object]] = []
 
-        def add_rule(rule_id: str, short: str, full: str, level: str) -> int:
+        def add_rule(rule_id: str, short: str, full: str, level: str, help_md: Optional[str] = None) -> int:
             if rule_id not in rule_index:
                 rule_index[rule_id] = len(rules)
                 rules.append({
@@ -285,13 +301,20 @@ class ReportGenerator:
                     "shortDescription": {"text": short},
                     "fullDescription": {"text": full},
                     "defaultConfiguration": {"level": level},
+                    # Code Scanning shows `help` on the alert page; without it the alert has no guidance
+                    "help": {"text": re.sub(r"[*`]", "", help_md or full), "markdown": help_md or full},
                 })
             return rule_index[rule_id]
 
         # 0. Deterministic AI-security rule hits (no model involved)
         for sf in summary.static_findings:
             rule_id = SARIF_RULE_STATIC_PREFIX + sf.rule_id
-            idx = add_rule(rule_id, sf.title, sf.remediation, self._sarif_level(sf.severity))
+            mappings = " · ".join(t for t in (sf.owasp_mapping, sf.atlas_mapping, sf.cwe) if t)
+            idx = add_rule(
+                rule_id, sf.title, sf.remediation, self._sarif_level(sf.severity),
+                help_md=f"**{sf.title}**\n\n{sf.remediation}" + (f"\n\nMappings: {mappings}" if mappings else "")
+                        + "\n\nDeterministic rule (no model involved): the hit is in the code itself, not a model's opinion.",
+            )
             tags = [t for t in (sf.owasp_mapping, sf.atlas_mapping, sf.cwe) if t]
             rules[idx].setdefault("properties", {"tags": ["security", *tags]})
             uri = self._sarif_uri(sf.file_path, root)
@@ -312,6 +335,10 @@ class ReportGenerator:
             SARIF_RULE_WHITEBOX, "Confirmed white-box defect hypothesis",
             "A defect reported by a reviewer model and confirmed (or left undecided) by cross-model verification.",
             "warning",
+            help_md="A reviewer model reported this defect and the other models confirmed it (or the vote tied). "
+                    "It is a hypothesis until a test exposes it: check the generated test and its outcome in the "
+                    "Markdown / JSON report (`properties.findingId` names the finding), then fix the root cause the "
+                    "message describes.",
         )
         # 1. Confirmed white-box findings (file locations resolved from line_number or the symbol table)
         for f in debate_result.confirmed_findings:
@@ -357,6 +384,10 @@ class ReportGenerator:
                     SARIF_RULE_BLACKBOX, "Confirmed black-box security breach",
                     "A threat-model-derived attack test whose defensive assertion failed against the target.",
                     "error",
+                    help_md="An attack script derived from the threat model ran against the target and its defensive "
+                            "assertion failed, i.e. the attack succeeded. Reproduce it with the PoC in the report "
+                            "(`properties.testId`), then add the missing authorization, validation or limit the threat "
+                            "(`properties.threatId`) describes and keep the test as a regression guard.",
                 )
             threat = threats_by_id.get(r.source_ref or "")
             derived = f" (derived from {r.source_ref}{': ' + threat.title if threat else ''})" if r.source_ref else ""
@@ -396,6 +427,8 @@ class ReportGenerator:
                 "properties": {
                     "overall_status": summary.overall_status,
                     "target": os.path.abspath(target_path),
+                    **({"generated_at": summary.run.generated_at, "execution_mode": summary.run.execution_mode,
+                        "target_git_commit": summary.run.target_git_commit or ""} if summary.run else {}),
                 },
             }],
         }
@@ -566,7 +599,7 @@ class ReportGenerator:
         """Appendix with every executed test's code next to its outcome. A model-written test that "passes"
         may be asserting the defect itself (e.g. `pytest.raises(KeyError)`), so the code must be reviewable;
         the JSON report keeps it verbatim, here control characters are removed for safe rendering."""
-        from runners.test_executor import TestSuiteExecutor
+        from vibeharness.runners.test_executor import TestSuiteExecutor
         if not whitebox_tests and not blackbox_tests:
             return []
         md = ["\n## 6. 🧪 Generated Test Code (audit trail)",

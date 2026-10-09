@@ -3,13 +3,13 @@ import json
 import os
 import re
 
-from core.llm_gateway import LLMGateway
-from core.models import ReviewFinding, FindingSeverity, CodeSymbol
-from agents.whitebox.debater import MultiModelDebater
-from reports.report_generator import ReportGenerator
+from vibeharness.core.llm_gateway import LLMGateway
+from vibeharness.core.models import ReviewFinding, FindingSeverity, CodeSymbol
+from vibeharness.agents.whitebox.debater import MultiModelDebater
+from vibeharness.reports.report_generator import ReportGenerator
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG = os.path.join(REPO_ROOT, "config", "agents_config.yaml")
+CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
 
 
 def _finding(fid, model, corroborating=(), symbol="get_order"):
@@ -120,7 +120,7 @@ def test_verifiers_see_the_code_of_the_finding(fake_live, tmp_path):
 
 
 def test_report_shows_votes_and_agreement(fake_live):
-    from core.models import ThreatModelReport, VibeHarnessSummary
+    from vibeharness.core.models import ThreatModelReport, VibeHarnessSummary
     _install(fake_live, {"deepseek": {"A": "reject"}, "glm": {"A": "reject"}})
     result = MultiModelDebater(LLMGateway(CONFIG, execution_mode="live")).arbitrate([_finding("A", "claude")])
     summary = VibeHarnessSummary(

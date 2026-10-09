@@ -3,10 +3,10 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any, Optional
 from pydantic import ValidationError
-from core.models import CodeSymbol, ReviewFinding, FindingSeverity, text_or
-from core.llm_gateway import LLMGateway, LLMGatewayError, UNCONFIGURED_ALIAS
-from core.codecontext import render_symbols, batch_symbols
-from core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
+from vibeharness.core.models import CodeSymbol, ReviewFinding, FindingSeverity, text_or
+from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError, UNCONFIGURED_ALIAS
+from vibeharness.core.codecontext import render_symbols, batch_symbols
+from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
 
 logger = logging.getLogger("VibeHarness.MultiReviewer")
 

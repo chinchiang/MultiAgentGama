@@ -5,10 +5,10 @@ import yaml
 from concurrent.futures import ThreadPoolExecutor
 from pydantic import ValidationError
 from typing import List, Dict, Any, Optional
-from core.models import ThreatItem, ThreatModelReport, STRIDECategory, FindingSeverity, CodeSymbol
-from core.llm_gateway import LLMGateway, LLMGatewayError
-from core.codecontext import render_symbols, batch_symbols
-from core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
+from vibeharness.core.models import ThreatItem, ThreatModelReport, STRIDECategory, FindingSeverity, CodeSymbol
+from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
+from vibeharness.core.codecontext import render_symbols, batch_symbols
+from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
 
 DEFAULT_RULES_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config", "threat_rules.yaml")
 

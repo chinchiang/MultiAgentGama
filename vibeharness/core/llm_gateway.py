@@ -1,6 +1,8 @@
+import datetime as _dt
 import hashlib
 import os
 import json
+import tempfile
 import logging
 import re
 import threading
@@ -8,7 +10,8 @@ import urllib.parse
 from typing import Dict, Any, Optional, List
 import yaml
 
-from core.models import AgentCallRecord
+from vibeharness.core.models import AgentCallRecord
+from vibeharness.core.sanitize import clean_model_text, redact_secrets
 
 try:
     import litellm
@@ -30,6 +33,14 @@ DEFAULT_MAX_OUTPUT_TOKENS = 16384
 
 
 BUDGET_EXHAUSTED_REASON = "max_model_calls budget exhausted"
+# How many times an unusable live answer (not JSON, missing keys, empty) is re-asked before it is
+# booked as `invalid`; each re-ask is a real call that counts against max_model_calls
+DEFAULT_RETRY_INVALID_OUTPUT = 1
+# Appended to the user prompt of a re-ask so the model knows what was wrong with its first answer
+_RETRY_SUFFIX = (
+    "\n\nYour previous answer could not be used ({reason}). Answer again with ONLY the JSON object described "
+    "in the instructions: no prose, no code fence, and include every required key."
+)
 
 # Agents missing from the config resolve to this alias, which has no model and no key: hybrid mode
 # simulates them and live mode fails loudly, instead of silently routing them to some real provider
@@ -79,7 +90,15 @@ class LLMGateway:
         ) or DEFAULT_MAX_CONCURRENT_CALLS
         self.live_calls_attempted = 0
         self._budget_lock = threading.Lock()
+        retries = global_cfg.get("retry_invalid_output", DEFAULT_RETRY_INVALID_OUTPUT)
+        self.retry_invalid_output = 0 if retries is None else retries
+        # On-disk cache of usable live answers keyed by model + prompt: a re-run of the same target with
+        # the same config costs nothing and gives the same answers. None disables it.
+        self.cache_dir: Optional[str] = None
+        if global_cfg.get("cache_dir"):
+            self.set_cache_dir(str(global_cfg["cache_dir"]))
         self._validate_endpoints()
+        self._validate_settings()
 
     def _validate_endpoints(self) -> None:
         """Every custom api_base must be https (plain http only to loopback): target source code and
@@ -101,6 +120,88 @@ class LLMGateway:
             raise ConfigError(
                 f"models.{alias}.api_base must be an https:// URL (http:// only for loopback hosts), got {base!r}"
             )
+
+    def set_cache_dir(self, path: str) -> None:
+        """Enables the response cache in `path` (created if missing). The directory holds raw model
+        answers, which can quote the audited code: treat it like the reports."""
+        target = os.path.abspath(path)
+        try:
+            os.makedirs(target, exist_ok=True)
+        except OSError as e:
+            raise ConfigError(f"cache_dir {path!r} cannot be created: {e}") from e
+        if not os.access(target, os.W_OK):
+            raise ConfigError(f"cache_dir {path!r} is not writable")
+        self.cache_dir = target
+
+    def _cache_key(self, model_alias: str, model_info: Dict[str, Any], temperature: float, system_prompt: str, user_prompt: str) -> str:
+        parts = "\x00".join([
+            model_alias, str(model_info.get("model")), str(model_info.get("fallback_model")), str(temperature),
+            str(self._max_output_tokens(model_info)), json.dumps(model_info.get("extra_params") or {}, sort_keys=True),
+            system_prompt, user_prompt,
+        ])
+        return hashlib.sha256(parts.encode("utf-8")).hexdigest()
+
+    def _cache_read(self, key: str) -> Optional[Dict[str, Any]]:
+        if not self.cache_dir:
+            return None
+        path = os.path.join(self.cache_dir, f"{key}.json")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                entry = json.load(f)
+        except (OSError, ValueError):
+            return None
+        return entry if isinstance(entry, dict) and isinstance(entry.get("raw_text"), str) else None
+
+    def _cache_write(self, key: str, agent_id: str, model_name: str, raw_text: str, finish_reason: Optional[str], prompt_sha256: str) -> None:
+        if not self.cache_dir:
+            return
+        entry = {
+            "agent_id": agent_id, "model": model_name, "finish_reason": finish_reason, "raw_text": raw_text,
+            "prompt_sha256": prompt_sha256, "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+        }
+        try:
+            # Atomic publish: concurrent agents may write the same key, readers must never see a torn file
+            fd, tmp = tempfile.mkstemp(prefix=".tmp-", suffix=".json", dir=self.cache_dir)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(entry, f, ensure_ascii=False)
+            os.replace(tmp, os.path.join(self.cache_dir, f"{key}.json"))
+        except OSError as e:
+            logger.warning(f"Could not write the response cache entry: {e}")
+
+    def _validate_settings(self) -> None:
+        """Numeric settings are checked once at start-up. They used to be read only when a call was
+        made, so a typo such as `timeout_seconds: "abc"` reached litellm, failed there, and in hybrid
+        mode was booked as "live invocation failed" and silently replaced by the simulation engine."""
+        global_cfg = self.config.get("global") or {}
+        self._number(global_cfg.get("timeout_seconds", 180), "global.timeout_seconds", minimum=1)
+        self._number(global_cfg.get("max_retries", 2), "global.max_retries", minimum=0, integer=True)
+        self._number(global_cfg.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS), "global.max_output_tokens",
+                     minimum=1, integer=True)
+        for alias, info in self.models_config.items():
+            if isinstance(info, dict) and info.get("max_output_tokens") is not None:
+                self._number(info["max_output_tokens"], f"models.{alias}.max_output_tokens", minimum=1, integer=True)
+        for agent_id, meta in self.agents_config.items():
+            if isinstance(meta, dict) and meta.get("temperature") is not None:
+                self._number(meta["temperature"], f"agents.{agent_id}.temperature", minimum=0, maximum=2)
+        self._number(self.retry_invalid_output, "global.retry_invalid_output", minimum=0, maximum=5, integer=True)
+        for alias, info in self.models_config.items():
+            extra = info.get("extra_params") if isinstance(info, dict) else None
+            if extra is not None and (not isinstance(extra, dict) or not all(isinstance(k, str) for k in extra)):
+                raise ConfigError(f"models.{alias}.extra_params must be a mapping of litellm parameter names, got {extra!r}")
+
+    @staticmethod
+    def _number(value: Any, key: str, minimum: float, maximum: Optional[float] = None, integer: bool = False) -> None:
+        ok = isinstance(value, (int, float)) and not isinstance(value, bool) and (not integer or isinstance(value, int))
+        if not ok or value < minimum or (maximum is not None and value > maximum):
+            kind = "an integer" if integer else "a number"
+            bounds = f">= {minimum}" if maximum is None else f"between {minimum} and {maximum}"
+            raise ConfigError(f"{key} must be {kind} {bounds}, got {value!r}")
+
+    @staticmethod
+    def _safe_reason(text: str) -> str:
+        """Provider error text as it may be logged or reported: credentials redacted (an HTTP client
+        can echo a request URL or header carrying the API key), control characters removed."""
+        return clean_model_text(redact_secrets(str(text)))
 
     @staticmethod
     def _positive_int(value: Any, key: str) -> Optional[int]:
@@ -130,6 +231,11 @@ class LLMGateway:
     @property
     def invalid_calls(self) -> List[AgentCallRecord]:
         return [rec for rec in self.call_log if rec.mode == "invalid"]
+
+    @property
+    def retried_calls(self) -> List[AgentCallRecord]:
+        """First attempts whose answer was unusable and that were re-asked (disclosed, not an evidence gap)."""
+        return [rec for rec in self.call_log if rec.mode == "retried"]
 
     @staticmethod
     def is_simulated(resp: Dict[str, Any]) -> bool:
@@ -192,30 +298,52 @@ class LLMGateway:
         elif not self.is_live_configured(model_alias):
             env_var = model_info.get("api_key_env") or "<no api_key_env configured>"
             fallback_reason = f"API key env var {env_var} is not set"
-        elif not self._reserve_live_call():
-            fallback_reason = BUDGET_EXHAUSTED_REASON
+        cached: Optional[Dict[str, Any]] = None
+        cache_key = ""
+        if fallback_reason is None:
+            cache_key = self._cache_key(model_alias, model_info, temperature, system_prompt, user_prompt)
+            cached = self._cache_read(cache_key)
+            if cached is None and not self._reserve_live_call():
+                fallback_reason = BUDGET_EXHAUSTED_REASON
 
         if fallback_reason is None:
             logger.info(f"Dispatching [{agent_id}] to Live LLM: {model_name} (Alias: {model_alias})")
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ]
-            try:
-                raw_text, model_name, finish_reason = self._complete(model_info, model_name, messages, temperature)
-            except Exception as e:
-                fallback_reason = f"live invocation failed: {e}"
-                if self.execution_mode == "live":
-                    raise LLMGatewayError(f"[{agent_id}] {model_name}: {fallback_reason}") from e
-                logger.warning(f"Live invocation failed for {agent_id} ({model_name}): {e}. Falling back to simulation logic.")
-            else:
+            # An unusable answer (prose instead of JSON, a missing key, an empty response from a safety
+            # filter) is re-asked up to retry_invalid_output times, naming the problem, before it is
+            # booked as `invalid`: in live runs most such answers are one-off format slips, and each
+            # one used to turn the whole run INCONCLUSIVE. Re-asks are real calls against the budget.
+            attempt = 0
+            prompt_text = user_prompt
+            while True:
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt_text}
+                ]
+                try:
+                    if cached is not None and attempt == 0:
+                        raw_text, model_name = cached["raw_text"], str(cached.get("model") or model_name)
+                        finish_reason = cached.get("finish_reason") if isinstance(cached.get("finish_reason"), str) else None
+                        logger.info(f"[{agent_id}] answer served from the response cache ({model_name})")
+                    else:
+                        raw_text, model_name, finish_reason = self._complete(model_info, model_name, messages, temperature)
+                except Exception as e:
+                    fallback_reason = f"live invocation failed: {self._safe_reason(str(e))}"
+                    if self.execution_mode == "live":
+                        raise LLMGatewayError(f"[{agent_id}] {model_name}: {fallback_reason}") from e
+                    logger.warning(f"Live invocation failed for {agent_id} ({model_name}): {fallback_reason}. Falling back to simulation logic.")
+                    break
                 # Only the network call is guarded above: a bug in parsing/validation/booking
                 # must fail loudly instead of being masked as a fallback to simulation.
                 result = self._clean_and_parse_json(raw_text) if json_output else {"raw": raw_text}
                 problem = self._validate_output(result, json_output, required_keys, required_keys_any)
                 if problem is None and result is not None:
-                    self._record(agent_id, model_alias, model_name, "live", prompt_sha256=prompt_hash)
-                    result[PROVENANCE_KEY] = {"mode": "live", "model": model_name}
+                    from_cache = cached is not None and attempt == 0
+                    if not from_cache:
+                        self._cache_write(cache_key if attempt == 0 else self._cache_key(
+                            model_alias, model_info, temperature, system_prompt, prompt_text
+                        ), agent_id, model_name, raw_text, finish_reason, prompt_hash)
+                    self._record(agent_id, model_alias, model_name, "live", prompt_sha256=prompt_hash, cached=from_cache)
+                    result[PROVENANCE_KEY] = {"mode": "live", "model": model_name, "cached": from_cache}
                     return result
                 reason = problem or "response is not valid JSON"
                 if not raw_text.strip():
@@ -227,6 +355,12 @@ class LLMGateway:
                         f"output truncated at the max_output_tokens limit ({self._max_output_tokens(model_info)}); "
                         f"{reason}. Raise max_output_tokens for this model (reasoning tokens count against it)"
                     )
+                if json_output and attempt < self.retry_invalid_output and self._reserve_live_call():
+                    attempt += 1
+                    logger.warning(f"[{agent_id}] {model_name} returned unusable output ({reason}); re-asking ({attempt}/{self.retry_invalid_output})")
+                    self._record(agent_id, model_alias, model_name, "retried", reason, prompt_sha256=prompt_hash)
+                    prompt_text = user_prompt + _RETRY_SUFFIX.format(reason=reason)
+                    continue
                 logger.error(f"[{agent_id}] {model_name} returned unusable output: {reason}")
                 self._record(agent_id, model_alias, model_name, "invalid", reason, prompt_sha256=prompt_hash)
                 return {PROVENANCE_KEY: {"mode": "invalid", "model": model_name, "reason": reason}}
@@ -274,6 +408,9 @@ class LLMGateway:
                 kwargs["aws_region_name"] = model_info["aws_region_name"]
         if model_info.get("api_base"):
             kwargs["api_base"] = model_info["api_base"]
+        # Per-model litellm passthrough, e.g. {thinking: {type: disabled}} or {reasoning_effort: low} so a
+        # reasoning model does not spend the whole output budget thinking (validated as a mapping at start-up)
+        kwargs.update(model_info.get("extra_params") or {})
 
         candidates = [model_name] + ([model_info["fallback_model"]] if model_info.get("fallback_model") else [])
         last_error: Optional[Exception] = None
@@ -285,7 +422,7 @@ class LLMGateway:
                 return choice.message.content or "", candidate, finish_reason if isinstance(finish_reason, str) else None
             except Exception as e:
                 last_error = e
-                logger.warning(f"Model {candidate} failed: {e}")
+                logger.warning(f"Model {candidate} failed: {self._safe_reason(str(e))}")
         if last_error is None:
             # Unreachable in practice: candidates is never empty, but never raise an Optional
             raise LLMGatewayError(f"Model {model_name}: no candidate model could be attempted")
@@ -329,12 +466,17 @@ class LLMGateway:
 
     def _record(
         self, agent_id: str, model_alias: str, model_name: str, mode: str,
-        reason: Optional[str] = None, prompt_sha256: Optional[str] = None
+        reason: Optional[str] = None, prompt_sha256: Optional[str] = None, cached: bool = False
     ):
         self.call_log.append(AgentCallRecord(
-            agent_id=agent_id, model_alias=model_alias, model_name=model_name, mode=mode, reason=reason,
-            prompt_sha256=prompt_sha256
+            agent_id=agent_id, model_alias=model_alias, model_name=model_name, mode=mode,
+            reason=self._safe_reason(reason) if reason is not None else None,
+            prompt_sha256=prompt_sha256, cached=cached
         ))
+
+    @property
+    def cached_calls(self) -> List[AgentCallRecord]:
+        return [rec for rec in self.call_log if rec.cached]
 
     def _clean_and_parse_json(self, text: str) -> Optional[Dict[str, Any]]:
         """Strips markdown code fences and parses JSON safely, with conversational fallback."""

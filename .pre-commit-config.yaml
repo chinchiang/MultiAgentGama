@@ -4,3 +4,13 @@ repos:
     rev: v0.16.9
     hooks:
       - id: ruff
+  # mypy runs from the project environment (same pinned mypy and real dependencies as CI's lint job),
+  # not from an isolated hook env that would need every runtime dependency listed again.
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: python -m mypy vibeharness/ main.py
+        language: system
+        pass_filenames: false
+        files: \.py$

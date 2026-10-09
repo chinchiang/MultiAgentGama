@@ -82,8 +82,11 @@ class LocalSubprocessSandbox:
     filesystem and network access; use DockerSandbox (sandbox_provider: docker) for untrusted targets.
     """
 
-    def __init__(self, timeout_seconds: int = 30):
+    def __init__(self, timeout_seconds: int = 30, memory_mb: int = 0):
         self.timeout_seconds = timeout_seconds
+        # Address-space cap (RLIMIT_AS, POSIX only) for the pytest process tree; 0 disables. Not a security
+        # boundary, but it stops a generated test from eating the host's memory or CPU time.
+        self.memory_mb = int(memory_mb or 0)
 
     def execute_python_code(
         self,
@@ -134,7 +137,7 @@ class LocalSubprocessSandbox:
             cmd, cwd, env = self._build_command(
                 run_dir, list(files), base_dir, collect_coverage, coverage_target, custom_env, timeout
             )
-            returncode, stdout, stderr = self._run(cmd, cwd=cwd, env=env, timeout=timeout)
+            returncode, stdout, stderr = self._run(cmd, cwd=cwd, env=env, timeout=timeout, limits=self._limits(timeout))
             duration = time.time() - start_time
             if returncode is None:
                 self._after_timeout(cmd)
@@ -206,14 +209,45 @@ class LocalSubprocessSandbox:
 
     # --- Process control ------------------------------------------------------------
 
+    def _limits(self, timeout: int) -> Dict[str, int]:
+        """Resource limits for the test process: memory (if configured) and CPU seconds (the batch budget
+        plus slack, so a busy loop that ignores signals still dies)."""
+        limits: Dict[str, int] = {"cpu_seconds": int(timeout) + 10}
+        if self.memory_mb > 0:
+            limits["memory_bytes"] = self.memory_mb * 1024 * 1024
+        return limits
+
     @staticmethod
-    def _run(cmd: List[str], cwd: str, env: Dict[str, str], timeout: int) -> Tuple[Optional[int], str, str]:
+    def _apply_limits(limits: Dict[str, int]):
+        """preexec_fn applying `limits` in the child (POSIX); unsupported limits are ignored."""
+        def apply() -> None:
+            try:
+                import resource
+            except ImportError:  # pragma: no cover - POSIX only
+                return
+            for name, value in (("RLIMIT_AS", limits.get("memory_bytes")), ("RLIMIT_CPU", limits.get("cpu_seconds"))):
+                if not value or not hasattr(resource, name):
+                    continue
+                try:
+                    soft, hard = resource.getrlimit(getattr(resource, name))
+                    cap = value if hard == resource.RLIM_INFINITY else min(value, hard)
+                    resource.setrlimit(getattr(resource, name), (cap, hard))
+                except (ValueError, OSError):
+                    pass
+        return apply
+
+    @staticmethod
+    def _run(
+        cmd: List[str], cwd: str, env: Dict[str, str], timeout: int, limits: Optional[Dict[str, int]] = None
+    ) -> Tuple[Optional[int], str, str]:
         """Runs cmd in its own process group; on timeout kills the whole tree and returns returncode None."""
         popen_kwargs: Dict[str, Any] = {}
         if sys.platform == "win32":
             popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             popen_kwargs["start_new_session"] = True
+            if limits:
+                popen_kwargs["preexec_fn"] = LocalSubprocessSandbox._apply_limits(limits)
         proc = subprocess.Popen(
             cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", errors="replace", **popen_kwargs
@@ -336,7 +370,7 @@ class DockerSandbox(LocalSubprocessSandbox):
         docker_bin: str = "docker",
         verify: bool = True
     ):
-        super().__init__(timeout_seconds)
+        super().__init__(timeout_seconds, memory_mb=0)
         self.image = image
         self.network = network
         self.memory = memory
@@ -453,6 +487,9 @@ class DockerSandbox(LocalSubprocessSandbox):
                 cov = rewrite_host_paths(os.path.abspath(coverage_target), self._path_mapping(base_dir))
             cmd.extend([f"--cov={cov}", "--cov-report=term-missing"])
         return cmd, run_dir, self._cli_env()
+
+    def _limits(self, timeout: int) -> Dict[str, int]:
+        return {}  # the container carries --memory/--cpus and the in-container `timeout`
 
     def _after_timeout(self, cmd: List[str]):
         # Killing the docker CLI does not stop the container; remove it explicitly
