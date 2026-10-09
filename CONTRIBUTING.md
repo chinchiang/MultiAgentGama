@@ -27,7 +27,7 @@ CI（`.github/workflows/tests.yml`）跑的是同一組指令，加上 Ubuntu／
 3. **目標程式碼是不受信任的輸入。** 新的 agent 若會讀目標程式碼，提示要經 `vibeharness/core/sanitize.untrusted_block` 並附 `UNTRUSTED_CODE_POLICY`；模型輸出進報告前要經 `markdown_safe`／`_cell`／`_code_span`。
 4. **設定錯誤要大聲失敗。** 新增設定欄位時在 `LLMGateway.__init__` 驗證型別與範圍（`ConfigError`，exit 5），不要等到呼叫時才炸。
 5. **不要安裝任何東西到使用者環境**，也不要擴大生成測試能做的事（`vibeharness/core/codecheck.py` 的閘門只能收緊）。
-6. **文件雙語同步。** 改了行為就同步更新 `README.md`／`README.en.md`、`docs/configuration*.md`、`CHANGELOG.md`／`CHANGELOG.en.md` 的 `[Unreleased]`；設計層面的變動更新 `docs/design*.md`。
+6. **文件雙語同步。** 改了行為就同步更新 `README.md`／`README.en.md`、`docs/configuration*.md`、`CHANGELOG.md`／`CHANGELOG.en.md` 的 `[Unreleased]`；設計層面的變動更新 `docs/design*.md`。設定檔、workflow、`action.yml`、Dockerfile、打包檔的註解與說明文字，以及 CLI `--help`，一律正體中文（臺灣）在前、English 在後。
 7. **依賴**：執行期依賴改 `requirements.txt` 與 `pyproject.toml`，然後重新產生鎖定檔：`uv pip compile --universal --python-version 3.10 requirements.txt -o requirements.lock`，並同步 `docker/sandbox.Dockerfile` 的釘版。
 
 ## Pull request
@@ -49,7 +49,7 @@ CI（`.github/workflows/tests.yml`）跑的是同一組指令，加上 Ubuntu／
 
 **Before you push**, run the same checks CI runs: `pytest --cov=vibeharness --cov-fail-under=93`, `ruff check .`, `mypy vibeharness/ main.py` and `pip_audit -r requirements.lock --disable-pip --no-deps`.
 
-**Principles**: every fix ships with a regression test that fails before the fix (the suite is offline: mock mode plus the fake litellm in `tests/conftest.py`); the quality gate fails only on executed evidence or deterministic rules, everything else is an evidence gap; target code is untrusted input (wrap prompts with `untrusted_block` + `UNTRUSTED_CODE_POLICY`, sanitize model text before it reaches a report); configuration errors fail loudly at start-up (`ConfigError`, exit 5); never widen what generated tests may do; keep the zh/en docs and both CHANGELOGs in sync; runtime dependency changes go through `requirements.txt` / `pyproject.toml`, then regenerate `requirements.lock` with `uv pip compile --universal --python-version 3.10` and update `docker/sandbox.Dockerfile`.
+**Principles**: every fix ships with a regression test that fails before the fix (the suite is offline: mock mode plus the fake litellm in `tests/conftest.py`); the quality gate fails only on executed evidence or deterministic rules, everything else is an evidence gap; target code is untrusted input (wrap prompts with `untrusted_block` + `UNTRUSTED_CODE_POLICY`, sanitize model text before it reaches a report); configuration errors fail loudly at start-up (`ConfigError`, exit 5); never widen what generated tests may do; keep the zh/en docs and both CHANGELOGs in sync, and write comments / descriptions in config files, workflows, `action.yml`, Dockerfiles, packaging files and the CLI `--help` bilingually (Traditional Chinese first, English second); runtime dependency changes go through `requirements.txt` / `pyproject.toml`, then regenerate `requirements.lock` with `uv pip compile --universal --python-version 3.10` and update `docker/sandbox.Dockerfile`.
 
 **Pull requests** branch from `master`, use Conventional Commit prefixes, follow the PR template, and are reviewed once CI (including the coverage floor) is green.
 

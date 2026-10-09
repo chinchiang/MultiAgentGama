@@ -1,9 +1,12 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
+    # 與 requirements-dev.txt 的 ruff 釘版保持一致（鏡像 tag 可能落後一個 patch）
     # Keep in sync with the ruff pin in requirements-dev.txt (the mirror tag may lag by a patch)
     rev: v0.16.9
     hooks:
       - id: ruff
+  # mypy 在專案環境執行（與 CI lint job 相同的釘版 mypy 與真實相依套件），
+  # 不用隔離的 hook 環境（那得再列一次所有執行期相依）。
   # mypy runs from the project environment (same pinned mypy and real dependencies as CI's lint job),
   # not from an isolated hook env that would need every runtime dependency listed again.
   - repo: local

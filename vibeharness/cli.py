@@ -72,59 +72,62 @@ def _writable_location(path: str) -> bool:
 
 def main():
     parser = _UsageErrorParser(
-        description="[VibeHarness-MAS] Multi-Agent White-Box & Black-Box Testing Harness for Vibe Coding"
+        description="[VibeHarness-MAS] 針對 vibe coding 的多代理白箱與黑箱測試 harness ／ "
+                    "Multi-Agent White-Box & Black-Box Testing Harness for Vibe Coding"
     )
     parser.add_argument(
         "--target", "-t",
         default="examples",
-        help="Directory or file of the target codebase to audit and test (default: 'examples')"
+        help="要稽核與測試的目標目錄或檔案（預設 'examples'）／ Directory or file of the target codebase to audit and test (default: 'examples')"
     )
     parser.add_argument(
         "--base-url", "-u",
         default=None,
-        help="Base URL of a running instance of the target for live HTTP black-box attacks "
-             "(e.g. 'http://localhost:8000'). Without it, black-box tests import the target in-process; "
+        help="執行中目標的 base URL，供 live HTTP 黑箱攻擊（例如 'http://localhost:8000'）；未指定時黑箱測試改在行程內匯入目標，"
+             "不會探測任何預設位址，攻擊不可能打到無關的本機服務 ／ Base URL of a running instance of the target for live HTTP "
+             "black-box attacks (e.g. 'http://localhost:8000'). Without it, black-box tests import the target in-process; "
              "a default is never probed, so attacks cannot hit an unrelated local service"
     )
     parser.add_argument(
         "--output", "-o",
         default="vibe_harness_report.md",
-        help="Output path for the generated Markdown audit report (default: 'vibe_harness_report.md')"
+        help="稽核報告的輸出路徑（預設 'vibe_harness_report.md'）／ Output path for the generated Markdown audit report (default: 'vibe_harness_report.md')"
     )
     parser.add_argument(
         "--desc", "-d",
         default=None,
-        help="High-level description of the system for Threat Modeling guidance"
+        help="系統的高階描述，供威脅建模參考 ／ High-level description of the system for Threat Modeling guidance"
     )
     parser.add_argument(
         "--config", "-c",
         default=DEFAULT_CONFIG_PATH,
-        help="Path to agents and models configuration YAML (default: the repo's config/agents_config.yaml)"
+        help="agent 與模型設定 YAML 的路徑（預設為套件內的 config/agents_config.yaml）／ Path to agents and models configuration YAML (default: the bundled config/agents_config.yaml)"
     )
     parser.add_argument(
         "--mode", "-m",
         choices=["live", "hybrid", "mock"],
         default=None,
-        help="Override execution_mode from config: live (real APIs only, fail otherwise), hybrid, or mock"
+        help="覆蓋設定檔的 execution_mode：live（只用真實 API，否則失敗）、hybrid 或 mock ／ Override execution_mode from config: live (real APIs only, fail otherwise), hybrid, or mock"
     )
     parser.add_argument(
         "--max-files",
         type=int,
         default=None,
-        help="Override global.max_files: number of source files analyzed (the rest are reported as skipped)"
+        help="覆蓋 global.max_files：分析的原始碼檔案數（其餘列為 skipped）／ Override global.max_files: number of source files analyzed (the rest are reported as skipped)"
     )
     parser.add_argument(
         "--max-model-calls",
         type=int,
         default=None,
-        help="Override global.max_model_calls: cost guard on live model invocations per run (0 = unlimited)"
+        help="覆蓋 global.max_model_calls：每次執行的真實模型呼叫上限（0 = 不限）／ Override global.max_model_calls: cost guard on live model invocations per run (0 = unlimited)"
     )
     parser.add_argument(
         "--include",
         action="append",
         metavar="GLOB",
         default=None,
-        help="Only analyze source files whose path (relative to --target) or name matches this glob; "
+        help="只分析路徑（相對於 --target）或檔名符合此 glob 的原始碼檔案；可重複指定，覆蓋設定檔的 global.include ／ "
+             "Only analyze source files whose path (relative to --target) or name matches this glob; "
              "repeatable. Overrides global.include from the config"
     )
     parser.add_argument(
@@ -132,28 +135,33 @@ def main():
         action="append",
         metavar="GLOB",
         default=None,
-        help="Skip source files whose path or name matches this glob (e.g. 'tests/*', 'vendor/*'); "
+        help="略過路徑或檔名符合此 glob 的原始碼檔案（例如 'tests/*'、'vendor/*'）；可重複指定，覆蓋設定檔的 global.exclude ／ "
+             "Skip source files whose path or name matches this glob (e.g. 'tests/*', 'vendor/*'); "
              "repeatable. Overrides global.exclude from the config"
     )
     parser.add_argument(
         "--changed-since",
         metavar="GIT_REF",
         default=None,
-        help="Only analyze files under --target that changed since this git ref (committed, staged, "
+        help="只分析 --target 下自此 git ref 以來有變更的檔案（已提交、已暫存、未暫存或未追蹤），例如 PR 檢查用 'origin/main'；"
+             "目標必須在 git repo 內 ／ Only analyze files under --target that changed since this git ref (committed, staged, "
              "unstaged or untracked), e.g. 'origin/main' in a PR check; the target must be inside a git repo"
     )
     parser.add_argument(
         "--baseline",
         metavar="REPORT_JSON",
         default=None,
-        help="A previous --format json report: findings, breaches and HIGH+ rule hits it already contains are "
-             "listed but no longer decide the verdict / exit code, so CI reacts to new problems only "
-             "(a .partial.json from a crashed run is refused)"
+        help="先前的 --format json 報告：其中已有的發現、突破與 HIGH 以上的規則命中仍會列出，但不再決定判定／exit code，"
+             "CI 只對新問題反應（崩潰留下的 .partial.json 會被拒絕）／ A previous --format json report: findings, breaches and "
+             "HIGH+ rule hits it already contains are listed but no longer decide the verdict / exit code, so CI reacts to "
+             "new problems only (a .partial.json from a crashed run is refused)"
     )
     parser.add_argument(
         "--estimate",
         action="store_true",
-        help="Do not call any model: run Phase 1 (symbol extraction) and print the expected number of model calls "
+        help="不呼叫任何模型：只跑第 1 階段（符號擷取），印出每個 agent／模型的預期呼叫數與 prompt／輸出 token"
+             "（有設定 models.<alias>.price_per_million_* 時連費用一起）；--format json 時估算寫到 --output。exit 0 ／ "
+             "Do not call any model: run Phase 1 (symbol extraction) and print the expected number of model calls "
              "and prompt/output tokens per agent and per model (cost too when models.<alias>.price_per_million_* "
              "is configured); with --format json the estimate is written to --output. Exit 0"
     )
@@ -161,26 +169,28 @@ def main():
         "--cache-dir",
         metavar="DIR",
         default=None,
-        help="Cache usable live model answers in DIR (created if missing) and reuse them on later runs with the "
-             "same model, settings and prompt; a cache hit makes no provider call and costs no budget. "
-             "Overrides global.cache_dir. The directory holds raw model answers: treat it like the reports"
+        help="把可用的 live 模型回答快取在 DIR（不存在會建立），之後同模型、同設定、同提示的執行直接取用；命中時不呼叫供應商、"
+             "不扣預算。覆蓋 global.cache_dir。目錄裡是原始的模型回答，請比照報告保管 ／ Cache usable live model answers in DIR "
+             "(created if missing) and reuse them on later runs with the same model, settings and prompt; a cache hit makes "
+             "no provider call and costs no budget. Overrides global.cache_dir. The directory holds raw model answers: "
+             "treat it like the reports"
     )
     parser.add_argument(
         "--verbose", "-v",
         action="store_true",
-        help="Enable debug logging"
+        help="開啟除錯日誌 ／ Enable debug logging"
     )
     parser.add_argument(
         "--format", "-f",
         choices=["md", "json"],
         default="md",
-        help="Report format written to --output: Markdown (default) or machine-readable JSON"
+        help="寫到 --output 的報告格式：Markdown（預設）或機器可讀的 JSON ／ Report format written to --output: Markdown (default) or machine-readable JSON"
     )
     parser.add_argument(
         "--sarif",
         metavar="PATH",
         default=None,
-        help="Also write a SARIF 2.1.0 report to PATH for GitHub Code Scanning (upload via github/codeql-action)"
+        help="另外把 SARIF 2.1.0 報告寫到 PATH，供 GitHub Code Scanning（以 github/codeql-action 上傳）／ Also write a SARIF 2.1.0 report to PATH for GitHub Code Scanning (upload via github/codeql-action)"
     )
     parser.add_argument(
         "--version",

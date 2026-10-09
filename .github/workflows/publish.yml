@@ -1,5 +1,6 @@
 name: publish
 
+# 推上版本 tag 時：建置 sdist／wheel、對 wheel 做冒煙測試，並把產物附到 GitHub Release；PyPI 發布需另行啟用（見下）。
 # On a version tag: build the sdist/wheel, smoke-test the wheel, and attach
 # the artifacts to the GitHub Release. PyPI publishing is opt-in (see below).
 on:
@@ -15,6 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # 第三方 action 釘在 commit SHA（供應鏈強化）；升版時同步改註解裡的 tag
       # Third-party actions are pinned to commit SHAs (supply-chain hardening); bump the tag in the comment
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -22,7 +24,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Verify tag matches the package version
+      - name: Verify tag matches the package version ／ 核對 tag 與套件版本一致
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           PKG_VERSION="$(python -c 'from vibeharness import __version__; print(__version__)')"
@@ -31,11 +33,12 @@ jobs:
             exit 1
           fi
 
-      - name: Build sdist and wheel
+      - name: Build sdist and wheel ／ 建置 sdist 與 wheel
         run: |
           pip install "$(grep '^build==' requirements-dev.txt)"
           python -m build
 
+      # 同一批產物同時上 Release 與（可選的）PyPI：pypi-publish 直接下載而不重建，兩邊位元相同
       # The same artifacts go to the Release and (optionally) PyPI: pypi-publish downloads them
       # instead of rebuilding, so both are bit-identical
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -44,10 +47,12 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-      - name: Smoke-test the wheel
+      - name: Smoke-test the wheel ／ wheel 冒煙測試
         run: |
           pip install dist/*.whl
           vibeharness --version
+          # 在 checkout 之外跑一次真的（mock 模式）稽核，安裝後的套件必須找得到自己附帶的設定檔；
+          # 判定 exit code 0-3 正常，4/5 表示安裝壞了
           # Run a real (mock-mode) audit from outside the checkout, so the installed package must
           # find its own bundled config; verdict exit codes 0-3 are fine, 4/5 mean a broken install
           mkdir -p "$RUNNER_TEMP/smoke" && cp examples/vibe_sample_app.py "$RUNNER_TEMP/smoke/"
@@ -56,7 +61,7 @@ jobs:
           if [ "$rc" -gt 3 ]; then echo "::error::installed wheel failed to run (exit $rc)"; exit 1; fi
           test -s report.md
 
-      - name: Create release (if missing) and upload artifacts
+      - name: Create release (if missing) and upload artifacts ／ 建立 Release（若不存在）並上傳產物
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -64,12 +69,15 @@ jobs:
             gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
           gh release upload "$GITHUB_REF_NAME" dist/* --clobber
 
+  # 以 Trusted Publishing（OIDC）發布到 PyPI：repo 裡不存任何 API token。
+  # 需另行啟用，因為要做一次只有 repo 擁有者能做的設定：
   # Publish to PyPI via Trusted Publishing (OIDC): no API token is stored in the repo.
   # Opt-in, because it needs one-time setup that only the repo owner can do:
-  #   1. On pypi.org, register this repo as a Trusted Publisher for the project:
+  #   1. 在 pypi.org 把這個 repo 註冊為專案的 Trusted Publisher ／ On pypi.org, register this repo as a Trusted Publisher for the project:
   #      owner=chinchiang  repository=MultiAgentGama  workflow=publish.yml  environment=pypi
-  #   2. Create the repository variable ENABLE_PYPI_PUBLISH=true
+  #   2. 建立 repository variable ENABLE_PYPI_PUBLISH=true ／ Create the repository variable ENABLE_PYPI_PUBLISH=true
   #      (Settings > Secrets and variables > Actions > Variables)
+  # 兩者都完成前這個 job 會被略過，產物只會放在 GitHub Release。
   # Until both are done this job is skipped and artifacts land only on the GitHub Release.
   pypi-publish:
     if: vars.ENABLE_PYPI_PUBLISH == 'true'
@@ -78,12 +86,12 @@ jobs:
     timeout-minutes: 15
     environment: pypi
     permissions:
-      # Exchange this workflow's OIDC token for a short-lived PyPI upload token
+      # 用這個 workflow 的 OIDC token 換取短效的 PyPI 上傳 token ／ Exchange this workflow's OIDC token for a short-lived PyPI upload token
       id-token: write
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: dist
           path: dist/
-      - name: Publish to PyPI
+      - name: Publish to PyPI ／ 發布到 PyPI
         uses: pypa/gh-action-pypi-publish@106e0b0b7c337fa67ed433972f777c6357f78598 # v1.13.0
