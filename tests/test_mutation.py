@@ -246,6 +246,54 @@ def test_scratch_copy_is_removed_and_the_target_is_restored_after_an_error(tmp_p
     assert open(os.path.join(root, "shop.py"), encoding="utf-8").read() == before
 
 
+def test_copy_leaves_out_skipped_dirs_bytecode_and_directory_symlinks(tmp_path):
+    """複本略過 SKIPPED_DIRS、點開頭目錄、位元組碼與指向目錄的符號連結（避免複製目標以外的內容或無限迴圈）。
+    The copy leaves out SKIPPED_DIRS, dot-directories, bytecode and symlinks to directories (no outside content, no loops)."""
+    root = _setup(tmp_path)
+    for name in (".venv", "venv", "build", "dist", "node_modules", "__pycache__"):
+        (tmp_path / "app" / name).mkdir()
+        (tmp_path / "app" / name / "big.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "app" / "keep").mkdir()
+    (tmp_path / "app" / "keep" / "ok.py").write_text("y = 2\n", encoding="utf-8")
+    (tmp_path / "app" / "stale.pyc").write_bytes(b"\0")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("s", encoding="utf-8")
+    try:
+        os.symlink(str(outside), str(tmp_path / "app" / "link"), target_is_directory=True)
+        os.symlink(str(tmp_path / "app"), str(tmp_path / "app" / "loop"), target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pass  # Windows 沒有建立連結的權限時只驗證其餘規則 ／ without symlink rights on Windows only the other rules are checked
+    seen = {}
+
+    def inspect(tests, working_dir, timeout):
+        if not seen:
+            seen["entries"] = sorted(os.listdir(working_dir))
+            seen["keep"] = os.path.isfile(os.path.join(working_dir, "keep", "ok.py"))
+        return "survived"
+    mut.run_mutation_testing(inspect, [_test("T1", WEAK, "F1")], _passed([_test("T1", WEAK, "F1")]),
+                             [_finding("F1", root, "discount")], _symbols(root), root, 1, 5)
+    assert seen["keep"] and "shop.py" in seen["entries"]
+    for left_out in (".venv", "venv", "build", "dist", "node_modules", "__pycache__", "stale.pyc", "link", "loop"):
+        assert left_out not in seen["entries"]
+
+
+def test_a_work_dir_over_the_copy_cap_is_skipped_with_a_reason(tmp_path):
+    """工作目錄（略過 SKIPPED_DIRS 後）超過 mutation_max_copy_mb 就不複製，回報原因而不是硬跑。
+    A work directory over mutation_max_copy_mb (after SKIPPED_DIRS) is not copied: a reason is reported instead."""
+    root = _setup(tmp_path)
+    (tmp_path / "app" / "data.bin").write_bytes(b"\0" * (2 * 1024 * 1024))
+    (tmp_path / "app" / "venv").mkdir()
+    (tmp_path / "app" / "venv" / "huge.bin").write_bytes(b"\0" * (3 * 1024 * 1024))
+    called = []
+    run = lambda *a: called.append(1) or "survived"  # noqa: E731
+    args = ([_test("T1", WEAK, "F1")], _passed([_test("T1", WEAK, "F1")]), [_finding("F1", root, "discount")], _symbols(root), root, 1, 5)
+    report = mut.run_mutation_testing(run, *args, max_copy_mb=1)
+    assert not called and report.score is None and "1 MB copy cap" in report.skipped_reason
+    # venv 不算進大小：上限 3 MB 時（只有 data.bin 的 2 MB）可以照常執行 ／ venv is not counted: a 3 MB cap (data.bin is 2 MB) runs
+    assert mut.run_mutation_testing(run, *args, max_copy_mb=3).skipped_reason != report.skipped_reason and called
+
+
 def test_endless_loop_mutant_is_killed_by_the_timeout_without_the_rerun_path(tmp_path):
     """會讓程式無窮迴圈的變異體由逾時殺死，而且很快（不走逾時後逐測重跑的路徑）。
     A mutant that makes the code loop forever is killed by the timeout, and quickly (no per-test rerun after a timeout)."""
@@ -515,6 +563,8 @@ def test_cli_rejects_a_bad_mutant_cap(monkeypatch, tmp_path, capsys):
     ("mutation_timeout_seconds", -1, "mutation_timeout_seconds"),
     ("mutation_min_score", 101, "mutation_min_score"),
     ("mutation_min_score", "high", "mutation_min_score"),
+    ("mutation_max_copy_mb", -5, "mutation_max_copy_mb"),
+    ("mutation_max_copy_mb", "big", "mutation_max_copy_mb"),
 ])
 def test_bad_mutation_settings_fail_at_start_up(tmp_path, key, value, match):
     """壞的突變測試設定在啟動時就失敗（exit 5），不會跑到一半才炸。

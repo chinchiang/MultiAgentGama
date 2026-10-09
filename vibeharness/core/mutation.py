@@ -18,6 +18,7 @@ import tokenize
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
+from vibeharness.agents.whitebox.ast_extractor import SKIPPED_DIRS
 from vibeharness.core.i18n import bi
 from vibeharness.core.models import (
     CodeSymbol, GeneratedTest, MutantResult, MutationReport, ReviewFinding, TestExecutionResult, TestStatus,
@@ -29,6 +30,10 @@ logger = logging.getLogger("VibeHarness.Mutation")
 # 變異體只用這幾類測試的結果：探針會吞掉例外，幾乎必過，沒有訊號
 # Only these test types are used: probes swallow exceptions, pass almost always and carry no signal
 ELIGIBLE_TEST_TYPES = ("whitebox_unit", "whitebox_property")
+# 複本大小上限（MB）：單一檔案目標會以所在目錄為工作目錄，可能很大；超過就略過並記原因
+# Size cap (MB) of the scratch copy: a single-file target uses its whole directory, which may be large;
+# above it the step is skipped with a reason
+DEFAULT_MAX_COPY_MB = 200
 
 _ARITHMETIC = {ast.Add: ("+", "-"), ast.Sub: ("-", "+"), ast.Mult: ("*", "/"), ast.Div: ("/", "*")}
 _COMPARISON = {
@@ -199,6 +204,41 @@ def _write(path: str, text: str) -> None:
         f.write(text)
 
 
+def _copy_ignore(directory: str, names: List[str]) -> List[str]:
+    """複製時略過的項目：與符號擷取相同的目錄（`SKIPPED_DIRS`、點開頭）、指向目錄的符號連結、位元組碼。
+    指向目錄的連結若被展開，可能複製到目標以外的內容，甚至無限迴圈。
+    What the copy leaves out: the directories symbol extraction skips (`SKIPPED_DIRS`, dot-names), symlinks
+    to directories and bytecode. A followed directory link could pull in content outside the target or loop forever."""
+    skipped = []
+    for name in names:
+        path = os.path.join(directory, name)
+        if os.path.isdir(path):
+            if name.startswith(".") or name in SKIPPED_DIRS or os.path.islink(path):
+                skipped.append(name)
+        elif name.endswith((".pyc", ".pyo")):
+            skipped.append(name)
+    return skipped
+
+
+def _copy_size(root: str, limit: int) -> int:
+    """依 `_copy_ignore` 的規則估計複本大小（位元組）；超過 `limit` 就提早停止並回傳目前累計值。
+    The size (bytes) the copy would have under `_copy_ignore`; stops early once it passes `limit`."""
+    total = 0
+    for directory, dirs, files in os.walk(root):
+        ignored = set(_copy_ignore(directory, dirs + files))
+        dirs[:] = [d for d in dirs if d not in ignored]
+        for name in files:
+            if name in ignored:
+                continue
+            try:
+                total += os.path.getsize(os.path.join(directory, name))
+            except OSError:
+                continue
+            if total > limit:
+                return total
+    return total
+
+
 def _skipped(reason_zh: str, reason_en: str, eligible: int = 0) -> MutationReport:
     return MutationReport(enabled=True, eligible_tests=eligible, skipped_reason=bi(reason_zh, reason_en))
 
@@ -212,6 +252,7 @@ def run_mutation_testing(
     work_dir: str,
     max_mutants: int,
     timeout_seconds: int,
+    max_copy_mb: int = DEFAULT_MAX_COPY_MB,
 ) -> MutationReport:
     """對已通過的白箱測試所涵蓋的符號做突變測試。`run_batch(tests, working_dir, timeout)` 回傳
     "killed"（有測試失敗或逾時）、"survived"（全數通過）或 "invalid"（變異體讓程式壞到無法判斷）。
@@ -244,12 +285,18 @@ def run_mutation_testing(
     if not selected:
         return _skipped("測試涵蓋的符號裡沒有可變異的位置", "no mutable spots in the symbols the tests cover", len(usable))
 
+    limit = max(1, max_copy_mb) * 1024 * 1024
+    if _copy_size(root, limit) > limit:
+        return _skipped(f"工作目錄（略過 SKIPPED_DIRS 後）超過複本上限 {max_copy_mb} MB；可調高 mutation_max_copy_mb",
+                        f"the work directory (after SKIPPED_DIRS) exceeds the {max_copy_mb} MB copy cap; raise mutation_max_copy_mb",
+                        len(usable))
+
     scratch = tempfile.mkdtemp(prefix="vibe_mutation_")
     report = MutationReport(enabled=True, eligible_tests=len(usable), candidate_sites=candidates,
                             truncated=candidates > len(selected))
     try:
         copy_dir = os.path.join(scratch, os.path.basename(root.rstrip("/\\")) or "target")
-        shutil.copytree(root, copy_dir, ignore=shutil.ignore_patterns(".git", "node_modules", "__pycache__", "*.pyc"))
+        shutil.copytree(root, copy_dir, ignore=_copy_ignore)
         rewritten = [t.model_copy(update={"code": rewrite_host_paths(t.code, [(root, copy_dir)])}) for t in usable]
         # 先確認測試在未變異的複本上全部通過：否則複本或路徑改寫有問題，之後的「殺死」都不可信
         # First confirm the tests all pass on the unmutated copy: otherwise the copy or the path rewrite is off
@@ -261,7 +308,9 @@ def run_mutation_testing(
             target = os.path.join(copy_dir, relative)
             original = sources[file_path]
             mutated = apply_mutation(original, site)
-            if mutated is None:
+            # 檔案不在複本裡（例如位於略過的目錄）就不能變異，否則會寫進不存在的路徑
+            # A file missing from the copy (e.g. under a skipped directory) cannot be mutated
+            if mutated is None or not os.path.isfile(target):
                 continue
             _write(target, mutated)
             try:

@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Fixed
+
+- The mutation-testing scratch copy now uses the same skip rules as symbol extraction (`SKIPPED_DIRS`, dot-directories) and also leaves out bytecode and symlinks to directories: `.venv`, `build` and `dist` used to be copied whole, and a directory link pointing back into the target made the copy expand until it failed. New `mutation_max_copy_mb` (default 200): the size is estimated before copying and above it the step is skipped with an evidence gap (a single-file target copies its whole directory, so it is the likely case).
+
 ## [0.5.0] - 2026-10-09
 
 Optional mutation testing, to check that passing white-box tests really catch behaviour changes.

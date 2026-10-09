@@ -42,6 +42,7 @@ From the CLI, use `--config <path>` to point at a different file and `--mode` to
 | `mutation_max_mutants` | `20` | Mutant cap per run (≥ 1); beyond it the list is truncated and flagged as an evidence gap. CLI `--mutation-max-mutants` overrides |
 | `mutation_timeout_seconds` | same as `per_test_timeout_seconds` | Timeout (seconds) of the sandbox batch for one mutant; a timeout counts as killed |
 | `mutation_min_score` | `70` | A score (percent, 0–100) below this is an evidence gap; it never causes `NEEDS_FIXES` |
+| `mutation_max_copy_mb` | `200` | Size cap (MB, ≥ 1) of the scratch copy. The copy leaves out the directories symbol extraction skips (`SKIPPED_DIRS`, dot-names), bytecode and symlinks to directories; above the cap nothing runs and an evidence gap is added. A single-file target uses its whole directory as the work directory, so it is the likely case |
 
 ### `execution_mode` behavior
 
