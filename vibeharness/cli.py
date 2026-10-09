@@ -12,6 +12,7 @@ from vibeharness.core.sandbox import SandboxUnavailableError
 from vibeharness.agents.blackbox.scenario_builder import validate_base_url
 from vibeharness.core.baseline import load_baseline
 from vibeharness.core.estimate import estimate_lines, estimate_run
+from vibeharness.core.i18n import bi
 
 # Exit codes reserved for harness/usage problems. Verdict codes (0/1/2/3/4) are documented in
 # the README; these must never collide with them, or CI would misread a crashed run as a verdict.
@@ -25,7 +26,7 @@ class _UsageErrorParser(argparse.ArgumentParser):
 
     def error(self, message):
         self.print_usage(sys.stderr)
-        print(f"{self.prog}: error: {message}", file=sys.stderr)
+        print(f"{self.prog}: {bi('錯誤', 'error')}: {message}", file=sys.stderr)
         sys.exit(USAGE_ERROR_EXIT_CODE)
 
 
@@ -203,13 +204,13 @@ def main():
 
     target_path = os.path.abspath(args.target)
     if not os.path.exists(target_path):
-        print(f"Error: Target path '{target_path}' does not exist.", file=sys.stderr)
+        print(f"{bi('錯誤', 'Error')}: {bi(f'目標路徑 {target_path!r} 不存在。', f'Target path {target_path!r} does not exist.')}", file=sys.stderr)
         sys.exit(USAGE_ERROR_EXIT_CODE)
 
     if args.max_files is not None and args.max_files < 1:
-        parser.error("--max-files must be at least 1")
+        parser.error(bi("--max-files 至少要是 1", "--max-files must be at least 1"))
     if args.max_model_calls is not None and args.max_model_calls < 0:
-        parser.error("--max-model-calls must not be negative")
+        parser.error(bi("--max-model-calls 不可為負數", "--max-model-calls must not be negative"))
     if args.base_url is not None:
         try:
             args.base_url = validate_base_url(args.base_url)
@@ -218,7 +219,8 @@ def main():
     # Fail before any model call is paid for, not after the whole pipeline ran
     for flag, path in (("--output", args.output), ("--sarif", args.sarif)):
         if path is not None and not _writable_location(path):
-            parser.error(f"{flag}: cannot write to '{path}' (directory missing or not writable)")
+            parser.error(f"{flag}: " + bi(f"無法寫入 '{path}'（目錄不存在或不可寫入）",
+                                           f"cannot write to '{path}' (directory missing or not writable)"))
     try:
         commander = VibeHarnessCommander(config_path=args.config, execution_mode=args.mode)
         if args.max_files is not None:
@@ -236,18 +238,18 @@ def main():
         if args.baseline:
             commander.baseline = load_baseline(args.baseline)
     except (ConfigError, ValueError, SandboxUnavailableError) as e:
-        print(f"Error: harness configuration problem: {e}", file=sys.stderr)
+        print(f"{bi('錯誤', 'Error')}: {bi('harness 設定問題', 'harness configuration problem')}: {e}", file=sys.stderr)
         sys.exit(USAGE_ERROR_EXIT_CODE)
     if args.estimate:
         try:
             estimate = estimate_run(commander, target_path)
         except ValueError as e:
-            print(f"Error: {e}", file=sys.stderr)
+            print(f"{bi('錯誤', 'Error')}: {e}", file=sys.stderr)
             sys.exit(USAGE_ERROR_EXIT_CODE)
         if args.format == "json":
             with open(args.output, "w", encoding="utf-8") as f:
                 f.write(estimate.model_dump_json(indent=2))
-            print(f"Estimate written to {args.output}")
+            print(bi(f"估算已寫入 {args.output}", f"Estimate written to {args.output}"))
         else:
             print("\n".join(estimate_lines(estimate)))
         sys.exit(0)
@@ -261,25 +263,30 @@ def main():
             output_sarif_path=args.sarif
         )
     except LLMGatewayError as e:
-        print(f"Error: live model invocation failed in strict 'live' mode: {e}", file=sys.stderr)
+        print(f"{bi('錯誤', 'Error')}: "
+              + bi("在嚴格的 'live' 模式下真實模型呼叫失敗", "live model invocation failed in strict 'live' mode")
+              + f": {e}", file=sys.stderr)
         sys.exit(4)
     except ValueError as e:
         # e.g. an unresolvable --changed-since ref: a usage problem found once the run started
-        print(f"Error: {e}", file=sys.stderr)
+        print(f"{bi('錯誤', 'Error')}: {e}", file=sys.stderr)
         sys.exit(USAGE_ERROR_EXIT_CODE)
     except KeyboardInterrupt:
-        print("Interrupted; no full report was written (a .partial.json may exist next to --output; "
-              "in-flight model calls may take a moment to stop).", file=sys.stderr)
+        print(bi("已中斷；沒有寫出完整報告（--output 旁可能有 .partial.json；進行中的模型呼叫可能需要片刻才會停止）。",
+                 "Interrupted; no full report was written (a .partial.json may exist next to --output; "
+                 "in-flight model calls may take a moment to stop)."), file=sys.stderr)
         sys.exit(INTERRUPTED_EXIT_CODE)
     except Exception as e:
         # A crashed run must never fall through to exit code 1, which CI reads as NEEDS_FIXES
         traceback.print_exc(file=sys.stderr)
-        print(f"Error: harness crashed unexpectedly: {type(e).__name__}: {e}", file=sys.stderr)
+        print(f"{bi('錯誤', 'Error')}: {bi('harness 意外崩潰', 'harness crashed unexpectedly')}: {type(e).__name__}: {e}", file=sys.stderr)
         sys.exit(USAGE_ERROR_EXIT_CODE)
 
     # Return exit code based on Quality Gate
     if summary.overall_status not in _VERDICT_STATUSES:
-        print(f"Error: unknown overall status '{summary.overall_status}'; failing closed.", file=sys.stderr)
+        print(f"{bi('錯誤', 'Error')}: "
+              + bi(f"未知的整體狀態 '{summary.overall_status}'；以失敗收場（failing closed）。",
+                   f"unknown overall status '{summary.overall_status}'; failing closed."), file=sys.stderr)
     sys.exit(verdict_exit_code(summary.overall_status))
 
 

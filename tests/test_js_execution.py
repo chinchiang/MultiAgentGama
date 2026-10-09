@@ -20,7 +20,9 @@ from vibeharness.core.sandbox import (
     DEFAULT_DOCKER_NODE_IMAGE, MIN_NODE_VERSION, TIMEOUT_EXIT_CODE, NodeDockerSandbox, NodeSubprocessSandbox,
     detect_node, node_test_command, parse_node_version,
 )
-from vibeharness.runners.test_executor import TestSuiteExecutor
+from vibeharness.runners.test_executor import (
+    TestSuiteExecutor, POC_HEADER_JS, REASON_NOT_RUN_CORRECTLY, REASON_TARGET_BROKEN,
+)
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
@@ -324,16 +326,16 @@ def test_js_aggregation_classifies_outcomes():
     wb = _js_test("WB", "x")
     exploit = executor._aggregate(bb, "BB", [ASSERTION_CASE])
     assert exploit.status == TestStatus.FAILED and exploit.is_security_exploit_confirmed
-    assert exploit.language == "javascript" and exploit.reproduction_poc.startswith("// === Reproduction PoC ===")
+    assert exploit.language == "javascript" and exploit.reproduction_poc.startswith(POC_HEADER_JS)
     crash = executor._aggregate(bb, "BB", [TARGET_TYPEERROR_CASE])
     assert crash.status == TestStatus.FAILED and not crash.is_security_exploit_confirmed
     assert crash.failure_reason.startswith("TypeError: Cannot read")
     test_side = executor._aggregate(wb, "WB", [TEST_SIDE_REFERROR_CASE])
     assert test_side.status == TestStatus.ERROR and "ReferenceError" in test_side.failure_reason
     missing = executor._aggregate(wb, "WB", [TEST_MODULE_NOT_FOUND])
-    assert missing.status == TestStatus.ERROR and missing.failure_reason.startswith("Test could not run correctly")
+    assert missing.status == TestStatus.ERROR and missing.failure_reason.startswith(REASON_NOT_RUN_CORRECTLY)
     broken = executor._aggregate(wb, "WB", [TARGET_BROKEN])
-    assert broken.status == TestStatus.ERROR and broken.failure_reason.startswith("Target code is broken")
+    assert broken.status == TestStatus.ERROR and broken.failure_reason.startswith(REASON_TARGET_BROKEN)
     passed = executor._aggregate(wb, "WB", [{**ASSERTION_CASE, "outcome": "passed"}])
     assert passed.status == TestStatus.PASSED and passed.language == "javascript"
 
@@ -398,7 +400,8 @@ def test_executor_without_js_runner_reports_every_js_test_as_not_run(tmp_path):
     results, _ = executor.execute_test_suite([_js_test("J", GOOD), _py_test("P", "def test_a():\n    assert 1\n")],
                                              working_dir=str(tmp_path))
     assert results[0].status == TestStatus.ERROR
-    assert "was not run: no JavaScript/TypeScript runner is configured" in results[0].failure_reason
+    assert "test was not run: " in results[0].failure_reason
+    assert "no JavaScript/TypeScript runner is configured" in results[0].failure_reason
     assert results[1].status == TestStatus.PASSED
 
     def boom():
@@ -571,7 +574,7 @@ def test_node_runs_esm_cjs_and_bare_specifier_modules(tmp_path):
     assert by_id["fails"].status == TestStatus.FAILED and by_id["fails"].is_security_exploit_confirmed
     assert by_id["crash"].status == TestStatus.FAILED and not by_id["crash"].is_security_exploit_confirmed
     assert by_id["crash"].failure_reason.startswith("TypeError: null")
-    assert by_id["missing"].status == TestStatus.ERROR and by_id["missing"].failure_reason.startswith("Test could not run correctly")
+    assert by_id["missing"].status == TestStatus.ERROR and by_id["missing"].failure_reason.startswith(REASON_NOT_RUN_CORRECTLY)
     assert "ERR_MODULE_NOT_FOUND" in by_id["missing"].failure_reason or "Cannot find module" in by_id["missing"].failure_reason
     assert by_id["cjs"].status == TestStatus.PASSED
     assert by_id["bare"].status == TestStatus.PASSED
@@ -696,7 +699,7 @@ def test_js_target_is_dynamically_verified_end_to_end(tmp_path, fake_live):
     assert summary.run is not None and summary.run.node_runtime.startswith("node v")
     text = report.read_text(encoding="utf-8")
     assert "```javascript" in text or "````javascript" in text
-    assert "// === Reproduction PoC ===" in text
+    assert POC_HEADER_JS in text and "Reproduction PoC" in text
     assert "Line Coverage (Python)" not in text  # console-only label; the report keeps its metric table
     assert summary.line_coverage_pct is None  # JS coverage is not collected
 

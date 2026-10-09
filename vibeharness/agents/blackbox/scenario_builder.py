@@ -10,6 +10,7 @@ import os
 from vibeharness.core.models import ThreatItem, GeneratedTest, CodeSymbol, text_or
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
 from vibeharness.core.codecheck import check_test_code_for, strip_code_fences
+from vibeharness.core.i18n import bi
 from vibeharness.core.codecontext import render_symbols, import_instructions, language_for_file
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
 
@@ -135,7 +136,8 @@ class ThreatScenarioBuilder:
             base_url = validate_base_url(base_url)
         server_is_live = self.check_server_live(base_url) if base_url else False
         mode_label = "Live HTTP" if server_is_live else "In-Process Contract"
-        logger.info(f"Synthesizing threat test cases in [{mode_label}] mode against: {base_url or 'the imported target'}")
+        logger.info(bi(f"以 [{mode_label}] 模式合成威脅測試案例，目標：{base_url or '匯入的目標'}",
+                       f"Synthesizing threat test cases in [{mode_label}] mode against: {base_url or 'the imported target'}"))
         if server_is_live:
             mode_rules = (
                 f"Send real HTTP requests to {base_url} using only the standard library (urllib.request) "
@@ -162,7 +164,8 @@ class ThreatScenarioBuilder:
                     raise  # strict live mode fails loudly
                 except Exception as e:
                     # The threat is reported as untested rather than aborting the other syntheses
-                    logger.error(f"Attack synthesis for [{threat.threat_id}] failed: {type(e).__name__}: {e}")
+                    logger.error(bi(f"[{threat.threat_id}] 的攻擊合成失敗：{type(e).__name__}: {e}",
+                                    f"Attack synthesis for [{threat.threat_id}] failed: {type(e).__name__}: {e}"))
                     continue
                 if test is not None:
                     tests.append(test)
@@ -179,7 +182,8 @@ class ThreatScenarioBuilder:
         root_dir: Optional[str]
     ) -> Optional[GeneratedTest]:
         """The attack test synthesized for one threat, or None when the threat stays untested."""
-        logger.info(f"Synthesizing black-box exploit test for: [{threat.threat_id}] {threat.title}")
+        logger.info(bi(f"正在合成黑箱利用測試：[{threat.threat_id}] {threat.title}",
+                       f"Synthesizing black-box exploit test for: [{threat.threat_id}] {threat.title}"))
 
         context, language = self._code_context(threat, symbols, root_dir)
         if server_is_live:
@@ -246,26 +250,29 @@ class ThreatScenarioBuilder:
         code_str = strip_code_fences(raw_code if isinstance(raw_code, str) else "")
         if not code_str:
             # No fabricated fallback: a threat without a synthesized test is reported as NOT TESTED
-            logger.warning(f"No executable test synthesized for [{threat.threat_id}]; threat remains untested.")
+            logger.warning(bi(f"[{threat.threat_id}] 沒有合成出可執行的測試；此威脅仍未測試。",
+                              f"No executable test synthesized for [{threat.threat_id}]; threat remains untested."))
             return None
         if server_is_live:
             offenders = self._hosts_outside_base_url(code_str, base_url or "")
             if offenders:
-                logger.warning(
+                logger.warning(bi(
+                    f"[{threat.threat_id}] 合成的測試指向非目標主機 {', '.join(offenders)}；已拒絕，此威脅仍未測試。",
                     f"Synthesized test for [{threat.threat_id}] targets non-target host(s) "
                     f"{', '.join(offenders)}; rejected and the threat remains untested."
-                )
+                ))
                 return None
         is_valid, problem = check_test_code_for(code_str, language)
         if not is_valid:
             # Kept so the executor reports it as ERROR rather than silently dropping it
-            logger.warning(f"Synthesized test for [{threat.threat_id}] is not executable: {problem}")
+            logger.warning(bi(f"[{threat.threat_id}] 合成的測試無法執行：{problem}",
+                              f"Synthesized test for [{threat.threat_id}] is not executable: {problem}"))
 
         return GeneratedTest(
             test_id=f"BB-TEST-{threat.threat_id}",
             test_type="blackbox_security",
             target_component=threat.attack_vector,
-            title=text_or(resp.get("title"), f"Security test for {threat.title}"),
+            title=text_or(resp.get("title"), bi(f"{threat.title} 的安全測試", f"Security test for {threat.title}")),
             code=code_str,
             rationale=text_or(resp.get("rationale"), threat.attack_scenario),
             expected_outcome=text_or(resp.get("expected_outcome"), threat.test_verification_goal),

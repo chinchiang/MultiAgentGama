@@ -6,6 +6,7 @@ import re
 from bisect import bisect_right
 from typing import Iterable, List, Optional, Tuple, Union
 from vibeharness.core.models import CodeSymbol
+from vibeharness.core.i18n import bi
 
 logger = logging.getLogger("VibeHarness.ASTExtractor")
 
@@ -108,11 +109,13 @@ class ASTExtractor:
                     continue
                 source_files.append(full)
         if self.oversized_files:
-            logger.warning(f"{len(self.oversized_files)} source file(s) exceed max_file_bytes ({max_file_bytes}) and were skipped.")
+            logger.warning(bi(f"{len(self.oversized_files)} 個原始碼檔案超過 max_file_bytes（{max_file_bytes}），已略過。",
+                              f"{len(self.oversized_files)} source file(s) exceed max_file_bytes ({max_file_bytes}) and were skipped."))
 
         self.skipped_files = source_files[max_files:]
         if self.skipped_files:
-            logger.warning(f"Only the first {max_files} of {len(source_files)} source files are analyzed; {len(self.skipped_files)} skipped.")
+            logger.warning(bi(f"{len(source_files)} 個原始碼檔案只分析前 {max_files} 個；略過 {len(self.skipped_files)} 個。",
+                              f"Only the first {max_files} of {len(source_files)} source files are analyzed; {len(self.skipped_files)} skipped."))
         self.analyzed_files = source_files[:max_files]
         all_symbols: List[CodeSymbol] = []
         for full_path in self.analyzed_files:
@@ -143,7 +146,7 @@ class ASTExtractor:
                 source = f.read()
             tree = ast.parse(source, filename=file_path)
         except Exception as e:
-            logger.warning(f"Could not parse {file_path}: {e}")
+            logger.warning(bi(f"無法解析 {file_path}：{e}", f"Could not parse {file_path}: {e}"))
             self.parse_failures.append(file_path)
             return []
 
@@ -173,7 +176,7 @@ class ASTExtractor:
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
         except Exception as e:
-            logger.warning(f"Could not read {file_path}: {e}")
+            logger.warning(bi(f"無法讀取 {file_path}：{e}", f"Could not read {file_path}: {e}"))
             self.parse_failures.append(file_path)
             return []
 

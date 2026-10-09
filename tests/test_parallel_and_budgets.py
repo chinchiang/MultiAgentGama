@@ -12,6 +12,7 @@ import yaml
 
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError, ConfigError, BUDGET_EXHAUSTED_REASON, PROVENANCE_KEY
 from vibeharness.core.models import FindingSeverity, ReviewFinding, STRIDECategory, ThreatItem, CodeSymbol
+from vibeharness.core.i18n import has_cjk
 from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
 from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
 from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
@@ -357,6 +358,7 @@ def test_unusable_answer_is_re_asked_once_and_the_retry_can_succeed(fake_live):
     assert gw.is_usable(resp) and resp["findings"] == []
     assert [c.mode for c in gw.call_log] == ["retried", "live"]
     assert "could not be used (response is not valid JSON)" in prompts[1] and prompts[1].startswith("audit this")
+    assert not has_cjk(prompts[1])  # the bilingual reason reaches the model in English only
     assert len(fake.calls) == 2 and gw.live_calls_attempted == 2
     assert not gw.invalid_calls and len(gw.retried_calls) == 1
 
@@ -620,7 +622,7 @@ def test_cached_answers_are_labelled_in_the_provenance_table(fake_live, tmp_path
     VibeHarnessCommander(config_path=cfg, execution_mode="live").run_full_pipeline(
         target_dir=str(target), output_report_path=str(tmp_path / "two.md"))
     assert "response cache" not in (tmp_path / "one.md").read_text(encoding="utf-8")
-    assert "🟢 live (response cache)" in (tmp_path / "two.md").read_text(encoding="utf-8")
+    assert "🟢 真實（回應快取） ／ live (response cache)" in (tmp_path / "two.md").read_text(encoding="utf-8")
 
 
 # --- Partial report on a crash -----------------------------------------------------------------

@@ -5,6 +5,7 @@ import sys
 import pytest
 
 from vibeharness.core.llm_gateway import DEFAULT_CONFIG_PATH
+from vibeharness.core.i18n import en_only
 from vibeharness.agents.blackbox.threat_modeler import DEFAULT_RULES_PATH
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -72,7 +73,7 @@ def test_null_fields_from_the_attack_synthesizer_fall_back_to_the_threat(fake_li
     builder = ThreatScenarioBuilder(LLMGateway(CONFIG, execution_mode="live"))
     tests = builder.build_test_cases_from_threats([_threat()], base_url=None)
     assert len(tests) == 1
-    assert tests[0].title == "Security test for Mass assignment"
+    assert en_only(tests[0].title) == "Security test for Mass assignment"
     assert tests[0].rationale == "send is_admin"
     assert tests[0].expected_outcome == "is_admin stays false"
 
@@ -87,7 +88,7 @@ def test_null_fields_from_the_test_generator_fall_back_to_the_finding(fake_live,
     assert [t.test_type for t in tests] == ["whitebox_unit"]
     assert tests[0].title == "None crash"
     assert tests[0].rationale == "call f(None)"
-    assert tests[0].expected_outcome == "Graceful handling without crash"
+    assert en_only(tests[0].expected_outcome) == "Graceful handling without crash"
 
 
 def test_non_string_test_code_is_ignored_not_fatal(fake_live, tmp_path):
@@ -116,7 +117,7 @@ def test_null_reviewer_fields_fall_back_but_empty_findings_are_dropped(fake_live
         symbols, root_dir=str(tmp_path)
     )
     assert len(findings) == 4  # the usable finding from each reviewer; the empty one is dropped
-    assert all(f.title == "Potential Defect" and f.symbol_name is None for f in findings)
+    assert all(en_only(f.title) == "Potential Defect" and f.symbol_name is None for f in findings)
     assert all(f.description == "x.y crashes on None" and f.root_cause == "" for f in findings)
 
 
@@ -520,7 +521,8 @@ def test_a_crashed_reviewer_batch_is_an_evidence_gap(tmp_path, monkeypatch):
     summary = commander.run_full_pipeline(target_dir=str(target), output_report_path=str(tmp_path / "r.md"))
     assert summary.overall_status != "READY_TO_SHIP"
     gap = [r for r in summary.inconclusive_reasons if "crashed before answering" in r]
-    assert len(gap) == 1 and "whitebox_reviewer_glm (agent call crashed before producing output: ValueError: boom)" in gap[0]
+    assert len(gap) == 1 and "whitebox_reviewer_glm (" in gap[0]
+    assert "agent call crashed before producing output: ValueError: boom)" in gap[0]
 
 
 def test_unknown_reviewer_severity_falls_back_to_medium(fake_live, tmp_path):

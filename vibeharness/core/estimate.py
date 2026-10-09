@@ -17,6 +17,7 @@ from vibeharness.agents.blackbox.threat_modeler import BATCH_MAX_TOKENS as TM_BA
 from vibeharness.agents.whitebox.debater import MultiModelDebater
 from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
 from vibeharness.core.codecontext import batch_symbols, estimate_tokens, render_symbols
+from vibeharness.core.i18n import bi
 from vibeharness.core.models import CodeSymbol
 
 # Prompt overhead beyond the code listing (system prompt, schema, guidance) and typical answer sizes,
@@ -94,9 +95,10 @@ def estimate_run(
         retry_invalid_output=retry, max_model_calls=gateway.max_model_calls,
     )
     if filters:
-        est.warnings.append("File selection applied: " + "; ".join(filters))
+        est.warnings.append(bi("已套用檔案篩選", "File selection applied") + ": " + "; ".join(filters))
     if not symbols:
-        est.warnings.append("No analyzable symbols: the reviewers and the test generator would make no calls")
+        est.warnings.append(bi("沒有可分析的符號：審查者與測試產生器不會發出任何呼叫",
+                               "No analyzable symbols: the reviewers and the test generator would make no calls"))
 
     # 1. Reviewers: exact
     wb_listing_tokens = [estimate_tokens(render_symbols(b, work_dir, max_tokens=HeterogeneousReviewerEnsemble.BATCH_MAX_TOKENS)) for b in wb_batches]
@@ -106,7 +108,7 @@ def estimate_run(
             agent=reviewer["agent_id"], model_alias=reviewer["model_alias"], calls_exact=calls, calls_typical=calls,
             calls_max=calls * reask, prompt_tokens_typical=sum(wb_listing_tokens) + calls * _OVERHEAD["reviewer"],
             output_tokens_typical=calls * _TYPICAL_OUTPUT["reviewer"],
-            basis=f"{len(wb_batches)} white-box batch(es) × 1 call",
+            basis=bi(f"{len(wb_batches)} 個白箱批次 × 1 次呼叫", f"{len(wb_batches)} white-box batch(es) × 1 call"),
         ))
 
     # 2. Findings scenario -> verifiers
@@ -121,7 +123,8 @@ def estimate_run(
             agent=agent_id, model_alias=alias, calls_typical=calls, calls_max=calls * reask,
             prompt_tokens_typical=calls * (_VERIFIER_LISTING_TOKENS + _VERIFIER_CODE_TOKENS + _OVERHEAD["verifier"]),
             output_tokens_typical=calls * _TYPICAL_OUTPUT["verifier"],
-            basis=f"~{assigned:.0f} finding(s) from other models / {MultiModelDebater.FINDINGS_PER_CALL} per call",
+            basis=bi(f"來自其他模型的 ~{assigned:.0f} 筆發現 / 每次呼叫 {MultiModelDebater.FINDINGS_PER_CALL} 筆",
+                     f"~{assigned:.0f} finding(s) from other models / {MultiModelDebater.FINDINGS_PER_CALL} per call"),
         ))
 
     # 3. Test generation per confirmed finding (+ heals)
@@ -134,7 +137,8 @@ def estimate_run(
         calls_max=gen_calls * reask + gen_calls * _HEAL_ATTEMPTS_MAX,
         prompt_tokens_typical=gen_calls * (_PER_FINDING_CODE_TOKENS + _OVERHEAD["test_generator"]) + heal_typical * (_OVERHEAD["heal"] + 1200),
         output_tokens_typical=gen_calls * _TYPICAL_OUTPUT["test_generator"] + heal_typical * _TYPICAL_OUTPUT["heal"],
-        basis=f"~{confirmed:.0f} confirmed finding(s) × 1 call, + heals (typical {heal_typical}, max {_HEAL_ATTEMPTS_MAX} per test)",
+        basis=bi(f"~{confirmed:.0f} 筆已確認的發現 × 1 次呼叫，+ 修復（典型 {heal_typical}，每個測試最多 {_HEAL_ATTEMPTS_MAX}）",
+                 f"~{confirmed:.0f} confirmed finding(s) × 1 call, + heals (typical {heal_typical}, max {_HEAL_ATTEMPTS_MAX} per test)"),
     ))
 
     # 4. Threat modeling: exact
@@ -144,7 +148,7 @@ def estimate_run(
         agent="blackbox_threat_modeler", model_alias=tm_alias, calls_exact=len(tm_batches), calls_typical=len(tm_batches),
         calls_max=len(tm_batches) * reask, prompt_tokens_typical=sum(tm_listing) + len(tm_batches) * _OVERHEAD["threat_modeler"],
         output_tokens_typical=len(tm_batches) * _TYPICAL_OUTPUT["threat_modeler"],
-        basis=f"{len(tm_batches)} threat-model batch(es) × 1 call",
+        basis=bi(f"{len(tm_batches)} 個威脅模型批次 × 1 次呼叫", f"{len(tm_batches)} threat-model batch(es) × 1 call"),
     ))
 
     # 5. Attack synthesis per threat
@@ -154,7 +158,7 @@ def estimate_run(
         agent="blackbox_test_synthesizer", model_alias=sy_alias, calls_typical=threats, calls_max=threats * reask,
         prompt_tokens_typical=threats * (_PER_FINDING_CODE_TOKENS + _OVERHEAD["synthesizer"]),
         output_tokens_typical=threats * _TYPICAL_OUTPUT["synthesizer"],
-        basis=f"~{threats} threat(s) × 1 call",
+        basis=bi(f"~{threats} 個威脅 × 1 次呼叫", f"~{threats} threat(s) × 1 call"),
     ))
 
     est.calls_exact = sum(c.calls_exact or 0 for c in est.by_agent)
@@ -180,40 +184,70 @@ def estimate_run(
             total_cost += row["cost_usd"]
             priced = True
         elif alias != "unconfigured":
-            est.warnings.append(f"No price configured for model alias '{alias}' (models.{alias}.price_per_million_input/_output): tokens only")
+            est.warnings.append(bi(
+                f"模型別名 '{alias}' 沒有設定價格（models.{alias}.price_per_million_input/_output）：只列 token",
+                f"No price configured for model alias '{alias}' (models.{alias}.price_per_million_input/_output): tokens only"
+            ))
     if priced:
         est.estimated_cost_usd = round(total_cost, 4)
     if est.max_model_calls is not None and est.calls_typical > est.max_model_calls:
-        est.warnings.append(
+        est.warnings.append(bi(
+            f"max_model_calls={est.max_model_calls} 低於典型呼叫數（{est.calls_typical}）：之後的代理會退回模擬（hybrid）或失敗（live）",
             f"max_model_calls={est.max_model_calls} is below the typical call count ({est.calls_typical}): later agents "
             "would fall back to simulation (hybrid) or fail (live)"
-        )
+        ))
     return est
+
+
+# `estimate_lines` 表格的雙語欄位標題 ／ Bilingual column headers of the `estimate_lines` table
+ESTIMATE_COLUMNS = (
+    bi("代理", "agent"), bi("模型", "model"), bi("精確", "exact"), bi("典型", "typical"), bi("最大", "max"),
+    bi("提示 token", "prompt tok"), bi("輸出 token", "output tok"), bi("依據", "basis"),
+)
+# 每欄寬度：原本的寬度或雙語標題的長度，取較大者 ／ Column widths: the original width or the bilingual header, whichever is wider
+_COLUMN_WIDTHS = tuple(max(w, len(h)) for w, h in zip((28, 12, 6, 8, 6, 11, 11), ESTIMATE_COLUMNS[:-1], strict=True))
 
 
 def estimate_lines(est: RunEstimate) -> List[str]:
     """Plain-text rendering (the CLI prints it; JSON output uses the model directly)."""
+    w_agent, w_model, w_exact, w_typ, w_max, w_prompt, w_output = _COLUMN_WIDTHS
+    h_agent, h_model, h_exact, h_typ, h_max, h_prompt, h_output, h_basis = ESTIMATE_COLUMNS
+    assumptions = ', '.join(f'{k}={v:g}' for k, v in est.assumptions.items())
     lines = [
-        f"Target: {est.target_path}",
-        f"Files analyzed: {est.files_analyzed} | symbols: {est.symbols} | white-box batches: {est.whitebox_batches} | threat batches: {est.threat_batches}",
-        f"Assumptions: {', '.join(f'{k}={v:g}' for k, v in est.assumptions.items())}; retry_invalid_output={est.retry_invalid_output}",
+        f"{bi('目標', 'Target')}: {est.target_path}",
+        f"{bi('分析的檔案', 'Files analyzed')}: {est.files_analyzed} | {bi('符號', 'symbols')}: {est.symbols} | "
+        f"{bi('白箱批次', 'white-box batches')}: {est.whitebox_batches} | {bi('威脅批次', 'threat batches')}: {est.threat_batches}",
+        f"{bi('假設', 'Assumptions')}: {assumptions}; retry_invalid_output={est.retry_invalid_output}",
         "",
-        f"{'agent':<28} {'model':<12} {'exact':>6} {'typical':>8} {'max':>6} {'prompt tok':>11} {'output tok':>11}  basis",
+        f"{h_agent:<{w_agent}} {h_model:<{w_model}} {h_exact:>{w_exact}} {h_typ:>{w_typ}} {h_max:>{w_max}} "
+        f"{h_prompt:>{w_prompt}} {h_output:>{w_output}}  {h_basis}",
     ]
     for c in est.by_agent:
         exact = str(c.calls_exact) if c.calls_exact is not None else "-"
-        lines.append(f"{c.agent:<28} {c.model_alias:<12} {exact:>6} {c.calls_typical:>8} {c.calls_max:>6} "
-                     f"{c.prompt_tokens_typical:>11,} {c.output_tokens_typical:>11,}  {c.basis}")
+        lines.append(f"{c.agent:<{w_agent}} {c.model_alias:<{w_model}} {exact:>{w_exact}} {c.calls_typical:>{w_typ}} {c.calls_max:>{w_max}} "
+                     f"{c.prompt_tokens_typical:>{w_prompt},} {c.output_tokens_typical:>{w_output},}  {c.basis}")
     lines.append("")
-    lines.append(f"Model calls: exact {est.calls_exact} + scenario → typical {est.calls_typical}, max {est.calls_max}"
-                 + (f" (max_model_calls={est.max_model_calls})" if est.max_model_calls is not None else " (no max_model_calls)"))
-    lines.append(f"Tokens (typical): prompt {est.prompt_tokens_typical:,}, output {est.output_tokens_typical:,}")
+    if est.max_model_calls is not None:
+        cap = f" (max_model_calls={est.max_model_calls})"
+    else:
+        cap = f" ({bi('沒有 max_model_calls', 'no max_model_calls')})"
+    lines.append(f"{bi('模型呼叫', 'Model calls')}: "
+                 + bi(f"精確 {est.calls_exact} + 情境 → 典型 {est.calls_typical}，最大 {est.calls_max}",
+                      f"exact {est.calls_exact} + scenario → typical {est.calls_typical}, max {est.calls_max}") + cap)
+    lines.append(f"{bi('Token（典型）', 'Tokens (typical)')}: "
+                 + bi(f"提示 {est.prompt_tokens_typical:,}，輸出 {est.output_tokens_typical:,}",
+                      f"prompt {est.prompt_tokens_typical:,}, output {est.output_tokens_typical:,}"))
     for alias, row in est.by_model.items():
         cost = f", ~${row['cost_usd']:.4f}" if "cost_usd" in row else ""
-        lines.append(f"  {alias:<12} calls {int(row['calls_typical'])} (max {int(row['calls_max'])}), prompt {int(row['prompt_tokens']):,}, output {int(row['output_tokens']):,}{cost}")
+        calls_t, calls_m = int(row['calls_typical']), int(row['calls_max'])
+        prompt_t, output_t = int(row['prompt_tokens']), int(row['output_tokens'])
+        lines.append(f"  {alias:<12} "
+                     + bi(f"呼叫 {calls_t}（最大 {calls_m}），提示 {prompt_t:,}，輸出 {output_t:,}",
+                          f"calls {calls_t} (max {calls_m}), prompt {prompt_t:,}, output {output_t:,}") + cost)
     if est.estimated_cost_usd is not None:
-        lines.append(f"Estimated cost (priced models only): ~${est.estimated_cost_usd:.4f}")
+        lines.append(f"{bi('預估費用（僅計有定價的模型）', 'Estimated cost (priced models only)')}: ~${est.estimated_cost_usd:.4f}")
     for w in est.warnings:
         lines.append(f"[!] {w}")
-    lines.append("No model was called. Typical/max figures are scenarios; exact figures are what Phase 2 and Phase 4 will spend.")
+    lines.append(bi("沒有呼叫任何模型。典型／最大數字是情境推估；精確數字是第 2 與第 4 階段實際會花費的。",
+                    "No model was called. Typical/max figures are scenarios; exact figures are what Phase 2 and Phase 4 will spend."))
     return lines

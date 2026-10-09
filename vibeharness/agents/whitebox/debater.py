@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
 from vibeharness.core.models import ReviewFinding, MultiModelDebateResult, VerificationVote, CodeSymbol
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError, UNCONFIGURED_ALIAS
+from vibeharness.core.i18n import bi
 from vibeharness.core.codecontext import render_symbols, truncate_to_tokens
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
 
@@ -51,7 +52,7 @@ class MultiModelDebater:
             return MultiModelDebateResult(
                 confirmed_findings=[],
                 disputed_findings=[],
-                consensus_summary="No findings submitted for verification."
+                consensus_summary=bi("沒有提交任何發現進行驗證。", "No findings submitted for verification.")
             )
 
         # Which findings each verifier must rule on: never its own, never ones it already corroborated
@@ -85,7 +86,8 @@ class MultiModelDebater:
                     except LLMGatewayError:
                         raise
                     except Exception as e:
-                        logger.error(f"Verifier batch for {job[0]} failed: {type(e).__name__}: {e}")
+                        logger.error(bi(f"{job[0]} 的驗證批次失敗：{type(e).__name__}: {e}",
+                                        f"Verifier batch for {job[0]} failed: {type(e).__name__}: {e}"))
                         # Booked as an invalid call: these votes are missing, not "unsure"
                         self.gateway.record_failure(job[0], f"{type(e).__name__}: {e}")
                         results.append(([], False))
@@ -98,11 +100,13 @@ class MultiModelDebater:
         real_votes = sum(1 for vs in votes.values() for v in vs if v.verdict != "unsure")
         if real_votes == 0:
             reason = "simulated" if any_simulated or all(f.is_simulated for f in findings) else "no usable verifier output"
-            logger.warning(f"Verification not applied ({reason}); all {len(findings)} findings kept unfiltered.")
+            logger.warning(bi(f"未套用驗證（{reason}）；全部 {len(findings)} 個發現未經篩選保留。",
+                              f"Verification not applied ({reason}); all {len(findings)} findings kept unfiltered."))
             return MultiModelDebateResult(
                 confirmed_findings=list(findings),
                 disputed_findings=[],
-                consensus_summary=f"Cross-model verification not applied ({reason}); findings are unfiltered reviewer hypotheses.",
+                consensus_summary=bi(f"未套用跨模型驗證（{reason}）；發現為未經篩選的審查者假設。",
+                                     f"Cross-model verification not applied ({reason}); findings are unfiltered reviewer hypotheses."),
                 model_agreement_ratio=None,
                 arbitration_applied=False,
                 is_simulated=reason == "simulated"
@@ -129,9 +133,12 @@ class MultiModelDebater:
 
         # Agreement counts only findings that were actually decided; ties agree with nothing
         ratio = agreeing / decisive if decisive else None
-        summary = (
+        verifier_names = ', '.join(sorted(set(self.verifiers.values())))
+        summary = bi(
+            f"跨模型多數決確認 {len(confirmed) - undecided} 個、駁回 {len(disputed)} 個；"
+            f"{undecided} 個未決（保留供測試）。驗證者：{verifier_names}；沒有模型裁決自己的發現。",
             f"{len(confirmed) - undecided} confirmed and {len(disputed)} disputed by cross-model majority; "
-            f"{undecided} undecided (kept for testing). Verifiers: {', '.join(sorted(set(self.verifiers.values())))}; "
+            f"{undecided} undecided (kept for testing). Verifiers: {verifier_names}; "
             f"no model ruled on its own finding."
         )
         return MultiModelDebateResult(
@@ -175,7 +182,8 @@ class MultiModelDebater:
         seen = set()
         raw_verdicts = resp.get("verdicts")
         if not isinstance(raw_verdicts, list):
-            logger.warning(f"Ignoring unusable verdict list from {alias} (got {type(raw_verdicts).__name__})")
+            logger.warning(bi(f"略過 {alias} 無法使用的裁決清單（收到 {type(raw_verdicts).__name__}）",
+                              f"Ignoring unusable verdict list from {alias} (got {type(raw_verdicts).__name__})"))
             raw_verdicts = []
         for item in raw_verdicts:
             if not isinstance(item, dict):

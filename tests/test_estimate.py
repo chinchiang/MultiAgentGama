@@ -100,7 +100,7 @@ def test_cli_estimate_calls_no_model_and_exits_zero(monkeypatch, tmp_path, capsy
         cli.main()
     assert exit_info.value.code == 0 and not called
     out = capsys.readouterr().out
-    assert "Model calls: exact 5" in out and "No model was called" in out
+    assert "Model calls: " in out and "exact 5 + scenario" in out and "No model was called" in out
     monkeypatch.setattr(sys, "argv", ["vibeharness", "-t", EXAMPLES, "-m", "mock", "--estimate", "--format", "json", "-o", str(tmp_path / "e.json")])
     with pytest.raises(SystemExit) as exit_info:
         cli.main()

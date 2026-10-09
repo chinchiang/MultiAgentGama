@@ -27,6 +27,7 @@ from vibeharness.core.sandbox import (
     NodeDockerSandbox, NodeSubprocessSandbox, detect_node,
 )
 from vibeharness.core.baseline import Baseline, annotate_report_payload, compare_with_baseline
+from vibeharness.core.i18n import bi
 from vibeharness.agents.whitebox.ast_extractor import ASTExtractor, DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES
 from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
 from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
@@ -136,7 +137,8 @@ class VibeHarnessCommander:
         if isinstance(value, str):
             value = [value]
         if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
-            raise ValueError(f"global.{key} must be a list of glob patterns, got {value!r}")
+            raise ValueError(bi(f"global.{key} 必須是 glob 樣式的清單，實際得到 {value!r}",
+                                f"global.{key} must be a list of glob patterns, got {value!r}"))
         return [v.strip() for v in value]
 
     @staticmethod
@@ -165,10 +167,12 @@ class VibeHarnessCommander:
         cwd = target_dir if os.path.isdir(target_dir) else os.path.dirname(os.path.abspath(target_dir))
         top = self._git(["rev-parse", "--show-toplevel"], cwd)
         if top is None:
-            raise ValueError(f"--changed-since needs the target to be inside a git repository: {target_dir}")
+            raise ValueError(bi("--changed-since 需要目標位於 git 版本庫內", "--changed-since needs the target to be inside a git repository")
+                             + f": {target_dir}")
         root = top.strip()
         if self._git(["rev-parse", "--verify", "--quiet", f"{since_ref}^{{commit}}"], cwd) is None:
-            raise ValueError(f"--changed-since: git ref {since_ref!r} cannot be resolved in {root}")
+            raise ValueError(bi(f"--changed-since：git ref {since_ref!r} 無法在 {root} 解析",
+                                f"--changed-since: git ref {since_ref!r} cannot be resolved in {root}"))
         spec = os.path.abspath(target_dir)
         # Both commands run from the repository root so their output paths are root-relative
         diff = self._git(["diff", "--name-only", "--diff-filter=ACMR", since_ref, "--", spec], root) or ""
@@ -187,8 +191,10 @@ class VibeHarnessCommander:
         has_ts = any(f.lower().endswith((".ts", ".tsx", ".mts", ".cts")) for f in self.ast_extractor.analyzed_files)
         supports_ts = version >= MIN_NODE_VERSION_TS
         if has_ts and not supports_ts:
-            self.node_typescript_problem = (
-                f"TypeScript tests need Node >= {'.'.join(map(str, MIN_NODE_VERSION_TS))} (type stripping); found {self.node_runtime}"
+            min_ts = '.'.join(map(str, MIN_NODE_VERSION_TS))
+            self.node_typescript_problem = bi(
+                f"TypeScript 測試需要 Node >= {min_ts}（型別剝除）；找到的是 {self.node_runtime}",
+                f"TypeScript tests need Node >= {min_ts} (type stripping); found {self.node_runtime}"
             )
         cfg = self._global_cfg
         timeout = int(cfg.get("sandbox_timeout_seconds", 120))
@@ -204,9 +210,10 @@ class VibeHarnessCommander:
                 supports_typescript=supports_ts,
             )
         if self.sandbox_node_provider != "local_subprocess":
-            raise ValueError(
+            raise ValueError(bi(
+                f"sandbox_node_provider '{self.sandbox_node_provider}' 尚未實作；支援：'local_subprocess'、'docker'",
                 f"sandbox_node_provider '{self.sandbox_node_provider}' is not implemented; supported: 'local_subprocess', 'docker'"
-            )
+            ))
         memory_mb = LLMGateway._positive_int(cfg.get("sandbox_memory_mb", DEFAULT_SANDBOX_MEMORY_MB), "sandbox_memory_mb") or 0
         return NodeSubprocessSandbox(
             timeout_seconds=timeout, memory_mb=memory_mb, node_bin=self.node_bin,
@@ -229,9 +236,10 @@ class VibeHarnessCommander:
                 cpus=str(global_cfg.get("docker_cpus", "2")),
                 pids_limit=int(global_cfg.get("docker_pids_limit", 256)),
             )
-        raise ValueError(
+        raise ValueError(bi(
+            f"sandbox_provider '{provider}' 尚未實作；支援：'local_subprocess'、'docker'",
             f"sandbox_provider '{provider}' is not implemented; supported: 'local_subprocess', 'docker'"
-        )
+        ))
 
     def run_full_pipeline(
         self,
@@ -252,15 +260,16 @@ class VibeHarnessCommander:
         Phase 6: Quality Gate Synthesis & Report Generation
         """
         if output_format not in ("md", "json"):
-            raise ValueError(f"Unknown output_format '{output_format}' (expected 'md' or 'json')")
+            raise ValueError(bi(f"未知的 output_format '{output_format}'（應為 'md' 或 'json'）",
+                                f"Unknown output_format '{output_format}' (expected 'md' or 'json')"))
         reviewer_models = self.multi_reviewer.distinct_models
         ensemble_label = " | ".join(r["model_alias"] for r in self.multi_reviewer.reviewer_agents) or "none configured"
         self.console.print(Panel.fit(
-            "[bold cyan][VibeHarness-MAS] Commander Harness Active[/bold cyan]\n"
-            f"[yellow]Target Codebase:[/yellow] {escape(os.path.abspath(target_dir))}\n"
-            f"[green]Multi-Model Ensemble:[/green] {escape(ensemble_label)}\n"
-            f"[magenta]Execution Mode:[/magenta] {self.gateway.execution_mode}",
-            title="AI Test Orchestration Engine",
+            f"[bold cyan][VibeHarness-MAS] {bi('Commander Harness 已啟動', 'Commander Harness Active')}[/bold cyan]\n"
+            f"[yellow]{bi('目標程式庫', 'Target Codebase')}:[/yellow] {escape(os.path.abspath(target_dir))}\n"
+            f"[green]{bi('多模型集成', 'Multi-Model Ensemble')}:[/green] {escape(ensemble_label)}\n"
+            f"[magenta]{bi('執行模式', 'Execution Mode')}:[/magenta] {self.gateway.execution_mode}",
+            title=bi("AI 測試協調引擎", "AI Test Orchestration Engine"),
             border_style="cyan"
         ))
 
@@ -271,21 +280,22 @@ class VibeHarnessCommander:
             # -------------------------------------------------------------
             # Phase 1: AST Extraction
             # -------------------------------------------------------------
-            self.console.print("\n[bold blue]=== Phase 1: AST Ingestion & Semantic Extraction ===[/bold blue]")
+            self.console.print(f"\n[bold blue]=== {bi('第 1 階段：AST 擷取與語意抽取', 'Phase 1: AST Ingestion & Semantic Extraction')} ===[/bold blue]")
             # A single-file target runs its tests from the containing directory
             work_dir = self.work_dir_for(target_dir)
             symbols, filters = self.select_symbols(target_dir)
             if filters:
-                self.console.print(f"[+] File selection: {escape('; '.join(filters))} "
-                                   f"({self.ast_extractor.filtered_out} source file(s) left out by request)")
+                n_out = self.ast_extractor.filtered_out
+                self.console.print(f"[+] {bi('檔案篩選', 'File selection')}: {escape('; '.join(filters))} "
+                                   f"({bi(f'{n_out} 個原始碼檔案依要求排除', f'{n_out} source file(s) left out by request')})")
             routes = [s.name for s in symbols if s.symbol_type == "route"]
             # Sorted so the reported stack is deterministic regardless of set iteration order
             detected_langs = sorted(self.ast_extractor.detected_languages) or ["Python"]
             lang_str = ", ".join(detected_langs)
-            self.console.print(f"[+] Detected Target Stack: [bold green]{lang_str}[/bold green]")
-            self.console.print(f"[+] Extracted [bold]{len(symbols)}[/bold] code symbols across target files.")
+            self.console.print(f"[+] {bi('偵測到的目標技術堆疊', 'Detected Target Stack')}: [bold green]{lang_str}[/bold green]")
+            self.console.print(f"[+] {bi(f'已從目標檔案擷取 [bold]{len(symbols)}[/bold] 個程式碼符號。', f'Extracted [bold]{len(symbols)}[/bold] code symbols across target files.')}")
             if routes:
-                self.console.print(f"[+] Detected [bold]{len(routes)}[/bold] API route handlers: {escape(', '.join(routes[:5]))}")
+                self.console.print(f"[+] {bi(f'偵測到 [bold]{len(routes)}[/bold] 個 API 路由處理器', f'Detected [bold]{len(routes)}[/bold] API route handlers')}: {escape(', '.join(routes[:5]))}")
 
             # Deterministic rules run before any model sees the code: they cannot be prompt-injected
             static_findings = self.static_scanner.scan_files(self.ast_extractor.analyzed_files)
@@ -293,10 +303,10 @@ class VibeHarnessCommander:
             ai_components = self.static_scanner.ai_components
             if ai_components:
                 self.console.print(
-                    f"[+] AI/LLM components detected: [bold]{escape(', '.join(ai_components))}[/bold] "
-                    "(OWASP LLM Top 10 2026 threat modeling enabled)"
+                    f"[+] {bi('偵測到的 AI/LLM 元件', 'AI/LLM components detected')}: [bold]{escape(', '.join(ai_components))}[/bold] "
+                    f"({bi('已啟用 OWASP LLM Top 10 2026 威脅建模', 'OWASP LLM Top 10 2026 threat modeling enabled')})"
                 )
-            self.console.print(f"[+] Deterministic AI-security rules: [bold]{len(static_findings)}[/bold] hit(s)")
+            self.console.print(f"[+] {bi('確定性 AI 資安規則', 'Deterministic AI-security rules')}: [bold]{len(static_findings)}[/bold] {bi('次命中', 'hit(s)')}")
             for sf in static_findings:
                 self.console.print(
                     f"   - [{sf.severity.value}] {sf.rule_id} {escape(sf.title)} "
@@ -306,39 +316,41 @@ class VibeHarnessCommander:
             # -------------------------------------------------------------
             # Phase 2: Heterogeneous White-Box Review & Multi-Model Debate
             # -------------------------------------------------------------
-            self.console.print("\n[bold blue]=== Phase 2: Heterogeneous Multi-Model White-Box Review ===[/bold blue]")
+            self.console.print(f"\n[bold blue]=== {bi('第 2 階段：異質多模型白箱審查', 'Phase 2: Heterogeneous Multi-Model White-Box Review')} ===[/bold blue]")
             raw_findings = self.multi_reviewer.review_symbols(symbols, root_dir=work_dir)
-            self.console.print(f"[+] Received [bold]{len(raw_findings)}[/bold] raw review findings from {escape(ensemble_label)}.")
+            self.console.print(f"[+] {bi(f'已從 {escape(ensemble_label)} 收到 [bold]{len(raw_findings)}[/bold] 筆原始審查發現。', f'Received [bold]{len(raw_findings)}[/bold] raw review findings from {escape(ensemble_label)}.')}")
             if len(reviewer_models) < 2:
                 # Agreement among copies of one model is consistency, not corroboration (OWASP LLM07:2026)
-                self.console.print("[yellow][!] Fewer than two distinct reviewer models: cross-model verification cannot run.[/yellow]")
+                self.console.print(f"[yellow][!] {bi('不同的審查模型少於兩個：跨模型驗證無法執行。', 'Fewer than two distinct reviewer models: cross-model verification cannot run.')}[/yellow]")
             findings = deduplicate_findings(raw_findings)
             progress.update(phase=2, findings=findings)
             corroborated = sum(1 for f in findings if f.corroborated_by)
             if len(findings) < len(raw_findings):
-                self.console.print(f"[+] Merged duplicates into [bold]{len(findings)}[/bold] distinct findings ({corroborated} reported by more than one model).")
+                self.console.print(f"[+] {bi(f'重複項已合併為 [bold]{len(findings)}[/bold] 筆不同的發現（{corroborated} 筆由多個模型回報）。', f'Merged duplicates into [bold]{len(findings)}[/bold] distinct findings ({corroborated} reported by more than one model).')}")
 
-            self.console.print("[yellow]Cross-verifying findings: each is ruled on by the models that did not report it...[/yellow]")
+            self.console.print(f"[yellow]{bi('正在交叉驗證發現：每筆由未回報它的模型裁決……', 'Cross-verifying findings: each is ruled on by the models that did not report it...')}[/yellow]")
             debate_result: MultiModelDebateResult = self.debater.arbitrate(findings, symbols=symbols, root_dir=work_dir)
             progress.update(debate=debate_result)
             if debate_result.arbitration_applied:
                 ratio = debate_result.model_agreement_ratio
-                ratio_display = f"{ratio * 100:.1f}%" if ratio is not None else "N/A (no decisive votes)"
-                self.console.print(f"[+] Cross-Model Agreement: [bold green]{ratio_display}[/bold green] | {len(debate_result.disputed_findings)} disputed")
+                ratio_display = f"{ratio * 100:.1f}%" if ratio is not None else bi("N/A（沒有決定性投票）", "N/A (no decisive votes)")
+                n_disputed = len(debate_result.disputed_findings)
+                self.console.print(f"[+] {bi('跨模型一致度', 'Cross-Model Agreement')}: [bold green]{ratio_display}[/bold green] | {bi(f'{n_disputed} 筆有爭議', f'{n_disputed} disputed')}")
             else:
-                self.console.print("[yellow][!] Cross-model verification not applied; findings are unfiltered reviewer hypotheses.[/yellow]")
+                self.console.print(f"[yellow][!] {bi('未套用跨模型驗證；發現是未經過濾的審查者假設。', 'Cross-model verification not applied; findings are unfiltered reviewer hypotheses.')}[/yellow]")
             confirmed_majority = len(debate_result.confirmed_findings) - debate_result.undecided_count
-            tie_note = f" (+{debate_result.undecided_count} undecided tie(s) kept for testing)" if debate_result.undecided_count else ""
-            self.console.print(f"[+] Confirmed Defect Hypotheses: [bold red]{confirmed_majority}[/bold red]{tie_note}")
+            n_tie = debate_result.undecided_count
+            tie_note = f" (+{bi(f'{n_tie} 個未決的平手已保留供測試', f'{n_tie} undecided tie(s) kept for testing')})" if n_tie else ""
+            self.console.print(f"[+] {bi('已確認的缺陷假設', 'Confirmed Defect Hypotheses')}: [bold red]{confirmed_majority}[/bold red]{tie_note}")
 
             # -------------------------------------------------------------
             # Phase 3: White-Box Test Generation & Sandbox Execution
             # -------------------------------------------------------------
-            self.console.print("\n[bold blue]=== Phase 3: White-Box Test Generation & Sandbox Execution ===[/bold blue]")
+            self.console.print(f"\n[bold blue]=== {bi('第 3 階段：白箱測試產生與沙盒執行', 'Phase 3: White-Box Test Generation & Sandbox Execution')} ===[/bold blue]")
             wb_tests = self.whitebox_test_gen.generate_tests_for_findings(
                 debate_result.confirmed_findings, symbols, root_dir=work_dir
             )
-            self.console.print(f"[+] Generated [bold]{len(wb_tests)}[/bold] targeted Pytest unit/boundary tests (with self-healing validation).")
+            self.console.print(f"[+] {bi(f'已產生 [bold]{len(wb_tests)}[/bold] 個針對性的 Pytest 單元／邊界測試（含自我修復驗證）。', f'Generated [bold]{len(wb_tests)}[/bold] targeted Pytest unit/boundary tests (with self-healing validation).')}")
 
             wb_results, cov_pct = self.executor.execute_test_suite(
                 wb_tests,
@@ -350,12 +362,16 @@ class VibeHarnessCommander:
             wb_failed = sum(1 for r in wb_results if r.status == TestStatus.FAILED)
             wb_errored = sum(1 for r in wb_results if r.status in (TestStatus.ERROR, TestStatus.SKIPPED))
             cov_display = f"{cov_pct:.1f}%" if cov_pct is not None else "N/A"
-            self.console.print(f"[+] White-Box Execution Outcome: [green]{wb_passed} Passed[/green] | [red]{wb_failed} Failed/Exposed[/red] | [yellow]{wb_errored} Error/Not Run[/yellow] | Line Coverage (Python): [bold cyan]{cov_display}[/bold cyan]")
+            self.console.print(
+                f"[+] {bi('白箱執行結果', 'White-Box Execution Outcome')}: [green]{wb_passed} {bi('通過', 'Passed')}[/green] | "
+                f"[red]{wb_failed} {bi('失敗／已暴露', 'Failed/Exposed')}[/red] | [yellow]{wb_errored} {bi('錯誤／未執行', 'Error/Not Run')}[/yellow] | "
+                f"{bi('行涵蓋率（Python）', 'Line Coverage (Python)')}: [bold cyan]{cov_display}[/bold cyan]"
+            )
 
             # -------------------------------------------------------------
             # Phase 4: Mandatory Black-Box Threat Modeling (STRIDE & OWASP)
             # -------------------------------------------------------------
-            self.console.print("\n[bold blue]=== Phase 4: Mandatory Black-Box Threat Modeling ===[/bold blue]")
+            self.console.print(f"\n[bold blue]=== {bi('第 4 階段：強制黑箱威脅建模', 'Phase 4: Mandatory Black-Box Threat Modeling')} ===[/bold blue]")
             sys_desc = system_description or f"Vibe-coded application in {os.path.basename(target_dir)}"
             threat_report: ThreatModelReport = self.threat_modeler.model_system(
                 system_description=sys_desc,
@@ -365,7 +381,8 @@ class VibeHarnessCommander:
                 root_dir=work_dir,
                 ai_components=ai_components
             )
-            self.console.print(f"[+] STRIDE Matrix Constructed: [bold yellow]{len(threat_report.threats)}[/bold yellow] attack scenarios identified.")
+            n_threats = len(threat_report.threats)
+            self.console.print(f"[+] {bi('STRIDE 矩陣已建構', 'STRIDE Matrix Constructed')}: [bold yellow]{n_threats}[/bold yellow] {bi('個攻擊情境已識別。', 'attack scenarios identified.')}")
             progress.update(phase=4, threat_model=threat_report)
             for t in threat_report.threats:
                 self.console.print(f"   - [[bold magenta]{t.stride_category.value}[/bold magenta]] ({t.severity.value}) {escape(t.title)}")
@@ -373,11 +390,11 @@ class VibeHarnessCommander:
             # -------------------------------------------------------------
             # Phase 5: Threat-Derived Black-Box Dynamic Test Execution
             # -------------------------------------------------------------
-            self.console.print("\n[bold blue]=== Phase 5: Threat-Derived Black-Box Test Execution ===[/bold blue]")
+            self.console.print(f"\n[bold blue]=== {bi('第 5 階段：威脅衍生的黑箱測試執行', 'Phase 5: Threat-Derived Black-Box Test Execution')} ===[/bold blue]")
             bb_tests = self.scenario_builder.build_test_cases_from_threats(
                 threat_report.threats, base_url=base_url, symbols=symbols, root_dir=work_dir
             )
-            self.console.print(f"[+] Synthesized [bold]{len(bb_tests)}[/bold] black-box attack scripts targeting identified threats.")
+            self.console.print(f"[+] {bi(f'已合成 [bold]{len(bb_tests)}[/bold] 個針對已識別威脅的黑箱攻擊腳本。', f'Synthesized [bold]{len(bb_tests)}[/bold] black-box attack scripts targeting identified threats.')}")
 
             bb_results, _ = self.executor.execute_test_suite(
                 bb_tests,
@@ -397,110 +414,137 @@ class VibeHarnessCommander:
             tested_threat_ids = {t.source_ref for t in bb_tests}
             untested_threats = [t.threat_id for t in threat_report.threats if t.threat_id not in tested_threat_ids]
             self.console.print(
-                f"[+] Dynamic Black-Box Outcome: [green]{bb_passed} Defended[/green] | "
-                f"[red]{bb_breaches} Confirmed Breaches[/red] | "
-                f"[yellow]{len(bb_failed_unclassified)} Failed (unclassified)[/yellow] | "
-                f"[yellow]{bb_errored} Error/Not Run[/yellow] | {len(untested_threats)} Threats Not Tested"
+                f"[+] {bi('動態黑箱結果', 'Dynamic Black-Box Outcome')}: [green]{bb_passed} {bi('已防禦', 'Defended')}[/green] | "
+                f"[red]{bb_breaches} {bi('已確認突破', 'Confirmed Breaches')}[/red] | "
+                f"[yellow]{len(bb_failed_unclassified)} {bi('失敗（未分類）', 'Failed (unclassified)')}[/yellow] | "
+                f"[yellow]{bb_errored} {bi('錯誤／未執行', 'Error/Not Run')}[/yellow] | {len(untested_threats)} {bi('個威脅未測試', 'Threats Not Tested')}"
             )
 
             # -------------------------------------------------------------
             # Phase 6: Quality Gate Synthesis & Reporting
             # -------------------------------------------------------------
-            self.console.print("\n[bold blue]=== Phase 6: Commander Quality Gate Synthesis ===[/bold blue]")
+            self.console.print(f"\n[bold blue]=== {bi('第 6 階段：Commander 品質閘門綜合判定', 'Phase 6: Commander Quality Gate Synthesis')} ===[/bold blue]")
             critical_threats = sum(1 for t in threat_report.threats if t.severity == FindingSeverity.CRITICAL)
 
             # Evidence gaps that forbid a READY_TO_SHIP verdict
             inconclusive_reasons: List[str] = []
             budget_hits = self.gateway.budget_exhausted_calls
             if budget_hits:
-                inconclusive_reasons.append(
+                inconclusive_reasons.append(bi(
+                    f"max_model_calls 預算（{self.gateway.max_model_calls}）已用盡；之後的 {len(budget_hits)} 次代理呼叫改用模擬引擎而非真實模型",
                     f"The max_model_calls budget ({self.gateway.max_model_calls}) was exhausted; "
                     f"{len(budget_hits)} later agent call(s) used the simulation engine instead of a real model"
-                )
+                ))
             if self.gateway.used_simulation:
                 simulated_agents = sorted({rec.agent_id for rec in self.gateway.call_log if rec.mode == "simulated"})
-                inconclusive_reasons.append(f"Simulation engine (not real models) was used for: {', '.join(simulated_agents)}")
+                inconclusive_reasons.append(
+                    bi("以下代理使用了模擬引擎（非真實模型）", "Simulation engine (not real models) was used for")
+                    + f": {', '.join(simulated_agents)}"
+                )
             invalid_calls = self.gateway.invalid_calls
             if invalid_calls:
                 # One entry per agent and reason: a crashed batch reads differently from a malformed answer
                 invalid_details = sorted({f"{rec.agent_id} ({rec.reason})" if rec.reason else rec.agent_id for rec in invalid_calls})
-                inconclusive_reasons.append(
+                inconclusive_reasons.append(bi(
+                    f"{len(invalid_calls)} 次模型呼叫回傳了無法使用的輸出，或在回答前就崩潰（無效的 JSON／欄位缺漏，或批次中發生例外）",
                     f"{len(invalid_calls)} model call(s) returned unusable output or crashed before answering "
-                    f"(invalid JSON / missing fields, or an exception in the batch): {'; '.join(invalid_details)}"
-                )
+                    f"(invalid JSON / missing fields, or an exception in the batch)"
+                ) + f": {'; '.join(invalid_details)}")
             unmodeled_findings = self.whitebox_test_gen.findings_without_model_tests
             if unmodeled_findings:
-                inconclusive_reasons.append(
+                inconclusive_reasons.append(bi(
+                    f"{len(unmodeled_findings)} 筆已確認的發現沒有可用的模型產生測試，只由確定性探針涵蓋，而非針對該缺陷的測試",
                     f"{len(unmodeled_findings)} confirmed finding(s) had no usable model-generated test and were only "
-                    f"covered by deterministic probes, not by a test targeting the defect: {', '.join(unmodeled_findings)}"
-                )
+                    f"covered by deterministic probes, not by a test targeting the defect"
+                ) + f": {', '.join(unmodeled_findings)}")
             integrity_hits = [f for f in static_findings if f.affects_review_integrity]
             if integrity_hits:
-                inconclusive_reasons.append(
+                integrity_rules = ', '.join(sorted({f.rule_id for f in integrity_hits}))
+                inconclusive_reasons.append(bi(
+                    f"目標中發現 {len(integrity_hits)} 處針對審查者的指示或不可見字元序列（{integrity_rules}）；"
+                    "以模型為基礎的審查、驗證與威脅建模可能遭到操弄（OWASP LLM01:2026），請人工檢視那些位置",
                     f"{len(integrity_hits)} reviewer-directed instruction(s) or invisible-character sequence(s) were found in "
-                    f"the target ({', '.join(sorted({f.rule_id for f in integrity_hits}))}); model-based review, verification "
+                    f"the target ({integrity_rules}); model-based review, verification "
                     "and threat modeling may have been manipulated (OWASP LLM01:2026), so review those locations manually"
-                )
+                ))
             if not self.multi_reviewer.reviewer_agents:
-                inconclusive_reasons.append("No whitebox_reviewer_* agents are configured, so no white-box model review ran")
+                inconclusive_reasons.append(bi("沒有設定任何 whitebox_reviewer_* 代理，因此沒有執行白箱模型審查",
+                                               "No whitebox_reviewer_* agents are configured, so no white-box model review ran"))
             elif len(reviewer_models) < 2:
                 # Copies of one model agreeing is consistency, not corroboration (OWASP LLM07:2026)
-                inconclusive_reasons.append(
+                inconclusive_reasons.append(bi(
+                    f"只設定了一個不同的審查模型（{reviewer_models[0]}），因此跨模型驗證無法執行；這些發現是未經過濾的單一模型假設",
                     f"Only one distinct reviewer model ({reviewer_models[0]}) is configured, so cross-model verification "
                     "could not run; the findings are unfiltered single-model hypotheses"
-                )
+                ))
             if not symbols:
-                inconclusive_reasons.append("No analyzable source symbols were found in the target")
+                inconclusive_reasons.append(bi("目標中找不到可分析的原始碼符號", "No analyzable source symbols were found in the target"))
             if self.ast_extractor.parse_failures:
-                inconclusive_reasons.append(
-                    f"{len(self.ast_extractor.parse_failures)} source file(s) could not be parsed and were not analyzed"
-                )
+                n_fail = len(self.ast_extractor.parse_failures)
+                inconclusive_reasons.append(bi(
+                    f"{n_fail} 個原始碼檔案無法解析，未納入分析",
+                    f"{n_fail} source file(s) could not be parsed and were not analyzed"
+                ))
             if self.ast_extractor.oversized_files:
-                inconclusive_reasons.append(
-                    f"{len(self.ast_extractor.oversized_files)} source file(s) exceed max_file_bytes ({self.max_file_bytes}) and were "
-                    f"not analyzed: {', '.join(os.path.basename(p) for p in self.ast_extractor.oversized_files[:5])}"
-                )
+                n_big = len(self.ast_extractor.oversized_files)
+                inconclusive_reasons.append(bi(
+                    f"{n_big} 個原始碼檔案超過 max_file_bytes（{self.max_file_bytes}），未納入分析",
+                    f"{n_big} source file(s) exceed max_file_bytes ({self.max_file_bytes}) and were not analyzed"
+                ) + f": {', '.join(os.path.basename(p) for p in self.ast_extractor.oversized_files[:5])}")
             if self.ast_extractor.skipped_files:
-                inconclusive_reasons.append(
-                    f"{len(self.ast_extractor.skipped_files)} source file(s) were skipped by the max_files limit ({self.max_files})"
-                )
+                n_skip = len(self.ast_extractor.skipped_files)
+                inconclusive_reasons.append(bi(
+                    f"{n_skip} 個原始碼檔案因 max_files 上限（{self.max_files}）而被略過",
+                    f"{n_skip} source file(s) were skipped by the max_files limit ({self.max_files})"
+                ))
             if wb_errored or bb_errored:
-                inconclusive_reasons.append(
+                inconclusive_reasons.append(bi(
+                    f"{wb_errored + bb_errored} 個產生的測試發生錯誤、被略過或從未執行；它們涵蓋的邊界在這次執行中仍未驗證",
                     f"{wb_errored + bb_errored} generated test(s) errored, were skipped, or never ran; "
                     "the boundaries they cover remain unverified by this run"
-                )
+                ))
             js_tests = [t for t in wb_tests + bb_tests if t.language != "python"]
             if "TypeScript/JavaScript" in detected_langs:
                 if not js_tests:
-                    inconclusive_reasons.append(
+                    inconclusive_reasons.append(bi(
+                        "TypeScript/JavaScript 程式碼只做了靜態審查：沒有為它產生任何 JS/TS 測試",
                         "TypeScript/JavaScript code was reviewed statically only: no JS/TS test was generated for it"
-                    )
+                    ))
                 elif self.executor.js_runner_unavailable_reason:
-                    inconclusive_reasons.append(
-                        f"{len(js_tests)} JS/TS test(s) were generated but could not run: "
-                        f"{self.node_runtime_problem or self.executor.js_runner_unavailable_reason}; "
+                    js_problem = self.node_runtime_problem or self.executor.js_runner_unavailable_reason
+                    inconclusive_reasons.append(bi(
+                        f"已產生 {len(js_tests)} 個 JS/TS 測試但無法執行：{js_problem}；TypeScript/JavaScript 程式碼只做了靜態審查",
+                        f"{len(js_tests)} JS/TS test(s) were generated but could not run: {js_problem}; "
                         "TypeScript/JavaScript code was reviewed statically only"
-                    )
+                    ))
                 elif self.node_typescript_problem and any(t.language == "typescript" for t in js_tests):
-                    inconclusive_reasons.append(f"TypeScript tests were generated but not run: {self.node_typescript_problem}")
+                    inconclusive_reasons.append(
+                        bi("已產生 TypeScript 測試但未執行", "TypeScript tests were generated but not run")
+                        + f": {self.node_typescript_problem}"
+                    )
             other_langs = [lang for lang in detected_langs if lang not in ("Python", "TypeScript/JavaScript")]
             if other_langs:
-                inconclusive_reasons.append(
+                inconclusive_reasons.append(bi(
+                    f"{', '.join(other_langs)} 程式碼只做了靜態審查：測試沙盒只執行 Python 與 JavaScript/TypeScript，因此沒有動態驗證涵蓋它",
                     f"{', '.join(other_langs)} code was reviewed statically only: the test sandbox "
                     "executes Python and JavaScript/TypeScript, so no dynamic verification covers it"
-                )
+                ))
             if bb_failed_unclassified:
-                inconclusive_reasons.append(
+                inconclusive_reasons.append(bi(
+                    f"{len(bb_failed_unclassified)} 個黑箱攻擊測試失敗，但沒有確認的利用分類；證據不明確，需要人工調查",
                     f"{len(bb_failed_unclassified)} black-box attack test(s) failed without a confirmed exploit "
-                    f"classification; the evidence is ambiguous and needs manual investigation: "
-                    f"{', '.join(r.test_id for r in bb_failed_unclassified)}"
-                )
+                    f"classification; the evidence is ambiguous and needs manual investigation"
+                ) + f": {', '.join(r.test_id for r in bb_failed_unclassified)}")
             if not wb_results:
-                inconclusive_reasons.append("No white-box tests were executed")
+                inconclusive_reasons.append(bi("沒有執行任何白箱測試", "No white-box tests were executed"))
             if not threat_report.threats:
-                inconclusive_reasons.append("Threat modeling produced no threats, so black-box coverage is unknown")
+                inconclusive_reasons.append(bi("威脅建模沒有產生任何威脅，因此黑箱涵蓋範圍未知",
+                                               "Threat modeling produced no threats, so black-box coverage is unknown"))
             if untested_threats:
-                inconclusive_reasons.append(f"{len(untested_threats)} modeled threat(s) have no executable test: {', '.join(untested_threats)}")
+                inconclusive_reasons.append(bi(
+                    f"{len(untested_threats)} 個已建模的威脅沒有可執行的測試",
+                    f"{len(untested_threats)} modeled threat(s) have no executable test"
+                ) + f": {', '.join(untested_threats)}")
 
             # Only executed evidence or deterministic rule hits can block or fail the gate; model findings and
             # modeled threats are hypotheses until a test confirms them
@@ -525,8 +569,10 @@ class VibeHarnessCommander:
                 bb_breaches = len(comparison.new_breaches)
                 if suppressed:
                     self.console.print(
-                        f"[yellow][!] Baseline: {len(suppressed)} known problem(s) from {escape(self.baseline.path)} "
-                        f"are reported but not counted ({escape(', '.join(s.id for s in suppressed))})[/yellow]"
+                        f"[yellow][!] {bi('基準', 'Baseline')}: "
+                        + bi(f"來自 {escape(self.baseline.path)} 的 {len(suppressed)} 個已知問題已列出但不計入",
+                             f"{len(suppressed)} known problem(s) from {escape(self.baseline.path)} are reported but not counted")
+                        + f" ({escape(', '.join(s.id for s in suppressed))})[/yellow]"
                     )
             if bb_breaches > 0:
                 overall_status = "BLOCKED_CRITICAL_RISK"
@@ -537,15 +583,16 @@ class VibeHarnessCommander:
             else:
                 overall_status = "READY_TO_SHIP"
             for reason in inconclusive_reasons:
-                self.console.print(f"[yellow][!] Evidence gap: {reason}[/yellow]")
+                self.console.print(f"[yellow][!] {bi('證據缺口', 'Evidence gap')}: {reason}[/yellow]")
 
             recommendations = self._build_recommendations(
                 gate_wb_results, gate_bb_results, threat_report, untested_threats, inconclusive_reasons, static_blocking
             )
             if suppressed:
                 recommendations.append(
-                    f"{len(suppressed)} problem(s) already in the baseline were not counted; they are still present: "
-                    + ", ".join(f"`{s.id}`" for s in suppressed)
+                    bi(f"基準中已有的 {len(suppressed)} 個問題不計入；它們仍然存在",
+                       f"{len(suppressed)} problem(s) already in the baseline were not counted; they are still present")
+                    + ": " + ", ".join(f"`{s.id}`" for s in suppressed)
                 )
 
             commit, dirty = self._target_revision(target_dir)
@@ -613,19 +660,19 @@ class VibeHarnessCommander:
             with open(output_report_path, "w", encoding="utf-8") as f:
                 f.write(md_content)
 
-            self.console.print(f"[+] Final audit report written to: [bold green]{output_report_path}[/bold green]")
+            self.console.print(f"[+] {bi('最終稽核報告已寫入', 'Final audit report written to')}: [bold green]{output_report_path}[/bold green]")
 
             if output_sarif_path:
                 sarif_content = self.reporter.generate_sarif_report(symbols=symbols, **report_args)
                 with open(output_sarif_path, "w", encoding="utf-8") as f:
                     f.write(sarif_content)
-                self.console.print(f"[+] SARIF report written to: [bold green]{output_sarif_path}[/bold green] (for GitHub Code Scanning)")
+                self.console.print(f"[+] {bi('SARIF 報告已寫入', 'SARIF report written to')}: [bold green]{output_sarif_path}[/bold green] ({bi('供 GitHub Code Scanning 使用', 'for GitHub Code Scanning')})")
             verdict_color = {"READY_TO_SHIP": "green", "INCONCLUSIVE": "yellow"}.get(overall_status, "red")
             self.console.print(Panel.fit(
-                f"[bold]Quality Gate Verdict:[/bold] [{verdict_color} bold]{overall_status}[/{verdict_color} bold]\n"
-                f"White-Box Passed: {wb_passed} | Black-Box Breaches: {bb_breaches}\n"
-                f"Report: {output_report_path}",
-                title="Verification Summary",
+                f"[bold]{bi('品質閘門判定結果', 'Quality Gate Verdict')}:[/bold] [{verdict_color} bold]{overall_status}[/{verdict_color} bold]\n"
+                f"{bi('白箱通過', 'White-Box Passed')}: {wb_passed} | {bi('黑箱突破', 'Black-Box Breaches')}: {bb_breaches}\n"
+                f"{bi('報告', 'Report')}: {output_report_path}",
+                title=bi("驗證摘要", "Verification Summary"),
                 border_style=verdict_color
             ))
 
@@ -660,11 +707,13 @@ class VibeHarnessCommander:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2, ensure_ascii=False, default=str)
         except OSError as e:
-            logger.warning(f"Could not write the partial report to {path}: {e}")
+            logger.warning(bi(f"無法把部分報告寫入 {path}", f"Could not write the partial report to {path}") + f": {e}")
             return
         self.console.print(
-            f"[yellow][!] Run stopped in phase {payload['phase_reached']} ({type(exc).__name__}); "
-            f"partial results written to {escape(path)}[/yellow]"
+            "[yellow][!] "
+            + bi(f"執行在第 {payload['phase_reached']} 階段停止（{type(exc).__name__}）；部分結果已寫入 {escape(path)}",
+                 f"Run stopped in phase {payload['phase_reached']} ({type(exc).__name__}); partial results written to {escape(path)}")
+            + "[/yellow]"
         )
 
     @staticmethod
@@ -683,22 +732,25 @@ class VibeHarnessCommander:
             if r.is_security_exploit_confirmed:
                 threat = threats_by_id.get(r.source_ref or "")
                 label = f"{threat.threat_id} {threat.title}" if threat else r.test_id
-                recs.append(f"Fix confirmed security breach `{r.test_id}` ({label}): {r.failure_reason}")
+                recs.append(bi(f"修正已確認的資安突破 `{r.test_id}`（{label}）",
+                               f"Fix confirmed security breach `{r.test_id}` ({label})") + f": {r.failure_reason}")
         for f in static_blocking or []:
-            recs.append(
-                f"Fix `{f.rule_id}` {f.title} at `{os.path.basename(f.file_path)}:{f.line_number}` "
-                f"({f.owasp_mapping}): {f.remediation}"
-            )
+            location = f"`{os.path.basename(f.file_path)}:{f.line_number}`"
+            recs.append(bi(f"修正 `{f.rule_id}` {f.title}，位於 {location}（{f.owasp_mapping}）",
+                           f"Fix `{f.rule_id}` {f.title} at {location} ({f.owasp_mapping})") + f": {f.remediation}")
         for r in wb_results:
             if r.status == TestStatus.FAILED:
-                recs.append(f"Fix defect exposed by `{r.test_id}` (from `{r.source_ref or '-'}`): {r.failure_reason}")
+                recs.append(bi(f"修正 `{r.test_id}` 暴露的缺陷（來自 `{r.source_ref or '-'}`）",
+                               f"Fix defect exposed by `{r.test_id}` (from `{r.source_ref or '-'}`)") + f": {r.failure_reason}")
         for r in bb_results:
             if r.status == TestStatus.FAILED and not r.is_security_exploit_confirmed:
-                recs.append(f"Investigate black-box crash in `{r.test_id}`: {r.failure_reason}")
+                recs.append(bi(f"調查 `{r.test_id}` 中的黑箱崩潰", f"Investigate black-box crash in `{r.test_id}`") + f": {r.failure_reason}")
         if untested_threats:
-            recs.append(f"Write or synthesize tests for untested threats: {', '.join(untested_threats)}")
+            recs.append(bi("為未測試的威脅撰寫或合成測試", "Write or synthesize tests for untested threats") + f": {', '.join(untested_threats)}")
         if inconclusive_reasons:
-            recs.append("Close the evidence gaps listed above (e.g. run with `--mode live` and valid API keys) before trusting a pass verdict.")
+            recs.append(bi("在信任通過判定之前，先補上上方列出的證據缺口（例如以 `--mode live` 與有效的 API 金鑰執行）。",
+                           "Close the evidence gaps listed above (e.g. run with `--mode live` and valid API keys) before trusting a pass verdict."))
         if not recs:
-            recs.append("No defects were exposed by the executed tests; keep these tests in CI as regression guards.")
+            recs.append(bi("已執行的測試未暴露任何缺陷；請把這些測試留在 CI 中作為回歸防護。",
+                           "No defects were exposed by the executed tests; keep these tests in CI as regression guards."))
         return recs

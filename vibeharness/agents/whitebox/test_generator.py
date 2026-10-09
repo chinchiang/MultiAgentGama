@@ -8,6 +8,7 @@ from typing import List, Optional, Set, Tuple
 from vibeharness.core.models import ReviewFinding, GeneratedTest, CodeSymbol, text_or
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
 from vibeharness.core.codecheck import check_test_code_for, strip_code_fences
+from vibeharness.core.i18n import bi
 from vibeharness.core.codecontext import (
     file_source, fence_language, import_instructions, language_for_file, module_import_name, truncate_to_tokens,
 )
@@ -62,14 +63,16 @@ class WhiteboxTestGenerator:
                 except LLMGatewayError:
                     raise  # strict live mode fails loudly
                 except Exception as e:
-                    logger.error(f"Test generation for {finding.finding_id} failed: {type(e).__name__}: {e}")
+                    logger.error(bi(f"{finding.finding_id} 的測試產生失敗：{type(e).__name__}: {e}",
+                                    f"Test generation for {finding.finding_id} failed: {type(e).__name__}: {e}"))
                     outcomes.append(([], False))
 
         generated_tests: List[GeneratedTest] = []
         for finding, (tests, has_valid_test) in zip(findings, outcomes, strict=True):
             generated_tests.extend(tests)
             if not has_valid_test:
-                logger.warning(f"No executable model-generated test for finding {finding.finding_id}; will use target-derived probes.")
+                logger.warning(bi(f"發現 {finding.finding_id} 沒有可執行的模型產生測試；將改用目標推導的探測。",
+                                  f"No executable model-generated test for finding {finding.finding_id}; will use target-derived probes."))
                 self.findings_without_model_tests.append(finding.finding_id)
 
         if self.findings_without_model_tests:
@@ -160,7 +163,7 @@ class WhiteboxTestGenerator:
                 title=text_or(t_item.get("title"), finding.title),
                 code=validated_code,
                 rationale=text_or(t_item.get("rationale"), finding.suggested_test_scenario),
-                expected_outcome=text_or(t_item.get("expected_outcome"), "Graceful handling without crash"),
+                expected_outcome=text_or(t_item.get("expected_outcome"), bi("妥善處理而不當機", "Graceful handling without crash")),
                 source_ref=finding.finding_id,
                 language=language,
             ))
@@ -179,7 +182,8 @@ class WhiteboxTestGenerator:
             is_valid, problem = check_test_code_for(code_to_check, language)
             if is_valid:
                 return code_to_check
-            logger.warning(f"Generated test for {subject} is invalid (attempt {attempt+1}): {problem}")
+            logger.warning(bi(f"為 {subject} 產生的測試無效（第 {attempt+1} 次嘗試）：{problem}",
+                              f"Generated test for {subject} is invalid (attempt {attempt+1}): {problem}"))
             if attempt == max_retries:
                 break
             if language == "python":
@@ -304,10 +308,12 @@ class WhiteboxTestGenerator:
                 test_id=f"WB-PROBE-{probe_no:02d}",
                 test_type="whitebox_probe",
                 target_component=sym.name,
-                title=f"Offline None-input robustness probe: {sym.name}()",
+                title=bi(f"離線 None 輸入強健性探測：{sym.name}()", f"Offline None-input robustness probe: {sym.name}()"),
                 code=code,
-                rationale="Target-derived deterministic probe (no model-generated test available).",
-                expected_outcome="Function rejects or handles None inputs without an unhandled TypeError/KeyError/AttributeError/IndexError.",
+                rationale=bi("由目標推導的確定性探測（沒有可用的模型產生測試）。",
+                             "Target-derived deterministic probe (no model-generated test available)."),
+                expected_outcome=bi("函式拒絕或妥善處理 None 輸入，不會出現未處理的 TypeError/KeyError/AttributeError/IndexError。",
+                                    "Function rejects or handles None inputs without an unhandled TypeError/KeyError/AttributeError/IndexError."),
                 source_ref=sym.name
             ))
         return probes

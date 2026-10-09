@@ -10,6 +10,8 @@ import uuid
 import logging
 from typing import Dict, Optional, Tuple, List, Any
 
+from vibeharness.core.i18n import bi
+
 logger = logging.getLogger("VibeHarness.Sandbox")
 
 # Exit code returned when the pytest run exceeds its time budget.
@@ -58,7 +60,8 @@ def filter_custom_env(custom_env: Optional[Dict[str, str]]) -> Dict[str, str]:
         else:
             kept[key] = value
     if dropped:
-        logger.warning(f"Refused to forward credential/injection env vars into the sandbox: {', '.join(sorted(dropped))}")
+        logger.warning(bi(f"拒絕把憑證／注入類環境變數轉送進沙盒：{', '.join(sorted(dropped))}",
+                          f"Refused to forward credential/injection env vars into the sandbox: {', '.join(sorted(dropped))}"))
     return kept
 
 
@@ -384,21 +387,23 @@ class DockerSandbox(LocalSubprocessSandbox):
 
     def _verify_available(self):
         if not shutil.which(self.docker):
-            raise SandboxUnavailableError(
+            raise SandboxUnavailableError(bi(
+                "sandbox_provider 'docker' 需要 PATH 上有 docker CLI；請安裝 Docker 或改用 'local_subprocess'。",
                 "sandbox_provider 'docker' needs the docker CLI on PATH; install Docker or use 'local_subprocess'."
-            )
+            ))
         try:
             result = subprocess.run(
                 [self.docker, "image", "inspect", self.image],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._cli_env(), timeout=60
             )
         except (OSError, subprocess.TimeoutExpired) as e:
-            raise SandboxUnavailableError(f"Docker is not usable: {e}") from e
+            raise SandboxUnavailableError(bi(f"Docker 無法使用：{e}", f"Docker is not usable: {e}")) from e
         if result.returncode != 0:
-            raise SandboxUnavailableError(
+            raise SandboxUnavailableError(bi(
+                f"Docker 映像檔 '{self.image}' 無法取得（或 Docker 服務未啟動）：{result.stderr.strip()}",
                 f"Docker image '{self.image}' is not available (or the Docker daemon is not running): "
-                f"{result.stderr.strip()}\nBuild it with: docker build -t {self.image} -f docker/sandbox.Dockerfile ."
-            )
+                f"{result.stderr.strip()}"
+            ) + f"\n{bi('建置指令', 'Build it with')}: docker build -t {self.image} -f docker/sandbox.Dockerfile .")
 
     @staticmethod
     def _cli_env() -> Dict[str, str]:
@@ -505,10 +510,12 @@ class DockerSandbox(LocalSubprocessSandbox):
         try:
             result = subprocess.run([self.docker, "rm", "-f", name], capture_output=True, env=self._cli_env(), timeout=60)
             if getattr(result, "returncode", 0) != 0:
-                logger.warning(f"'{self.docker} rm -f {name}' failed (rc={result.returncode}); "
-                               "the container is bounded by its in-container timeout but may linger.")
+                logger.warning(bi(f"'{self.docker} rm -f {name}' 失敗（rc={result.returncode}）；"
+                                  "容器受其內部逾時限制，但可能殘留。",
+                                  f"'{self.docker} rm -f {name}' failed (rc={result.returncode}); "
+                                  "the container is bounded by its in-container timeout but may linger."))
         except (OSError, subprocess.TimeoutExpired) as e:
-            logger.warning(f"Could not remove container {name} after timeout: {e}")
+            logger.warning(bi(f"逾時後無法移除容器 {name}：{e}", f"Could not remove container {name} after timeout: {e}"))
 
 
 # --- Node (JavaScript / TypeScript) sandboxes --------------------------------------------------
@@ -529,17 +536,21 @@ def detect_node(node_bin: str = "node") -> Tuple[Optional[str], Optional[Tuple[i
     """(resolved path, version, problem): the problem names what is missing when the first two are None."""
     path = shutil.which(node_bin)
     if not path:
-        return None, None, f"no usable Node runtime found for node_bin {node_bin!r} (need Node >= {'.'.join(map(str, MIN_NODE_VERSION))})"
+        minimum = '.'.join(map(str, MIN_NODE_VERSION))
+        return None, None, bi(f"找不到 node_bin {node_bin!r} 可用的 Node 執行環境（需要 Node >= {minimum}）",
+                              f"no usable Node runtime found for node_bin {node_bin!r} (need Node >= {minimum})")
     try:
         result = subprocess.run([path, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace",
                                 env=build_safe_env(), timeout=10)
     except (OSError, subprocess.TimeoutExpired) as e:
-        return None, None, f"{node_bin} --version failed: {e}"
+        return None, None, bi(f"{node_bin} --version 執行失敗：{e}", f"{node_bin} --version failed: {e}")
     version = parse_node_version(result.stdout)
     if version is None:
-        return None, None, f"{node_bin} --version returned {result.stdout.strip()!r}, not a version"
+        return None, None, bi(f"{node_bin} --version 回傳 {result.stdout.strip()!r}，不是版本號",
+                              f"{node_bin} --version returned {result.stdout.strip()!r}, not a version")
     if version < MIN_NODE_VERSION:
-        return None, version, f"Node v{'.'.join(map(str, version))} is below the minimum {'.'.join(map(str, MIN_NODE_VERSION))}"
+        found, minimum = '.'.join(map(str, version)), '.'.join(map(str, MIN_NODE_VERSION))
+        return None, version, bi(f"Node v{found} 低於最低需求 {minimum}", f"Node v{found} is below the minimum {minimum}")
     return path, version, None
 
 

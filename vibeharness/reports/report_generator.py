@@ -17,6 +17,7 @@ from vibeharness.core.models import (
     FindingSeverity,
     StaticFinding
 )
+from vibeharness.core.i18n import bi
 from vibeharness.core.sanitize import clean_model_text, markdown_safe
 
 # Windows drive paths ("C:\...") count as absolute even on POSIX hosts, so a SARIF produced
@@ -32,6 +33,48 @@ SARIF_RULE_BLACKBOX = "vibeharness/blackbox-breach"
 SARIF_RULE_STATIC_PREFIX = "vibeharness/"
 # Version of the JSON report layout (summary / whitebox / threat_model / blackbox_* keys)
 JSON_SCHEMA_VERSION = "1"
+
+# 報告中的固定標題與表頭（中文 ／ English），測試可直接匯入
+# Fixed report headings and table headers (Chinese / English), importable by tests
+REPORT_TITLE = "# 🛡️ " + bi("VibeHarness-MAS 多代理品質與資安報告", "VibeHarness-MAS Multi-Agent Quality & Security Report")
+HEADING_EXECUTIVE_SUMMARY = "## 1. 📊 " + bi("執行摘要與品質閘門", "Executive Summary & Quality Gate")
+HEADING_WHITEBOX = "## 2. 🔬 " + bi("第 2–3 階段：異質白箱程式碼審查、驗證與測試",
+                                   "Phases 2–3: Heterogeneous White-Box Code Review, Verification & Tests")
+HEADING_THREAT_MODEL = "## 3. 🎯 " + bi("第 4 階段：黑箱威脅建模（STRIDE 與 OWASP）",
+                                       "Phase 4: Black-Box Threat Modeling (STRIDE & OWASP)")
+HEADING_BLACKBOX = "## 4. ⚡ " + bi("第 5 階段：威脅衍生的黑箱動態測試執行",
+                                   "Phase 5: Threat-Derived Black-Box Dynamic Test Execution")
+HEADING_NEXT_STEPS = "## 5. 💡 " + bi("給 Vibe Coder 的可行後續步驟", "Actionable Next Steps for Vibe Coder")
+HEADING_GENERATED_TESTS = "## 6. 🧪 " + bi("產生的測試程式碼（稽核軌跡）", "Generated Test Code (audit trail)")
+HEADING_VERDICT = "### " + bi("判定結果", "Verdict")
+HEADING_STATIC_RULES = "### " + bi("確定性 AI 資安規則（不涉及模型）", "Deterministic AI-Security Rules (no model involved)")
+HEADING_PROVENANCE = "### " + bi("執行來源", "Execution Provenance")
+HEADING_CONFIRMED_FINDINGS = "### " + bi("已確認的邏輯與防禦盲點", "Confirmed Logic & Defensive Blindspots")
+HEADING_DISPUTED_FINDINGS = "### " + bi("有爭議的發現（遭跨模型多數否決，未測試）",
+                                        "Disputed Findings (rejected by a cross-model majority, not tested)")
+HEADING_WHITEBOX_RESULTS = "### " + bi("白箱測試執行結果", "White-Box Test Execution Results")
+HEADING_POCS = "### 🚨 " + bi("已確認弱點的概念驗證（PoC）", "Confirmed Vulnerability Proof of Concepts (PoCs)")
+HEADING_UNTESTED_THREATS = "### ⚪ " + bi("未測試的威脅", "Threats Not Tested")
+METRIC_TABLE_HEADER = f"| {bi('指標', 'Metric')} | {bi('數值', 'Value')} | {bi('目標', 'Target')} |"
+PROVENANCE_TABLE_HEADER = (f"| {bi('代理', 'Agent')} | {bi('模型', 'Model')} | {bi('模式', 'Mode')} | "
+                           f"{bi('呼叫數', 'Calls')} | {bi('原因', 'Reason')} |")
+WHITEBOX_TABLE_HEADER = (f"| {bi('測試 ID', 'Test ID')} | {bi('類型', 'Type')} | {bi('來源', 'Derived From')} | "
+                         f"{bi('狀態', 'Status')} | {bi('耗時', 'Duration')} | {bi('結果', 'Outcome')} |")
+THREAT_TABLE_HEADER = (f"| {bi('威脅 ID', 'Threat ID')} | {bi('STRIDE 類別', 'STRIDE Category')} | "
+                       f"{bi('OWASP 對應', 'OWASP Mapping')} | MITRE ATLAS | {bi('嚴重度', 'Severity')} | "
+                       f"{bi('威脅標題與攻擊向量', 'Threat Title & Attack Vector')} |")
+BLACKBOX_TABLE_HEADER = (f"| {bi('測試 ID', 'Test ID')} | {bi('類型', 'Type')} | {bi('狀態', 'Status')} | "
+                         f"{bi('延遲', 'Latency')} | {bi('結果與利用情形', 'Outcome / Exploitation')} |")
+STATIC_TABLE_HEADER = (f"| {bi('規則', 'Rule')} | {bi('嚴重度', 'Severity')} | {bi('位置', 'Location')} | "
+                       f"{bi('發現', 'Finding')} | OWASP | MITRE ATLAS | CWE |")
+# 測試結果標籤 ／ Test outcome labels
+STATUS_PASSED = "✅ " + bi("通過", "PASSED")
+STATUS_FAILED = "❌ " + bi("失敗", "FAILED")
+STATUS_ERROR = "⚠️ " + bi("錯誤（不是發現）", "ERROR (not a finding)")
+STATUS_SKIPPED = "⏭️ " + bi("已略過", "SKIPPED")
+OUTCOME_VULNERABLE = "❌ " + bi("存在弱點", "VULNERABLE")
+OUTCOME_NOT_RUN = bi("未執行", "not run")
+LABEL_FROM = bi("來自", "from")
 
 
 class ReportGenerator:
@@ -54,151 +97,169 @@ class ReportGenerator:
         md = []
 
         # Header
-        md.append("# 🛡️ VibeHarness-MAS Multi-Agent Quality & Security Report")
-        md.append(f"**Target System Path**: `{os.path.abspath(target_path)}`  ")
-        md.append("**Orchestrator**: Commander Harness Agent  ")
-        md.append(f"**Overall Status**: `{summary.overall_status}`  ")
+        md.append(REPORT_TITLE)
+        md.append(f"**{bi('目標系統路徑', 'Target System Path')}**: `{os.path.abspath(target_path)}`  ")
+        md.append(f"**{bi('協調者', 'Orchestrator')}**: {bi('Commander Harness 代理', 'Commander Harness Agent')}  ")
+        md.append(f"**{bi('整體狀態', 'Overall Status')}**: `{summary.overall_status}`  ")
         if summary.run:
             run = summary.run
-            revision = run.target_git_commit or "not a git repository"
+            revision = run.target_git_commit or bi("不是 git 版本庫", "not a git repository")
             if run.target_git_commit and run.target_git_dirty:
-                revision += " (uncommitted changes)"
-            md.append(f"**Generated**: {run.generated_at} by VibeHarness-MAS {run.harness_version} "
+                revision += f" ({bi('有未提交的變更', 'uncommitted changes')})"
+            md.append(f"**{bi('產生時間', 'Generated')}**: {run.generated_at} "
+                      f"{bi(f'由 VibeHarness-MAS {run.harness_version} 產生', f'by VibeHarness-MAS {run.harness_version}')} "
                       f"(mode `{run.execution_mode}`, sandbox `{run.sandbox_provider}`)  ")
-            md.append(f"**Target revision**: `{self._cell(revision)}`  ")
-            md.append(f"**Config**: `{self._cell(run.config_path)}`  ")
+            md.append(f"**{bi('目標修訂', 'Target revision')}**: `{self._cell(revision)}`  ")
+            md.append(f"**{bi('設定檔', 'Config')}**: `{self._cell(run.config_path)}`  ")
             if run.file_filters:
-                md.append(f"**File selection**: {self._code_span('; '.join(run.file_filters))}  ")
+                md.append(f"**{bi('檔案篩選', 'File selection')}**: {self._code_span('; '.join(run.file_filters))}  ")
         md.append("\n---\n")
 
         simulated_calls = [c for c in summary.agent_calls if c.mode == "simulated"]
         if simulated_calls:
-            scope = "ALL" if len(simulated_calls) == len(summary.agent_calls) else "SOME"
+            all_simulated = len(simulated_calls) == len(summary.agent_calls)
+            scope = "ALL" if all_simulated else "SOME"
+            scope_zh = "全部" if all_simulated else "部分"
             md.append(
-                f"> ⚠️ **SIMULATED RESULTS — {scope} agent outputs in this report come from the offline simulation engine**, "
-                "which returns fixed template responses independent of the target code. "
-                "Findings, consensus ratio and threat model marked `[SIMULATED]` are NOT a real model audit. "
-                "Only executed test outcomes reflect the actual target behaviour.\n"
+                f"> ⚠️ **{bi(f'模擬結果 — 本報告中{scope_zh}代理輸出來自離線模擬引擎', f'SIMULATED RESULTS — {scope} agent outputs in this report come from the offline simulation engine')}**, "
+                + bi("它回傳與目標程式碼無關的固定範本回應。標示 `[SIMULATED]` 的發現、共識比例與威脅模型並非真實的模型稽核。"
+                     "只有已執行的測試結果反映目標的實際行為。",
+                     "which returns fixed template responses independent of the target code. "
+                     "Findings, consensus ratio and threat model marked `[SIMULATED]` are NOT a real model audit. "
+                     "Only executed test outcomes reflect the actual target behaviour.") + "\n"
             )
 
         # 1. Executive Summary
-        md.append("## 1. 📊 Executive Summary & Quality Gate")
+        md.append(HEADING_EXECUTIVE_SUMMARY)
         status_badge = {
-            "READY_TO_SHIP": "🟢 **PASS: READY TO SHIP**",
-            "NEEDS_FIXES": "🟠 **FAIL: NEEDS FIXES**",
-            "INCONCLUSIVE": "🟡 **INCONCLUSIVE: INSUFFICIENT EVIDENCE**",
-            "BLOCKED_CRITICAL_RISK": "🔴 **FAIL: BLOCKED BY CRITICAL RISKS**",
-        }.get(summary.overall_status, f"⚠️ **UNKNOWN STATUS: `{summary.overall_status}`**")
-        md.append(f"### Verdict: {status_badge}\n")
+            "READY_TO_SHIP": f"🟢 **{bi('通過：可以出貨', 'PASS: READY TO SHIP')}**",
+            "NEEDS_FIXES": f"🟠 **{bi('未通過：需要修正', 'FAIL: NEEDS FIXES')}**",
+            "INCONCLUSIVE": f"🟡 **{bi('無法判定：證據不足', 'INCONCLUSIVE: INSUFFICIENT EVIDENCE')}**",
+            "BLOCKED_CRITICAL_RISK": f"🔴 **{bi('未通過：遭關鍵風險阻擋', 'FAIL: BLOCKED BY CRITICAL RISKS')}**",
+        }.get(summary.overall_status, f"⚠️ **{bi('未知狀態', 'UNKNOWN STATUS')}: `{summary.overall_status}`**")
+        md.append(f"{HEADING_VERDICT}: {status_badge}\n")
         if summary.baseline_path:
-            md.append(f"**Baseline**: `{self._cell(summary.baseline_path)}` — "
-                      f"{len(summary.baseline_suppressed)} known problem(s) reported but not counted in the verdict  ")
+            n_known = len(summary.baseline_suppressed)
+            md.append(f"**{bi('基準', 'Baseline')}**: `{self._cell(summary.baseline_path)}` — "
+                      f"{bi(f'{n_known} 個已知問題已列出但不計入判定', f'{n_known} known problem(s) reported but not counted in the verdict')}  ")
             if summary.baseline_suppressed:
-                md.append("\n**Known from baseline (not counted):**")
+                md.append(f"\n**{bi('基準中的已知問題（不計入）', 'Known from baseline (not counted)')}:**")
                 for item in summary.baseline_suppressed:
                     md.append(f"- `{self._cell(item.id)}` ({item.kind}): {markdown_safe(item.title)}")
             md.append("")
         if summary.inconclusive_reasons:
-            md.append("**Evidence gaps:**")
+            md.append(f"**{bi('證據缺口', 'Evidence gaps')}:**")
             for reason in summary.inconclusive_reasons:
                 md.append(f"- {markdown_safe(reason)}")  # reasons quote model-chosen ids and failure text
             md.append("")
 
         sim_tag = " `[SIMULATED]`" if debate_result.is_simulated else ""
-        md.append("| Metric | Value | Target |")
+        md.append(METRIC_TABLE_HEADER)
         md.append("| :--- | :--- | :--- |")
-        md.append(f"| **Primary Target Language** | `{summary.detected_language}` | Supported Stack |")
+        md.append(f"| **{bi('主要目標語言', 'Primary Target Language')}** | `{summary.detected_language}` | {bi('支援的技術堆疊', 'Supported Stack')} |")
         ratio = debate_result.model_agreement_ratio
         if not debate_result.arbitration_applied:
-            ratio_str = "N/A (verification not applied)"
+            ratio_str = bi("N/A（未套用驗證）", "N/A (verification not applied)")
         else:
-            ratio_str = f"{ratio * 100:.1f}%" if ratio is not None else "N/A (no decisive votes)"
-        md.append(f"| **Cross-Model Agreement** | `{ratio_str}`{sim_tag} | ≥ 70% Agreement |")
+            ratio_str = f"{ratio * 100:.1f}%" if ratio is not None else bi("N/A（沒有決定性投票）", "N/A (no decisive votes)")
+        md.append(f"| **{bi('跨模型一致度', 'Cross-Model Agreement')}** | `{ratio_str}`{sim_tag} | {bi('一致度 ≥ 70%', '≥ 70% Agreement')} |")
         cov_str = f"{summary.line_coverage_pct:.1f}%" if summary.line_coverage_pct is not None else "N/A"
-        md.append(f"| **Code Line Coverage** | `{cov_str}` | ≥ 80% Baseline |")
+        md.append(f"| **{bi('程式碼行涵蓋率', 'Code Line Coverage')}** | `{cov_str}` | {bi('基準 ≥ 80%', '≥ 80% Baseline')} |")
         if summary.distinct_whitebox_findings is not None:
-            md.append(f"| **Reviewer Findings (raw → distinct)** | `{summary.total_whitebox_findings} → {summary.distinct_whitebox_findings}` | - |")
-        md.append(f"| **Confirmed White-Box Logic Flaws** | `{summary.confirmed_whitebox_bugs}` | 0 Critical |")
-        md.append(f"| **White-Box Tests Passed** | `{summary.whitebox_tests_passed} / {len(whitebox_results)}` ({summary.whitebox_tests_errored} errored / not run) | 100% Pass Rate |")
-        md.append(f"| **STRIDE Threat Scenarios Modeled** | `{summary.total_threats_modeled}` | Full Asset Coverage |")
-        md.append(f"| **Threats Without Executable Test** | `{len(summary.untested_threat_ids)}` | 0 Untested |")
-        md.append(f"| **Confirmed Black-Box Security Breaches** | `{summary.blackbox_security_breaches}` | 0 Breaches Tolerated |")
-        md.append(f"| **Black-Box Tests Failed (unclassified)** | `{summary.blackbox_tests_failed}` | 0 — failing attack scripts need manual review |")
+            md.append(f"| **{bi('審查者發現（原始 → 去重後）', 'Reviewer Findings (raw → distinct)')}** | `{summary.total_whitebox_findings} → {summary.distinct_whitebox_findings}` | - |")
+        md.append(f"| **{bi('已確認的白箱邏輯缺陷', 'Confirmed White-Box Logic Flaws')}** | `{summary.confirmed_whitebox_bugs}` | {bi('0 個關鍵', '0 Critical')} |")
+        n_err = summary.whitebox_tests_errored
+        md.append(f"| **{bi('白箱測試通過', 'White-Box Tests Passed')}** | `{summary.whitebox_tests_passed} / {len(whitebox_results)}` "
+                  f"({bi(f'{n_err} 個錯誤或未執行', f'{n_err} errored / not run')}) | {bi('通過率 100%', '100% Pass Rate')} |")
+        md.append(f"| **{bi('已建模的 STRIDE 威脅情境', 'STRIDE Threat Scenarios Modeled')}** | `{summary.total_threats_modeled}` | {bi('完整資產涵蓋', 'Full Asset Coverage')} |")
+        md.append(f"| **{bi('沒有可執行測試的威脅', 'Threats Without Executable Test')}** | `{len(summary.untested_threat_ids)}` | {bi('0 個未測試', '0 Untested')} |")
+        md.append(f"| **{bi('已確認的黑箱資安突破', 'Confirmed Black-Box Security Breaches')}** | `{summary.blackbox_security_breaches}` | {bi('不容許任何突破', '0 Breaches Tolerated')} |")
+        md.append(f"| **{bi('黑箱測試失敗（未分類）', 'Black-Box Tests Failed (unclassified)')}** | `{summary.blackbox_tests_failed}` | "
+                  f"{bi('0 — 失敗的攻擊腳本需人工審查', '0 — failing attack scripts need manual review')} |")
         blocking = sum(1 for f in summary.static_findings if f.severity in (FindingSeverity.CRITICAL, FindingSeverity.HIGH))
-        md.append(f"| **Deterministic AI-Security Rule Hits** | `{len(summary.static_findings)}` ({blocking} HIGH+) | 0 HIGH+ |")
+        md.append(f"| **{bi('確定性 AI 資安規則命中', 'Deterministic AI-Security Rule Hits')}** | `{len(summary.static_findings)}` ({blocking} HIGH+) | 0 HIGH+ |")
         md.append("\n")
         if summary.reviewer_models:
-            md.append(f"**Reviewer models** ({len(summary.reviewer_models)} distinct): `{', '.join(summary.reviewer_models)}`  ")
+            n_models = len(summary.reviewer_models)
+            md.append(f"**{bi('審查模型', 'Reviewer models')}** ({bi(f'{n_models} 個不同模型', f'{n_models} distinct')}): `{', '.join(summary.reviewer_models)}`  ")
         if summary.ai_components:
-            md.append(f"**AI/LLM components detected**: `{', '.join(summary.ai_components)}` — OWASP Top 10 for LLM Applications 2026 applied to threat modeling  ")
+            md.append(f"**{bi('偵測到的 AI/LLM 元件', 'AI/LLM components detected')}**: `{', '.join(summary.ai_components)}` — "
+                      f"{bi('威脅建模已套用 OWASP Top 10 for LLM Applications 2026', 'OWASP Top 10 for LLM Applications 2026 applied to threat modeling')}  ")
         md.append("")
         md.extend(self._static_section(summary.static_findings))
 
         # Provenance
-        md.append("### Execution Provenance")
+        md.append(HEADING_PROVENANCE)
         if summary.agent_calls:
-            md.append("| Agent | Model | Mode | Calls | Reason |")
+            md.append(PROVENANCE_TABLE_HEADER)
             md.append("| :--- | :--- | :--- | :--- | :--- |")
             grouped: Dict[Tuple[str, str, str, str], int] = {}
             for c in summary.agent_calls:
                 key = (c.agent_id, c.model_name, "cached" if c.cached else c.mode, c.reason or "")
                 grouped[key] = grouped.get(key, 0) + 1
             for (agent_id, model_name, mode, reason), count in grouped.items():
-                mode_label = {"live": "🟢 live", "cached": "🟢 live (response cache)", "simulated": "🟡 simulated",
-                              "retried": "🟠 unusable, re-asked"}.get(mode, "🔴 invalid output")
+                mode_label = {"live": "🟢 " + bi("真實", "live"), "cached": "🟢 " + bi("真實（回應快取）", "live (response cache)"),
+                              "simulated": "🟡 " + bi("模擬", "simulated"),
+                              "retried": "🟠 " + bi("無法使用，已重問", "unusable, re-asked")}.get(mode, "🔴 " + bi("無效輸出", "invalid output"))
                 md.append(f"| `{self._cell(agent_id)}` | `{self._cell(model_name)}` | {mode_label} | {count} | {self._cell(reason) or '-'} |")
         else:
-            md.append("No agent invocations were recorded.")
+            md.append(bi("沒有記錄到任何代理呼叫。", "No agent invocations were recorded."))
         md.append("\n")
 
         # 2. White-Box Multi-Model Review Findings
-        md.append("## 2. 🔬 Phases 2–3: Heterogeneous White-Box Code Review, Verification & Tests")
+        md.append(HEADING_WHITEBOX)
         models = " / ".join(summary.reviewer_models) or "the configured reviewer models"
+        models_zh = " / ".join(summary.reviewer_models) or "設定的審查模型"
         if debate_result.is_simulated or any(f.is_simulated for f in debate_result.confirmed_findings):
-            md.append(f"> **De-biasing Architecture (SIMULATED)**: Reviewer and verifier outputs below are simulation templates, not real {models} audits.\n")
+            md.append(f"> **{bi('去偏差架構（模擬）', 'De-biasing Architecture (SIMULATED)')}**: "
+                      + bi(f"以下的審查者與驗證者輸出是模擬範本，並非真實的 {models_zh} 稽核。",
+                           f"Reviewer and verifier outputs below are simulation templates, not real {models} audits.") + "\n")
         else:
-            md.append(f"> **De-biasing Architecture**: Findings cross-audited across {models}; no model rules on its own finding.\n")
-        md.append(f"**Debate Consensus Summary**{sim_tag}: {markdown_safe(debate_result.consensus_summary)}\n")
+            md.append(f"> **{bi('去偏差架構', 'De-biasing Architecture')}**: "
+                      + bi(f"發現已由 {models_zh} 交叉稽核；沒有模型裁決自己的發現。",
+                           f"Findings cross-audited across {models}; no model rules on its own finding.") + "\n")
+        md.append(f"**{bi('辯論共識摘要', 'Debate Consensus Summary')}**{sim_tag}: {markdown_safe(debate_result.consensus_summary)}\n")
 
         if debate_result.confirmed_findings:
-            kept = f" ({debate_result.undecided_count} undecided tie(s) kept for testing)" if debate_result.undecided_count else ""
-            md.append(f"### Confirmed Logic & Defensive Blindspots{kept}:")
+            n_tie = debate_result.undecided_count
+            kept = f" ({bi(f'{n_tie} 個未決的平手已保留供測試', f'{n_tie} undecided tie(s) kept for testing')})" if n_tie else ""
+            md.append(f"{HEADING_CONFIRMED_FINDINGS}{kept}:")
             for f in debate_result.confirmed_findings:
                 tag = " `[SIMULATED]`" if f.is_simulated else ""
-                also = f"; also reported by {', '.join(f.corroborated_by)}" if f.corroborated_by else ""
+                also = f"; {bi('亦見於', 'also reported by')} {', '.join(f.corroborated_by)}" if f.corroborated_by else ""
                 mapping = f" `{self._cell(f.owasp_mapping)}`" if f.owasp_mapping else ""
-                md.append(f"- **[{f.severity.value}] {markdown_safe(f.title)}**{mapping}{tag} (Identified by {f.reviewer_name}{also})")
-                md.append(f"  - **Root Cause**: {markdown_safe(f.root_cause)}")
-                md.append(f"  - **Vibe-Coding Flaw**: {markdown_safe(f.suspected_vibe_flaw)}")
-                md.append(f"  - **Suggested Scenario**: {self._code_span(f.suggested_test_scenario)}")
+                md.append(f"- **[{f.severity.value}] {markdown_safe(f.title)}**{mapping}{tag} ({bi('發現者', 'Identified by')} {f.reviewer_name}{also})")
+                md.append(f"  - **{bi('根本原因', 'Root Cause')}**: {markdown_safe(f.root_cause)}")
+                md.append(f"  - **{bi('Vibe-Coding 缺陷', 'Vibe-Coding Flaw')}**: {markdown_safe(f.suspected_vibe_flaw)}")
+                md.append(f"  - **{bi('建議情境', 'Suggested Scenario')}**: {self._code_span(f.suggested_test_scenario)}")
                 if f.verification_votes:
-                    md.append(f"  - **Verification**: {self._votes(f)}")
+                    md.append(f"  - **{bi('驗證', 'Verification')}**: {self._votes(f)}")
         else:
-            md.append("✅ No critical white-box defects identified.")
+            md.append("✅ " + bi("未發現關鍵的白箱缺陷。", "No critical white-box defects identified."))
 
         if debate_result.disputed_findings:
-            md.append("\n### Disputed Findings (rejected by a cross-model majority, not tested):")
+            md.append(f"\n{HEADING_DISPUTED_FINDINGS}:")
             for f in debate_result.disputed_findings:
-                md.append(f"- [{f.severity.value}] {markdown_safe(f.title)} (Identified by {f.reviewer_name}) — {self._votes(f)}")
+                md.append(f"- [{f.severity.value}] {markdown_safe(f.title)} ({bi('發現者', 'Identified by')} {f.reviewer_name}) — {self._votes(f)}")
 
-        md.append("\n### White-Box Test Execution Results")
+        md.append(f"\n{HEADING_WHITEBOX_RESULTS}")
         if whitebox_results:
-            md.append("| Test ID | Type | Derived From | Status | Duration | Outcome |")
+            md.append(WHITEBOX_TABLE_HEADER)
             md.append("| :--- | :--- | :--- | :--- | :--- | :--- |")
             for r in whitebox_results:
-                md.append(f"| `{self._cell(r.test_id)}` | {r.test_type} | `{self._cell(r.source_ref) or '-'}` | {self._status_label(r.status, 'FAILED')} | `{r.duration_seconds}s` | {self._cell(r.failure_reason) or 'Passed'} |")
+                md.append(f"| `{self._cell(r.test_id)}` | {r.test_type} | `{self._cell(r.source_ref) or '-'}` | {self._status_label(r.status)} | `{r.duration_seconds}s` | {self._cell(r.failure_reason) or bi('通過', 'Passed')} |")
         else:
-            md.append("No white-box tests executed.")
+            md.append(bi("未執行任何白箱測試。", "No white-box tests executed."))
 
         md.append("\n")
 
         # 3. Black-Box Threat Modeling Matrix
-        md.append("## 3. 🎯 Phase 4: Black-Box Threat Modeling (STRIDE & OWASP)" + (" `[SIMULATED]`" if threat_model.is_simulated else ""))
-        md.append(f"**System Description**: {markdown_safe(threat_model.system_description)}  ")
-        md.append(f"**Entrypoints Audited**: {self._code_span(self._join_list(threat_model.entrypoints))}  ")
-        md.append(f"**Trust Boundaries**: {self._code_span(self._join_list(threat_model.trust_boundaries))}\n")
+        md.append(HEADING_THREAT_MODEL + (" `[SIMULATED]`" if threat_model.is_simulated else ""))
+        md.append(f"**{bi('系統描述', 'System Description')}**: {markdown_safe(threat_model.system_description)}  ")
+        md.append(f"**{bi('稽核的進入點', 'Entrypoints Audited')}**: {self._code_span(self._join_list(threat_model.entrypoints))}  ")
+        md.append(f"**{bi('信任邊界', 'Trust Boundaries')}**: {self._code_span(self._join_list(threat_model.trust_boundaries))}\n")
 
-        md.append("| Threat ID | STRIDE Category | OWASP Mapping | MITRE ATLAS | Severity | Threat Title & Attack Vector |")
+        md.append(THREAT_TABLE_HEADER)
         md.append("| :--- | :--- | :--- | :--- | :--- | :--- |")
         for t in threat_model.threats:
             owasp = self._cell(t.owasp_mapping) or "N/A"
@@ -208,42 +269,44 @@ class ReportGenerator:
         md.append("\n")
 
         # 4. Black-Box Dynamic Security Execution Results
-        md.append("## 4. ⚡ Phase 5: Threat-Derived Black-Box Dynamic Test Execution")
+        md.append(HEADING_BLACKBOX)
         if blackbox_results:
-            md.append("| Test ID | Type | Status | Latency | Outcome / Exploitation |")
+            md.append(BLACKBOX_TABLE_HEADER)
             md.append("| :--- | :--- | :--- | :--- | :--- |")
             for r in blackbox_results:
-                status_icon = "❌ VULNERABLE" if r.is_security_exploit_confirmed else self._status_label(r.status, "FAILED")
-                md.append(f"| `{self._cell(r.test_id)}` | {r.test_type} | {status_icon} | `{r.duration_seconds}s` | {self._cell(r.failure_reason) or 'Boundary defended'} |")
+                status_icon = OUTCOME_VULNERABLE if r.is_security_exploit_confirmed else self._status_label(r.status)
+                md.append(f"| `{self._cell(r.test_id)}` | {r.test_type} | {status_icon} | `{r.duration_seconds}s` | {self._cell(r.failure_reason) or bi('邊界已防禦', 'Boundary defended')} |")
 
             # Check for reproduction PoCs
             pocs = [r for r in blackbox_results if r.reproduction_poc and r.is_security_exploit_confirmed]
             if pocs:
-                md.append("\n### 🚨 Confirmed Vulnerability Proof of Concepts (PoCs):")
+                md.append(f"\n{HEADING_POCS}:")
                 for p in pocs:
-                    md.append(f"#### PoC for `{p.test_id}`")
+                    md.append(f"#### {bi('PoC 對象', 'PoC for')} `{p.test_id}`")
                     poc_text = p.reproduction_poc or ""
                     fence = self._fence(poc_text)
                     md.append(f"{fence}{self._fence_lang(p.language)}\n{poc_text}\n{fence}")
         else:
-            md.append("No black-box tests executed.")
+            md.append(bi("未執行任何黑箱測試。", "No black-box tests executed."))
 
         if summary.untested_threat_ids:
-            md.append("\n### ⚪ Threats Not Tested")
-            md.append("No executable test was synthesized for these threats; they are neither confirmed nor ruled out:")
+            md.append(f"\n{HEADING_UNTESTED_THREATS}")
+            md.append(bi("這些威脅沒有合成出可執行的測試；既未確認也未排除：",
+                         "No executable test was synthesized for these threats; they are neither confirmed nor ruled out:"))
             for threat_id in summary.untested_threat_ids:
                 md.append(f"- {self._code_span(threat_id)}")  # a model-chosen id cannot break out of the span
 
         md.append("\n")
 
         # 5. Key Recommendations for Vibe Coder
-        md.append("## 5. 💡 Actionable Next Steps for Vibe Coder")
+        md.append(HEADING_NEXT_STEPS)
         for rec in summary.key_recommendations:
             md.append(f"- {markdown_safe(rec)}")
 
         md.extend(self._generated_tests_section(whitebox_tests, whitebox_results, blackbox_tests, blackbox_results))
 
-        md.append("\n---\n*Generated automatically by VibeHarness-MAS Harness Commander.*")
+        md.append("\n---\n*" + bi("由 VibeHarness-MAS Harness Commander 自動產生。",
+                                   "Generated automatically by VibeHarness-MAS Harness Commander.") + "*")
 
         return "\n".join(md)
 
@@ -320,8 +383,9 @@ class ReportGenerator:
             mappings = " · ".join(t for t in (sf.owasp_mapping, sf.atlas_mapping, sf.cwe) if t)
             idx = add_rule(
                 rule_id, sf.title, sf.remediation, self._sarif_level(sf.severity),
-                help_md=f"**{sf.title}**\n\n{sf.remediation}" + (f"\n\nMappings: {mappings}" if mappings else "")
-                        + "\n\nDeterministic rule (no model involved): the hit is in the code itself, not a model's opinion.",
+                help_md=f"**{sf.title}**\n\n{sf.remediation}" + (f"\n\n{bi('對應', 'Mappings')}: {mappings}" if mappings else "")
+                        + "\n\n" + bi("確定性規則（不涉及模型）：命中來自程式碼本身，不是模型的意見。",
+                                        "Deterministic rule (no model involved): the hit is in the code itself, not a model's opinion."),
             )
             tags = [t for t in (sf.owasp_mapping, sf.atlas_mapping, sf.cwe) if t]
             rules[idx].setdefault("properties", {"tags": ["security", *tags]})
@@ -340,13 +404,17 @@ class ReportGenerator:
             results.append(static_result)
 
         add_rule(
-            SARIF_RULE_WHITEBOX, "Confirmed white-box defect hypothesis",
-            "A defect reported by a reviewer model and confirmed (or left undecided) by cross-model verification.",
+            SARIF_RULE_WHITEBOX, bi("已確認的白箱缺陷假設", "Confirmed white-box defect hypothesis"),
+            bi("由審查模型回報、並經跨模型驗證確認（或未決）的缺陷。",
+               "A defect reported by a reviewer model and confirmed (or left undecided) by cross-model verification."),
             "warning",
-            help_md="A reviewer model reported this defect and the other models confirmed it (or the vote tied). "
-                    "It is a hypothesis until a test exposes it: check the generated test and its outcome in the "
-                    "Markdown / JSON report (`properties.findingId` names the finding), then fix the root cause the "
-                    "message describes.",
+            help_md=bi("審查模型回報了這個缺陷，其他模型確認了它（或投票平手）。在測試揭露之前它只是假設："
+                       "請在 Markdown / JSON 報告中查看產生的測試及其結果（`properties.findingId` 指出該發現），"
+                       "再修正訊息所描述的根本原因。",
+                       "A reviewer model reported this defect and the other models confirmed it (or the vote tied). "
+                       "It is a hypothesis until a test exposes it: check the generated test and its outcome in the "
+                       "Markdown / JSON report (`properties.findingId` names the finding), then fix the root cause the "
+                       "message describes."),
         )
         # 1. Confirmed white-box findings (file locations resolved from line_number or the symbol table)
         for f in debate_result.confirmed_findings:
@@ -355,9 +423,9 @@ class ReportGenerator:
             if f.description:
                 desc += f"\n\n{f.description}"
             if f.root_cause:
-                desc += f"\n\nRoot cause: {f.root_cause}"
+                desc += f"\n\n{bi('根本原因', 'Root cause')}: {f.root_cause}"
             if f.suggested_test_scenario:
-                desc += f"\n\nSuggested test: {f.suggested_test_scenario}"
+                desc += f"\n\n{bi('建議測試', 'Suggested test')}: {f.suggested_test_scenario}"
             desc = clean_model_text(desc)
             uri = self._sarif_uri(f.file_path, root)
             result: Dict[str, object] = {
@@ -389,17 +457,22 @@ class ReportGenerator:
                 continue
             if SARIF_RULE_BLACKBOX not in rule_index:
                 add_rule(
-                    SARIF_RULE_BLACKBOX, "Confirmed black-box security breach",
-                    "A threat-model-derived attack test whose defensive assertion failed against the target.",
+                    SARIF_RULE_BLACKBOX, bi("已確認的黑箱資安突破", "Confirmed black-box security breach"),
+                    bi("由威脅模型衍生、其防禦斷言對目標失敗的攻擊測試。",
+                       "A threat-model-derived attack test whose defensive assertion failed against the target."),
                     "error",
-                    help_md="An attack script derived from the threat model ran against the target and its defensive "
-                            "assertion failed, i.e. the attack succeeded. Reproduce it with the PoC in the report "
-                            "(`properties.testId`), then add the missing authorization, validation or limit the threat "
-                            "(`properties.threatId`) describes and keep the test as a regression guard.",
+                    help_md=bi("由威脅模型衍生的攻擊腳本對目標執行後，其防禦斷言失敗，也就是攻擊成功。"
+                               "請用報告中的 PoC（`properties.testId`）重現，再補上威脅（`properties.threatId`）所描述的"
+                               "缺少的授權、驗證或限制，並把這個測試留作回歸防護。",
+                               "An attack script derived from the threat model ran against the target and its defensive "
+                               "assertion failed, i.e. the attack succeeded. Reproduce it with the PoC in the report "
+                               "(`properties.testId`), then add the missing authorization, validation or limit the threat "
+                               "(`properties.threatId`) describes and keep the test as a regression guard."),
                 )
             threat = threats_by_id.get(r.source_ref or "")
-            derived = f" (derived from {r.source_ref}{': ' + threat.title if threat else ''})" if r.source_ref else ""
-            text = f"Confirmed security breach {r.test_id}{derived}: {r.failure_reason or 'the attack test succeeded'}"
+            derived = f" ({bi('衍生自', 'derived from')} {r.source_ref}{': ' + threat.title if threat else ''})" if r.source_ref else ""
+            text = (f"{bi('已確認的資安突破', 'Confirmed security breach')} {r.test_id}{derived}: "
+                    f"{r.failure_reason or bi('攻擊測試成功', 'the attack test succeeded')}")
             breach: Dict[str, object] = {
                 "ruleId": SARIF_RULE_BLACKBOX,
                 "ruleIndex": rule_index[SARIF_RULE_BLACKBOX],
@@ -549,19 +622,19 @@ class ReportGenerator:
         return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
 
     @staticmethod
-    def _status_label(status: TestStatus, failed_label: str) -> str:
+    def _status_label(status: TestStatus, failed_label: str = STATUS_FAILED) -> str:
         return {
-            TestStatus.PASSED: "✅ PASSED",
-            TestStatus.FAILED: f"❌ {failed_label}",
-            TestStatus.ERROR: "⚠️ ERROR (not a finding)",
-            TestStatus.SKIPPED: "⏭️ SKIPPED",
+            TestStatus.PASSED: STATUS_PASSED,
+            TestStatus.FAILED: failed_label,
+            TestStatus.ERROR: STATUS_ERROR,
+            TestStatus.SKIPPED: STATUS_SKIPPED,
         }[status]
 
     @staticmethod
     def _votes(finding: ReviewFinding) -> str:
         """e.g. `deepseek: reject (checked before use); glm: corroborated`"""
         if not finding.verification_votes:
-            return "no usable verifier votes"
+            return bi("沒有可用的驗證者投票", "no usable verifier votes")
         return "; ".join(
             f"{v.model_alias}: {v.verdict}" + (f" ({markdown_safe(v.reason)})" if v.reason else "")
             for v in finding.verification_votes
@@ -614,12 +687,13 @@ class ReportGenerator:
         from vibeharness.runners.test_executor import TestSuiteExecutor
         if not whitebox_tests and not blackbox_tests:
             return []
-        md = ["\n## 6. 🧪 Generated Test Code (audit trail)",
-              "Model-written tests are hypotheses too: check that each assertion encodes the *correct* behaviour, "
-              "not the defect. Outcomes refer to the tables above.\n"]
+        md = ["\n" + HEADING_GENERATED_TESTS,
+              bi("模型寫的測試同樣是假設：請確認每個斷言編碼的是*正確*行為，而不是缺陷本身。結果對應上方的表格。",
+                 "Model-written tests are hypotheses too: check that each assertion encodes the *correct* behaviour, "
+                 "not the defect. Outcomes refer to the tables above.") + "\n"]
         for label, tests, results in (
-            ("White-box tests", whitebox_tests or [], whitebox_results),
-            ("Black-box attack tests", blackbox_tests or [], blackbox_results),
+            (bi("白箱測試", "White-box tests"), whitebox_tests or [], whitebox_results),
+            (bi("黑箱攻擊測試", "Black-box attack tests"), blackbox_tests or [], blackbox_results),
         ):
             if not tests:
                 continue
@@ -628,35 +702,38 @@ class ReportGenerator:
             for test_id, t in zip(TestSuiteExecutor._unique_test_ids(tests), tests, strict=True):
                 result = by_id.get(test_id)
                 if result is None:
-                    outcome = "not run"
+                    outcome = OUTCOME_NOT_RUN
                 elif result.is_security_exploit_confirmed:
-                    outcome = "❌ VULNERABLE"
+                    outcome = OUTCOME_VULNERABLE
                 else:
-                    outcome = self._status_label(result.status, "FAILED")
+                    outcome = self._status_label(result.status)
                 # <summary> is an HTML block (Markdown is not rendered there): escape ids as HTML
-                source = f" — from <code>{html.escape(clean_model_text(t.source_ref))}</code>" if t.source_ref else ""
+                source = f" — {LABEL_FROM} <code>{html.escape(clean_model_text(t.source_ref))}</code>" if t.source_ref else ""
                 code = clean_model_text(t.code)
                 fence = self._fence(code)
                 md.append("<details>")
                 md.append(f"<summary><code>{html.escape(clean_model_text(test_id))}</code> — {outcome}{source}</summary>\n")
-                md.append(f"- **Title**: {markdown_safe(t.title)}")
-                md.append(f"- **Rationale**: {markdown_safe(t.rationale)}")
-                md.append(f"- **Expected outcome**: {markdown_safe(t.expected_outcome)}\n")
+                md.append(f"- **{bi('標題', 'Title')}**: {markdown_safe(t.title)}")
+                md.append(f"- **{bi('理由', 'Rationale')}**: {markdown_safe(t.rationale)}")
+                md.append(f"- **{bi('預期結果', 'Expected outcome')}**: {markdown_safe(t.expected_outcome)}\n")
                 md.append(f"{fence}{self._fence_lang(t.language)}\n{code}\n{fence}\n")
                 md.append("</details>\n")
         return md
 
     def _static_section(self, findings: List[StaticFinding]) -> List[str]:
         """Deterministic AI-security rule hits (OWASP LLM Top 10 2026 / MITRE ATLAS mapped)."""
-        md = ["### Deterministic AI-Security Rules (no model involved)"]
+        md = [HEADING_STATIC_RULES]
         if not findings:
-            md.append("No rule hits. Rules cover unsafe model loading and unpinned model downloads (LLM04), model output "
-                      "reaching exec/shell/SQL sinks (LLM10), uncapped model calls (LLM06), hard-coded credentials "
-                      "(LLM02) and reviewer-directed prompt injection or invisible characters (LLM01).\n")
+            md.append(bi("沒有規則命中。規則涵蓋不安全的模型載入與未釘選版本的模型下載（LLM04）、模型輸出流入 exec/shell/SQL "
+                         "匯點（LLM10）、沒有上限的模型呼叫（LLM06）、寫死的憑證（LLM02），以及針對審查者的提示注入或不可見字元（LLM01）。",
+                         "No rule hits. Rules cover unsafe model loading and unpinned model downloads (LLM04), model output "
+                         "reaching exec/shell/SQL sinks (LLM10), uncapped model calls (LLM06), hard-coded credentials "
+                         "(LLM02) and reviewer-directed prompt injection or invisible characters (LLM01).") + "\n")
             return md
-        md.append("HIGH+ hits fail the gate (`NEEDS_FIXES`); prompt-injection and invisible-character hits also mark "
-                  "the model-driven phases as possibly manipulated.\n")
-        md.append("| Rule | Severity | Location | Finding | OWASP | MITRE ATLAS | CWE |")
+        md.append(bi("HIGH 以上的命中會讓閘門失敗（`NEEDS_FIXES`）；提示注入與不可見字元的命中也會把模型驅動的階段標示為可能遭操弄。",
+                     "HIGH+ hits fail the gate (`NEEDS_FIXES`); prompt-injection and invisible-character hits also mark "
+                     "the model-driven phases as possibly manipulated.") + "\n")
+        md.append(STATIC_TABLE_HEADER)
         md.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
         for f in findings:
             evidence = f"<br>*{self._cell(f.evidence)}*" if f.evidence else ""

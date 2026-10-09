@@ -8,8 +8,28 @@ from typing import Callable, List, Tuple, Optional, Dict, Set
 from vibeharness.core.models import GeneratedTest, TestExecutionResult, TestStatus
 from vibeharness.core.sandbox import LocalSubprocessSandbox, TIMEOUT_EXIT_CODE
 from vibeharness.core.codecheck import check_test_code_for
+from vibeharness.core.i18n import bi
 
 logger = logging.getLogger("VibeHarness.TestExecutor")
+
+# 使用者可見的原因字串（中文 ／ English）；測試以 == / startswith 比對的匯出為常數
+# User-visible reason strings (Chinese / English); the ones tests compare with == / startswith are exported
+REASON_NOT_RUN_CORRECTLY = bi("測試無法正常執行", "Test could not run correctly")
+REASON_TARGET_BROKEN = bi("目標程式碼已損壞，此測試從未實際執行到它", "Target code is broken and was never exercised by this test")
+REASON_NO_TEST_COLLECTED = bi("產生的程式碼中沒有收集到任何測試", "No test was collected from the generated code")
+REASON_REPORT_UNPARSEABLE = bi("沙盒測試報告無法解析；沒有逐一測試的判定結果",
+                               "Sandbox test report could not be parsed; no per-test verdict available")
+REASON_RERUN_BUDGET_EXHAUSTED = bi("批次逾時後重跑預算已用盡；此模組未重新執行",
+                                   "Rerun budget exhausted after the batch timeout; module was not re-run")
+REASON_UNKNOWN_FAILURE = bi("不明的執行失敗", "Unknown execution failure")
+REASON_SKIPPED = bi("已略過", "Skipped")
+REASON_JS_RUNNER_NOT_CONFIGURED = bi("未設定 JavaScript/TypeScript 執行器", "no JavaScript/TypeScript runner is configured")
+REASON_NO_NODE_RUNTIME = bi("找不到可用的 Node 執行環境", "no usable Node runtime was found")
+REASON_JS_NOT_RUN = bi("JavaScript/TypeScript 測試未執行", "JavaScript/TypeScript test was not run")
+REASON_TS_NOT_RUN = bi("TypeScript 測試未執行：Node 執行環境低於 22.6（不支援型別剝除）",
+                       "TypeScript test was not run: the Node runtime is older than 22.6 (no type stripping)")
+POC_HEADER_PY = "# === " + bi("重現 PoC", "Reproduction PoC") + " ==="
+POC_HEADER_JS = "// === " + bi("重現 PoC", "Reproduction PoC") + " ==="
 
 # Exceptions that indicate a broken generated test / harness setup rather than a defect in the target
 HARNESS_ERROR_EXCEPTIONS = (
@@ -67,14 +87,14 @@ class TestSuiteExecutor:
         if not self._js_sandbox_resolved:
             self._js_sandbox_resolved = True
             if self._js_sandbox_factory is None:
-                self.js_runner_unavailable_reason = "no JavaScript/TypeScript runner is configured"
+                self.js_runner_unavailable_reason = REASON_JS_RUNNER_NOT_CONFIGURED
             else:
                 try:
                     self._js_sandbox = self._js_sandbox_factory()
                 except Exception as e:  # a missing docker image, a broken node binary: disclosed, not fatal
                     self.js_runner_unavailable_reason = f"{type(e).__name__}: {e}"
                 if self._js_sandbox is None and not self.js_runner_unavailable_reason:
-                    self.js_runner_unavailable_reason = "no usable Node runtime was found"
+                    self.js_runner_unavailable_reason = REASON_NO_NODE_RUNTIME
         return self._js_sandbox
 
     def execute_test_suite(
@@ -100,12 +120,12 @@ class TestSuiteExecutor:
                 if sandbox is None:
                     results[i] = self._result(
                         t, unique_ids[i], TestStatus.ERROR,
-                        failure_reason=f"JavaScript/TypeScript test was not run: {self.js_runner_unavailable_reason}"
+                        failure_reason=f"{REASON_JS_NOT_RUN}: {self.js_runner_unavailable_reason}"
                     )
                 elif t.language == "typescript" and not getattr(sandbox, "supports_typescript", True):
                     results[i] = self._result(
                         t, unique_ids[i], TestStatus.ERROR,
-                        failure_reason="TypeScript test was not run: the Node runtime is older than 22.6 (no type stripping)"
+                        failure_reason=REASON_TS_NOT_RUN
                     )
                 else:
                     runnable.append(i)
@@ -168,7 +188,7 @@ class TestSuiteExecutor:
             if not is_valid:
                 results[idx] = self._result(
                     t, unique_ids[idx], TestStatus.ERROR,
-                    failure_reason=f"Generated test is not executable ({problem}); not run"
+                    failure_reason=bi(f"產生的測試無法執行（{problem}）；未執行", f"Generated test is not executable ({problem}); not run")
                 )
                 continue
             module = f"test_vh_{idx:03d}"
@@ -182,7 +202,8 @@ class TestSuiteExecutor:
         coverage_pct: Optional[float] = None
         if not files:
             return None
-        logger.info(f"Executing {len(files)} {language} test module(s) in sandbox (coverage={collect_coverage})...")
+        logger.info(bi(f"在沙盒中執行 {len(files)} 個 {language} 測試模組（coverage={collect_coverage}）...",
+                       f"Executing {len(files)} {language} test module(s) in sandbox (coverage={collect_coverage})..."))
         # Per module: (exit code, stdout, stderr, junit xml); a Python batch shares one run, a JS module
         # gets its own process (Node's junit reporter does not name the file a top-level test came from)
         runs: Dict[str, Tuple[int, str, str, Optional[str]]] = {}
@@ -222,7 +243,8 @@ class TestSuiteExecutor:
             cases = self._parse_junit(junit_xml, language)
             if exit_code == TIMEOUT_EXIT_CODE and len(files) > 1:
                 # One hanging test must not void the whole batch: rerun each module on its own budget
-                logger.warning("Batch run timed out; re-running each test module individually to isolate the hang.")
+                logger.warning(bi("批次執行逾時；逐一重新執行每個測試模組以找出卡住的測試。",
+                                  "Batch run timed out; re-running each test module individually to isolate the hang."))
                 coverage_pct = None
                 cases, timed_out, not_rerun, parse_failed = self._run_individually(files, working_dir, sandbox, language)
                 junit_xml = ""  # per-module outcomes are now in `cases` / `timed_out`
@@ -238,42 +260,45 @@ class TestSuiteExecutor:
             if module in not_rerun:
                 results[idx] = self._result(
                     t, unique_ids[idx], TestStatus.ERROR,
-                    failure_reason="Rerun budget exhausted after the batch timeout; module was not re-run"
+                    failure_reason=REASON_RERUN_BUDGET_EXHAUSTED
                 )
             elif module in parse_failed:
                 results[idx] = self._result(
                     t, unique_ids[idx], TestStatus.ERROR,
-                    failure_reason="Sandbox test report could not be parsed; no per-test verdict available",
+                    failure_reason=REASON_REPORT_UNPARSEABLE,
                     stderr=stderr
                 )
             elif module in timed_out and (is_js or not module_cases):
                 results[idx] = self._result(
                     t, unique_ids[idx], TestStatus.ERROR,
-                    failure_reason=f"Test timed out after {self.per_test_timeout_seconds}s; not run to completion"
+                    failure_reason=bi(f"測試在 {self.per_test_timeout_seconds} 秒後逾時；未執行完畢",
+                                      f"Test timed out after {self.per_test_timeout_seconds}s; not run to completion")
                 )
             elif junit_xml is None:
                 if exit_code == TIMEOUT_EXIT_CODE:
                     results[idx] = self._result(
                         t, unique_ids[idx], TestStatus.ERROR,
-                        failure_reason=(f"Test batch timed out after {batch_timeout or '?'}s "
-                                        "and no per-test report was produced")
+                        failure_reason=bi(f"測試批次在 {batch_timeout or '?'} 秒後逾時，且沒有產生逐一測試的報告",
+                                          f"Test batch timed out after {batch_timeout or '?'}s "
+                                          "and no per-test report was produced")
                     )
                 else:
                     results[idx] = self._result(
                         t, unique_ids[idx], TestStatus.ERROR,
-                        failure_reason=f"Sandbox run produced no report: {stderr.strip()[:200] or f'exit code {exit_code}'}",
+                        failure_reason=f"{bi('沙盒執行沒有產生報告', 'Sandbox run produced no report')}: "
+                                       f"{stderr.strip()[:200] or f'exit code {exit_code}'}",
                         stdout=stdout, stderr=stderr
                     )
             elif cases is None:
                 results[idx] = self._result(
                     t, unique_ids[idx], TestStatus.ERROR,
-                    failure_reason="Sandbox test report could not be parsed; no per-test verdict available",
+                    failure_reason=REASON_REPORT_UNPARSEABLE,
                     stdout=stdout, stderr=stderr
                 )
             elif not module_cases:
                 results[idx] = self._result(
                     t, unique_ids[idx], TestStatus.ERROR,
-                    failure_reason="No test was collected from the generated code",
+                    failure_reason=REASON_NO_TEST_COLLECTED,
                     stdout=stdout, stderr=stderr
                 )
             else:
@@ -383,7 +408,7 @@ class TestSuiteExecutor:
         try:
             root = ET.fromstring(junit_xml)
         except ET.ParseError as e:
-            logger.error(f"Unable to parse JUnit XML: {e}")
+            logger.error(bi(f"無法解析 JUnit XML：{e}", f"Unable to parse JUnit XML: {e}"))
             return None
 
         parents = {child: parent for parent in root.iter() for child in parent}
@@ -447,7 +472,7 @@ class TestSuiteExecutor:
             case = defect_failures[0]
             is_assertion = self._js_is_assertion(case) if is_js else self._is_assertion(case["message"])
             reason = (self._js_exception_summary(case) if is_js else "") or self._first_line(case["message"]) \
-                or f"Assertion failed during {test.title}"
+                or bi(f"於 {test.title} 期間斷言失敗", f"Assertion failed during {test.title}")
             return self._result(
                 test, test_id, TestStatus.FAILED,
                 failure_reason=reason,
@@ -462,13 +487,13 @@ class TestSuiteExecutor:
                 if self._js_raised_in_target_code(case) and any(m in summary for m in _JS_HARNESS_MARKERS):
                     return self._result(
                         test, test_id, TestStatus.ERROR,
-                        failure_reason=(f"Target code is broken and was never exercised by this test: "
+                        failure_reason=(f"{REASON_TARGET_BROKEN}: "
                                         f"{summary} (raised outside the generated test module)"),
                         traceback=case["details"], duration=duration, stdout=stdout, stderr=stderr
                     )
                 return self._result(
                     test, test_id, TestStatus.ERROR,
-                    failure_reason=f"Test could not run correctly: {summary or 'Unknown execution failure'}",
+                    failure_reason=f"{REASON_NOT_RUN_CORRECTLY}: {summary or REASON_UNKNOWN_FAILURE}",
                     traceback=case["details"], duration=duration, stdout=stdout, stderr=stderr
                 )
             if case["outcome"] == "error" and self._raised_in_target_code(case):
@@ -479,21 +504,21 @@ class TestSuiteExecutor:
                     # report must not blame the test for the target being broken.
                     return self._result(
                         test, test_id, TestStatus.ERROR,
-                        failure_reason=(f"Target code is broken and was never exercised by this test: "
+                        failure_reason=(f"{REASON_TARGET_BROKEN}: "
                                         f"{summary} (raised outside the generated test module)"),
                         traceback=case["details"], duration=duration, stdout=stdout, stderr=stderr
                     )
             reason = (self._exception_summary(case) or self._first_line(case["message"])
-                      or self._first_line(case["details"]) or "Unknown execution failure")
+                      or self._first_line(case["details"]) or REASON_UNKNOWN_FAILURE)
             return self._result(
                 test, test_id, TestStatus.ERROR,
-                failure_reason=f"Test could not run correctly: {reason}",
+                failure_reason=f"{REASON_NOT_RUN_CORRECTLY}: {reason}",
                 traceback=case["details"], duration=duration, stdout=stdout, stderr=stderr
             )
         if all(c["outcome"] == "skipped" for c in cases):
             return self._result(
                 test, test_id, TestStatus.SKIPPED,
-                failure_reason=self._first_line(cases[0]["message"]) or "Skipped",
+                failure_reason=self._first_line(cases[0]["message"]) or REASON_SKIPPED,
                 duration=duration, stdout=stdout, stderr=stderr
             )
         passed = self._result(test, test_id, TestStatus.PASSED, duration=duration, stdout=stdout, stderr=stderr)
@@ -501,7 +526,8 @@ class TestSuiteExecutor:
         if skipped_count:
             # A partially skipped module is weaker evidence than a clean pass; say so explicitly
             # instead of counting unverified boundaries as defended.
-            passed.failure_reason = (
+            passed.failure_reason = bi(
+                f"此模組內 {len(cases)} 個案例中有 {skipped_count} 個被略過；只有實際執行的案例能驗證邊界",
                 f"{skipped_count} of {len(cases)} case(s) were skipped inside this module; "
                 "only the executed cases verify the boundary"
             )
@@ -628,11 +654,13 @@ class TestSuiteExecutor:
 
     def _generate_poc(self, test: GeneratedTest, fn_name: str) -> str:
         """Constructs a reproduction script for a confirmed failure."""
-        c = "//" if test.language != "python" else "#"
+        is_js = test.language != "python"
+        c = "//" if is_js else "#"
+        header = POC_HEADER_JS if is_js else POC_HEADER_PY
         return (
-            f"{c} === Reproduction PoC ===\n"
-            f"{c} Target: {self._header_field(test.target_component)}\n"
-            f"{c} Failure Context: {self._header_field(test.title)}\n"
-            f"{c} Test Function: {fn_name}\n"
-            f"{c} Test Code:\n{test.code}\n"
+            f"{header}\n"
+            f"{c} {bi('目標', 'Target')}: {self._header_field(test.target_component)}\n"
+            f"{c} {bi('失敗情境', 'Failure Context')}: {self._header_field(test.title)}\n"
+            f"{c} {bi('測試函式', 'Test Function')}: {fn_name}\n"
+            f"{c} {bi('測試程式碼', 'Test Code')}:\n{test.code}\n"
         )

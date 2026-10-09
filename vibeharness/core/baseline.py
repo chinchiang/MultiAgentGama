@@ -16,6 +16,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 
 from pydantic import BaseModel, Field
 
+from vibeharness.core.i18n import bi
 from vibeharness.core.models import (
     BaselineSuppressedItem, ReviewFinding, StaticFinding, TestExecutionResult, ThreatItem,
 )
@@ -171,13 +172,15 @@ def load_baseline(path: str) -> Baseline:
         with open(path, "r", encoding="utf-8") as f:
             payload = json.load(f)
     except OSError as e:
-        raise ValueError(f"baseline {path!r} cannot be read: {e}") from e
+        raise ValueError(bi(f"基準 {path!r} 無法讀取", f"baseline {path!r} cannot be read") + f": {e}") from e
     except ValueError as e:
-        raise ValueError(f"baseline {path!r} is not valid JSON: {e}") from e
+        raise ValueError(bi(f"基準 {path!r} 不是有效的 JSON", f"baseline {path!r} is not valid JSON") + f": {e}") from e
     if not isinstance(payload, dict) or payload.get("tool") != TOOL_NAME:
-        raise ValueError(f"baseline {path!r} is not a VibeHarness JSON report (expected --format json output)")
+        raise ValueError(bi(f"基準 {path!r} 不是 VibeHarness 的 JSON 報告（需要 --format json 的輸出）",
+                            f"baseline {path!r} is not a VibeHarness JSON report (expected --format json output)"))
     if payload.get("partial"):
-        raise ValueError(f"baseline {path!r} is a partial report from a crashed run; use a complete JSON report")
+        raise ValueError(bi(f"基準 {path!r} 是崩潰執行留下的部分報告；請使用完整的 JSON 報告",
+                            f"baseline {path!r} is a partial report from a crashed run; use a complete JSON report"))
     baseline = _keys_from_report(payload)
     baseline.path = os.path.abspath(path)
     return baseline

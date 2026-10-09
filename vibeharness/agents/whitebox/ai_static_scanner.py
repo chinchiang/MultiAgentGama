@@ -16,6 +16,7 @@ import re
 from typing import Dict, Iterable, List, Optional, Set
 
 from vibeharness.core.models import FindingSeverity, StaticFinding
+from vibeharness.core.i18n import bi
 from vibeharness.core.sanitize import clean_model_text, find_injection_markers, find_invisible, find_secrets
 
 logger = logging.getLogger("VibeHarness.AIStaticScanner")
@@ -37,62 +38,78 @@ _AI_JS_PACKAGE_RE = re.compile(
 # Rule catalogue: id -> metadata shared by every hit of the rule
 RULES: Dict[str, Dict[str, str]] = {
     "VH-AI-001": {
-        "title": "Remote model code execution enabled (trust_remote_code=True)",
+        "title": bi("啟用了遠端模型程式碼執行（trust_remote_code=True）", "Remote model code execution enabled (trust_remote_code=True)"),
         "severity": "HIGH", "owasp": "LLM04:2026 Supply Chain", "atlas": "AML.T0010.003, AML.T0011.000",
         "cwe": "CWE-494",
-        "remediation": "Do not execute repository-supplied model code; if unavoidable, pin `revision=` to a reviewed "
-                       "commit hash and load inside an isolated sandbox (ATLAS AML.M0014 Verify AI Artifacts).",
+        "remediation": bi("避免執行儲存庫提供的模型程式碼；若無法避免，請將 `revision=` 固定在經審閱的 commit 雜湊，"
+                          "並在隔離的沙盒中載入（ATLAS AML.M0014 Verify AI Artifacts）。",
+                          "Do not execute repository-supplied model code; if unavoidable, pin `revision=` to a reviewed "
+                          "commit hash and load inside an isolated sandbox (ATLAS AML.M0014 Verify AI Artifacts)."),
     },
     "VH-AI-002": {
-        "title": "torch.load without weights_only=True (pickle code execution)",
+        "title": bi("torch.load 未加 weights_only=True（pickle 程式碼執行）", "torch.load without weights_only=True (pickle code execution)"),
         "severity": "HIGH", "owasp": "LLM04:2026 Supply Chain", "atlas": "AML.T0011.000", "cwe": "CWE-502",
-        "remediation": "Pass weights_only=True on torch>=2.6 (earlier releases had the CVE-2025-32434 bypass) or "
-                       "prefer safetensors; verify artifact hashes/signatures before loading (AML.M0014).",
+        "remediation": bi("在 torch>=2.6 傳入 weights_only=True（較早版本有 CVE-2025-32434 繞過）或改用 safetensors；"
+                          "載入前先驗證成品的雜湊／簽章（AML.M0014）。",
+                          "Pass weights_only=True on torch>=2.6 (earlier releases had the CVE-2025-32434 bypass) or "
+                          "prefer safetensors; verify artifact hashes/signatures before loading (AML.M0014)."),
     },
     "VH-AI-003": {
-        "title": "Pickle-based deserialization of a data or model artifact",
+        "title": bi("以 pickle 反序列化資料或模型成品", "Pickle-based deserialization of a data or model artifact"),
         "severity": "MEDIUM", "owasp": "LLM04:2026 Supply Chain", "atlas": "AML.T0011.000", "cwe": "CWE-502",
-        "remediation": "Never unpickle untrusted artifacts; use safetensors/JSON, or verify a pinned hash or "
-                       "signature first. Pickle scanners are defense in depth only (they have been bypassed).",
+        "remediation": bi("絕不反序列化不可信的 pickle 成品；改用 safetensors/JSON，或先驗證固定的雜湊或簽章。"
+                          "pickle 掃描器只是縱深防禦（已有被繞過的案例）。",
+                          "Never unpickle untrusted artifacts; use safetensors/JSON, or verify a pinned hash or "
+                          "signature first. Pickle scanners are defense in depth only (they have been bypassed)."),
     },
     "VH-AI-004": {
-        "title": "Model downloaded from a hub without a pinned revision",
+        "title": bi("從模型中心下載模型時未固定修訂版本", "Model downloaded from a hub without a pinned revision"),
         "severity": "MEDIUM", "owasp": "LLM04:2026 Supply Chain", "atlas": "AML.T0010.003, AML.T0109",
         "cwe": "CWE-494",
-        "remediation": "Pin `revision=` to an immutable commit hash so a re-pushed or rug-pulled model cannot be "
-                       "substituted, and record it in an AI-BOM (ATLAS AML.M0023).",
+        "remediation": bi("將 `revision=` 固定在不可變的 commit 雜湊，讓重新推送或被下架的模型無法被偷換，"
+                          "並記錄在 AI-BOM 中（ATLAS AML.M0023）。",
+                          "Pin `revision=` to an immutable commit hash so a re-pushed or rug-pulled model cannot be "
+                          "substituted, and record it in an AI-BOM (ATLAS AML.M0023)."),
     },
     "VH-AI-005": {
-        "title": "LLM call without an output-token cap",
+        "title": bi("LLM 呼叫沒有輸出 token 上限", "LLM call without an output-token cap"),
         "severity": "MEDIUM", "owasp": "LLM06:2026 Unbounded Consumption", "atlas": "AML.T0034", "cwe": "CWE-770",
-        "remediation": "Set max_tokens / max_output_tokens and a timeout on every model call, and enforce per-user "
-                       "rate and spend limits that stop execution rather than alert (AML.M0036, AML.M0004).",
+        "remediation": bi("為每次模型呼叫設定 max_tokens / max_output_tokens 與逾時，並強制執行每位使用者的速率與花費上限，"
+                          "超限時中止執行而不只是告警（AML.M0036、AML.M0004）。",
+                          "Set max_tokens / max_output_tokens and a timeout on every model call, and enforce per-user "
+                          "rate and spend limits that stop execution rather than alert (AML.M0036, AML.M0004)."),
     },
     "VH-AI-006": {
-        "title": "Model output flows into a code, shell or SQL execution sink",
+        "title": bi("模型輸出流入程式碼、shell 或 SQL 執行點", "Model output flows into a code, shell or SQL execution sink"),
         "severity": "HIGH", "owasp": "LLM10:2026 Improper Output Handling", "atlas": "AML.T0050, AML.T0102",
         "cwe": "CWE-94",
-        "remediation": "Treat model output as untrusted input: parse it against a strict schema in application "
-                       "code, use parameterized queries and argument lists, and never eval/exec or shell it.",
+        "remediation": bi("把模型輸出當成不可信的輸入：在應用程式碼中以嚴格的結構描述解析，使用參數化查詢與引數清單，"
+                          "絕不 eval/exec 或交給 shell 執行。",
+                          "Treat model output as untrusted input: parse it against a strict schema in application "
+                          "code, use parameterized queries and argument lists, and never eval/exec or shell it."),
     },
     "VH-AI-007": {
-        "title": "Hard-coded credential in source",
+        "title": bi("原始碼中寫死的憑證", "Hard-coded credential in source"),
         "severity": "HIGH", "owasp": "LLM02:2026 Sensitive Information Disclosure", "atlas": "AML.T0055",
         "cwe": "CWE-798",
-        "remediation": "Move the secret to a secret manager or environment variable and rotate it; never place "
-                       "credentials in prompts (LLM08:2026 Hidden Context Exposure).",
+        "remediation": bi("把密鑰移到密鑰管理服務或環境變數並輪替；絕不把憑證放進提示詞（LLM08:2026 Hidden Context Exposure）。",
+                          "Move the secret to a secret manager or environment variable and rotate it; never place "
+                          "credentials in prompts (LLM08:2026 Hidden Context Exposure)."),
     },
     "VH-AI-008": {
-        "title": "Invisible or bidirectional-control characters in source",
+        "title": bi("原始碼中含有不可見或雙向控制字元", "Invisible or bidirectional-control characters in source"),
         "severity": "HIGH", "owasp": "LLM01:2026 Prompt Injection", "atlas": "AML.T0068", "cwe": "",
-        "remediation": "Remove the characters. They can smuggle hidden directives into AI tooling or make code read "
-                       "differently than it executes (Trojan Source); strip them at every ingest boundary.",
+        "remediation": bi("移除這些字元。它們可能把隱藏內容夾帶進 AI 工具，或讓程式碼的閱讀結果與實際執行不同（Trojan Source）；"
+                          "在每個資料輸入邊界都要剝除。",
+                          "Remove the characters. They can smuggle hidden directives into AI tooling or make code read "
+                          "differently than it executes (Trojan Source); strip them at every ingest boundary."),
     },
     "VH-AI-009": {
-        "title": "Instruction addressed to AI reviewers embedded in the code",
+        "title": bi("程式碼中嵌入了針對 AI 審查工具的文字", "Instruction addressed to AI reviewers embedded in the code"),
         "severity": "MEDIUM", "owasp": "LLM01:2026 Prompt Injection", "atlas": "AML.T0051.001", "cwe": "",
-        "remediation": "Remove text that tells AI tools to ignore instructions or report nothing, and review the "
-                       "change that introduced it; model-based review results for this target may be manipulated.",
+        "remediation": bi("移除試圖操控 AI 工具審查結果的文字，並稽核引入它的那次變更；此目標的模型審查結果可能已遭操弄。",
+                          "Remove text that tells AI tools to ignore instructions or report nothing, and review the "
+                          "change that introduced it; model-based review results for this target may be manipulated."),
     },
 }
 

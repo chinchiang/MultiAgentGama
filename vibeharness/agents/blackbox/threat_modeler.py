@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from typing import List, Dict, Any, Optional
 from vibeharness.core.models import ThreatItem, ThreatModelReport, STRIDECategory, FindingSeverity, CodeSymbol
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
+from vibeharness.core.i18n import bi
 from vibeharness.core.codecontext import render_symbols, batch_symbols
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
 
@@ -58,13 +59,15 @@ class AutomatedThreatModeler:
         # The rules only enrich the prompt, so a missing or broken file degrades with a warning
         # instead of failing the run (but never silently: it once went missing from the wheel)
         if not os.path.exists(path):
-            logger.warning(f"Threat rules not found at {path}; threat modeling runs without the STRIDE/OWASP checklist.")
+            logger.warning(bi(f"在 {path} 找不到威脅規則；威脅建模將在沒有 STRIDE/OWASP 檢查清單的情況下執行。",
+                              f"Threat rules not found at {path}; threat modeling runs without the STRIDE/OWASP checklist."))
             return {}
         try:
             with open(path, "r", encoding="utf-8") as f:
                 rules = yaml.safe_load(f) or {}
         except (OSError, yaml.YAMLError) as e:
-            logger.warning(f"Could not load threat rules from {path}: {e}; continuing without them.")
+            logger.warning(bi(f"無法從 {path} 載入威脅規則：{e}；在沒有規則的情況下繼續執行。",
+                              f"Could not load threat rules from {path}: {e}; continuing without them."))
             return {}
         return rules if isinstance(rules, dict) else {}
 
@@ -203,7 +206,7 @@ class AutomatedThreatModeler:
         # An empty symbol list keeps one (code-less) batch so a report-level response is still produced
         batches = batch_symbols(ordered, root_dir or os.getcwd(), BATCH_MAX_TOKENS, BATCH_MAX_SYMBOLS) or [[]]
 
-        logger.info("Initiating STRIDE & OWASP threat modeling...")
+        logger.info(bi("開始 STRIDE 與 OWASP 威脅建模...", "Initiating STRIDE & OWASP threat modeling..."))
         with ThreadPoolExecutor(max_workers=min(self.gateway.max_concurrent_calls, len(batches))) as pool:
             futures = [
                 pool.submit(
@@ -225,7 +228,8 @@ class AutomatedThreatModeler:
                 except LLMGatewayError:
                     raise
                 except Exception as e:
-                    logger.error(f"Threat modeler batch failed: {type(e).__name__}: {e}")
+                    logger.error(bi(f"威脅建模批次失敗：{type(e).__name__}: {e}",
+                                    f"Threat modeler batch failed: {type(e).__name__}: {e}"))
                     responses.append({})
 
         report_fields: Optional[Dict[str, Any]] = None
@@ -271,33 +275,38 @@ class AutomatedThreatModeler:
             elif _SEVERITY_RANK[t.severity] < _SEVERITY_RANK[kept.severity]:
                 merged[key] = kept.model_copy(update={"severity": t.severity})
         if len(merged) < len(threats):
-            logger.info(f"Merged {len(threats)} threats from all batches into {len(merged)} distinct threats.")
+            logger.info(bi(f"已將所有批次的 {len(threats)} 個威脅合併為 {len(merged)} 個不重複的威脅。",
+                           f"Merged {len(threats)} threats from all batches into {len(merged)} distinct threats."))
         return list(merged.values())
 
     def _parse_threats(self, resp: Dict[str, Any], used_ids: set) -> List[ThreatItem]:
         """Validated ThreatItems from one model response; ids that collide with earlier batches are renumbered."""
         raw_threats = resp.get("threats")
         if not isinstance(raw_threats, list):
-            logger.warning(f"Ignoring unusable threat list from model (got {type(raw_threats).__name__})")
+            logger.warning(bi(f"略過模型無法使用的威脅清單（收到 {type(raw_threats).__name__}）",
+                              f"Ignoring unusable threat list from model (got {type(raw_threats).__name__})"))
             raw_threats = []
 
         threat_items: List[ThreatItem] = []
         next_fallback = 1
         for position, item in enumerate(raw_threats, start=1):
             if not isinstance(item, dict):
-                logger.warning(f"Skipping malformed threat entry #{position} (not a JSON object)")
+                logger.warning(bi(f"略過格式錯誤的威脅項目 #{position}（不是 JSON 物件）",
+                                  f"Skipping malformed threat entry #{position} (not a JSON object)"))
                 continue
 
             try:
                 category = STRIDECategory(str(item.get("stride_category") or "Tampering"))
             except ValueError:
-                logger.warning(f"Unknown STRIDE category '{item.get('stride_category')}' on '{item.get('threat_id')}'; using Tampering")
+                logger.warning(bi(f"'{item.get('threat_id')}' 的 STRIDE 類別 '{item.get('stride_category')}' 未知；改用 Tampering",
+                                  f"Unknown STRIDE category '{item.get('stride_category')}' on '{item.get('threat_id')}'; using Tampering"))
                 category = STRIDECategory.TAMPERING
 
             try:
                 severity = FindingSeverity(str(item.get("severity") or "HIGH").upper())
             except ValueError:
-                logger.warning(f"Unknown severity '{item.get('severity')}' on '{item.get('threat_id')}'; using HIGH")
+                logger.warning(bi(f"'{item.get('threat_id')}' 的嚴重度 '{item.get('severity')}' 未知；改用 HIGH",
+                                  f"Unknown severity '{item.get('severity')}' on '{item.get('threat_id')}'; using HIGH"))
                 severity = FindingSeverity.HIGH
 
             threat_id = item.get("threat_id")
@@ -318,7 +327,7 @@ class AutomatedThreatModeler:
                     stride_category=category,
                     owasp_mapping=owasp_mapping if isinstance(owasp_mapping, str) and owasp_mapping.strip() else None,
                     atlas_mapping=atlas_mapping if isinstance(atlas_mapping, str) and atlas_mapping.strip() else None,
-                    title=_text(item.get("title"), "Unclassified Threat"),
+                    title=_text(item.get("title"), bi("未分類的威脅", "Unclassified Threat")),
                     description=_text(item.get("description"), ""),
                     asset_at_risk=_text(item.get("asset_at_risk"), "Application Data"),
                     attack_vector=_text(item.get("attack_vector"), "REST API"),
@@ -328,6 +337,6 @@ class AutomatedThreatModeler:
                     test_verification_goal=_text(item.get("test_verification_goal"), ""),
                 ))
             except ValidationError as e:
-                logger.warning(f"Skipping unusable threat entry #{position}: {e}")
+                logger.warning(bi(f"略過無法使用的威脅項目 #{position}：{e}", f"Skipping unusable threat entry #{position}: {e}"))
 
         return threat_items

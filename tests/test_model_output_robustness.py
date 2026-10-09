@@ -2,7 +2,8 @@
 import json
 import os
 
-from vibeharness.core.llm_gateway import LLMGateway, PROVENANCE_KEY
+from vibeharness.core.llm_gateway import LLMGateway, PROVENANCE_KEY, REASON_NOT_VALID_JSON
+from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.models import (
     AgentCallRecord,
     CodeSymbol,
@@ -135,7 +136,7 @@ def test_wrong_typed_threat_fields_are_coerced_not_fatal():
     t = AutomatedThreatModeler(gw).model_system("desc", ["/api/users"]).threats[0]
     assert t.severity == FindingSeverity.HIGH
     assert t.owasp_mapping is None
-    assert t.title == "Unclassified Threat"
+    assert t.title == bi("未分類的威脅", "Unclassified Threat")
     assert t.attack_vector == "REST API"
     assert t.stride_category == STRIDECategory.TAMPERING
 
@@ -422,11 +423,12 @@ def test_clean_and_parse_json_robustness():
 def test_validate_output_any_of_keys():
     assert LLMGateway._validate_output({"tests": []}, True, None, ["tests", "code"]) is None
     assert LLMGateway._validate_output({"code": "def test_x(): pass"}, True, None, ["tests", "code"]) is None
-    assert LLMGateway._validate_output(None, True, None, ["tests", "code"]) == "response is not valid JSON"
+    assert LLMGateway._validate_output(None, True, None, ["tests", "code"]) == REASON_NOT_VALID_JSON
+    assert en_only(REASON_NOT_VALID_JSON) == "response is not valid JSON"
     problem = LLMGateway._validate_output({"oops": 1}, True, None, ["tests", "code"])
     assert problem is not None and "none of the expected" in problem
     # all-of semantics are unchanged
-    assert LLMGateway._validate_output({"a": 1}, True, ["a", "b"], None) == "response is missing required key(s): b"
+    assert en_only(LLMGateway._validate_output({"a": 1}, True, ["a", "b"], None)) == "response is missing required key(s): b"
     assert LLMGateway._validate_output({"a": 1, "b": 2}, True, ["a", "b"], None) is None
 
 
@@ -469,4 +471,4 @@ def test_reports_carry_run_metadata_and_a_schema_version(tmp_path):
     commander.run_full_pipeline(target_dir=str(target), output_report_path=str(tmp_path / "r.md"))
     md = (tmp_path / "r.md").read_text(encoding="utf-8")
     assert f"by VibeHarness-MAS {__version__} (mode `mock`, sandbox `local_subprocess`)" in md
-    assert "**Target revision**:" in md and "**Config**:" in md
+    assert "／ Target revision**:" in md and "／ Config**:" in md  # bilingual label, value after it

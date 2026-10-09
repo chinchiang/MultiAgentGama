@@ -12,6 +12,7 @@ from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanne
 from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
 from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
 from vibeharness.core.codecheck import check_test_code
+from vibeharness.core.i18n import en_only, has_cjk
 from vibeharness.core.codecontext import render_symbols
 from vibeharness.core.llm_gateway import ConfigError, LLMGateway, LLMGatewayError
 from vibeharness.core.models import FindingSeverity, ReviewFinding
@@ -516,7 +517,8 @@ def test_empty_answer_reports_the_finish_reason(fake_live, monkeypatch):
     gw = LLMGateway(CONFIG, execution_mode="live")
     resp = gw.generate("blackbox_test_synthesizer", "s", "u", required_keys=["code"])
     assert not gw.is_usable(resp)
-    assert gw.call_log[-1].reason == "model returned an empty response (finish_reason: content_filter)"
+    reason = gw.call_log[-1].reason
+    assert has_cjk(reason) and en_only(reason) == "model returned an empty response (finish_reason: content_filter)"
 
 
 def test_bedrock_model_authenticates_with_an_aws_profile(tmp_path, monkeypatch):
@@ -574,21 +576,24 @@ def _report_inputs():
 
 
 def test_markdown_appendix_shows_each_tests_code_with_its_outcome():
-    from vibeharness.reports.report_generator import ReportGenerator
+    from vibeharness.reports.report_generator import (
+        HEADING_GENERATED_TESTS, LABEL_FROM, OUTCOME_VULNERABLE, STATUS_FAILED, STATUS_PASSED, ReportGenerator,
+    )
     args, _ = _report_inputs()
     md = ReportGenerator().generate_markdown_report(**args)
-    appendix = md[md.index("## 6. 🧪 Generated Test Code"):]
-    assert "<code>WB-TEST-01</code> — ✅ PASSED — from <code>WB-CLA-01</code>" in appendix
+    appendix = md[md.index(HEADING_GENERATED_TESTS):]
+    assert f"<code>WB-TEST-01</code> — {STATUS_PASSED} — {LABEL_FROM} <code>WB-CLA-01</code>" in appendix
+    assert "PASSED — " in appendix and "from <code>WB-CLA-01</code>" in appendix  # the English halves survive
     # duplicate model ids are disambiguated exactly like the executor does, so outcomes line up
-    assert "<code>WB-TEST-01-2</code> — ❌ FAILED" in appendix
-    assert "<code>BB-TEST-THREAT-01</code> — ❌ VULNERABLE" in appendix
+    assert f"<code>WB-TEST-01-2</code> — {STATUS_FAILED}" in appendix
+    assert f"<code>BB-TEST-THREAT-01</code> — {OUTCOME_VULNERABLE}" in appendix
     assert "def test_a():" in appendix and "def test_c():" in appendix
 
 
 def test_appendix_code_cannot_break_out_of_its_fence_or_inject_html():
-    from vibeharness.reports.report_generator import ReportGenerator
+    from vibeharness.reports.report_generator import HEADING_GENERATED_TESTS, ReportGenerator
     args, _ = _report_inputs()
-    appendix = ReportGenerator().generate_markdown_report(**args).split("## 6. 🧪 Generated Test Code")[1]
+    appendix = ReportGenerator().generate_markdown_report(**args).split(HEADING_GENERATED_TESTS)[1]
     assert "`````python\n" in appendix          # fence longer than the code's 4-backtick run
     assert "\x1b" not in appendix               # terminal escapes removed for display
     assert "<b>WB-GLM-01</b>" not in appendix and "&lt;b&gt;WB-GLM-01&lt;/b&gt;" in appendix
@@ -612,7 +617,8 @@ def test_reports_without_tests_have_no_appendix():
 
 def test_pipeline_report_includes_the_executed_tests(tmp_path):
     summary, md, _ = _run(tmp_path, "def f(x):\n    return x['k']\n")
-    assert "## 6. 🧪 Generated Test Code" in md and "WB-PROBE-01" in md.split("## 6.")[1]
+    from vibeharness.reports.report_generator import HEADING_GENERATED_TESTS
+    assert HEADING_GENERATED_TESTS in md and "WB-PROBE-01" in md.split("## 6.")[1]
 
 
 # --- Chinese reviewer-directed instructions ---------------------------------------------------

@@ -3,6 +3,7 @@ import re
 from typing import Dict, List, Set
 
 from vibeharness.core.models import ReviewFinding, FindingSeverity
+from vibeharness.core.i18n import bi
 
 logger = logging.getLogger("VibeHarness.Deduplicator")
 
@@ -102,5 +103,6 @@ def deduplicate_findings(findings: List[ReviewFinding]) -> List[ReviewFinding]:
         }))
 
     if len(merged) < len(findings):
-        logger.info(f"Merged {len(findings)} reviewer findings into {len(merged)} distinct findings.")
+        logger.info(bi(f"已將 {len(findings)} 個審查者發現合併為 {len(merged)} 個不重複的發現。",
+                       f"Merged {len(findings)} reviewer findings into {len(merged)} distinct findings."))
     return merged

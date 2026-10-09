@@ -14,6 +14,7 @@ from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
 from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
 from vibeharness.runners.test_executor import TestSuiteExecutor
 from vibeharness.core.harness import VibeHarnessCommander
+from vibeharness.reports.report_generator import METRIC_TABLE_HEADER
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
@@ -433,7 +434,7 @@ def test_mock_pipeline_is_never_ready_to_ship_and_report_discloses_simulation(tm
     report = report_path.read_text(encoding="utf-8")
     assert "SIMULATED RESULTS" in report
     assert "Threats Not Tested" in report
-    assert "| Metric | Value | Target |" in report
+    assert METRIC_TABLE_HEADER in report
 
 
 def test_clean_target_in_mock_mode_is_inconclusive(tmp_path):
