@@ -28,6 +28,11 @@ global:
   docker_memory: "1g"
   docker_cpus: "2"
   docker_pids_limit: 256
+  # JS/TS targets: generated node:test modules run with Node's built-in runner (>= 20; TypeScript needs >= 22.6 for
+  # type stripping). A missing runtime is an evidence gap for those tests, never a start-up failure.
+  node_bin: "node"
+  sandbox_node_provider: null     # null = follow sandbox_provider; "local_subprocess" or "docker"
+  docker_node_image: "vibeharness-sandbox-node:latest"  # docker build -t vibeharness-sandbox-node:latest -f docker/sandbox-node.Dockerfile .
   sandbox_timeout_seconds: 120    # budget for one batched pytest run
   sandbox_memory_mb: 2048         # local_subprocess only: address-space cap (RLIMIT_AS, POSIX) for the pytest process
                                   # tree, plus a CPU-time cap of the batch budget + 10 s; 0 disables. Not a security boundary

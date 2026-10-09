@@ -119,6 +119,7 @@ Every agent's model and prompt live in [`vibeharness/config/agents_config.yaml`]
 6. **Two sandboxes**: generated tests run in a temp directory with an environment-variable allowlist (API keys are never passed in, and injection keys such as `LD_PRELOAD` and `BASH_ENV` are dropped). Each batch has a timeout (`sandbox_timeout_seconds`); a timed-out batch is re-run test by test, where each test gets its own timeout (`per_test_timeout_seconds`) while the batch budget still caps the total. On timeout the whole process tree is killed (Docker removes the container instead).
    - `local_subprocess` (default): a local subprocess; on POSIX its address space is capped by `sandbox_memory_mb` (default 2 GB) plus a CPU-time cap, stopping runaway consumption (still not a security boundary).
    - `docker`: each test batch runs in a disposable container — no network by default, read-only root filesystem and target mount, all capabilities dropped, no privilege escalation, non-root user (when the harness itself runs as root the container runs as `nobody`), and memory/CPU/process limits. Only the run's temp directory and `/tmp` (a noexec tmpfs) are writable.
+7. **JS/TS dynamic test execution**: for `.js` / `.jsx` / `.mjs` / `.cjs` / `.ts` / `.tsx` / `.mts` / `.cts` targets, white-box tests and in-process black-box attack tests are generated as `node:test` + `node:assert` ES modules (`node_bin` is detected the first time one is needed; Node >= 20, and >= 22.6 for `.ts` through type stripping). Each test module runs in its own `node --test` process and is judged from the JUnit report: only an `AssertionError` / `ERR_ASSERTION` failure is a confirmed breach, a `TypeError` thrown inside the target is a defect but not an exploit, and a test-side `ReferenceError` or an unresolvable import is a harness error. Tests import the target through its `file://` URL (the prompt states the ESM / CommonJS import form and the detected exports); bare specifiers resolve from the target's `node_modules` (linked into the run directory); the static gate refuses package installs (`npm` / `pnpm` / `yarn` / `bun` / `npx`) as it does for Python. The Node sandbox sets no `RLIMIT_AS` (V8 reserves a large address space at start-up) and caps the heap with `--max-old-space-size` instead, keeping the CPU cap; `NODE_OPTIONS` / `NODE_PATH` are never forwarded from the host. Black-box HTTP attacks against a running server are still written in Python (urllib). Without a usable Node runtime the JS/TS tests are reported as ERROR and as an evidence gap ("no usable Node runtime"), never as a start-up failure; the mock mode's simulation engine generates no JS test, so the gap reads "no JS/TS test was generated". Under Docker, Node tests use a separate image, `docker_node_image` (`docker/sandbox-node.Dockerfile`).
 
 > ⚠️ **`local_subprocess` is not a security boundary.** It executes model-generated code with your user's permissions, with file and network access. For untrusted targets or live mode, use `sandbox_provider: docker`.
 
@@ -144,7 +145,7 @@ VibeHarness-MAS is itself an LLM application: the target's code is untrusted inp
 | Dynamic DAST / fuzzing agent | Not implemented; black-box tests are generated per threat as pytest attack scripts |
 | Hypothesis property-based testing | Not built in; models may generate it, but the target environment needs `hypothesis` installed |
 | `e2b` sandbox | Not implemented; `sandbox_provider` supports `local_subprocess` and `docker`, anything else fails fast |
-| JS/TS test execution | Symbol extraction is a dependency-free lexer with real brace matching (for review and threat modeling); generated and executed tests support Python only, and JS/TS targets always carry a "reviewed statically only" evidence gap |
+| JS/TS coverage and third-party packages | JS/TS tests are generated and run with Node (see "JS/TS dynamic test execution" below), but JS coverage is not collected; TypeScript is type-stripped only (enums, namespaces, parameter properties, decorators and tsconfig path aliases are unsupported); inside the Docker sandbox bare ESM specifiers do not resolve (only CommonJS honours `NODE_PATH`) |
 
 ---
 
@@ -162,7 +163,8 @@ MultiAgentGama/
 │       ├── publish.yml          # Release: on tag push, verify the version matches, build sdist / wheel, upload to the GitHub Release (PyPI needs ENABLE_PYPI_PUBLISH)
 │       └── live-smoke.yml       # Manual: one live / hybrid run of examples with the repo's provider secrets, reports uploaded
 ├── docker/
-│   └── sandbox.Dockerfile       # Base image for the docker sandbox (pytest / pytest-cov / requests)
+│   ├── sandbox.Dockerfile       # Base image for the docker sandbox (pytest / pytest-cov / requests)
+│   └── sandbox-node.Dockerfile  # Base image for the docker Node sandbox (node:22-slim, runs JS/TS tests)
 ├── vibeharness/                 # the only top-level package (the sole directory a pip install adds to site-packages)
 │   ├── __init__.py              # package version (__version__, pyproject's single source)
 │   ├── cli.py                   # CLI entry point (the vibeharness command)
@@ -177,7 +179,7 @@ MultiAgentGama/
 │   │   ├── codecheck.py             # Static checks on generated tests (needs test_ functions and assertions; refuses package installs)
 │   │   ├── codecontext.py           # Source code and import guidance handed to the models (through the untrusted-code channel)
 │   │   ├── sanitize.py              # Trust-boundary hygiene: invisible chars, secret redaction, untrusted-code channel, output sanitizing
-│   │   └── sandbox.py               # Sandboxes: local subprocess (not a security boundary) and Docker containers
+│   │   └── sandbox.py               # Sandboxes: local subprocess (not a security boundary) and Docker containers; a Node flavour of each (node --test)
 │   ├── agents/
 │   │   ├── __init__.py
 │   │   ├── whitebox/
@@ -213,6 +215,7 @@ MultiAgentGama/
 │   ├── test_dedup_and_budget.py        # Duplicate-finding merge and prompt context within the token budget
 │   ├── test_docker_sandbox.py          # Docker sandbox: path mapping, hardening flags, real execution (when Docker is present)
 │   ├── test_harness_components.py      # Component integration tests in mock mode
+│   ├── test_js_execution.py            # JS/TS execution: code gate, ESM/CJS detection, Node JUnit classification, Node sandboxes (real runs when node exists), end to end
 │   ├── test_js_ts_extractor.py         # JS/TS extractor: brace matching, literal/comment masking, arrow functions, routes
 │   ├── test_model_output_robustness.py # Graceful degradation on malformed model output, probe-fallback disclosure
 │   ├── test_p0_regressions.py          # Executor correctness, self-repair and result-provenance honesty regressions
@@ -287,9 +290,10 @@ In simulation mode, white-box tests use deterministic None-input robustness prob
 
 ```bash
 docker build -t vibeharness-sandbox:latest -f docker/sandbox.Dockerfile .
+docker build -t vibeharness-sandbox-node:latest -f docker/sandbox-node.Dockerfile .   # when the target has JS/TS
 ```
 
-Set `sandbox_provider: "docker"` in `vibeharness/config/agents_config.yaml`. Tunables: `docker_image`, `docker_network`, `docker_memory`, `docker_cpus`, `docker_pids_limit`.
+Set `sandbox_provider: "docker"` in `vibeharness/config/agents_config.yaml`. Tunables: `docker_image`, `docker_network`, `docker_memory`, `docker_cpus`, `docker_pids_limit`. JS/TS tests use the Node container `docker_node_image` (`sandbox_node_provider` follows `sandbox_provider` by default and can be set to `local_subprocess` alone to run JS tests with the local Node).
 
 - The target directory is mounted read-only into the container at `/work/<dir name>`; host absolute paths inside generated tests are rewritten to container paths automatically.
 - Containers have **no network** by default, so packages cannot be installed at run time. Pre-install the target's dependencies into the image: build a project-specific image `FROM vibeharness-sandbox:latest`, `pip install` the dependencies, and point `docker_image` at it.

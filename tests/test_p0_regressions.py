@@ -480,7 +480,11 @@ def test_check_test_code_accepts_assertion_in_called_helper():
 
 
 def test_import_instructions_disclose_non_python_targets():
+    # JS/TS targets get node:test guidance (file:// URL, module system); other languages stay static-only
     text = import_instructions("app/server.ts", ".")
+    assert "file://" in text and "TypeScript" in text and "node:" in text
+    assert "importlib" not in text
+    text = import_instructions("app/main.go", ".")
     assert "not a Python file" in text
     assert "importlib" not in text
     assert "cannot be imported" in text
@@ -714,7 +718,8 @@ def test_symbol_relevance_uses_word_boundaries():
     # Whole-word matching: only validate_username is named; "user" inside "username" must not
     # drag in get_user, and unnamed symbols stay out.
     symbols = [sym("get_user"), sym("validate_username"), sym("process_payment")]
-    context = ThreatScenarioBuilder._code_context(threat, symbols, root_dir=".")
+    context, language = ThreatScenarioBuilder._code_context(threat, symbols, root_dir=".")
+    assert language == "python"
     assert "Symbol: validate_username" in context
     assert "Symbol: get_user" not in context
     assert "Symbol: process_payment" not in context

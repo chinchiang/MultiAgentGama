@@ -44,7 +44,7 @@ class SandboxUnavailableError(RuntimeError):
 # Keys in custom_env that are never forwarded, however they are spelled (uppercase or not):
 # credentials (the allowlist already keeps host secrets out, but callers could pass their own)
 # and injection vectors a generated test could abuse to escape into a shell on import.
-_CUSTOM_ENV_DENY_RE = re.compile(r"(API_?KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|^BASH_ENV$|^ENV$|^LD_PRELOAD$|^LD_LIBRARY_PATH$|^PYTHONINSPECT$|^PYTHONSTARTUP$)", re.IGNORECASE)
+_CUSTOM_ENV_DENY_RE = re.compile(r"(API_?KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|^BASH_ENV$|^ENV$|^LD_PRELOAD$|^LD_LIBRARY_PATH$|^PYTHONINSPECT$|^PYTHONSTARTUP$|^NODE_OPTIONS$|^NODE_REPL_EXTERNAL_MODULE$)", re.IGNORECASE)
 
 
 def filter_custom_env(custom_env: Optional[Dict[str, str]]) -> Dict[str, str]:
@@ -452,6 +452,20 @@ class DockerSandbox(LocalSubprocessSandbox):
         }
         if custom_env:
             env.update(filter_custom_env(custom_env))
+        cmd = self._docker_run_prefix(run_dir, base_dir, env)
+        cmd += [self.image, "timeout", "--kill-after=5", str(timeout_seconds or self.timeout_seconds),
+                "python", "-m", "pytest", *[f"{CONTAINER_RUN_DIR}/{f}" for f in filenames]]
+        cmd += self._pytest_options(CONTAINER_RUN_DIR, f"{CONTAINER_RUN_DIR}/junit.xml")
+        if collect_coverage:
+            cov = target
+            if coverage_target:
+                cov = rewrite_host_paths(os.path.abspath(coverage_target), self._path_mapping(base_dir))
+            cmd.extend([f"--cov={cov}", "--cov-report=term-missing"])
+        return cmd, run_dir, self._cli_env()
+
+    def _docker_run_prefix(self, run_dir: str, base_dir: str, env: Dict[str, str]) -> List[str]:
+        """`docker run` with the hardening flags, mounts and environment, up to (not including) the image."""
+        target = container_target_dir(base_dir)
         if hasattr(os, "getuid") and os.getuid() == 0:
             # The container writes junit.xml/coverage into the run dir as nobody (see _user);
             # a root-owned 0755 dir would make every run fail with no report.
@@ -478,15 +492,7 @@ class DockerSandbox(LocalSubprocessSandbox):
         ]
         for key, value in env.items():
             cmd += ["-e", f"{key}={value}"]
-        cmd += [self.image, "timeout", "--kill-after=5", str(timeout_seconds or self.timeout_seconds),
-                "python", "-m", "pytest", *[f"{CONTAINER_RUN_DIR}/{f}" for f in filenames]]
-        cmd += self._pytest_options(CONTAINER_RUN_DIR, f"{CONTAINER_RUN_DIR}/junit.xml")
-        if collect_coverage:
-            cov = target
-            if coverage_target:
-                cov = rewrite_host_paths(os.path.abspath(coverage_target), self._path_mapping(base_dir))
-            cmd.extend([f"--cov={cov}", "--cov-report=term-missing"])
-        return cmd, run_dir, self._cli_env()
+        return cmd
 
     def _limits(self, timeout: int) -> Dict[str, int]:
         return {}  # the container carries --memory/--cpus and the in-container `timeout`
@@ -501,3 +507,160 @@ class DockerSandbox(LocalSubprocessSandbox):
                                "the container is bounded by its in-container timeout but may linger.")
         except (OSError, subprocess.TimeoutExpired) as e:
             logger.warning(f"Could not remove container {name} after timeout: {e}")
+
+
+# --- Node (JavaScript / TypeScript) sandboxes --------------------------------------------------
+
+MIN_NODE_VERSION = (20, 0, 0)
+MIN_NODE_VERSION_TS = (22, 6, 0)  # --experimental-strip-types
+DEFAULT_DOCKER_NODE_IMAGE = "vibeharness-sandbox-node:latest"
+NODE_TEST_FILE_EXT = ".mjs"
+
+
+def parse_node_version(text: str) -> Optional[Tuple[int, int, int]]:
+    """'v22.6.0' -> (22, 6, 0); None for anything else."""
+    m = re.match(r"\s*v?(\d+)\.(\d+)\.(\d+)", text or "")
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+
+
+def detect_node(node_bin: str = "node") -> Tuple[Optional[str], Optional[Tuple[int, int, int]], Optional[str]]:
+    """(resolved path, version, problem): the problem names what is missing when the first two are None."""
+    path = shutil.which(node_bin)
+    if not path:
+        return None, None, f"no usable Node runtime found for node_bin {node_bin!r} (need Node >= {'.'.join(map(str, MIN_NODE_VERSION))})"
+    try:
+        result = subprocess.run([path, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                env=build_safe_env(), timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, None, f"{node_bin} --version failed: {e}"
+    version = parse_node_version(result.stdout)
+    if version is None:
+        return None, None, f"{node_bin} --version returned {result.stdout.strip()!r}, not a version"
+    if version < MIN_NODE_VERSION:
+        return None, version, f"Node v{'.'.join(map(str, version))} is below the minimum {'.'.join(map(str, MIN_NODE_VERSION))}"
+    return path, version, None
+
+
+def node_test_command(node: str, files: List[str], junit_path: str, strip_types: bool,
+                      collect_coverage: bool, max_old_space_mb: int) -> List[str]:
+    """`node --test` with the spec reporter on stdout and the junit reporter into junit_path."""
+    cmd = [node]
+    if max_old_space_mb > 0:
+        cmd.append(f"--max-old-space-size={max_old_space_mb}")
+    if strip_types:
+        cmd.append("--experimental-strip-types")
+    cmd += ["--test", "--test-reporter=spec", "--test-reporter-destination=stdout",
+            "--test-reporter=junit", f"--test-reporter-destination={junit_path}"]
+    if collect_coverage:
+        cmd.append("--experimental-test-coverage")
+    cmd += files
+    return cmd
+
+
+def link_node_modules(run_dir: str, base_dir: str) -> Optional[str]:
+    """Makes the target's node_modules resolvable from the run directory (bare specifiers resolve by
+    walking up from the importing file): a symlink, a junction on Windows, else None (the caller falls
+    back to NODE_PATH, which only CommonJS honours)."""
+    source = os.path.join(base_dir, "node_modules")
+    if not os.path.isdir(source):
+        return None
+    link = os.path.join(run_dir, "node_modules")
+    try:
+        os.symlink(source, link, target_is_directory=True)
+        return link
+    except (OSError, NotImplementedError):
+        pass
+    if sys.platform == "win32":
+        try:
+            result = subprocess.run(["cmd", "/c", "mklink", "/J", link, source], capture_output=True, timeout=30)
+            if result.returncode == 0:
+                return link
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return None
+
+
+class NodeSubprocessSandbox(LocalSubprocessSandbox):
+    """Runs `node:test` modules (ESM, test_vh_NNN.mjs) with Node's built-in runner. Same driver and
+    timeout handling as the Python sandbox; no RLIMIT_AS (V8 reserves a large address space at
+    start-up and aborts under one), the heap is capped with --max-old-space-size instead."""
+
+    def __init__(self, timeout_seconds: int = 30, memory_mb: int = 0, node_bin: str = "node", strip_types: bool = False,
+                 supports_typescript: bool = True):
+        super().__init__(timeout_seconds, memory_mb=memory_mb)
+        self.node = shutil.which(node_bin) or node_bin
+        self.strip_types = strip_types
+        self.supports_typescript = supports_typescript
+
+    def _build_command(
+        self,
+        run_dir: str,
+        filenames: List[str],
+        base_dir: str,
+        collect_coverage: bool,
+        coverage_target: Optional[str],
+        custom_env: Optional[Dict[str, str]],
+        timeout_seconds: Optional[int] = None
+    ) -> Tuple[List[str], str, Dict[str, str]]:
+        extra: Dict[str, str] = {"NODE_ENV": "test"}
+        if link_node_modules(run_dir, base_dir) is None and os.path.isdir(os.path.join(base_dir, "node_modules")):
+            extra["NODE_PATH"] = os.path.join(base_dir, "node_modules")
+        env = build_safe_env(extra)
+        if custom_env:
+            env.update(filter_custom_env(custom_env))
+        cmd = node_test_command(self.node, [os.path.join(run_dir, f) for f in filenames],
+                                os.path.join(run_dir, "junit.xml"), self.strip_types, False, self.memory_mb)
+        return cmd, base_dir, env
+
+    def _limits(self, timeout: int) -> Dict[str, int]:
+        return {"cpu_seconds": int(timeout) + 10}
+
+    def _extract_coverage_percent(self, stdout: str) -> Optional[float]:
+        return None  # JS coverage is not collected (v1); line coverage stays Python-only
+
+
+class NodeDockerSandbox(DockerSandbox):
+    """The Node flavour of the container sandbox: same hardening, a Node image (docker/sandbox-node.Dockerfile)."""
+
+    def __init__(
+        self,
+        timeout_seconds: int = 120,
+        image: str = DEFAULT_DOCKER_NODE_IMAGE,
+        network: str = "none",
+        memory: str = "1g",
+        cpus: str = "2",
+        pids_limit: int = 256,
+        docker_bin: str = "docker",
+        verify: bool = True,
+        strip_types: bool = False,
+        supports_typescript: bool = True,
+    ):
+        self.strip_types = strip_types
+        self.supports_typescript = supports_typescript
+        super().__init__(timeout_seconds, image, network, memory, cpus, pids_limit, docker_bin, verify)
+
+    def _verify_available(self):
+        try:
+            super()._verify_available()
+        except SandboxUnavailableError as e:
+            raise SandboxUnavailableError(str(e).replace("docker/sandbox.Dockerfile", "docker/sandbox-node.Dockerfile")) from e
+
+    def _build_command(
+        self,
+        run_dir: str,
+        filenames: List[str],
+        base_dir: str,
+        collect_coverage: bool,
+        coverage_target: Optional[str],
+        custom_env: Optional[Dict[str, str]],
+        timeout_seconds: Optional[int] = None
+    ) -> Tuple[List[str], str, Dict[str, str]]:
+        target = container_target_dir(base_dir)
+        env = {"HOME": "/tmp", "NODE_ENV": "test", "NODE_PATH": f"{target}/node_modules"}
+        if custom_env:
+            env.update(filter_custom_env(custom_env))
+        cmd = self._docker_run_prefix(run_dir, base_dir, env)
+        cmd += [self.image, "timeout", "--kill-after=5", str(timeout_seconds or self.timeout_seconds)]
+        cmd += node_test_command("node", [f"{CONTAINER_RUN_DIR}/{f}" for f in filenames],
+                                 f"{CONTAINER_RUN_DIR}/junit.xml", self.strip_types, False, 0)
+        return cmd, run_dir, self._cli_env()

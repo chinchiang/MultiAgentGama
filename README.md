@@ -119,6 +119,7 @@ flowchart TD
 6. **兩種沙盒**：生成的測試在暫存目錄中執行，環境變數採白名單（不傳入 API 金鑰，也剔除 `LD_PRELOAD`、`BASH_ENV` 這類注入鍵）。每批測試有逾時（`sandbox_timeout_seconds`）；批次逾時後會逐一重跑，此時每個測試另有單測逾時（`per_test_timeout_seconds`），總時間仍受批次預算限制。逾時會終止整個程序樹（Docker 則移除容器）。
    - `local_subprocess`（預設）：本機子程序；POSIX 上以 `sandbox_memory_mb`（預設 2 GB）限制位址空間並加 CPU 時間上限，擋住失控的消耗（仍不是安全邊界）。
    - `docker`：每批測試在一次性容器中執行——預設無網路、根檔案系統與目標目錄唯讀、移除所有 capabilities、禁止提權、非 root 使用者（harness 以 root 執行時容器改用 `nobody`）、記憶體／CPU／程序數上限。只有該次執行的暫存目錄與 `/tmp`（noexec 的 tmpfs）可寫。
+7. **JS/TS 動態測試執行**：目標檔是 `.js`／`.jsx`／`.mjs`／`.cjs`／`.ts`／`.tsx`／`.mts`／`.cts` 時，白箱測試生成與黑箱 in-process 攻擊測試改以 `node:test` + `node:assert` 的 ES module 生成（第一次需要時才偵測 `node_bin`，需 Node ≥ 20；`.ts` 需 ≥ 22.6 的型別剝除），每個測試模組各自在一個 `node --test` 程序中執行，由 JUnit 報告判定：`AssertionError`／`ERR_ASSERTION` 失敗才算確認突破，目標內拋出的 `TypeError` 算缺陷但不算 exploit，測試自身的 `ReferenceError`／無法解析的匯入算 harness 錯誤。測試以 `file://` URL 匯入目標（提示詞會告知 ESM／CommonJS 的匯入寫法與偵測到的匯出名），裸 specifier 由目標的 `node_modules`（symlink 進執行目錄）解析；靜態閘門同樣拒絕安裝套件（`npm`／`pnpm`／`yarn`／`bun`／`npx`）。Node 沙盒不套 `RLIMIT_AS`（V8 啟動時保留大片位址空間），改以 `--max-old-space-size` 封頂堆積並保留 CPU 上限；`NODE_OPTIONS`／`NODE_PATH` 不從主機轉送。打執行中服務的黑箱 HTTP 攻擊仍一律以 Python（urllib）撰寫。沒有可用的 Node 時，JS/TS 測試列為 ERROR 並寫入證據缺口（「no usable Node runtime」），不會在啟動時失敗；mock 模式的模擬引擎不會生成 JS 測試，缺口為「no JS/TS test was generated」。Docker 下 Node 測試用另一個映像 `docker_node_image`（`docker/sandbox-node.Dockerfile`）。
 
 > ⚠️ **`local_subprocess` 不是安全邊界。** 它以你的使用者權限執行模型生成的程式碼，可讀寫檔案與存取網路。對不信任的目標或 live 模式，請使用 `sandbox_provider: docker`。
 
@@ -144,7 +145,7 @@ VibeHarness 本身就是一個 LLM 應用：待審程式碼是每個審查、驗
 | 動態 DAST／Fuzzing 代理 | 未實作；黑箱測試由威脅模型逐項生成 pytest 攻擊腳本 |
 | Hypothesis 性質測試 | 未內建；模型可自行生成，但需目標環境已安裝 `hypothesis` |
 | `e2b` 沙盒 | 未實作；`sandbox_provider` 支援 `local_subprocess` 與 `docker`，其他值會直接報錯 |
-| JS/TS 測試執行 | 符號擷取為無相依的 lexer（真正的括號配對，供審查與威脅建模）；生成與執行的測試只支援 Python，JS/TS 目標一律列為「只做靜態審查」的證據缺口 |
+| JS/TS 覆蓋率與第三方套件 | JS/TS 測試已可生成並以 Node 執行（見下方「JS/TS 動態測試執行」），但不收集 JS 覆蓋率；TypeScript 只做型別剝除（enum、namespace、參數屬性、裝飾器、tsconfig 路徑別名不支援）；Docker 沙盒內 ESM 的裸 specifier 無法解析（只有 CommonJS 吃 `NODE_PATH`） |
 
 ---
 
@@ -162,7 +163,8 @@ MultiAgentGama/
 │       ├── publish.yml          # 發佈：tag 推送時驗證版本一致、建置 sdist／wheel、上傳 GitHub Release（PyPI 需設 ENABLE_PYPI_PUBLISH）
 │       └── live-smoke.yml       # 手動觸發：以 repo secrets 的真實金鑰對 examples 跑一次 live／hybrid，上傳報告
 ├── docker/
-│   └── sandbox.Dockerfile       # docker 沙盒的基底映像（pytest / pytest-cov / requests）
+│   ├── sandbox.Dockerfile       # docker 沙盒的基底映像（pytest / pytest-cov / requests）
+│   └── sandbox-node.Dockerfile  # docker Node 沙盒的基底映像（node:22-slim，執行 JS/TS 測試）
 ├── vibeharness/                 # 唯一的頂層套件（pip install 後 site-packages 只多這一個目錄）
 │   ├── __init__.py              # 套件版本號（__version__，pyproject 的唯一來源）
 │   ├── cli.py                   # CLI 進入點（vibeharness 指令）
@@ -177,7 +179,7 @@ MultiAgentGama/
 │   │   ├── codecheck.py             # 生成測試的靜態檢查（需有 test_ 函式與斷言；拒絕安裝套件）
 │   │   ├── codecontext.py           # 提供給模型的原始碼與 import 指引（經不受信任程式碼通道）
 │   │   ├── sanitize.py              # 信任邊界：去隱形字元、遮蔽密鑰、不受信任程式碼通道、報告消毒
-│   │   └── sandbox.py               # 沙盒：本機子程序（非安全邊界）與 Docker 容器
+│   │   └── sandbox.py               # 沙盒：本機子程序（非安全邊界）與 Docker 容器；Node 版本各一（node --test）
 │   ├── agents/
 │   │   ├── __init__.py
 │   │   ├── whitebox/
@@ -194,7 +196,7 @@ MultiAgentGama/
 │   │       └── scenario_builder.py  # 威脅轉化可執行攻擊腳本
 │   ├── runners/
 │   │   ├── __init__.py
-│   │   └── test_executor.py         # 沙盒 Pytest 執行器與 PoC 抓取（白箱與黑箱共用）
+│   │   └── test_executor.py         # 沙盒測試執行器（pytest；JS/TS 走 node:test）與 PoC 抓取（白箱與黑箱共用）
 │   ├── reports/
 │   │   ├── __init__.py
 │   │   └── report_generator.py      # Markdown／JSON／SARIF 審計報告生成器
@@ -213,6 +215,7 @@ MultiAgentGama/
 │   ├── test_dedup_and_budget.py        # 重複發現合併與 token 預算內的提示上下文
 │   ├── test_docker_sandbox.py          # Docker 沙盒：路徑映射、容器強化參數、實際執行（有 Docker 時）
 │   ├── test_harness_components.py      # 各元件於 mock 模式下的整合測試
+│   ├── test_js_execution.py            # JS/TS 執行：程式碼閘門、ESM/CJS 偵測、Node JUnit 分類、Node 沙盒（有 node 時實跑）、端對端
 │   ├── test_js_ts_extractor.py         # JS/TS 擷取器：括號配對、字面值／註解遮蔽、箭頭函式、路由
 │   ├── test_model_output_robustness.py # 模型輸出異常時優雅降級、探針回退的揭露
 │   ├── test_p0_regressions.py          # 執行器正確性、自我修復與結果來源誠實性的回歸測試
@@ -287,9 +290,10 @@ export GEMINI_API_KEY="AIza..."          # Gemini
 
 ```bash
 docker build -t vibeharness-sandbox:latest -f docker/sandbox.Dockerfile .
+docker build -t vibeharness-sandbox-node:latest -f docker/sandbox-node.Dockerfile .   # 目標含 JS/TS 時
 ```
 
-在 `vibeharness/config/agents_config.yaml` 設定 `sandbox_provider: "docker"`。可調整 `docker_image`、`docker_network`、`docker_memory`、`docker_cpus`、`docker_pids_limit`。
+在 `vibeharness/config/agents_config.yaml` 設定 `sandbox_provider: "docker"`。可調整 `docker_image`、`docker_network`、`docker_memory`、`docker_cpus`、`docker_pids_limit`；JS/TS 測試的 Node 容器用 `docker_node_image`（`sandbox_node_provider` 預設跟隨 `sandbox_provider`，可單獨設為 `local_subprocess` 讓 JS 測試在本機 Node 執行）。
 
 - 目標目錄以唯讀方式掛載到容器內的 `/work/<目錄名>`；生成測試中的主機絕對路徑會自動改寫為容器路徑。
 - 容器預設**沒有網路**，無法在執行時安裝套件。目標的相依套件需預先裝進映像：以 `FROM vibeharness-sandbox:latest` 建立專案專用映像並 `pip install` 相依套件，再把 `docker_image` 指向它。

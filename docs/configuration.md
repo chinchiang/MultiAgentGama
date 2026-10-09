@@ -32,7 +32,10 @@ CLI 啟動時可用 `--config <路徑>` 改用其他設定檔、`--mode` 覆蓋 
 | `docker_memory` | `"1g"` | 容器記憶體上限 |
 | `docker_cpus` | `"2"` | 容器 CPU 上限 |
 | `docker_pids_limit` | `256` | 容器程序數上限 |
-| `sandbox_memory_mb` | `2048` | 僅 `local_subprocess`：以 `RLIMIT_AS` 限制 pytest 程序樹的位址空間（POSIX；Windows 無效），另加 CPU 時間上限（批次預算 + 10 秒）。`0` 關閉。不是安全邊界，只是擋住失控的記憶體與 CPU 消耗；`docker` provider 改用 `docker_memory`／`docker_cpus` |
+| `sandbox_memory_mb` | `2048` | 僅 `local_subprocess`：以 `RLIMIT_AS` 限制 pytest 程序樹的位址空間（POSIX；Windows 無效），另加 CPU 時間上限（批次預算 + 10 秒）。`0` 關閉。Node 沙盒不套 `RLIMIT_AS`（V8 啟動會失敗），改以 `--max-old-space-size=<值>` 封頂堆積、保留 CPU 上限。不是安全邊界，只是擋住失控的記憶體與 CPU 消耗；`docker` provider 改用 `docker_memory`／`docker_cpus` |
+| `node_bin` | `"node"` | 執行 JS/TS 測試的 Node 可執行檔（名稱或路徑）；第一次需要時才偵測，需 ≥ 20（`.ts` 需 ≥ 22.6 的型別剝除）。找不到或版本過舊時 JS/TS 測試列為 ERROR 並寫入證據缺口，不會在啟動時失敗 |
+| `sandbox_node_provider` | `null` | JS/TS 測試的沙盒：`null` 跟隨 `sandbox_provider`；可單獨設 `local_subprocess`（本機 Node）或 `docker`（Node 容器） |
+| `docker_node_image` | `"vibeharness-sandbox-node:latest"` | Node 容器映像（`docker/sandbox-node.Dockerfile`，node:22-slim）；容器內設 `NODE_PATH=/work/<目標>/node_modules`，只有 CommonJS 吃得到 |
 | `sandbox_timeout_seconds` | `120` | 單批 pytest 的總逾時（秒），逾時會終止整個程序樹／移除容器 |
 | `per_test_timeout_seconds` | `30` | 批次逾時後改為逐測重跑時，單一測試的逾時（秒） |
 
@@ -150,6 +153,7 @@ agents:
 global:
   sandbox_provider: "docker"
   docker_image: "vibeharness-sandbox:latest"   # 需先 docker build -t ... -f docker/sandbox.Dockerfile .
+  docker_node_image: "vibeharness-sandbox-node:latest"   # 目標含 JS/TS 時：docker build -t ... -f docker/sandbox-node.Dockerfile .
   docker_network: "none"                        # 黑箱打執行中服務時改 "host"（Linux）
   docker_memory: "1g"
   docker_cpus: "2"

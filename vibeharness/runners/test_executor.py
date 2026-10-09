@@ -4,10 +4,10 @@ import os
 import time
 import logging
 import xml.etree.ElementTree as ET
-from typing import List, Tuple, Optional, Dict, Set
+from typing import Callable, List, Tuple, Optional, Dict, Set
 from vibeharness.core.models import GeneratedTest, TestExecutionResult, TestStatus
 from vibeharness.core.sandbox import LocalSubprocessSandbox, TIMEOUT_EXIT_CODE
-from vibeharness.core.codecheck import check_test_code
+from vibeharness.core.codecheck import check_test_code_for
 
 logger = logging.getLogger("VibeHarness.TestExecutor")
 
@@ -27,6 +27,19 @@ _SIGNATURE_TYPEERROR_RE = re.compile(
 )
 _RAISED_IN_TEST_MODULE_RE = re.compile(r"test_vh_\d+\.py:\d+: TypeError\s*$")
 
+# --- JavaScript / TypeScript (node:test) classification ---------------------------------------
+# Load / resolution failures of the generated module itself, never a defect in the target
+_JS_HARNESS_MARKERS = ("ERR_MODULE_NOT_FOUND", "Cannot find module", "Cannot find package", "ERR_UNKNOWN_FILE_EXTENSION",
+                       "ERR_UNSUPPORTED_DIR_IMPORT", "ERR_REQUIRE_ESM", "ERR_PACKAGE_PATH_NOT_EXPORTED",
+                       "ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX", "SyntaxError")
+# Test-side mistakes when raised from the generated module (innermost V8 frame)
+_JS_TEST_SIDE_ERRORS = ("ReferenceError", "TypeError")
+# V8 stack frames are innermost-first: "    at fn (file:///x/y.mjs:3:9)" or "    at file:///x/y.mjs:3:9"
+_V8_FRAME_RE = re.compile(r"^\s+at (?:.*?\()?((?:file:///|/|[A-Za-z]:[\\/])[^\s)]+?):\d+:\d+\)?\s*$", re.MULTILINE)
+_JS_CAUSE_RE = re.compile(r"^\s*cause:\s*([^'\"\s].*?)\s*\{?\s*$", re.MULTILINE)  # a quoted cause ('test failed') says nothing
+_JS_ERROR_LINE_RE = re.compile(r"^\s*\[?(\w*Error(?: \[\w+\])?: .+)$", re.MULTILINE)
+_JS_FILE_CASE_RE = re.compile(r"test_vh_\d+\.(?:mjs|cjs|js)$")
+
 
 class TestSuiteExecutor:
     __test__ = False
@@ -36,9 +49,33 @@ class TestSuiteExecutor:
     Only genuine assertion failures in black-box tests count as confirmed security exploits.
     """
 
-    def __init__(self, sandbox: LocalSubprocessSandbox, per_test_timeout_seconds: int = 30):
+    def __init__(
+        self,
+        sandbox: LocalSubprocessSandbox,
+        per_test_timeout_seconds: int = 30,
+        js_sandbox_factory: Optional[Callable[[], Optional[LocalSubprocessSandbox]]] = None,
+    ):
         self.sandbox = sandbox
         self.per_test_timeout_seconds = per_test_timeout_seconds
+        # Built on first use (Node is only needed when a JS/TS test exists); None means "cannot run JS"
+        self._js_sandbox_factory = js_sandbox_factory
+        self._js_sandbox: Optional[LocalSubprocessSandbox] = None
+        self._js_sandbox_resolved = False
+        self.js_runner_unavailable_reason: Optional[str] = None
+
+    def _js_sandbox_or_none(self) -> Optional[LocalSubprocessSandbox]:
+        if not self._js_sandbox_resolved:
+            self._js_sandbox_resolved = True
+            if self._js_sandbox_factory is None:
+                self.js_runner_unavailable_reason = "no JavaScript/TypeScript runner is configured"
+            else:
+                try:
+                    self._js_sandbox = self._js_sandbox_factory()
+                except Exception as e:  # a missing docker image, a broken node binary: disclosed, not fatal
+                    self.js_runner_unavailable_reason = f"{type(e).__name__}: {e}"
+                if self._js_sandbox is None and not self.js_runner_unavailable_reason:
+                    self.js_runner_unavailable_reason = "no usable Node runtime was found"
+        return self._js_sandbox
 
     def execute_test_suite(
         self,
@@ -48,10 +85,39 @@ class TestSuiteExecutor:
     ) -> Tuple[List[TestExecutionResult], Optional[float]]:
         if not tests:
             return [], None
+        unique_ids = self._unique_test_ids(tests)
+        results: Dict[int, TestExecutionResult] = {}
+        py_idx = [i for i, t in enumerate(tests) if t.language == "python"]
+        js_idx = [i for i, t in enumerate(tests) if t.language != "python"]
 
+        coverage_pct = self._run_group(tests, py_idx, unique_ids, results, working_dir, collect_coverage,
+                                       "python", self.sandbox) if py_idx else None
+        if js_idx:
+            sandbox = self._js_sandbox_or_none()
+            runnable = []
+            for i in js_idx:
+                t = tests[i]
+                if sandbox is None:
+                    results[i] = self._result(
+                        t, unique_ids[i], TestStatus.ERROR,
+                        failure_reason=f"JavaScript/TypeScript test was not run: {self.js_runner_unavailable_reason}"
+                    )
+                elif t.language == "typescript" and not getattr(sandbox, "supports_typescript", True):
+                    results[i] = self._result(
+                        t, unique_ids[i], TestStatus.ERROR,
+                        failure_reason="TypeScript test was not run: the Node runtime is older than 22.6 (no type stripping)"
+                    )
+                else:
+                    runnable.append(i)
+            if runnable and sandbox is not None:
+                self._run_group(tests, runnable, unique_ids, results, working_dir, False, "javascript", sandbox)
+        return [results[i] for i in range(len(tests))], coverage_pct
+
+    @staticmethod
+    def _python_header(working_dir: str) -> str:
         abs_target = os.path.abspath(working_dir)
         parent_dir = os.path.dirname(abs_target)
-        header = "\n".join([
+        return "\n".join([
             "import pytest",
             "import sys",
             "import os",
@@ -65,13 +131,40 @@ class TestSuiteExecutor:
             "# --- VibeHarness Auto-Generated Test ---",
         ])
 
-        unique_ids = self._unique_test_ids(tests)
-        results: Dict[int, TestExecutionResult] = {}
+    @staticmethod
+    def _js_header(working_dir: str) -> str:
+        # Comments only: an `import` here would collide with the module's own `import { test }`
+        abs_target = os.path.abspath(working_dir)
+        return "\n".join([
+            "// --- VibeHarness Auto-Generated Test (node:test, ESM) ---",
+            f"// Target directory: {abs_target}",
+            "// The target is imported through the file:// URL given in the prompt; bare specifiers resolve",
+            f"// from {os.path.join(abs_target, 'node_modules')} (linked into this run directory); nothing may be installed.",
+        ])
+
+    def _run_group(
+        self,
+        tests: List[GeneratedTest],
+        indices: List[int],
+        unique_ids: List[str],
+        results: Dict[int, TestExecutionResult],
+        working_dir: str,
+        collect_coverage: bool,
+        language: str,
+        sandbox: LocalSubprocessSandbox,
+    ) -> Optional[float]:
+        """Runs one language's tests as one sandbox batch (module names use the global index, so ids
+        stay unique across groups) and fills `results` for those indices."""
+        is_js = language != "python"
+        header = self._js_header(working_dir) if is_js else self._python_header(working_dir)
+        ext = ".mjs" if is_js else ".py"
+        comment = "//" if is_js else "#"
         files: Dict[str, str] = {}
         module_to_idx: Dict[str, int] = {}
 
-        for idx, t in enumerate(tests):
-            is_valid, problem = check_test_code(t.code)
+        for idx in indices:
+            t = tests[idx]
+            is_valid, problem = check_test_code_for(t.code, t.language)
             if not is_valid:
                 results[idx] = self._result(
                     t, unique_ids[idx], TestStatus.ERROR,
@@ -80,82 +173,116 @@ class TestSuiteExecutor:
                 continue
             module = f"test_vh_{idx:03d}"
             module_to_idx[module] = idx
-            preamble, body = self._split_future_imports(t.code)
-            files[f"{module}.py"] = (
-                f"{preamble}{header}\n# Target: {self._header_field(t.target_component)} | Test: {self._header_field(t.title)}\n{body}\n"
+            preamble, body = ("", t.code) if is_js else self._split_future_imports(t.code)
+            files[f"{module}{ext}"] = (
+                f"{preamble}{header}\n{comment} Target: {self._header_field(t.target_component)} | "
+                f"Test: {self._header_field(t.title)}\n{body}\n"
             )
 
         coverage_pct: Optional[float] = None
-        if files:
-            logger.info(f"Executing {len(files)} test module(s) in sandbox (coverage={collect_coverage})...")
-            exit_code, stdout, stderr, duration, coverage_pct, junit_xml = self.sandbox.execute_pytest_files(
+        if not files:
+            return None
+        logger.info(f"Executing {len(files)} {language} test module(s) in sandbox (coverage={collect_coverage})...")
+        # Per module: (exit code, stdout, stderr, junit xml); a Python batch shares one run, a JS module
+        # gets its own process (Node's junit reporter does not name the file a top-level test came from)
+        runs: Dict[str, Tuple[int, str, str, Optional[str]]] = {}
+        cases: Optional[Dict[str, List[dict]]] = {}
+        timed_out: Set[str] = set()
+        not_rerun: Set[str] = set()
+        parse_failed: Set[str] = set()
+        batch_timeout: Optional[int] = None
+        if is_js:
+            for filename, code in files.items():
+                module = os.path.splitext(filename)[0]
+                exit_code, stdout, stderr, _, _, junit_xml = sandbox.execute_pytest_files(
+                    {filename: code}, working_dir=working_dir, timeout_seconds=self.per_test_timeout_seconds
+                )
+                runs[module] = (exit_code, stdout, stderr, junit_xml)
+                if exit_code == TIMEOUT_EXIT_CODE:
+                    timed_out.add(module)
+                    continue
+                parsed = self._parse_junit(junit_xml, language, module=module)
+                if parsed is None:
+                    parse_failed.add(module)
+                elif cases is not None:
+                    for case in parsed.get(module, []):
+                        # A module that failed to load is one file-level case whose junit body only says
+                        # "test failed"; the actual error (ERR_MODULE_NOT_FOUND, a ReferenceError at load)
+                        # is on the runner's stdout, which the classification needs to see first.
+                        if case["outcome"] == "failure" and _JS_FILE_CASE_RE.search(os.path.basename(case["name"] or "")):
+                            case["details"] = f"{stdout[:6000]}\n{case['details'] or ''}"
+                    cases.update(parsed)
+        else:
+            exit_code, stdout, stderr, duration, coverage_pct, junit_xml = sandbox.execute_pytest_files(
                 files,
                 working_dir=working_dir,
                 collect_coverage=collect_coverage,
                 coverage_target=working_dir
             )
-            cases = self._parse_junit(junit_xml)
-            timed_out: Set[str] = set()
-            not_rerun: Set[str] = set()
-            parse_failed: Set[str] = set()
+            cases = self._parse_junit(junit_xml, language)
             if exit_code == TIMEOUT_EXIT_CODE and len(files) > 1:
                 # One hanging test must not void the whole batch: rerun each module on its own budget
                 logger.warning("Batch run timed out; re-running each test module individually to isolate the hang.")
                 coverage_pct = None
-                cases, timed_out, not_rerun, parse_failed = self._run_individually(files, working_dir)
+                cases, timed_out, not_rerun, parse_failed = self._run_individually(files, working_dir, sandbox, language)
                 junit_xml = ""  # per-module outcomes are now in `cases` / `timed_out`
+            elif exit_code == TIMEOUT_EXIT_CODE:
+                batch_timeout = getattr(sandbox, "timeout_seconds", None)
+            for module in module_to_idx:
+                runs[module] = (exit_code, stdout, stderr, junit_xml)
 
-            for module, idx in module_to_idx.items():
-                t = tests[idx]
-                module_cases = cases.get(module) if cases is not None else None
-                if module in not_rerun:
+        for module, idx in module_to_idx.items():
+            t = tests[idx]
+            exit_code, stdout, stderr, junit_xml = runs[module]
+            module_cases = cases.get(module) if cases is not None else None
+            if module in not_rerun:
+                results[idx] = self._result(
+                    t, unique_ids[idx], TestStatus.ERROR,
+                    failure_reason="Rerun budget exhausted after the batch timeout; module was not re-run"
+                )
+            elif module in parse_failed:
+                results[idx] = self._result(
+                    t, unique_ids[idx], TestStatus.ERROR,
+                    failure_reason="Sandbox test report could not be parsed; no per-test verdict available",
+                    stderr=stderr
+                )
+            elif module in timed_out and (is_js or not module_cases):
+                results[idx] = self._result(
+                    t, unique_ids[idx], TestStatus.ERROR,
+                    failure_reason=f"Test timed out after {self.per_test_timeout_seconds}s; not run to completion"
+                )
+            elif junit_xml is None:
+                if exit_code == TIMEOUT_EXIT_CODE:
                     results[idx] = self._result(
                         t, unique_ids[idx], TestStatus.ERROR,
-                        failure_reason="Rerun budget exhausted after the batch timeout; module was not re-run"
-                    )
-                elif module in parse_failed:
-                    results[idx] = self._result(
-                        t, unique_ids[idx], TestStatus.ERROR,
-                        failure_reason="Sandbox test report could not be parsed; no per-test verdict available",
-                        stderr=stderr
-                    )
-                elif junit_xml is None:
-                    if exit_code == TIMEOUT_EXIT_CODE:
-                        results[idx] = self._result(
-                            t, unique_ids[idx], TestStatus.ERROR,
-                            failure_reason=(f"Test batch timed out after {getattr(self.sandbox, 'timeout_seconds', '?')}s "
-                                            "and no per-test report was produced")
-                        )
-                    else:
-                        results[idx] = self._result(
-                            t, unique_ids[idx], TestStatus.ERROR,
-                            failure_reason=f"Sandbox run produced no report: {stderr.strip()[:200] or f'exit code {exit_code}'}",
-                            stdout=stdout, stderr=stderr
-                        )
-                elif cases is None:
-                    results[idx] = self._result(
-                        t, unique_ids[idx], TestStatus.ERROR,
-                        failure_reason="Sandbox test report could not be parsed; no per-test verdict available",
-                        stdout=stdout, stderr=stderr
-                    )
-                elif not module_cases and module in timed_out:
-                    results[idx] = self._result(
-                        t, unique_ids[idx], TestStatus.ERROR,
-                        failure_reason=f"Test timed out after {self.per_test_timeout_seconds}s; not run to completion"
-                    )
-                elif not module_cases:
-                    results[idx] = self._result(
-                        t, unique_ids[idx], TestStatus.ERROR,
-                        failure_reason="No test was collected from the generated code",
-                        stdout=stdout, stderr=stderr
+                        failure_reason=(f"Test batch timed out after {batch_timeout or '?'}s "
+                                        "and no per-test report was produced")
                     )
                 else:
-                    results[idx] = self._aggregate(t, unique_ids[idx], module_cases)
-
-        return [results[i] for i in range(len(tests))], coverage_pct
+                    results[idx] = self._result(
+                        t, unique_ids[idx], TestStatus.ERROR,
+                        failure_reason=f"Sandbox run produced no report: {stderr.strip()[:200] or f'exit code {exit_code}'}",
+                        stdout=stdout, stderr=stderr
+                    )
+            elif cases is None:
+                results[idx] = self._result(
+                    t, unique_ids[idx], TestStatus.ERROR,
+                    failure_reason="Sandbox test report could not be parsed; no per-test verdict available",
+                    stdout=stdout, stderr=stderr
+                )
+            elif not module_cases:
+                results[idx] = self._result(
+                    t, unique_ids[idx], TestStatus.ERROR,
+                    failure_reason="No test was collected from the generated code",
+                    stdout=stdout, stderr=stderr
+                )
+            else:
+                results[idx] = self._aggregate(t, unique_ids[idx], module_cases)
+        return coverage_pct
 
     def _run_individually(
-        self, files: Dict[str, str], working_dir: str
+        self, files: Dict[str, str], working_dir: str, sandbox: Optional[LocalSubprocessSandbox] = None,
+        language: str = "python"
     ) -> Tuple[Dict[str, List[dict]], Set[str], Set[str], Set[str]]:
         """Runs each module in its own process.
 
@@ -167,19 +294,20 @@ class TestSuiteExecutor:
         timed_out: Set[str] = set()
         not_rerun: Set[str] = set()
         parse_failed: Set[str] = set()
-        deadline = time.monotonic() + float(getattr(self.sandbox, "timeout_seconds", 0) or 0)
+        sandbox = sandbox or self.sandbox
+        deadline = time.monotonic() + float(getattr(sandbox, "timeout_seconds", 0) or 0)
         for filename, code in files.items():
-            module = filename[:-3]
+            module = os.path.splitext(filename)[0]
             if time.monotonic() >= deadline:
                 not_rerun.add(module)
                 continue
-            exit_code, _, _, _, _, junit_xml = self.sandbox.execute_pytest_files(
+            exit_code, _, _, _, _, junit_xml = sandbox.execute_pytest_files(
                 {filename: code}, working_dir=working_dir, timeout_seconds=self.per_test_timeout_seconds
             )
             if exit_code == TIMEOUT_EXIT_CODE:
                 timed_out.add(module)
                 continue
-            module_cases = self._parse_junit(junit_xml)
+            module_cases = self._parse_junit(junit_xml, language)
             if module_cases is None:
                 parse_failed.add(module)
                 continue
@@ -232,14 +360,24 @@ class TestSuiteExecutor:
         return unique
 
     @staticmethod
-    def _parse_junit(junit_xml: Optional[str]) -> Optional[Dict[str, List[dict]]]:
+    def _parse_junit(junit_xml: Optional[str], language: str = "python",
+                     module: Optional[str] = None) -> Optional[Dict[str, List[dict]]]:
         """Groups JUnit testcases by generated module name (test_vh_NNN).
 
+        pytest puts the module in `classname` (collection errors: in `name`). Node's junit reporter
+        names neither (classname is the literal "test"; only a file that never reached a test()
+        appears by name), so a Node report is produced per module and `module` assigns every case
+        to it; the enclosing `<testsuite name>` ancestors are searched as a fallback. A Node file
+        that never reached a test() is reported as a single passing file-level case: that
+        pseudo-case is dropped (an empty file must not count as a pass), while a failing one (a
+        load error) is kept as the module's failure.
         Returns {} when nothing was produced (or nothing matched), and None when a report
         existed but could not be parsed — the caller must not report that as "no test
         collected", which blames the generated code for a broken sandbox report.
         """
         grouped: Dict[str, List[dict]] = {}
+        if module is not None:
+            grouped[module] = []  # the module ran; without any case it is "no test collected", never a pass
         if not junit_xml:
             return grouped
         try:
@@ -248,11 +386,18 @@ class TestSuiteExecutor:
             logger.error(f"Unable to parse JUnit XML: {e}")
             return None
 
+        parents = {child: parent for parent in root.iter() for child in parent}
         for tc in root.iter("testcase"):
-            # Collection errors: classname="" and name=<module>; regular tests: classname=<module>
             match = re.search(r"test_vh_\d+", tc.get("classname") or "") or re.search(r"test_vh_\d+", tc.get("name") or "")
-            if not match:
+            node = tc
+            while match is None and node in parents:
+                node = parents[node]
+                if node.tag == "testsuite":
+                    match = re.search(r"test_vh_\d+", node.get("name") or "")
+            group = match.group(0) if match else module
+            if not group:
                 continue
+            is_file_case = language != "python" and bool(_JS_FILE_CASE_RE.search(os.path.basename(tc.get("name") or "")))
             outcome, message, details = "passed", None, None
             out, err = "", ""
             for child in tc:
@@ -264,11 +409,14 @@ class TestSuiteExecutor:
                     out += child.text or ""
                 elif child.tag == "system-err":
                     err += child.text or ""
+            if is_file_case and outcome == "passed":
+                grouped.setdefault(group, [])  # the file ran, but no test() inside it: nothing to count
+                continue
             try:
                 case_time = float(tc.get("time") or 0.0)
             except (TypeError, ValueError):
                 case_time = 0.0  # the XML came from a container running untrusted code; never crash on it
-            grouped.setdefault(match.group(0), []).append({
+            grouped.setdefault(group, []).append({
                 "name": tc.get("name"),
                 "time": case_time,
                 "outcome": outcome,
@@ -289,22 +437,40 @@ class TestSuiteExecutor:
         # Report this test's own captured output rather than the whole batch's
         stdout = "".join(c["stdout"] for c in cases)
         stderr = "".join(c["stderr"] for c in cases)
+        is_js = test.language != "python"
         errors = [c for c in cases if c["outcome"] == "error"]
         failures = [c for c in cases if c["outcome"] == "failure"]
-        harness_failures = [c for c in failures if self._is_harness_failure(c)]
+        harness_failures = [c for c in failures if (self._js_is_harness_failure(c) if is_js else self._is_harness_failure(c))]
         defect_failures = [c for c in failures if c not in harness_failures]
 
         if defect_failures:
             case = defect_failures[0]
+            is_assertion = self._js_is_assertion(case) if is_js else self._is_assertion(case["message"])
+            reason = (self._js_exception_summary(case) if is_js else "") or self._first_line(case["message"]) \
+                or f"Assertion failed during {test.title}"
             return self._result(
                 test, test_id, TestStatus.FAILED,
-                failure_reason=self._first_line(case["message"]) or f"Assertion failed during {test.title}",
+                failure_reason=reason,
                 traceback=case["details"], duration=duration, stdout=stdout, stderr=stderr,
-                is_exploit=test.test_type == "blackbox_security" and self._is_assertion(case["message"]),
+                is_exploit=test.test_type == "blackbox_security" and is_assertion,
                 poc=self._generate_poc(test, case["name"])
             )
         if errors or harness_failures:
             case = (errors or harness_failures)[0]
+            if is_js:
+                summary = self._js_exception_summary(case)
+                if self._js_raised_in_target_code(case) and any(m in summary for m in _JS_HARNESS_MARKERS):
+                    return self._result(
+                        test, test_id, TestStatus.ERROR,
+                        failure_reason=(f"Target code is broken and was never exercised by this test: "
+                                        f"{summary} (raised outside the generated test module)"),
+                        traceback=case["details"], duration=duration, stdout=stdout, stderr=stderr
+                    )
+                return self._result(
+                    test, test_id, TestStatus.ERROR,
+                    failure_reason=f"Test could not run correctly: {summary or 'Unknown execution failure'}",
+                    traceback=case["details"], duration=duration, stdout=stdout, stderr=stderr
+                )
             if case["outcome"] == "error" and self._raised_in_target_code(case):
                 summary = self._exception_summary(case)
                 if summary.startswith(HARNESS_ERROR_EXCEPTIONS):
@@ -375,6 +541,45 @@ class TestSuiteExecutor:
         return not os.path.basename(frames[-1]).startswith("test_vh_")
 
     @staticmethod
+    def _js_is_harness_failure(case: dict) -> bool:
+        """A node:test failure caused by the generated module (unresolvable import, syntax) or by a
+        test-side ReferenceError/TypeError raised from the module itself."""
+        text = f"{case.get('message') or ''}\n{case.get('details') or ''}"
+        if any(marker in text for marker in _JS_HARNESS_MARKERS):
+            return True
+        summary = TestSuiteExecutor._js_exception_summary(case)
+        return summary.startswith(_JS_TEST_SIDE_ERRORS) and not TestSuiteExecutor._js_raised_in_target_code(case) \
+            and bool(_V8_FRAME_RE.search(case.get("details") or ""))
+
+    @staticmethod
+    def _js_raised_in_target_code(case: dict) -> bool:
+        """V8 stacks list the innermost frame first; without frames nothing is attributed to the target."""
+        frames = _V8_FRAME_RE.findall(case.get("details") or "")
+        if not frames:
+            return False
+        return not os.path.basename(frames[0]).startswith("test_vh_")
+
+    @staticmethod
+    def _js_exception_summary(case: dict) -> str:
+        """The error Node reports: the `cause:` line of the junit body, else the first `XError: ...` line,
+        else the junit message (which for assertions is the bare expectation text)."""
+        details = case.get("details") or ""
+        cause = _JS_CAUSE_RE.search(details)
+        if cause:
+            return cause.group(1).strip().rstrip("{").strip()[:300]
+        line = _JS_ERROR_LINE_RE.search(details)
+        if line:
+            return line.group(1).strip()[:300]
+        return (case.get("message") or "").strip()[:300]
+
+    @staticmethod
+    def _js_is_assertion(case: dict) -> bool:
+        """node:assert failures carry ERR_ASSERTION / AssertionError in the body (the junit message is the
+        bare expectation text); expect()-style libraries name the call."""
+        text = f"{case.get('message') or ''}\n{case.get('details') or ''}"
+        return "ERR_ASSERTION" in text or "AssertionError" in text or "Error: expect(" in text
+
+    @staticmethod
     def _is_assertion(message: Optional[str]) -> bool:
         """pytest reports explicit AssertionErrors, rewritten bare asserts ('assert x == y'),
         and explicit test failures via pytest.fail() ('Failed: ...')."""
@@ -417,15 +622,17 @@ class TestSuiteExecutor:
             failure_reason=failure_reason,
             is_security_exploit_confirmed=is_exploit,
             reproduction_poc=poc,
-            source_ref=test.source_ref
+            source_ref=test.source_ref,
+            language=test.language,
         )
 
     def _generate_poc(self, test: GeneratedTest, fn_name: str) -> str:
         """Constructs a reproduction script for a confirmed failure."""
+        c = "//" if test.language != "python" else "#"
         return (
-            f"# === Reproduction PoC ===\n"
-            f"# Target: {self._header_field(test.target_component)}\n"
-            f"# Failure Context: {self._header_field(test.title)}\n"
-            f"# Test Function: {fn_name}\n"
-            f"# Test Code:\n{test.code}\n"
+            f"{c} === Reproduction PoC ===\n"
+            f"{c} Target: {self._header_field(test.target_component)}\n"
+            f"{c} Failure Context: {self._header_field(test.title)}\n"
+            f"{c} Test Function: {fn_name}\n"
+            f"{c} Test Code:\n{test.code}\n"
         )

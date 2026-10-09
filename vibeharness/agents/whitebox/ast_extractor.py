@@ -15,7 +15,7 @@ DEFAULT_MAX_FILES = 50
 DEFAULT_MAX_FILE_BYTES = 1_000_000
 # Directory names never descended into (plus any name starting with '.')
 SKIPPED_DIRS = {"venv", "__pycache__", "node_modules", "dist", "build", "site-packages"}
-SOURCE_EXTENSIONS = (".py", ".js", ".jsx", ".ts", ".tsx")
+SOURCE_EXTENSIONS = (".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts")
 # FastAPI/Starlette verbs plus Flask/Quart route decorators
 ROUTE_DECORATORS = {"get", "post", "put", "delete", "patch", "route", "api_route", "websocket"}
 
@@ -60,7 +60,7 @@ class ASTExtractor:
         if ext == ".py":
             self.detected_languages.add("Python")
             return self._parse_python_file(file_path)
-        elif ext in [".js", ".jsx", ".ts", ".tsx"]:
+        elif ext in [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"]:
             self.detected_languages.add("TypeScript/JavaScript")
             return self._parse_js_ts_file(file_path)
         return []

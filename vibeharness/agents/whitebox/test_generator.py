@@ -7,8 +7,10 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional, Set, Tuple
 from vibeharness.core.models import ReviewFinding, GeneratedTest, CodeSymbol, text_or
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
-from vibeharness.core.codecheck import check_test_code, strip_code_fences
-from vibeharness.core.codecontext import file_source, fence_language, import_instructions, module_import_name, truncate_to_tokens
+from vibeharness.core.codecheck import check_test_code_for, strip_code_fences
+from vibeharness.core.codecontext import (
+    file_source, fence_language, import_instructions, language_for_file, module_import_name, truncate_to_tokens,
+)
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, prepare_untrusted_code, untrusted_block
 
 logger = logging.getLogger("VibeHarness.TestGenerator")
@@ -79,21 +81,44 @@ class WhiteboxTestGenerator:
         self, idx: int, finding: ReviewFinding, symbols: List[CodeSymbol], root: str, target_file: str
     ) -> Tuple[List[GeneratedTest], bool]:
         """Model-generated (and healed) tests for one finding, and whether any of them is executable."""
+        file_path = finding.file_path if finding.file_path not in ("", "unknown") else target_file
+        language = language_for_file(file_path)
+        if language == "python":
+            role = (
+                "You are an expert Python QA Engineer and Test Automation Specialist.\n"
+                "Your job is to generate a robust, executable pytest test module that imports the real "
+                "code under test and asserts correct behavior under the specified edge-case scenario.\n"
+                "Rules: import the target exactly as instructed; every test_ function must assert on the "
+                "target's behavior (assert / pytest.raises); a failing assertion must mean the target is defective; "
+                "do not use the network, do not write files outside tmp_path, do not mock the function under test, "
+                "and never install packages (use only the standard library, pytest and what the target imports).\n\n"
+            )
+            example = ('"import pytest\\nfrom module import func\\n\\ndef test_something():\\n'
+                       '    with pytest.raises(ValueError):\\n        func(None)"')
+        else:
+            role = (
+                "You are an expert JavaScript/TypeScript QA Engineer and Test Automation Specialist.\n"
+                "Your job is to generate a robust, executable ES-module test file for Node's built-in test runner "
+                "(`node:test`) with `node:assert`, importing the real code under test and asserting correct behavior "
+                "under the specified edge-case scenario.\n"
+                "Rules: import the target through the file:// URL exactly as instructed; every test() must assert on "
+                "the target's behavior (assert.* / assert.throws / assert.rejects); a failing assertion must mean the "
+                "target is defective; no network, no files outside os.tmpdir(), do not mock the function under test, "
+                "no third-party test frameworks (no jest/mocha/vitest), and never install packages "
+                "(only node: built-ins and what the target already depends on).\n\n"
+            )
+            example = ('"import { test } from \\"node:test\\";\\nimport assert from \\"node:assert/strict\\";\\n'
+                       'import { func } from \\"file:///abs/module.js\\";\\n\\ntest(\\"rejects null\\", () => {\\n'
+                       '  assert.throws(() => func(null));\\n});"')
         system_prompt = (
-            "You are an expert Python QA Engineer and Test Automation Specialist.\n"
-            "Your job is to generate a robust, executable pytest test module that imports the real "
-            "code under test and asserts correct behavior under the specified edge-case scenario.\n"
-            "Rules: import the target exactly as instructed; every test_ function must assert on the "
-            "target's behavior (assert / pytest.raises); a failing assertion must mean the target is defective; "
-            "do not use the network, do not write files outside tmp_path, do not mock the function under test, "
-            "and never install packages (use only the standard library, pytest and what the target imports).\n\n"
+            f"{role}"
             "Respond in JSON format:\n"
             "{\n"
             f'  "test_id": "WB-TEST-{idx+1:02d}",\n'
             '  "title": "Clear description of test purpose",\n'
             '  "rationale": "Why this test exposes vibe-coding flaws",\n'
             '  "expected_outcome": "Expected assertion or exception handling",\n'
-            '  "code": "import pytest\\nfrom module import func\\n\\ndef test_something():\\n    with pytest.raises(ValueError):\\n        func(None)"\n'
+            f'  "code": {example}\n'
             "}"
             f"{UNTRUSTED_CODE_POLICY}"
         )
@@ -104,7 +129,7 @@ class WhiteboxTestGenerator:
             f"Description: {finding.description}\n"
             f"Root Cause: {finding.root_cause}\n"
             f"Suggested Test Scenario: {finding.suggested_test_scenario}\n"
-            f"Produce an executable Pytest unit test."
+            + ("Produce an executable Pytest unit test." if language == "python" else "Produce an executable node:test module.")
         )
 
         # The model may answer with a batch ({"tests": [...]}) or a single object ({"code": ...});
@@ -124,8 +149,8 @@ class WhiteboxTestGenerator:
         has_valid_test = False
         for t_idx, t_item in enumerate(tests_data):
             # Self-healing validation loop; code that stays invalid is kept so it is reported as ERROR
-            validated_code = self._validate_and_heal(t_item["code"], f"finding {finding.finding_id}")
-            has_valid_test = has_valid_test or check_test_code(validated_code)[0]
+            validated_code = self._validate_and_heal(t_item["code"], f"finding {finding.finding_id}", language=language)
+            has_valid_test = has_valid_test or check_test_code_for(validated_code, language)[0]
 
             test_id = f"WB-TEST-{idx+1:02d}" + (f"-{t_idx+1}" if len(tests_data) > 1 else "")
             tests.append(GeneratedTest(
@@ -136,11 +161,12 @@ class WhiteboxTestGenerator:
                 code=validated_code,
                 rationale=text_or(t_item.get("rationale"), finding.suggested_test_scenario),
                 expected_outcome=text_or(t_item.get("expected_outcome"), "Graceful handling without crash"),
-                source_ref=finding.finding_id
+                source_ref=finding.finding_id,
+                language=language,
             ))
         return tests, has_valid_test
 
-    def _validate_and_heal(self, code: str, subject: str, max_retries: int = 2) -> str:
+    def _validate_and_heal(self, code: str, subject: str, max_retries: int = 2, language: str = "python") -> str:
         """
         Validates that the code parses and defines a module-level test_ function.
         On failure, asks the model to repair it. Returns the best available code;
@@ -150,19 +176,29 @@ class WhiteboxTestGenerator:
         code_to_check = strip_code_fences(code)
 
         for attempt in range(max_retries + 1):
-            is_valid, problem = check_test_code(code_to_check)
+            is_valid, problem = check_test_code_for(code_to_check, language)
             if is_valid:
                 return code_to_check
             logger.warning(f"Generated test for {subject} is invalid (attempt {attempt+1}): {problem}")
             if attempt == max_retries:
                 break
-            heal_prompt = (
-                f"The following Python pytest code is invalid: {problem}.\n"
-                f"Fix it so it parses and defines at least one module-level test_ function, "
-                f"and every test_ function asserts on the target's behavior. "
-                f"Output the corrected Python code only:\n\n{code_to_check}"
-            )
-            resp = self.gateway.generate("whitebox_test_generator", "Fix Python Test Code", heal_prompt, json_output=False)
+            if language == "python":
+                heal_prompt = (
+                    f"The following Python pytest code is invalid: {problem}.\n"
+                    f"Fix it so it parses and defines at least one module-level test_ function, "
+                    f"and every test_ function asserts on the target's behavior. "
+                    f"Output the corrected Python code only:\n\n{code_to_check}"
+                )
+                heal_system = "Fix Python Test Code"
+            else:
+                heal_prompt = (
+                    f"The following node:test module is invalid: {problem}.\n"
+                    f"Fix it so it is a valid ES module that defines at least one test() call, "
+                    f"and every test() asserts on the target's behavior with node:assert. "
+                    f"Output the corrected JavaScript code only:\n\n{code_to_check}"
+                )
+                heal_system = "Fix JavaScript Test Code"
+            resp = self.gateway.generate("whitebox_test_generator", heal_system, heal_prompt, json_output=False)
             fixed = strip_code_fences(text_or(resp.get("raw"), ""))
             if not fixed:
                 break  # Nothing to repair with (e.g. simulation engine)

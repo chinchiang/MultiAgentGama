@@ -32,7 +32,10 @@ From the CLI, use `--config <path>` to point at a different file and `--mode` to
 | `docker_memory` | `"1g"` | Container memory limit |
 | `docker_cpus` | `"2"` | Container CPU limit |
 | `docker_pids_limit` | `256` | Container process limit |
-| `sandbox_memory_mb` | `2048` | `local_subprocess` only: caps the pytest process tree's address space with `RLIMIT_AS` (POSIX; no effect on Windows) and adds a CPU-time cap of the batch budget + 10 s. `0` disables. Not a security boundary, just a stop on runaway memory / CPU use; the `docker` provider uses `docker_memory` / `docker_cpus` instead |
+| `sandbox_memory_mb` | `2048` | `local_subprocess` only: caps the pytest process tree's address space with `RLIMIT_AS` (POSIX; no effect on Windows) and adds a CPU-time cap of the batch budget + 10 s. `0` disables. The Node sandbox sets no `RLIMIT_AS` (V8 would fail to start) and caps the heap with `--max-old-space-size=<value>` instead, keeping the CPU cap. Not a security boundary, just a stop on runaway memory / CPU use; the `docker` provider uses `docker_memory` / `docker_cpus` instead |
+| `node_bin` | `"node"` | Node executable (name or path) that runs JS/TS tests; detected the first time one is needed, needs >= 20 (>= 22.6 for `.ts`, type stripping). When it is missing or too old, JS/TS tests are reported as ERROR and as an evidence gap, never as a start-up failure |
+| `sandbox_node_provider` | `null` | Sandbox for JS/TS tests: `null` follows `sandbox_provider`; set `local_subprocess` (local Node) or `docker` (Node container) on its own |
+| `docker_node_image` | `"vibeharness-sandbox-node:latest"` | Node container image (`docker/sandbox-node.Dockerfile`, node:22-slim); the container sets `NODE_PATH=/work/<target>/node_modules`, which only CommonJS honours |
 | `sandbox_timeout_seconds` | `120` | Total timeout for one batched pytest run; on timeout the whole process tree is killed / the container removed |
 | `per_test_timeout_seconds` | `30` | Per-test timeout used when a timed-out batch is re-run test by test |
 
@@ -150,6 +153,7 @@ agents:
 global:
   sandbox_provider: "docker"
   docker_image: "vibeharness-sandbox:latest"   # requires docker build -t ... -f docker/sandbox.Dockerfile . first
+  docker_node_image: "vibeharness-sandbox-node:latest"   # when the target has JS/TS: docker build -t ... -f docker/sandbox-node.Dockerfile .
   docker_network: "none"                        # use "host" (Linux) for black-box tests against a running service
   docker_memory: "1g"
   docker_cpus: "2"

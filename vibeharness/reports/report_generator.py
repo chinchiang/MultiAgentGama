@@ -224,7 +224,7 @@ class ReportGenerator:
                     md.append(f"#### PoC for `{p.test_id}`")
                     poc_text = p.reproduction_poc or ""
                     fence = self._fence(poc_text)
-                    md.append(f"{fence}python\n{poc_text}\n{fence}")
+                    md.append(f"{fence}{self._fence_lang(p.language)}\n{poc_text}\n{fence}")
         else:
             md.append("No black-box tests executed.")
 
@@ -592,6 +592,10 @@ class ReportGenerator:
         return f"{fence}{pad}{body}{pad}{fence}"
 
     @staticmethod
+    def _fence_lang(language: str) -> str:
+        return {"python": "python", "javascript": "javascript", "typescript": "typescript"}.get(language, "")
+
+    @staticmethod
     def _fence(text: str) -> str:
         """A code fence longer than any backtick run in the text, so model-written code cannot close it early."""
         longest = max((len(run) for run in re.findall(r"`+", text or "")), default=0)
@@ -638,7 +642,7 @@ class ReportGenerator:
                 md.append(f"- **Title**: {markdown_safe(t.title)}")
                 md.append(f"- **Rationale**: {markdown_safe(t.rationale)}")
                 md.append(f"- **Expected outcome**: {markdown_safe(t.expected_outcome)}\n")
-                md.append(f"{fence}python\n{code}\n{fence}\n")
+                md.append(f"{fence}{self._fence_lang(t.language)}\n{code}\n{fence}\n")
                 md.append("</details>\n")
         return md
 

@@ -5,12 +5,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import os
 from vibeharness.core.models import ThreatItem, GeneratedTest, CodeSymbol, text_or
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
-from vibeharness.core.codecheck import check_test_code, strip_code_fences
-from vibeharness.core.codecontext import render_symbols, import_instructions
+from vibeharness.core.codecheck import check_test_code_for, strip_code_fences
+from vibeharness.core.codecontext import render_symbols, import_instructions, language_for_file
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
 
 logger = logging.getLogger("VibeHarness.ScenarioBuilder")
@@ -66,10 +66,11 @@ class ThreatScenarioBuilder:
         return False
 
     @staticmethod
-    def _code_context(threat: ThreatItem, symbols: Optional[List[CodeSymbol]], root_dir: Optional[str]) -> str:
-        """Import paths and source for the symbols the threat's attack vector names (else all entry points)."""
+    def _code_context(threat: ThreatItem, symbols: Optional[List[CodeSymbol]], root_dir: Optional[str]) -> Tuple[str, str]:
+        """(import paths and source for the symbols the threat's attack vector names, else all entry points;
+        the language of the first relevant symbol's file: a mixed target follows that file)."""
         if not symbols:
-            return ""
+            return "", "python"
         root = root_dir or os.path.dirname(os.path.abspath(symbols[0].file_path))
         text = f"{threat.attack_vector} {threat.attack_scenario}"
         # Whole-word matching: a substring test would tie every threat mentioning "user" to a
@@ -80,10 +81,11 @@ class ThreatScenarioBuilder:
         ]
         if not relevant:
             relevant = sorted(symbols, key=lambda s: s.symbol_type != "route")
-        files = sorted({s.file_path for s in relevant if s.file_path.endswith(".py")})
+        language = language_for_file(relevant[0].file_path)
+        files = sorted({s.file_path for s in relevant if language_for_file(s.file_path) == language})
         imports = "\n".join(import_instructions(f, root) for f in files)
         listing = render_symbols(relevant, root, max_tokens=CODE_CONTEXT_TOKENS)
-        return f"How to import the target:\n{imports}\n\nRelevant target code:\n{untrusted_block(listing)}\n\n"
+        return f"How to import the target:\n{imports}\n\nRelevant target code:\n{untrusted_block(listing)}\n\n", language
 
     # Loopback names are the same machine; targeting them is allowed when the target itself is local
     _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
@@ -179,12 +181,34 @@ class ThreatScenarioBuilder:
         """The attack test synthesized for one threat, or None when the threat stays untested."""
         logger.info(f"Synthesizing black-box exploit test for: [{threat.threat_id}] {threat.title}")
 
+        context, language = self._code_context(threat, symbols, root_dir)
+        if server_is_live:
+            language = "python"  # HTTP attacks are written in Python (urllib) whatever the target language
+        if language == "python":
+            module_kind = "executable Python pytest module"
+            example = ('"from module import handler\\n\\ndef test_security_case():\\n    result = handler(...)\\n'
+                       '    assert result[\\"status\\"] == \\"error\\""')
+            closing = "Generate the executable Python test function."
+        else:
+            module_kind = ("executable ES-module test file for Node's built-in `node:test` runner with `node:assert` "
+                           "(no jest/mocha/vitest)")
+            example = ('"import { test } from \\"node:test\\";\\nimport assert from \\"node:assert/strict\\";\\n'
+                       'import { handler } from \\"file:///abs/module.js\\";\\n\\ntest(\\"rejects a foreign id\\", () => {\\n'
+                       '  const result = handler({ id: 2 }, { userId: 1 });\\n  assert.equal(result.status, \\"error\\");\\n});"')
+            closing = "Generate the executable node:test module."
+            if not server_is_live:
+                mode_rules = (
+                    "No server is running: import the target module in-process through the file:// URL given below "
+                    "(ESM `import`, or the default-import / createRequire form for CommonJS) and call its "
+                    "functions/handlers directly with attacker-controlled arguments. Do not start servers or use the network.\n"
+                )
+
         system_prompt = (
             "You are an Elite Offensive Security & AppSec Test Automation Engineer.\n"
             f"Execution Mode: {mode_label}.\n"
             f"{mode_rules}"
             "Your task is to translate a specific STRIDE/OWASP threat model item into a concrete, "
-            "executable Python pytest module.\n\n"
+            f"{module_kind}.\n\n"
             "The test must assert that defensive boundaries hold (e.g. status code is 401/403/422, "
             "or sensitive fields are uncompromised), so that an assertion failure means the attack succeeded. "
             "If the attack cannot be expressed against the given code, return an empty code string instead of guessing. "
@@ -195,7 +219,7 @@ class ThreatScenarioBuilder:
             '  "title": "Clear test name",\n'
             '  "rationale": "Why this test proves or disproves the threat",\n'
             '  "expected_outcome": "Defensive condition that must be met",\n'
-            '  "code": "from module import handler\\n\\ndef test_security_case():\\n    result = handler(...)\\n    assert result[\\"status\\"] == \\"error\\""\n'
+            f'  "code": {example}\n'
             "}"
             f"{UNTRUSTED_CODE_POLICY}"
         )
@@ -210,8 +234,8 @@ class ThreatScenarioBuilder:
             + f"Attack Vector: {threat.attack_vector}\n"
             f"Attack Scenario: {threat.attack_scenario}\n"
             f"Defense Verification Goal: {threat.test_verification_goal}\n\n"
-            f"{self._code_context(threat, symbols, root_dir)}"
-            f"Generate the executable Python test function."
+            f"{context}"
+            f"{closing}"
         )
 
         resp = self.gateway.generate(
@@ -232,7 +256,7 @@ class ThreatScenarioBuilder:
                     f"{', '.join(offenders)}; rejected and the threat remains untested."
                 )
                 return None
-        is_valid, problem = check_test_code(code_str)
+        is_valid, problem = check_test_code_for(code_str, language)
         if not is_valid:
             # Kept so the executor reports it as ERROR rather than silently dropping it
             logger.warning(f"Synthesized test for [{threat.threat_id}] is not executable: {problem}")
@@ -245,5 +269,6 @@ class ThreatScenarioBuilder:
             code=code_str,
             rationale=text_or(resp.get("rationale"), threat.attack_scenario),
             expected_outcome=text_or(resp.get("expected_outcome"), threat.test_verification_goal),
-            source_ref=threat.threat_id
+            source_ref=threat.threat_id,
+            language=language,
         )

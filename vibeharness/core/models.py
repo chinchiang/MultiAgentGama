@@ -130,6 +130,8 @@ class GeneratedTest(BaseModel):
     rationale: str
     expected_outcome: str
     source_ref: Optional[str] = None  # finding_id / threat_id / symbol this test was derived from
+    # "python" | "javascript" | "typescript": picks the code gate, the sandbox and the report fence
+    language: str = "python"
 
 
 class TestExecutionResult(BaseModel):
@@ -146,6 +148,7 @@ class TestExecutionResult(BaseModel):
     is_security_exploit_confirmed: bool = False
     reproduction_poc: Optional[str] = None
     source_ref: Optional[str] = None
+    language: str = "python"
 
 
 class AgentCallRecord(BaseModel):
@@ -193,6 +196,7 @@ class RunMetadata(BaseModel):
     target_git_commit: Optional[str] = None  # HEAD of the repository containing the target, if any
     target_git_dirty: Optional[bool] = None  # uncommitted changes under the target at run time
     file_filters: List[str] = Field(default_factory=list)  # include/exclude/changed-since actually applied
+    node_runtime: Optional[str] = None  # e.g. "node v22.22.0" when JS/TS tests ran, else None
 
 
 class VibeHarnessSummary(BaseModel):

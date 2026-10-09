@@ -22,7 +22,10 @@ from vibeharness.core.models import (
     StaticFinding
 )
 from vibeharness.core.llm_gateway import LLMGateway, DEFAULT_CONFIG_PATH
-from vibeharness.core.sandbox import LocalSubprocessSandbox, DockerSandbox, DEFAULT_DOCKER_IMAGE
+from vibeharness.core.sandbox import (
+    LocalSubprocessSandbox, DockerSandbox, DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_NODE_IMAGE, MIN_NODE_VERSION_TS,
+    NodeDockerSandbox, NodeSubprocessSandbox, detect_node,
+)
 from vibeharness.core.baseline import Baseline, annotate_report_payload, compare_with_baseline
 from vibeharness.agents.whitebox.ast_extractor import ASTExtractor, DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES
 from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
@@ -80,8 +83,16 @@ class VibeHarnessCommander:
         self.threat_modeler = AutomatedThreatModeler(self.gateway)
         self.scenario_builder = ThreatScenarioBuilder(self.gateway)
         self.executor = TestSuiteExecutor(
-            self.sandbox, per_test_timeout_seconds=int(global_cfg.get("per_test_timeout_seconds", 30))
+            self.sandbox, per_test_timeout_seconds=int(global_cfg.get("per_test_timeout_seconds", 30)),
+            js_sandbox_factory=self._build_node_sandbox,
         )
+        # JS/TS tests run with Node's built-in runner; the sandbox is built lazily, the first time one is needed
+        self._global_cfg = global_cfg
+        self.node_bin = str(global_cfg.get("node_bin") or "node")
+        self.sandbox_node_provider = str(global_cfg.get("sandbox_node_provider") or global_cfg.get("sandbox_provider", "local_subprocess"))
+        self.node_runtime: Optional[str] = None
+        self.node_runtime_problem: Optional[str] = None
+        self.node_typescript_problem: Optional[str] = None
         self.reporter = ReportGenerator()
         # Validated like the other limits (a negative or non-integer value is a ConfigError); 0/null keep the default
         self.max_files = LLMGateway._positive_int(global_cfg.get("max_files"), "max_files") or DEFAULT_MAX_FILES
@@ -164,6 +175,43 @@ class VibeHarnessCommander:
         untracked = self._git(["ls-files", "--others", "--exclude-standard", "--", spec], root) or ""
         paths = {os.path.join(root, line.strip()) for line in (diff + untracked).splitlines() if line.strip()}
         return sorted(p for p in paths if os.path.isfile(p))
+
+    def _build_node_sandbox(self) -> Optional[LocalSubprocessSandbox]:
+        """The sandbox for `node:test` modules, or None (with `node_runtime_problem` set) when no usable
+        Node runtime exists: a missing runtime is an evidence gap for the JS/TS tests, never a start-up failure."""
+        path, version, problem = detect_node(self.node_bin)
+        if path is None or version is None:
+            self.node_runtime_problem = problem
+            return None
+        self.node_runtime = f"node v{'.'.join(map(str, version))}"
+        has_ts = any(f.lower().endswith((".ts", ".tsx", ".mts", ".cts")) for f in self.ast_extractor.analyzed_files)
+        supports_ts = version >= MIN_NODE_VERSION_TS
+        if has_ts and not supports_ts:
+            self.node_typescript_problem = (
+                f"TypeScript tests need Node >= {'.'.join(map(str, MIN_NODE_VERSION_TS))} (type stripping); found {self.node_runtime}"
+            )
+        cfg = self._global_cfg
+        timeout = int(cfg.get("sandbox_timeout_seconds", 120))
+        if self.sandbox_node_provider == "docker":
+            return NodeDockerSandbox(
+                timeout_seconds=timeout,
+                image=cfg.get("docker_node_image", DEFAULT_DOCKER_NODE_IMAGE),
+                network=cfg.get("docker_network", "none"),
+                memory=str(cfg.get("docker_memory", "1g")),
+                cpus=str(cfg.get("docker_cpus", "2")),
+                pids_limit=int(cfg.get("docker_pids_limit", 256)),
+                strip_types=has_ts and supports_ts,
+                supports_typescript=supports_ts,
+            )
+        if self.sandbox_node_provider != "local_subprocess":
+            raise ValueError(
+                f"sandbox_node_provider '{self.sandbox_node_provider}' is not implemented; supported: 'local_subprocess', 'docker'"
+            )
+        memory_mb = LLMGateway._positive_int(cfg.get("sandbox_memory_mb", DEFAULT_SANDBOX_MEMORY_MB), "sandbox_memory_mb") or 0
+        return NodeSubprocessSandbox(
+            timeout_seconds=timeout, memory_mb=memory_mb, node_bin=self.node_bin,
+            strip_types=has_ts and supports_ts, supports_typescript=supports_ts,
+        )
 
     @staticmethod
     def _build_sandbox(global_cfg: dict) -> LocalSubprocessSandbox:
@@ -302,7 +350,7 @@ class VibeHarnessCommander:
             wb_failed = sum(1 for r in wb_results if r.status == TestStatus.FAILED)
             wb_errored = sum(1 for r in wb_results if r.status in (TestStatus.ERROR, TestStatus.SKIPPED))
             cov_display = f"{cov_pct:.1f}%" if cov_pct is not None else "N/A"
-            self.console.print(f"[+] White-Box Execution Outcome: [green]{wb_passed} Passed[/green] | [red]{wb_failed} Failed/Exposed[/red] | [yellow]{wb_errored} Error/Not Run[/yellow] | Line Coverage: [bold cyan]{cov_display}[/bold cyan]")
+            self.console.print(f"[+] White-Box Execution Outcome: [green]{wb_passed} Passed[/green] | [red]{wb_failed} Failed/Exposed[/red] | [yellow]{wb_errored} Error/Not Run[/yellow] | Line Coverage (Python): [bold cyan]{cov_display}[/bold cyan]")
 
             # -------------------------------------------------------------
             # Phase 4: Mandatory Black-Box Threat Modeling (STRIDE & OWASP)
@@ -421,11 +469,25 @@ class VibeHarnessCommander:
                     f"{wb_errored + bb_errored} generated test(s) errored, were skipped, or never ran; "
                     "the boundaries they cover remain unverified by this run"
                 )
-            non_python_langs = [lang for lang in detected_langs if lang != "Python"]
-            if non_python_langs:
+            js_tests = [t for t in wb_tests + bb_tests if t.language != "python"]
+            if "TypeScript/JavaScript" in detected_langs:
+                if not js_tests:
+                    inconclusive_reasons.append(
+                        "TypeScript/JavaScript code was reviewed statically only: no JS/TS test was generated for it"
+                    )
+                elif self.executor.js_runner_unavailable_reason:
+                    inconclusive_reasons.append(
+                        f"{len(js_tests)} JS/TS test(s) were generated but could not run: "
+                        f"{self.node_runtime_problem or self.executor.js_runner_unavailable_reason}; "
+                        "TypeScript/JavaScript code was reviewed statically only"
+                    )
+                elif self.node_typescript_problem and any(t.language == "typescript" for t in js_tests):
+                    inconclusive_reasons.append(f"TypeScript tests were generated but not run: {self.node_typescript_problem}")
+            other_langs = [lang for lang in detected_langs if lang not in ("Python", "TypeScript/JavaScript")]
+            if other_langs:
                 inconclusive_reasons.append(
-                    f"{', '.join(non_python_langs)} code was reviewed statically only: the test sandbox "
-                    "executes Python, so no dynamic verification covers it"
+                    f"{', '.join(other_langs)} code was reviewed statically only: the test sandbox "
+                    "executes Python and JavaScript/TypeScript, so no dynamic verification covers it"
                 )
             if bb_failed_unclassified:
                 inconclusive_reasons.append(
@@ -497,6 +559,7 @@ class VibeHarnessCommander:
                 target_git_commit=commit,
                 target_git_dirty=dirty,
                 file_filters=filters,
+                node_runtime=self.node_runtime,
             )
             summary = VibeHarnessSummary(
                 overall_status=overall_status,

@@ -87,11 +87,19 @@ jobs:
       # Reproducible CI installs: exact pins from the uv-generated universal lock
       # (regenerate with: uv pip compile --universal requirements.txt -o requirements.lock)
       - run: python -m pip install -r requirements.lock
+      # JS/TS tests run with Node's built-in runner; pin the version the suite is validated against
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - run: echo "VIBEHARNESS_REQUIRE_NODE=1" >> "$GITHUB_ENV"
+        shell: bash
       # Linux runners have Docker: build the sandbox image so the real-container tests run instead of skipping
       - if: runner.os == 'Linux'
         run: |
           docker build -t vibeharness-sandbox:latest -f docker/sandbox.Dockerfile .
+          docker build -t vibeharness-sandbox-node:latest -f docker/sandbox-node.Dockerfile .
           echo "VIBEHARNESS_REQUIRE_DOCKER=1" >> "$GITHUB_ENV"
+          echo "VIBEHARNESS_REQUIRE_DOCKER_NODE=1" >> "$GITHUB_ENV"
       # Hermetic: the suite uses mock mode and a fake litellm, so no API keys are needed
       # Floor is the measured total minus headroom for OS matrix variance; raise as coverage grows
       - run: python -m pytest -q --cov=vibeharness --cov-report=term-missing --cov-fail-under=93

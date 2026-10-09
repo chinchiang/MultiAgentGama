@@ -92,7 +92,7 @@ def check_test_code(code: str) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
-_INSTALLER_RE = re.compile(r"\b(?:pip3?|uv|poetry|conda|mamba|npm|pnpm|yarn|ensurepip)\b")
+_INSTALLER_RE = re.compile(r"\b(?:pip3?|uv|poetry|conda|mamba|npm|pnpm|yarn|bun|ensurepip)\b")
 _INSTALL_VERB_RE = re.compile(r"\b(?:install|add)\b")
 
 
@@ -123,3 +123,72 @@ def _test_has_assertion(test_node: _TestNode) -> bool:
             if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
         )
     return _has_assertion(test_node)
+
+
+# --- JavaScript / TypeScript (node:test modules) -----------------------------------------------
+
+_JS_TEST_CALL_RE = re.compile(r"(?<![\w.$])(?:test|it)\s*\(")
+_JS_ASSERT_RE = re.compile(r"\bassert\b\s*[.(]|\bexpect\s*\(|\bthrow\b|\.(?:throws|rejects|doesNotThrow|doesNotReject)\s*\(")
+_JS_INSTALL_RE = re.compile(r"\b(?:npm|pnpm|yarn|bun)\s+(?:install|add|i|exec|dlx|x)\b|\bnpx\b|\bpip3?\s+install\b", re.I)
+_JS_SHELL_RE = re.compile(r"child_process|\bexecSync\s*\(|\bspawnSync\s*\(|\bexecFileSync\s*\(")
+_JS_OPEN, _JS_CLOSE = "([{", ")]}"
+
+
+def _js_masked(code: str) -> str:
+    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor  # no cycle: it imports only models
+    return ASTExtractor._mask_source(code)
+
+
+def _js_balanced(masked: str) -> bool:
+    stack: List[str] = []
+    for ch in masked:
+        if ch in _JS_OPEN:
+            stack.append(ch)
+        elif ch in _JS_CLOSE:
+            if not stack or _JS_OPEN.index(stack.pop()) != _JS_CLOSE.index(ch):
+                return False
+    return not stack
+
+
+def _js_call_span(masked: str, open_paren: int) -> int:
+    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
+    close = ASTExtractor._match_delim(masked, open_paren, "(", ")")
+    return close if close is not None else len(masked) - 1
+
+
+def check_js_test_code(code: str) -> Tuple[bool, Optional[str]]:
+    """The JS/TS counterpart of check_test_code for `node:test` modules: parses well enough (balanced
+    delimiters on masked source), installs nothing, defines at least one test()/it() call, and every
+    test asserts on something. There is no JS parser here, so the gate is a lexer-level approximation;
+    Node itself reports what it cannot parse at run time (classified as a harness error, not a defect)."""
+    if not code or not code.strip():
+        return False, "empty test code"
+    if "\x00" in code:
+        return False, "syntax error: source contains a NUL byte"
+    if _JS_INSTALL_RE.search(code) or (_JS_SHELL_RE.search(code) and _INSTALLER_RE.search(code)):
+        m = _JS_INSTALL_RE.search(code) or _INSTALLER_RE.search(code)
+        return False, (f"test installs packages at run time ({m.group(0) if m else 'installer call'}); "
+                       "refused (slopsquatting / OWASP LLM04:2026)")
+    masked = _js_masked(code)
+    if not _js_balanced(masked):
+        return False, "syntax error: unbalanced delimiters"
+    tests = list(_JS_TEST_CALL_RE.finditer(masked))
+    if not tests:
+        return False, "no test()/it() call defined"
+    vacuous: List[str] = []
+    for m in tests:
+        open_paren = m.end() - 1
+        close = _js_call_span(masked, open_paren)
+        if not _JS_ASSERT_RE.search(masked[open_paren:close + 1]):
+            literal = re.search(r"""["'`]([^"'`\n]{0,60})["'`]""", code[open_paren:close + 1])
+            vacuous.append(literal.group(1) if literal else f"test at offset {m.start()}")
+    if vacuous:
+        return False, f"test(s) without any assertion: {', '.join(vacuous)}"
+    return True, None
+
+
+def check_test_code_for(code: str, language: str) -> Tuple[bool, Optional[str]]:
+    """Dispatches to the gate for the test's language."""
+    if language in ("javascript", "typescript"):
+        return check_js_test_code(code)
+    return check_test_code(code)
