@@ -60,6 +60,7 @@ HEADING_CONFIRMED_FINDINGS = "### " + bi("已確認的邏輯與防禦盲點", "C
 HEADING_DISPUTED_FINDINGS = "### " + bi("有爭議的發現（遭跨模型多數否決，未測試）",
                                         "Disputed Findings (rejected by a cross-model majority, not tested)")
 HEADING_WHITEBOX_RESULTS = "### " + bi("白箱測試執行結果", "White-Box Test Execution Results")
+HEADING_MUTANTS = "### 🧬 " + bi("突變測試：存活的變異體", "Mutation Testing: Surviving Mutants")
 HEADING_POCS = "### 🚨 " + bi("已確認弱點的概念驗證（PoC）", "Confirmed Vulnerability Proof of Concepts (PoCs)")
 HEADING_UNTESTED_THREATS = "### ⚪ " + bi("未測試的威脅", "Threats Not Tested")
 METRIC_TABLE_HEADER = f"| {bi('指標', 'Metric')} | {bi('數值', 'Value')} | {bi('目標', 'Target')} |"
@@ -67,6 +68,8 @@ PROVENANCE_TABLE_HEADER = (f"| {bi('代理', 'Agent')} | {bi('模型', 'Model')}
                            f"{bi('呼叫數', 'Calls')} | {bi('原因', 'Reason')} |")
 WHITEBOX_TABLE_HEADER = (f"| {bi('測試 ID', 'Test ID')} | {bi('類型', 'Type')} | {bi('來源', 'Derived From')} | "
                          f"{bi('狀態', 'Status')} | {bi('耗時', 'Duration')} | {bi('結果', 'Outcome')} |")
+MUTANT_TABLE_HEADER = (f"| {bi('位置', 'Location')} | {bi('符號', 'Symbol')} | {bi('類別', 'Operator')} | "
+                        f"{bi('原本', 'Original')} | {bi('變異後', 'Mutated')} |")
 THREAT_TABLE_HEADER = (f"| {bi('威脅 ID', 'Threat ID')} | {bi('STRIDE 類別', 'STRIDE Category')} | "
                        f"{bi('OWASP 對應', 'OWASP Mapping')} | MITRE ATLAS | {bi('嚴重度', 'Severity')} | "
                        f"{bi('威脅標題與攻擊向量', 'Threat Title & Attack Vector')} |")
@@ -176,6 +179,11 @@ class ReportGenerator:
         md.append(f"| **{bi('跨模型一致度', 'Cross-Model Agreement')}** | `{ratio_str}`{sim_tag} | {bi('一致度 ≥ 70%', '≥ 70% Agreement')} |")
         cov_str = f"{summary.line_coverage_pct:.1f}%" if summary.line_coverage_pct is not None else "N/A"
         md.append(f"| **{bi('程式碼行涵蓋率', 'Code Line Coverage')}** | `{cov_str}` | {bi('基準 ≥ 80%', '≥ 80% Baseline')} |")
+        if summary.mutation is not None:
+            mut = summary.mutation
+            mut_str = f"{mut.score:.1f}% ({mut.killed} {bi('殺死', 'killed')} / {mut.survived} {bi('存活', 'survived')} / {mut.invalid} {bi('無效', 'invalid')})" \
+                if mut.score is not None else "N/A"
+            md.append(f"| **{bi('突變測試分數', 'Mutation Score')}** | `{mut_str}` | {bi('越高越好；是下界', 'higher is better; a lower bound')} |")
         if summary.distinct_whitebox_findings is not None:
             md.append(f"| **{bi('審查者發現（原始 → 去重後）', 'Reviewer Findings (raw → distinct)')}** | `{summary.total_whitebox_findings} → {summary.distinct_whitebox_findings}` | - |")
         md.append(f"| **{bi('已確認的白箱邏輯缺陷', 'Confirmed White-Box Logic Flaws')}** | `{summary.confirmed_whitebox_bugs}` | {bi('0 個關鍵', '0 Critical')} |")
@@ -263,6 +271,21 @@ class ReportGenerator:
                 md.append(f"| `{self._cell(r.test_id)}` | {r.test_type} | `{self._cell(r.source_ref) or '-'}` | {self._status_label(r.status)} | `{r.duration_seconds}s` | {self._cell(r.failure_reason) or bi('通過', 'Passed')} |")
         else:
             md.append(bi("未執行任何白箱測試。", "No white-box tests executed."))
+
+        mutation = summary.mutation
+        if mutation is not None:
+            md.append(f"\n{HEADING_MUTANTS}")
+            survivors = [m for m in mutation.mutants if m.status == "survived"]
+            if mutation.skipped_reason and mutation.score is None:
+                md.append(f"{bi('沒有結論', 'No conclusion')}: {markdown_safe(mutation.skipped_reason)}")
+            elif survivors:
+                md.append(MUTANT_TABLE_HEADER)
+                md.append("| :--- | :--- | :--- | :--- | :--- |")
+                for m in survivors:
+                    md.append(f"| `{self._cell(m.file)}:{m.line}` | `{self._cell(m.symbol) or '-'}` | {m.operator} | "
+                              f"`{self._cell(m.original)}` | `{self._cell(m.mutated)}` |")
+            else:
+                md.append(bi("沒有存活的變異體。", "No surviving mutants."))
 
         md.append("\n")
 

@@ -120,6 +120,7 @@ Every agent's model and prompt live in [`vibeharness/config/agents_config.yaml`]
    - `local_subprocess` (default): a local subprocess; on POSIX its address space is capped by `sandbox_memory_mb` (default 2 GB) plus a CPU-time cap, stopping runaway consumption (still not a security boundary).
    - `docker`: each test batch runs in a disposable container — no network by default, read-only root filesystem and target mount, all capabilities dropped, no privilege escalation, non-root user (when the harness itself runs as root the container runs as `nobody`), and memory/CPU/process limits. Only the run's temp directory and `/tmp` (a noexec tmpfs) are writable.
 7. **JS/TS dynamic test execution**: for `.js` / `.jsx` / `.mjs` / `.cjs` / `.ts` / `.tsx` / `.mts` / `.cts` targets, white-box tests and in-process black-box attack tests are generated as `node:test` + `node:assert` ES modules (`node_bin` is detected the first time one is needed; Node >= 20, and >= 22.6 for `.ts` through type stripping). Each test module runs in its own `node --test` process and is judged from the JUnit report: only an `AssertionError` / `ERR_ASSERTION` failure is a confirmed breach, a `TypeError` thrown inside the target is a defect but not an exploit, and a test-side `ReferenceError` or an unresolvable import is a harness error. Tests import the target through its `file://` URL (the prompt states the ESM / CommonJS import form and the detected exports); bare specifiers resolve from the target's `node_modules` (linked into the run directory); the static gate refuses package installs (`npm` / `pnpm` / `yarn` / `bun` / `npx`) as it does for Python. The Node sandbox sets no `RLIMIT_AS` (V8 reserves a large address space at start-up) and caps the heap with `--max-old-space-size` instead, keeping the CPU cap; `NODE_OPTIONS` / `NODE_PATH` are never forwarded from the host. Black-box HTTP attacks against a running server are still written in Python (urllib). Without a usable Node runtime the JS/TS tests are reported as ERROR and as an evidence gap ("no usable Node runtime"), never as a start-up failure; the mock mode's simulation engine generates no JS test, so the gap reads "no JS/TS test was generated". Under Docker, Node tests use a separate image, `docker_node_image` (`docker/sandbox-node.Dockerfile`).
+8. **Mutation testing (optional, `--mutation`)**: coverage only measures which lines ran, not whether the tests would notice a behaviour change. When on, deterministic single-token changes (`+`↔`-`, `<`↔`<=`, `and`↔`or`, removing `not`, `True`↔`False`, `0`↔`1`, …) are made to the functions covered by passing Python white-box tests and the tests are re-run on a copy: any failing test "kills" the mutant, all passing means it "survived"; score = killed ÷ (killed + survived), a lower bound (equivalent mutants cannot be decided). Fully offline, no model calls, **off by default**; it only adds evidence gaps (score below `mutation_min_score`, mutants truncated by `mutation_max_mutants`, or no conclusion), never causes `NEEDS_FIXES`, and never writes into your target directory. Limits: Python only, no JS/TS, not in SARIF or the baseline.
 
 > ⚠️ **`local_subprocess` is not a security boundary.** It executes model-generated code with your user's permissions, with file and network access. For untrusted targets or live mode, use `sandbox_provider: docker`.
 
@@ -141,7 +142,6 @@ VibeHarness-MAS is itself an LLM application: the target's code is untrusted inp
 
 | Feature | Status |
 | :--- | :--- |
-| Mutation testing | Not implemented; white-box tests are currently measured by line coverage (pytest-cov) |
 | Dynamic DAST / fuzzing agent | Not implemented; black-box tests are generated per threat as pytest attack scripts |
 | Hypothesis property-based testing | Not built in; models may generate it, but the target environment needs `hypothesis` installed |
 | `e2b` sandbox | Not implemented; `sandbox_provider` supports `local_subprocess` and `docker`, anything else fails fast |
@@ -217,6 +217,7 @@ MultiAgentGama/
 │   ├── test_harness_components.py      # Component integration tests in mock mode
 │   ├── test_js_execution.py            # JS/TS execution: code gate, ESM/CJS detection, Node JUnit classification, Node sandboxes (real runs when node exists), end to end
 │   ├── test_js_ts_extractor.py         # JS/TS extractor: brace matching, literal/comment masking, arrow functions, routes
+│   ├── test_mutation.py                # Mutation testing: sites and splicing, determinism and cap, isolation and path rewriting, strong vs weak tests end to end, gate semantics, switch precedence, CLI / Action
 │   ├── test_model_output_robustness.py # Graceful degradation on malformed model output, probe-fallback disclosure
 │   ├── test_p0_regressions.py          # Executor correctness, self-repair and result-provenance honesty regressions
 │   ├── test_parallel_and_budgets.py    # Parallel test generation, model-call budget, file / worker caps
@@ -327,6 +328,7 @@ You can also pass `--sarif <path>` to emit a [SARIF 2.1.0](https://docs.oasis-op
     max-model-calls: "80"
     changed-since: origin/main                 # PR checks: only files that changed (optional)
     baseline: .vibeharness/baseline.json       # optional: only problems that are new fail the job
+    mutation: "true"                            # optional: true / false switches mutation testing for this run, empty follows the config
     fail-on: needs-fixes                       # blocked | needs-fixes | inconclusive | never
   env:
     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -340,6 +342,8 @@ You can also pass `--sarif <path>` to emit a [SARIF 2.1.0](https://docs.oasis-op
 ```
 
 The action's outputs are `verdict` (`READY_TO_SHIP` / `NEEDS_FIXES` / `BLOCKED_CRITICAL_RISK` / `INCONCLUSIVE`, or `ERROR` when the harness itself failed) and `exit-code`; the report, the SARIF and a crash's `.partial.json` are uploaded as the `vibeharness-report` artifact. Without the action, `pip install "git+https://github.com/chinchiang/MultiAgentGama@v0.4.0"` and call `vibeharness` directly.
+
+**Mutation testing switch**: `--mutation` turns it on, `--no-mutation` off; precedence is CLI flag > config `global.mutation_testing` > off, so a config that enables it can be switched off for one run with `--no-mutation`, and a config that disables it can be switched on with `--mutation`. `--mutation-max-mutants N` (≥ 1) overrides the mutant cap (default 20); each mutant costs one sandbox batch and no model call, and `--estimate` lists the ceiling when it is on. The report has a Mutation Score row in the metrics table and lists surviving mutants; the other keys are in [`docs/configuration.md`](docs/configuration.md).
 
 **Gating on new problems only (`--baseline`)**: keep one `--format json` report (for example committed as `.vibeharness/baseline.json`) and pass it with `--baseline`: failed white-box tests (keyed by their source finding), probe failures, black-box breaches and HIGH+ rule hits it already contains are still listed in the report's "基準中的已知問題（不計入） ／ Known from baseline (not counted)" section and in the recommendations, but no longer count toward the verdict or the exit code, so CI fails only on problems that are new. The keys do not depend on run numbering (a finding is keyed by target-relative path + symbol + normalized title, a breach by the threat's STRIDE category + title + attack vector, a rule hit by rule + file + evidence without the line number, a probe by its symbol), so re-numbered model output or unrelated line shifts never turn an old problem into a new one. Every item in the JSON report carries a `fingerprint` field; reports from before 0.3.0 without it are recomputed. A crash's `.partial.json` cannot serve as a baseline.
 

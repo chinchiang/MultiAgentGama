@@ -227,7 +227,37 @@ class RunMetadata(BaseModel):
     target_git_commit: Optional[str] = None  # 包含目標的版本庫的 HEAD（若有） ／ HEAD of the repository containing the target, if any
     target_git_dirty: Optional[bool] = None  # 執行時目標底下有未提交的變更 ／ uncommitted changes under the target at run time
     file_filters: List[str] = Field(default_factory=list)  # 實際套用的 include／exclude／changed-since ／ include/exclude/changed-since actually applied
+    mutation_enabled: Optional[bool] = None  # 突變測試最終是否開啟 ／ whether mutation testing ended up on
+    mutation_source: Optional[str] = None  # 開關的來源：cli／config／default ／ where the switch came from: cli / config / default
     node_runtime: Optional[str] = None  # 例如 JS/TS 測試有執行時為 "node v22.22.0"，否則為 None ／ e.g. "node v22.22.0" when JS/TS tests ran, else None
+
+
+class MutantResult(BaseModel):
+    """一個變異體的結果：改了哪一行、改成什麼，以及測試有沒有抓到。
+    The result of one mutant: which line changed, what it became and whether the tests caught it."""
+    file: str  # 相對於目標目錄的檔案 ／ file relative to the target directory
+    line: int
+    operator: str  # 運算子類別 ／ operator class: arithmetic／comparison／boolean／negation／constant
+    symbol: str = ""
+    original: str  # 變異前的該行（去除前後空白） ／ the line before the change (stripped)
+    mutated: str  # 變異後的該行（去除前後空白） ／ the line after the change (stripped)
+    status: str  # "killed"（有測試失敗或逾時）、"survived"（全部通過）、"invalid"（程式壞到無法判斷） ／ "killed" (a test failed or timed out), "survived" (all passed), "invalid" (broke the code beyond judging)
+
+
+class MutationReport(BaseModel):
+    """突變測試的整體結果；`score` 是下界（等價變異體算成存活）。
+    The overall mutation-testing result; `score` is a lower bound (equivalent mutants count as survivors)."""
+    enabled: bool = True
+    score: Optional[float] = None  # killed / (killed + survived)，百分比 ／ killed / (killed + survived) as a percentage
+    total: int = 0
+    killed: int = 0
+    survived: int = 0
+    invalid: int = 0
+    candidate_sites: int = 0  # 符號內所有可變異的位置 ／ every mutable spot in the covered symbols
+    truncated: bool = False  # 候選位置超過 mutation_max_mutants，分數只是樣本 ／ candidates exceeded mutation_max_mutants, the score is a sample
+    eligible_tests: int = 0
+    skipped_reason: Optional[str] = None  # 沒有執行或沒有結論的原因 ／ why nothing ran or nothing was concluded
+    mutants: List[MutantResult] = Field(default_factory=list)
 
 
 class VibeHarnessSummary(BaseModel):
@@ -255,6 +285,8 @@ class VibeHarnessSummary(BaseModel):
     agent_calls: List[AgentCallRecord] = Field(default_factory=list)
     inconclusive_reasons: List[str] = Field(default_factory=list)
     line_coverage_pct: Optional[float] = None
+    # 突變測試（--mutation）的結果；沒有啟用時為 None ／ the --mutation result; None when it is off
+    mutation: Optional[MutationReport] = None
     detected_language: str = "Python"
     static_findings: List[StaticFinding] = Field(default_factory=list)
     # 目標匯入的 AI/LLM SDK；非空時會啟用 OWASP LLM Top 10 威脅建模

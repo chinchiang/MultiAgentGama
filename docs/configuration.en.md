@@ -38,6 +38,10 @@ From the CLI, use `--config <path>` to point at a different file and `--mode` to
 | `docker_node_image` | `"vibeharness-sandbox-node:latest"` | Node container image (`docker/sandbox-node.Dockerfile`, node:22-slim); the container sets `NODE_PATH=/work/<target>/node_modules`, which only CommonJS honours |
 | `sandbox_timeout_seconds` | `120` | Total timeout for one batched pytest run; on timeout the whole process tree is killed / the container removed |
 | `per_test_timeout_seconds` | `30` | Per-test timeout used when a timed-out batch is re-run test by test |
+| `mutation_testing` | `false` | Master switch for mutation testing (off by default); CLI `--mutation` / `--no-mutation` wins over it. Python only, fully offline, no model calls |
+| `mutation_max_mutants` | `20` | Mutant cap per run (≥ 1); beyond it the list is truncated and flagged as an evidence gap. CLI `--mutation-max-mutants` overrides |
+| `mutation_timeout_seconds` | same as `per_test_timeout_seconds` | Timeout (seconds) of the sandbox batch for one mutant; a timeout counts as killed |
+| `mutation_min_score` | `70` | A score (percent, 0–100) below this is an evidence gap; it never causes `NEEDS_FIXES` |
 
 ### `execution_mode` behavior
 

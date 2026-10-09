@@ -120,6 +120,7 @@ flowchart TD
    - `local_subprocess`（預設）：本機子程序；POSIX 上以 `sandbox_memory_mb`（預設 2 GB）限制位址空間並加 CPU 時間上限，擋住失控的消耗（仍不是安全邊界）。
    - `docker`：每批測試在一次性容器中執行——預設無網路、根檔案系統與目標目錄唯讀、移除所有 capabilities、禁止提權、非 root 使用者（harness 以 root 執行時容器改用 `nobody`）、記憶體／CPU／程序數上限。只有該次執行的暫存目錄與 `/tmp`（noexec 的 tmpfs）可寫。
 7. **JS/TS 動態測試執行**：目標檔是 `.js`／`.jsx`／`.mjs`／`.cjs`／`.ts`／`.tsx`／`.mts`／`.cts` 時，白箱測試生成與黑箱 in-process 攻擊測試改以 `node:test` + `node:assert` 的 ES module 生成（第一次需要時才偵測 `node_bin`，需 Node ≥ 20；`.ts` 需 ≥ 22.6 的型別剝除），每個測試模組各自在一個 `node --test` 程序中執行，由 JUnit 報告判定：`AssertionError`／`ERR_ASSERTION` 失敗才算確認突破，目標內拋出的 `TypeError` 算缺陷但不算 exploit，測試自身的 `ReferenceError`／無法解析的匯入算 harness 錯誤。測試以 `file://` URL 匯入目標（提示詞會告知 ESM／CommonJS 的匯入寫法與偵測到的匯出名），裸 specifier 由目標的 `node_modules`（symlink 進執行目錄）解析；靜態閘門同樣拒絕安裝套件（`npm`／`pnpm`／`yarn`／`bun`／`npx`）。Node 沙盒不套 `RLIMIT_AS`（V8 啟動時保留大片位址空間），改以 `--max-old-space-size` 封頂堆積並保留 CPU 上限；`NODE_OPTIONS`／`NODE_PATH` 不從主機轉送。打執行中服務的黑箱 HTTP 攻擊仍一律以 Python（urllib）撰寫。沒有可用的 Node 時，JS/TS 測試列為 ERROR 並寫入證據缺口（「no usable Node runtime」），不會在啟動時失敗；mock 模式的模擬引擎不會生成 JS 測試，缺口為「no JS/TS test was generated」。Docker 下 Node 測試用另一個映像 `docker_node_image`（`docker/sandbox-node.Dockerfile`）。
+8. **突變測試（選用，`--mutation`）**：覆蓋率只量到「哪些行被跑過」，量不到「測試能不能抓到行為改變」。開啟後，對通過的 Python 白箱測試所涵蓋的函式做確定性的單一 token 改動（`+`↔`-`、`<`↔`<=`、`and`↔`or`、移除 `not`、`True`↔`False`、`0`↔`1` 等），在複本上重跑測試：任何測試失敗即「殺死」，全數通過即「存活」；分數 = 殺死 ÷（殺死＋存活），是下界（等價變異體無法判定）。完全離線、不呼叫模型，**預設關閉**；只產生證據缺口（分數低於 `mutation_min_score`、變異體被 `mutation_max_mutants` 截斷、或沒有結論），不會造成 `NEEDS_FIXES`，也不會寫入你的目標目錄。限制：只支援 Python，不含 JS/TS，不納入 SARIF 與基準線。
 
 > ⚠️ **`local_subprocess` 不是安全邊界。** 它以你的使用者權限執行模型生成的程式碼，可讀寫檔案與存取網路。對不信任的目標或 live 模式，請使用 `sandbox_provider: docker`。
 
@@ -141,7 +142,6 @@ VibeHarness 本身就是一個 LLM 應用：待審程式碼是每個審查、驗
 
 | 功能 | 現況 |
 | :--- | :--- |
-| 突變測試（Mutation Testing） | 未實作；目前以行覆蓋率（pytest-cov）衡量白箱測試 |
 | 動態 DAST／Fuzzing 代理 | 未實作；黑箱測試由威脅模型逐項生成 pytest 攻擊腳本 |
 | Hypothesis 性質測試 | 未內建；模型可自行生成，但需目標環境已安裝 `hypothesis` |
 | `e2b` 沙盒 | 未實作；`sandbox_provider` 支援 `local_subprocess` 與 `docker`，其他值會直接報錯 |
@@ -217,6 +217,7 @@ MultiAgentGama/
 │   ├── test_harness_components.py      # 各元件於 mock 模式下的整合測試
 │   ├── test_js_execution.py            # JS/TS 執行：程式碼閘門、ESM/CJS 偵測、Node JUnit 分類、Node 沙盒（有 node 時實跑）、端對端
 │   ├── test_js_ts_extractor.py         # JS/TS 擷取器：括號配對、字面值／註解遮蔽、箭頭函式、路由
+│   ├── test_mutation.py                # 突變測試：變異點與切換、決定性與上限、隔離與路徑改寫、強弱測試端對端、閘門語意、開關優先順序、CLI／Action
 │   ├── test_model_output_robustness.py # 模型輸出異常時優雅降級、探針回退的揭露
 │   ├── test_p0_regressions.py          # 執行器正確性、自我修復與結果來源誠實性的回歸測試
 │   ├── test_parallel_and_budgets.py    # 測試生成並行、模型呼叫預算、檔案／worker 上限
@@ -327,6 +328,7 @@ python main.py --target examples --output report.json --format json
     max-model-calls: "80"
     changed-since: origin/main                 # PR 檢查：只分析有變更的檔案（可省略）
     baseline: .vibeharness/baseline.json       # 可選：只有「新出現」的問題才讓 job 失敗
+    mutation: "true"                            # 可選：true／false 單次開關突變測試，留空沿用設定檔
     fail-on: needs-fixes                       # blocked | needs-fixes | inconclusive | never
   env:
     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -340,6 +342,8 @@ python main.py --target examples --output report.json --format json
 ```
 
 Action 的 outputs 有 `verdict`（`READY_TO_SHIP`／`NEEDS_FIXES`／`BLOCKED_CRITICAL_RISK`／`INCONCLUSIVE`，harness 本身失敗時為 `ERROR`）與 `exit-code`；報告、SARIF 與崩潰時的 `.partial.json` 會以 artifact `vibeharness-report` 上傳。不用 Action 的話，`pip install "git+https://github.com/chinchiang/MultiAgentGama@v0.4.0"` 後直接呼叫 `vibeharness` 即可。
+
+**突變測試開關**：`--mutation` 開啟、`--no-mutation` 關閉；優先順序為 CLI 旗標 > 設定檔 `global.mutation_testing` > 預設關閉，因此設定檔開啟時可用 `--no-mutation` 單次關掉，設定檔關閉時可用 `--mutation` 單次打開。`--mutation-max-mutants N`（≥ 1）覆蓋變異體上限（預設 20）；每個變異體跑一批沙盒、不呼叫模型，`--estimate` 在開啟時會列出上限。報告的指標表有 Mutation Score 一列並列出存活的變異體；其餘鍵見 [`docs/configuration.md`](docs/configuration.md)。
 
 **只對新問題把關（`--baseline`）**：把一次 `--format json` 的報告存起來（例如提交到 repo 的 `.vibeharness/baseline.json`），之後以 `--baseline` 指定它：報告中已經存在的白箱測試失敗（以其來源發現識別）、探針失敗、黑箱突破與 HIGH 以上的規則命中仍會列在報告的「基準中的已知問題（不計入） ／ Known from baseline (not counted)」清單與建議中，但不再計入判定與 exit code，只有新出現的問題會讓 CI 失敗。比對 key 與執行次序無關（finding 以檔案相對路徑＋符號＋標題正規化、突破以威脅的 STRIDE 分類＋標題＋攻擊向量、靜態命中以規則＋檔案＋證據但不含行號、探針以符號名），所以模型重新編號或無關的行數位移不會讓舊問題變新的。JSON 報告每個項目都帶 `fingerprint` 欄位；0.3.0 之前沒有該欄位的報告會自動重算。崩潰產生的 `.partial.json` 不能當 baseline。
 

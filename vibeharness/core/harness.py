@@ -15,6 +15,7 @@ from rich.panel import Panel
 from vibeharness import __version__
 from vibeharness.core.models import (
     CodeSymbol,
+    MutationReport,
     RunMetadata,
     VibeHarnessSummary,
     FindingSeverity,
@@ -30,6 +31,7 @@ from vibeharness.core.sandbox import (
     NodeDockerSandbox, NodeSubprocessSandbox, detect_node, parse_node_version,
 )
 from vibeharness.core.baseline import Baseline, annotate_report_payload, compare_with_baseline
+from vibeharness.core.mutation import run_mutation_testing
 from vibeharness.core.i18n import bi
 from vibeharness.agents.whitebox.ast_extractor import ASTExtractor, DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES
 from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
@@ -47,6 +49,9 @@ logger = logging.getLogger("VibeHarness.Commander")
 # local_subprocess 沙盒的位址空間上限（MB）；0 表示停用
 # Address-space cap for the local_subprocess sandbox (MB); 0 disables
 DEFAULT_SANDBOX_MEMORY_MB = 2048
+# 突變測試的預設值：變異體上限與低於幾分（百分比）算證據缺口 ／ mutation-testing defaults: the mutant cap and the score (percent) below which an evidence gap is added
+DEFAULT_MUTATION_MAX_MUTANTS = 20
+DEFAULT_MUTATION_MIN_SCORE = 70.0
 
 
 def force_utf8_stdio() -> None:
@@ -109,6 +114,12 @@ class VibeHarnessCommander:
         # The Node sandbox is built lazily, so every setting it uses is validated once here (start-up) and reused;
         # a bad value exits 5 instead of surfacing at the first JS test
         self._node_cfg = self._validate_node_settings(global_cfg, self.sandbox_node_provider, self._sandbox_cfg)
+        # 突變測試：開關優先順序為 CLI（set_mutation）> global.mutation_testing > 預設關閉，來源記進 RunMetadata
+        # Mutation testing: the switch precedence is CLI (set_mutation) > global.mutation_testing > off by default,
+        # and the source is recorded in RunMetadata
+        self._mutation_cfg = self._mutation_settings(global_cfg)
+        self.mutation_testing: bool = self._mutation_cfg["enabled"]
+        self.mutation_source: str = "config" if global_cfg.get("mutation_testing") is not None else "default"
         self.node_runtime: Optional[str] = None
         self.node_runtime_problem: Optional[str] = None
         self.node_typescript_problem: Optional[str] = None
@@ -208,6 +219,30 @@ class VibeHarnessCommander:
         untracked = self._git(["ls-files", "--others", "--exclude-standard", "--", spec], root) or ""
         paths = {os.path.join(root, line.strip()) for line in (diff + untracked).splitlines() if line.strip()}
         return sorted(p for p in paths if os.path.isfile(p))
+
+    @staticmethod
+    def _mutation_settings(global_cfg: dict) -> Dict[str, Any]:
+        """突變測試的設定，啟動時驗證一次（錯誤值 exit 5）。
+        The mutation-testing settings, validated once at start-up (a bad value exits 5)."""
+        enabled = global_cfg.get("mutation_testing")
+        if enabled is not None and not isinstance(enabled, bool):
+            raise ValueError(bi(f"global.mutation_testing 必須是 true 或 false，目前為 {enabled!r}",
+                                f"global.mutation_testing must be true or false, got {enabled!r}"))
+        max_mutants = global_cfg.get("mutation_max_mutants", DEFAULT_MUTATION_MAX_MUTANTS)
+        if isinstance(max_mutants, bool) or not isinstance(max_mutants, int) or max_mutants < 1:
+            raise ValueError(bi(f"global.mutation_max_mutants 必須是至少 1 的整數，目前為 {max_mutants!r}",
+                                f"global.mutation_max_mutants must be an integer >= 1, got {max_mutants!r}"))
+        per_test = LLMGateway._positive_int(global_cfg.get("per_test_timeout_seconds", 30), "per_test_timeout_seconds") or 30
+        timeout = LLMGateway._positive_int(global_cfg.get("mutation_timeout_seconds", per_test), "mutation_timeout_seconds") or per_test
+        min_score = global_cfg.get("mutation_min_score", DEFAULT_MUTATION_MIN_SCORE)
+        LLMGateway._number(min_score, "mutation_min_score", 0, 100)
+        return {"enabled": bool(enabled), "max_mutants": max_mutants, "timeout": timeout, "min_score": float(min_score)}
+
+    def set_mutation(self, enabled: bool, source: str = "cli") -> None:
+        """依 CLI 旗標開啟或關閉突變測試（優先於設定檔）。
+        Turns mutation testing on or off from a CLI flag (it wins over the config file)."""
+        self.mutation_testing = enabled
+        self.mutation_source = source
 
     @staticmethod
     def _sandbox_settings(global_cfg: dict, need_docker: bool = True) -> Dict[str, Any]:
@@ -508,6 +543,33 @@ class VibeHarnessCommander:
             )
 
             # -------------------------------------------------------------
+            # 第 3.5 階段：突變測試（選用，--mutation）
+            # Phase 3.5: Mutation Testing (optional, --mutation)
+            # -------------------------------------------------------------
+            mutation_report: Optional[MutationReport] = None
+            if self.mutation_testing:
+                self.console.print(f"\n[bold blue]=== {bi('第 3.5 階段：突變測試', 'Phase 3.5: Mutation Testing')} ===[/bold blue]")
+                try:
+                    mutation_report = run_mutation_testing(
+                        self.executor.run_mutant_batch, wb_tests, wb_results, debate_result.confirmed_findings, symbols,
+                        work_dir, self._mutation_cfg["max_mutants"], self._mutation_cfg["timeout"],
+                    )
+                except Exception as e:  # 突變測試出錯不能拖垮整個稽核：揭露為證據缺口 ／ a mutation failure must not sink the audit: disclosed as an evidence gap
+                    logger.error(bi(f"突變測試失敗：{type(e).__name__}", f"Mutation testing failed: {type(e).__name__}") + f": {self.gateway._safe_reason(str(e))}")
+                    mutation_report = MutationReport(enabled=True, skipped_reason=bi(
+                        f"突變測試執行失敗（{type(e).__name__}）", f"mutation testing failed ({type(e).__name__})"))
+                progress.update(mutation=mutation_report)
+                if mutation_report.skipped_reason and mutation_report.score is None:
+                    self.console.print(f"[!] {bi('突變測試沒有結論', 'Mutation testing has no conclusion')}: {escape(mutation_report.skipped_reason)}")
+                else:
+                    score_text = f"{mutation_report.score:.1f}%" if mutation_report.score is not None else "N/A"
+                    self.console.print(
+                        f"[+] {bi('突變測試結果', 'Mutation Testing Outcome')}: [green]{mutation_report.killed} {bi('殺死', 'Killed')}[/green] | "
+                        f"[red]{mutation_report.survived} {bi('存活', 'Survived')}[/red] | [yellow]{mutation_report.invalid} {bi('無效', 'Invalid')}[/yellow] | "
+                        f"{bi('分數', 'Score')}: [bold cyan]{score_text}[/bold cyan]"
+                    )
+
+            # -------------------------------------------------------------
             # 第 4 階段：強制黑箱威脅建模（STRIDE 與 OWASP）
             # Phase 4: Mandatory Black-Box Threat Modeling (STRIDE & OWASP)
             # -------------------------------------------------------------
@@ -651,6 +713,25 @@ class VibeHarnessCommander:
                     f"{wb_errored + bb_errored} generated test(s) errored, were skipped, or never ran; "
                     "the boundaries they cover remain unverified by this run"
                 ))
+            if mutation_report is not None:
+                min_score = self._mutation_cfg["min_score"]
+                if mutation_report.skipped_reason and mutation_report.score is None:
+                    inconclusive_reasons.append(bi(
+                        "已要求突變測試但沒有結論，通過的測試是否抓得到行為改變仍未驗證",
+                        "Mutation testing was requested but has no conclusion, so whether the passing tests catch behaviour changes is unverified"
+                    ) + f": {mutation_report.skipped_reason}")
+                elif mutation_report.score is not None and mutation_report.score < min_score:
+                    inconclusive_reasons.append(bi(
+                        f"突變測試分數 {mutation_report.score:.1f}% 低於門檻 {min_score:g}%：{mutation_report.survived} 個存活的變異體表示通過的測試可能抓不到行為改變",
+                        f"Mutation score {mutation_report.score:.1f}% is below the {min_score:g}% threshold: {mutation_report.survived} surviving mutant(s) "
+                        "mean the passing tests may not catch behaviour changes"
+                    ))
+                if mutation_report.truncated:
+                    inconclusive_reasons.append(bi(
+                        f"突變測試只涵蓋 {mutation_report.total} 個變異體（候選 {mutation_report.candidate_sites} 個，受 mutation_max_mutants 限制），分數只是樣本",
+                        f"Mutation testing covered {mutation_report.total} mutant(s) of {mutation_report.candidate_sites} candidates "
+                        "(limited by mutation_max_mutants), so the score is a sample"
+                    ))
             js_tests = [t for t in wb_tests + bb_tests if t.language != "python"]
             if "TypeScript/JavaScript" in detected_langs:
                 if not js_tests:
@@ -740,6 +821,14 @@ class VibeHarnessCommander:
             recommendations = self._build_recommendations(
                 gate_wb_results, gate_bb_results, threat_report, untested_threats, inconclusive_reasons, static_blocking
             )
+            survivors = [m for m in (mutation_report.mutants if mutation_report else []) if m.status == "survived"]
+            if survivors:
+                where = ", ".join(f"{m.file}:{m.line}" for m in survivors[:3])
+                recommendations.append(bi(
+                    f"在 {where} 等位置補強斷言，讓測試抓得到這 {len(survivors)} 個存活的變異（把運算子或常數改掉測試仍通過）",
+                    f"Strengthen the assertions around {where} so the tests catch these {len(survivors)} surviving mutant(s) "
+                    "(the tests still pass when an operator or constant is changed)"
+                ))
             if suppressed:
                 recommendations.append(
                     bi(f"基準中已有的 {len(suppressed)} 個問題不計入；它們仍然存在",
@@ -759,6 +848,8 @@ class VibeHarnessCommander:
                 target_git_dirty=dirty,
                 file_filters=filters,
                 node_runtime=self.node_runtime,
+                mutation_enabled=self.mutation_testing,
+                mutation_source=self.mutation_source,
             )
             summary = VibeHarnessSummary(
                 overall_status=overall_status,
@@ -779,6 +870,7 @@ class VibeHarnessCommander:
                 agent_calls=list(self.gateway.call_log),
                 inconclusive_reasons=inconclusive_reasons,
                 line_coverage_pct=cov_pct,
+                mutation=mutation_report,
                 detected_language=lang_str,
                 key_recommendations=recommendations,
                 static_findings=static_findings,

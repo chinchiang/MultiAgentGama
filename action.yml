@@ -63,6 +63,9 @@ inputs:
   python-version:
     description: "要安裝的 Python 版本 ／ Python version to set up"
     default: "3.12"
+  mutation:
+    description: "突變測試：true 開啟、false 關閉、留空沿用設定檔的 global.mutation_testing ／ Mutation testing: true on, false off, empty follows global.mutation_testing in the config"
+    default: ""
   fail-on:
     description: >-
       讓 job 失敗的最低判定：blocked（只有 BLOCKED_CRITICAL_RISK）、needs-fixes（BLOCKED 或 NEEDS_FIXES）、
@@ -115,6 +118,7 @@ runs:
         VH_FORMAT: ${{ inputs.format }}
         VH_SARIF: ${{ inputs.sarif }}
         VH_EXTRA: ${{ inputs.extra-args }}
+        VH_MUTATION: ${{ inputs.mutation }}
         VH_FAIL_ON: ${{ inputs.fail-on }}
       run: |
         # extra-args 以 shlex 規則切字（引號有效；不執行任何 shell、不展開 glob）；切不開就以 exit 5 失敗
@@ -131,6 +135,13 @@ runs:
         [ -n "$VH_CHANGED_SINCE" ] && args+=(--changed-since "$VH_CHANGED_SINCE")
         [ -n "$VH_BASELINE" ] && args+=(--baseline "$VH_BASELINE")
         [ -n "$VH_SARIF" ] && args+=(--sarif "$VH_SARIF")
+        # 突變測試開關：true／false 轉成旗標，留空則不加（沿用設定檔） ／ mutation switch: true / false become a flag, empty adds none (the config decides)
+        case "$VH_MUTATION" in
+          true) args+=(--mutation) ;;
+          false) args+=(--no-mutation) ;;
+          "") ;;
+          *) echo "::error::unknown mutation value '$VH_MUTATION' (use true, false or leave empty)"; exit 5 ;;
+        esac
         vibeharness "${args[@]}" "${extra[@]}"
         rc=$?
         set -e
