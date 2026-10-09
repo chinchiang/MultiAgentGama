@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Added
+
+- Mutation testing (optional, off by default): the `--mutation` / `--no-mutation` switch (wins over the config `global.mutation_testing`), `--mutation-max-mutants N`, and the config keys `mutation_testing`, `mutation_max_mutants`, `mutation_timeout_seconds`, `mutation_min_score`. Deterministic single-token changes are made to the functions covered by passing Python white-box tests, the tests are re-run on a copy and a score is computed; it only adds evidence gaps and never affects `NEEDS_FIXES` / `BLOCKED_CRITICAL_RISK`. The report gains a Mutation Score row and a "Surviving Mutants" section, JSON carries `summary.mutation`, `RunMetadata` records the final switch and its source, `--estimate` lists the mutant ceiling when on, and the composite Action gains a `mutation` input.
+
 ## [0.4.0] - 2026-10-09
 
 CI integration (`--baseline`, GitHub Action), `--estimate`, dynamic JS/TS test execution, and fully bilingual output, source comments and documentation.

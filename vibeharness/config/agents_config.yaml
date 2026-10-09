@@ -47,6 +47,15 @@ global:
   sandbox_memory_mb: 2048         # 僅 local_subprocess：pytest 程序樹的位址空間上限（RLIMIT_AS，POSIX），另加批次預算 + 10 秒的 CPU 時間上限；0 關閉。不是安全邊界
                                   # local_subprocess only: address-space cap (RLIMIT_AS, POSIX) for the pytest process
                                   # tree, plus a CPU-time cap of the batch budget + 10 s; 0 disables. Not a security boundary
+  # 突變測試（選用）：對已通過的白箱測試所涵蓋的函式做確定性的小改動，檢查測試會不會失敗；不呼叫模型。
+  # CLI 的 --mutation／--no-mutation 優先於 mutation_testing；分數低於 mutation_min_score、被上限截斷或沒有結論時加證據缺口（不影響 NEEDS_FIXES）
+  # Mutation testing (optional): applies small deterministic changes to the functions the passing white-box tests cover and
+  # checks whether the tests fail; no model is called. CLI --mutation / --no-mutation wins over mutation_testing; a score below
+  # mutation_min_score, a truncated mutant list or no conclusion adds an evidence gap (it never causes NEEDS_FIXES)
+  mutation_testing: false
+  mutation_max_mutants: 20        # 變異體上限，每個變異體一次沙盒批次 ／ mutant cap, one sandbox batch per mutant
+  mutation_timeout_seconds: 30    # 每個變異體的批次逾時（逾時算殺死）；預設同 per_test_timeout_seconds ／ per-mutant batch timeout (a timeout counts as killed); defaults to per_test_timeout_seconds
+  mutation_min_score: 70          # 百分比，低於它就加證據缺口 ／ percent, below it an evidence gap is added
   per_test_timeout_seconds: 30    # 批次逾時後逐測重跑時，每個測試的預算 ／ budget per test when a timed-out batch is re-run test by test
 
 models:

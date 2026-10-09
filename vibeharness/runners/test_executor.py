@@ -152,6 +152,37 @@ class TestSuiteExecutor:
                 self._run_group(tests, runnable, unique_ids, results, working_dir, False, "javascript", sandbox)
         return [results[i] for i in range(len(tests))], coverage_pct
 
+    def run_mutant_batch(self, tests: List[GeneratedTest], working_dir: str, timeout_seconds: int) -> str:
+        """突變測試用：把已通過的 Python 測試當作**一個**沙盒批次對 working_dir 執行，不走逾時後逐測重跑的路徑
+        （無窮迴圈的變異體會讓重跑拖很久）。回傳 "killed"（有測試失敗、或批次逾時）、"survived"（全部通過）、
+        "invalid"（沙盒沒有報告、報告解析不了，或變異體讓匯入／載入壞掉，無法判斷）。
+        For mutation testing: runs the PASSED Python tests as ONE sandbox batch against working_dir, without the
+        per-test rerun after a timeout (a mutant with an endless loop would make that rerun very slow). Returns
+        "killed" (a test failed, or the batch timed out), "survived" (all passed) or "invalid" (no report, an
+        unparsable report, or the mutant broke import/load so nothing can be concluded)."""
+        header = self._python_header(working_dir)
+        files: Dict[str, str] = {}
+        for idx, t in enumerate(tests):
+            preamble, body = self._split_future_imports(t.code)
+            files[f"test_vh_{idx:03d}.py"] = (
+                f"{preamble}{header}\n# Target: {self._header_field(t.target_component)} | "
+                f"Test: {self._header_field(t.title)}\n{body}\n"
+            )
+        exit_code, _stdout, _stderr, _duration, _coverage, junit_xml = self.sandbox.execute_pytest_files(
+            files, working_dir=working_dir, collect_coverage=False, timeout_seconds=timeout_seconds
+        )
+        if exit_code == TIMEOUT_EXIT_CODE:
+            return "killed"
+        cases = self._parse_junit(junit_xml, "python")
+        if not cases:
+            return "invalid"
+        flat = [case for module_cases in cases.values() for case in module_cases]
+        if any(c["outcome"] == "failure" and not self._is_harness_failure(c) for c in flat):
+            return "killed"
+        if any(c["outcome"] in ("error", "failure") for c in flat) or not flat:
+            return "invalid"
+        return "survived"
+
     @staticmethod
     def _python_header(working_dir: str) -> str:
         abs_target = os.path.abspath(working_dir)

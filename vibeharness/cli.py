@@ -133,6 +133,24 @@ def main():
         help="覆蓋 global.max_model_calls：每次執行的真實模型呼叫上限（0 = 不限）／ Override global.max_model_calls: cost guard on live model invocations per run (0 = unlimited)"
     )
     parser.add_argument(
+        "--mutation",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="開啟或關閉突變測試（--mutation／--no-mutation，優先於設定檔的 global.mutation_testing，預設關閉）："
+             "對已通過的白箱測試所涵蓋的函式做確定性的小改動，檢查測試會不會失敗；不呼叫模型，只加證據缺口、不影響 NEEDS_FIXES ／ "
+             "Turn mutation testing on or off (--mutation / --no-mutation, wins over global.mutation_testing in the config, off by default): "
+             "applies small deterministic changes to the functions the passing white-box tests cover and checks whether the tests fail; "
+             "no model is called, it only adds evidence gaps and never causes NEEDS_FIXES"
+    )
+    parser.add_argument(
+        "--mutation-max-mutants",
+        type=int,
+        metavar="N",
+        default=None,
+        help="覆蓋 global.mutation_max_mutants：突變測試最多產生幾個變異體（每個一次沙盒批次）／ "
+             "Override global.mutation_max_mutants: the most mutants mutation testing creates (one sandbox batch each)"
+    )
+    parser.add_argument(
         "--include",
         action="append",
         metavar="GLOB",
@@ -219,6 +237,8 @@ def main():
 
     if args.max_files is not None and args.max_files < 1:
         parser.error(bi("--max-files 至少要是 1", "--max-files must be at least 1"))
+    if args.mutation_max_mutants is not None and args.mutation_max_mutants < 1:
+        parser.error(bi("--mutation-max-mutants 至少要是 1", "--mutation-max-mutants must be at least 1"))
     if args.max_model_calls is not None and args.max_model_calls < 0:
         parser.error(bi("--max-model-calls 不可為負數", "--max-model-calls must not be negative"))
     if args.base_url is not None:
@@ -238,6 +258,10 @@ def main():
             commander.max_files = args.max_files
         if args.max_model_calls is not None:
             commander.gateway.max_model_calls = args.max_model_calls or None
+        if args.mutation is not None:
+            commander.set_mutation(args.mutation, "cli")
+        if args.mutation_max_mutants is not None:
+            commander._mutation_cfg["max_mutants"] = args.mutation_max_mutants
         if args.include is not None:
             commander.include_patterns = args.include
         if args.exclude is not None:
