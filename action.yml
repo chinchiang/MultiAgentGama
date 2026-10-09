@@ -1,0 +1,166 @@
+name: "VibeHarness-MAS audit"
+description: >-
+  針對 vibe coding 專案的多代理白箱審查、跨模型驗證、沙盒測試執行與威脅建模黑箱攻擊測試；
+  輸出 Markdown／JSON 報告與 GitHub Code Scanning 用的 SARIF，判定以 outputs 提供。
+  Multi-agent white-box review, cross-model verification, sandboxed test execution and
+  threat-modeled black-box attack tests for vibe-coded projects. Writes a Markdown / JSON report
+  and a SARIF file for GitHub Code Scanning; the verdict is exposed as outputs.
+author: chinchiang
+branding:
+  icon: shield
+  color: purple
+
+# 用法（在目標 repo 中）／ Usage (in the target repository):
+#   - uses: chinchiang/MultiAgentGama@v0.4.0
+#     with:
+#       target: src
+#       mode: hybrid
+#       max-model-calls: "80"
+#       baseline: .vibeharness/baseline.json        # 可選：只有新問題會讓 job 失敗 ／ optional: only new problems fail the job
+#     env:
+#       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+#       ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+#       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+#       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+#   - uses: github/codeql-action/upload-sarif@v3
+#     with:
+#       sarif_file: vibeharness.sarif
+# 供應商金鑰從環境變數讀取，action 不會印出。受稽核的程式碼會送到每一家設定的供應商（寫死的密鑰會先遮蔽）。
+# The provider keys are read from the environment; the action never prints them. The audited code
+# is sent to every configured provider (hard-coded secrets are redacted first).
+
+inputs:
+  target:
+    description: "要稽核的目錄或檔案（相對於 workspace）／ Directory or file to audit, relative to the workspace"
+    default: "."
+  mode:
+    description: "live（只用真實模型，缺金鑰即失敗）、hybrid（缺金鑰的 agent 改用模擬）或 mock ／ live (real models only, fail without a key), hybrid (simulate agents without a key) or mock"
+    default: "hybrid"
+  max-model-calls:
+    description: "成本防護：每次執行的真實模型呼叫數（0 = 不限）／ Cost guard: real model calls per run (0 = unlimited)"
+    default: "0"
+  max-files:
+    description: "每次執行分析的原始碼檔案數 ／ Source files analyzed per run"
+    default: "50"
+  changed-since:
+    description: "只分析自此 git ref 以來有變更的檔案（例如 origin/main）；留空 = 全部 ／ Only analyze files changed since this git ref (e.g. origin/main); empty = all files"
+    default: ""
+  baseline:
+    description: "先前 JSON 報告的路徑；其中已有的問題會列出但不會讓 job 失敗 ／ Path to a previous JSON report; problems it contains are reported but do not fail the job"
+    default: ""
+  output:
+    description: "報告路徑（format 不是 json 時為 Markdown）／ Report path (Markdown unless format is json)"
+    default: "vibeharness-report.md"
+  format:
+    description: "報告格式：md 或 json ／ Report format: md or json"
+    default: "md"
+  sarif:
+    description: "SARIF 輸出路徑；留空則不產生 ／ SARIF output path; empty disables"
+    default: "vibeharness.sarif"
+  extra-args:
+    description: "額外的 CLI 參數，例如 --exclude 'tests/*' --cache-dir .vibeharness-cache ／ Additional CLI arguments, e.g. --exclude 'tests/*' --cache-dir .vibeharness-cache"
+    default: ""
+  python-version:
+    description: "要安裝的 Python 版本 ／ Python version to set up"
+    default: "3.12"
+  fail-on:
+    description: >-
+      讓 job 失敗的最低判定：blocked（只有 BLOCKED_CRITICAL_RISK）、needs-fixes（BLOCKED 或 NEEDS_FIXES）、
+      inconclusive（READY_TO_SHIP 以外全部）或 never ／
+      Lowest verdict that fails the job: blocked (only BLOCKED_CRITICAL_RISK), needs-fixes
+      (BLOCKED or NEEDS_FIXES), inconclusive (anything but READY_TO_SHIP) or never
+    default: "needs-fixes"
+
+outputs:
+  verdict:
+    description: "READY_TO_SHIP | NEEDS_FIXES | BLOCKED_CRITICAL_RISK | INCONCLUSIVE（harness 本身失敗時為 ERROR）／ (or ERROR when the harness itself failed)"
+    value: ${{ steps.audit.outputs.verdict }}
+  exit-code:
+    description: "CLI 的 exit code（0-3 判定、4 live 失敗、5 harness 錯誤）／ The CLI exit code (0-3 verdicts, 4 live failure, 5 harness error)"
+    value: ${{ steps.audit.outputs.exit-code }}
+  report:
+    description: "寫出的報告路徑 ／ Path of the written report"
+    value: ${{ inputs.output }}
+  sarif:
+    description: "寫出的 SARIF 路徑（未啟用時為空）／ Path of the written SARIF file (empty when disabled)"
+    value: ${{ inputs.sarif }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install VibeHarness-MAS ／ 安裝 VibeHarness-MAS
+      shell: bash
+      run: |
+        # 安裝 action 自己的 ref（tag 或 SHA），稽核版本永遠與 action 版本一致。
+        # 套件上 PyPI 後可改為：pip install "vibeharness-mas==<version>"
+        # The action's own ref (tag or SHA) is installed, so the audit and the action version always match.
+        # Once the package is on PyPI this can become: pip install "vibeharness-mas==<version>"
+        python -m pip install --quiet "git+https://github.com/chinchiang/MultiAgentGama@${{ github.action_ref }}"
+
+    - name: Run the audit ／ 執行稽核
+      id: audit
+      shell: bash
+      env:
+        VH_TARGET: ${{ inputs.target }}
+        VH_MODE: ${{ inputs.mode }}
+        VH_MAX_CALLS: ${{ inputs.max-model-calls }}
+        VH_MAX_FILES: ${{ inputs.max-files }}
+        VH_CHANGED_SINCE: ${{ inputs.changed-since }}
+        VH_BASELINE: ${{ inputs.baseline }}
+        VH_OUTPUT: ${{ inputs.output }}
+        VH_FORMAT: ${{ inputs.format }}
+        VH_SARIF: ${{ inputs.sarif }}
+        VH_EXTRA: ${{ inputs.extra-args }}
+        VH_FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        # extra-args 以 shlex 規則切字（引號有效；不執行任何 shell、不展開 glob）；切不開就以 exit 5 失敗
+        # extra-args is split by shlex rules (quotes work; no shell execution, no glob expansion); unparsable input exits 5
+        # extra-args-split-begin
+        python -c 'import shlex, sys; sys.stdout.write("".join(a + "\0" for a in shlex.split(sys.argv[1])))' "$VH_EXTRA" > "$RUNNER_TEMP/vh_extra_args" \
+          || { echo "::error::extra-args could not be parsed: $VH_EXTRA"; exit 5; }
+        extra=()
+        while IFS= read -r -d '' arg; do extra+=("$arg"); done < "$RUNNER_TEMP/vh_extra_args"
+        # extra-args-split-end
+        set +e
+        args=(--target "$VH_TARGET" --mode "$VH_MODE" --max-model-calls "$VH_MAX_CALLS" --max-files "$VH_MAX_FILES"
+              --output "$VH_OUTPUT" --format "$VH_FORMAT")
+        [ -n "$VH_CHANGED_SINCE" ] && args+=(--changed-since "$VH_CHANGED_SINCE")
+        [ -n "$VH_BASELINE" ] && args+=(--baseline "$VH_BASELINE")
+        [ -n "$VH_SARIF" ] && args+=(--sarif "$VH_SARIF")
+        vibeharness "${args[@]}" "${extra[@]}"
+        rc=$?
+        set -e
+        case "$rc" in
+          0) verdict=READY_TO_SHIP ;;
+          1) verdict=NEEDS_FIXES ;;
+          2) verdict=BLOCKED_CRITICAL_RISK ;;
+          3) verdict=INCONCLUSIVE ;;
+          *) verdict=ERROR ;;
+        esac
+        echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+        echo "exit-code=$rc" >> "$GITHUB_OUTPUT"
+        echo "## VibeHarness-MAS: $verdict (exit $rc)" >> "$GITHUB_STEP_SUMMARY"
+        echo "Report: \`$VH_OUTPUT\`$( [ -n "$VH_SARIF" ] && echo ", SARIF: \`$VH_SARIF\`" )" >> "$GITHUB_STEP_SUMMARY"
+        if [ "$rc" -ge 4 ]; then echo "::error::VibeHarness-MAS could not complete the audit (exit $rc)"; exit "$rc"; fi
+        case "$VH_FAIL_ON" in
+          never) exit 0 ;;
+          blocked) [ "$rc" -eq 2 ] && exit 1 ;;
+          needs-fixes) [ "$rc" -eq 1 ] || [ "$rc" -eq 2 ] && exit 1 ;;
+          inconclusive) [ "$rc" -ne 0 ] && exit 1 ;;
+          *) echo "::error::unknown fail-on value '$VH_FAIL_ON'"; exit 5 ;;
+        esac
+        exit 0
+
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      if: always()
+      with:
+        name: vibeharness-report
+        path: |
+          ${{ inputs.output }}
+          ${{ inputs.output }}.partial.json
+          ${{ inputs.sarif }}
+        if-no-files-found: ignore

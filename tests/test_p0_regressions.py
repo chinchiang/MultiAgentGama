@@ -1,4 +1,5 @@
-"""Regression tests for executor correctness, self-healing, and result-provenance honesty."""
+"""執行器正確性、自我修復與結果來源誠實性的回歸測試。
+Regression tests for executor correctness, self-healing, and result-provenance honesty."""
 import json
 import os
 import sys
@@ -14,6 +15,7 @@ from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
 from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
 from vibeharness.runners.test_executor import TestSuiteExecutor
 from vibeharness.core.harness import VibeHarnessCommander
+from vibeharness.reports.report_generator import METRIC_TABLE_HEADER
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
@@ -32,6 +34,7 @@ def executor():
     return TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60))
 
 
+# --- 執行器 -------------------------------------------------------------------
 # --- Executor ---------------------------------------------------------------
 
 def test_syntax_error_does_not_poison_other_tests(executor, tmp_path):
@@ -58,7 +61,10 @@ def test_module_level_import_error_is_isolated(executor, tmp_path):
 
 
 def test_parent_dir_module_does_not_shadow_the_target(executor, tmp_path):
-    """proj\\m.py must not shadow proj\\app\\m.py: in the generated header the target
+    """proj\\m.py 不得遮蔽 proj\\app\\m.py：在產生的標頭中，目標目錄最終位於
+    sys.path[0]（與沙盒的 PYTHONPATH 順序一致），因此受測模組永遠勝過
+    上層目錄中的同名模組。
+    proj\\m.py must not shadow proj\\app\\m.py: in the generated header the target
     directory ends up at sys.path[0] (matching the sandbox PYTHONPATH order), so the
     module under test always wins over a same-named module in the parent directory."""
     (tmp_path / "m.py").write_text("WHO = 'parent'\ndef f(x):\n    return WHO\n", encoding="utf-8")
@@ -72,10 +78,13 @@ def test_parent_dir_module_does_not_shadow_the_target(executor, tmp_path):
     assert results[0].status == TestStatus.PASSED, results[0].failure_reason
 
 
+# --- 執行器：誠實歸因沙盒／報告的失敗 -------------------------------------------------------
 # --- Executor: honest attribution of sandbox/report failures -------------------------------------
 
 def test_unparseable_junit_report_is_not_reported_as_no_tests_collected(executor, tmp_path, monkeypatch):
-    """A truncated/corrupt JUnit report is a sandbox problem, not 'no test was collected
+    """被截斷／毀損的 JUnit 報告是沙盒的問題，而不是「產生的程式碼沒有收集到任何測試」，
+    後者會錯誤地歸咎於產生的測試。
+    A truncated/corrupt JUnit report is a sandbox problem, not 'no test was collected
     from the generated code', which would wrongly blame the generated tests."""
     def broken_report(files, working_dir=None, **kwargs):
         return 0, "", "", 0.1, None, "<testsuites><truncated"
@@ -108,7 +117,9 @@ def test_rerun_report_parse_failure_is_reported_honestly(executor, tmp_path, mon
 
 
 def test_broken_target_import_is_attributed_to_the_target(executor, tmp_path):
-    """A target that cannot even be imported (missing dependency) means the target is
+    """連匯入都失敗的目標（缺少相依套件）代表目標本身壞了：報告必須把錯誤歸因於
+    目標而非產生的測試，也不得宣稱已演練過該邊界。
+    A target that cannot even be imported (missing dependency) means the target is
     broken: the report must attribute the error to the target instead of the generated
     test, and must not claim the boundary was exercised."""
     (tmp_path / "m.py").write_text("import nonexistent_pkg_xyz\n\ndef f(x):\n    return x\n", encoding="utf-8")
@@ -144,7 +155,9 @@ def test_pytest_fail_is_recognized_as_confirmed_exploit(executor, tmp_path):
 
 
 def test_did_not_raise_is_recognized_as_confirmed_exploit(executor, tmp_path):
-    """A missing defense (`pytest.raises` not satisfied) must count as a confirmed exploit
+    """缺少防禦（`pytest.raises` 未被滿足）必須和其他斷言失敗一樣算作已確認的攻擊成功，
+    而不是非安全性的測試錯誤。
+    A missing defense (`pytest.raises` not satisfied) must count as a confirmed exploit
     like any other assertion failure, not as a non-security test error."""
     (tmp_path / "m.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
     results, _ = executor.execute_test_suite([
@@ -189,7 +202,9 @@ def test_code_without_test_function_is_error(executor, tmp_path):
 
 
 def test_metadata_newlines_cannot_inject_code(executor, tmp_path):
-    """The generated-module header interpolates LLM-controlled metadata into a comment;
+    """產生的模組標頭會把模型控制的中繼資料內插到註解中；title／target_component 中的
+    換行會逃出註解並加入未驗證的程式碼。
+    The generated-module header interpolates LLM-controlled metadata into a comment;
     a newline in title/target_component would escape it and add unvalidated code."""
     injected = _test(
         "INJ",
@@ -200,11 +215,13 @@ def test_metadata_newlines_cannot_inject_code(executor, tmp_path):
         "target_component": "x\nimport os\nassert os is None or True",
     })
     results, _ = executor.execute_test_suite([injected], working_dir=str(tmp_path))
+    # 只有通過驗證的測試函式會執行；注入的行只是無作用的註解文字
     # Only the validated test function runs; the injected lines are inert comment text
     assert results[0].status == TestStatus.PASSED
     assert results[0].is_security_exploit_confirmed is False
 
 
+# --- JUnit 解析／重跑預算 -------------------------------------------------------
 # --- JUnit parsing / rerun budget ---------------------------------------------
 
 def test_junit_modules_beyond_999_are_not_merged():
@@ -226,7 +243,8 @@ def test_junit_garbage_time_does_not_crash():
 
 
 class _FakeSandbox:
-    """Stands in for the sandbox so timeout/rerun paths run without spawning processes."""
+    """沙盒的替身，讓逾時／重跑路徑不需產生行程就能執行。
+    Stands in for the sandbox so timeout/rerun paths run without spawning processes."""
 
     def __init__(self, batch_exit=TIMEOUT_EXIT_CODE, individual_junit=None, timeout_seconds=60):
         self.timeout_seconds = timeout_seconds
@@ -268,6 +286,7 @@ def test_rerun_budget_is_capped_by_the_batch_budget(tmp_path):
         _test("A", "def test_a():\n    assert True"),
         _test("B", "def test_b():\n    assert True"),
     ], working_dir=str(tmp_path))
+    # 批次逾時且（為零的）重跑預算立刻耗盡：沒有任何模組被重跑
     # The batch timed out and the (zero) rerun budget is exhausted immediately: no module is re-run
     assert sandbox.individual_calls == 0
     assert all(r.status == TestStatus.ERROR and "Rerun budget" in r.failure_reason for r in results)
@@ -286,6 +305,7 @@ def test_sandbox_does_not_write_into_target(executor, tmp_path):
     assert os.listdir(tmp_path) == []
 
 
+# --- 自我修復 -------------------------------------------------------------------
 # --- Self-healing -----------------------------------------------------------
 
 def test_heal_keeps_valid_code_with_leading_imports():
@@ -313,6 +333,7 @@ def test_check_test_code_accepts_class_based_tests():
         "        assert 1 + 1 == 2\n"
     )
     assert check_test_code(valid)[0] is True
+    # 沒有任何 test_ 方法的 Test* 類別，pytest 也不會收集
     # A Test* class without any test_ method is not collected by pytest either
     helper_class = "class TestConfig:\n    def settings(self):\n        return {}\n"
     assert check_test_code(helper_class)[0] is False
@@ -334,6 +355,7 @@ def test_strip_code_fences_never_leaks_the_language_tag():
 
 
 def test_mock_assertion_calls_do_not_satisfy_the_assertion_gate():
+    # 只戳記錄用方法的測試，對目標沒有任何檢查
     # A test that only pokes bookkeeping methods checks nothing about the target
     is_valid, problem = check_test_code(
         "def test_a():\n"
@@ -343,6 +365,7 @@ def test_mock_assertion_calls_do_not_satisfy_the_assertion_gate():
     )
     assert not is_valid
     assert "without any assertion" in problem
+    # 只是*看起來*像斷言的輔助函式也不算斷言
     # A helper that merely *looks* like an assertion is not one either
     is_valid, problem = check_test_code(
         "def test_b():\n"
@@ -352,6 +375,7 @@ def test_mock_assertion_calls_do_not_satisfy_the_assertion_gate():
     assert "without any assertion" in problem
 
 
+# --- 閘道來源紀錄 ---------------------------------------------------------------
 # --- Gateway provenance -----------------------------------------------------
 
 def test_live_mode_without_key_raises(monkeypatch):
@@ -391,10 +415,11 @@ def test_null_config_sections_are_treated_as_empty(tmp_path):
 
 def test_force_utf8_stdio_is_safe_to_call():
     from vibeharness.core.harness import force_utf8_stdio
-    force_utf8_stdio()  # must not raise on any platform, including pytest's captured streams
+    force_utf8_stdio()  # 在任何平台上都不得拋出例外，包括 pytest 擷取的串流 ／ must not raise on any platform, including pytest's captured streams
     assert sys.stdout.writable()
 
 
+# --- 沒有寫死的範例應用程式測試 -------------------------------------------------
 # --- No hardcoded sample-app tests -------------------------------------------
 
 def test_offline_probes_derive_from_target_not_sample_app(executor, tmp_path):
@@ -427,13 +452,13 @@ def test_mock_pipeline_is_never_ready_to_ship_and_report_discloses_simulation(tm
         target_dir=EXAMPLES, base_url="http://localhost:59999", output_report_path=str(report_path)
     )
     assert summary.overall_status != "READY_TO_SHIP"
-    assert summary.untested_threat_ids  # simulated threats have no real tests
+    assert summary.untested_threat_ids  # 模擬的威脅沒有真正的測試 ／ simulated threats have no real tests
     assert all(isinstance(c, AgentCallRecord) and c.mode == "simulated" for c in summary.agent_calls)
 
     report = report_path.read_text(encoding="utf-8")
     assert "SIMULATED RESULTS" in report
     assert "Threats Not Tested" in report
-    assert "| Metric | Value | Target |" in report
+    assert METRIC_TABLE_HEADER in report
 
 
 def test_clean_target_in_mock_mode_is_inconclusive(tmp_path):
@@ -452,6 +477,7 @@ def test_clean_target_in_mock_mode_is_inconclusive(tmp_path):
     assert summary.inconclusive_reasons
 
 
+# --- 關卡的誠實性：空洞測試、無法使用的模型輸出、仲裁 ---------------------------
 # --- Gate honesty: vacuous tests, unusable model output, arbitration ---------
 
 def test_vacuous_test_is_error_not_defended(executor, tmp_path):
@@ -468,6 +494,7 @@ def test_check_test_code_accepts_assertion_forms():
 
 
 def test_check_test_code_rejects_uncalled_helper_assertion_decoy():
+    # 巢狀且從未被呼叫的輔助函式內的 assert，否則也會滿足關卡
     # An assert inside a nested, never-called helper would otherwise satisfy the gate
     is_valid, problem = check_test_code("def test_a():\n    def unused():\n        assert False\n")
     assert not is_valid
@@ -480,13 +507,20 @@ def test_check_test_code_accepts_assertion_in_called_helper():
 
 
 def test_import_instructions_disclose_non_python_targets():
+    # JS/TS 目標會得到 node:test 的指引（file:// URL、模組系統）；其他語言維持純靜態
+    # JS/TS targets get node:test guidance (file:// URL, module system); other languages stay static-only
     text = import_instructions("app/server.ts", ".")
+    assert "file://" in text and "TypeScript" in text and "node:" in text
+    assert "importlib" not in text
+    text = import_instructions("app/main.go", ".")
     assert "not a Python file" in text
     assert "importlib" not in text
     assert "cannot be imported" in text
 
 
 def test_fallback_threat_ids_have_no_gaps(fake_live):
+    # 模型提供的 id 不得消耗退回計數器，否則 THREAT-XX
+    # 序列會跳號（THREAT-01 可能閒置，而退回的 id 跳到 02 以後）。
     # A model-supplied id must not consume the fallback counter, otherwise the THREAT-XX
     # sequence skips numbers (THREAT-01 could stay unused while fallbacks jump to 02+).
     fake_live(lambda s, u: json.dumps({"threats": [
@@ -506,6 +540,7 @@ def test_unparseable_live_output_is_recorded_invalid(fake_live):
     resp = gateway.generate("whitebox_reviewer_claude", "sys", "prompt", required_keys=["findings"])
     assert not gateway.is_usable(resp)
     assert "findings" not in resp
+    # 無法使用的回答會再問一次（登記為 `retried`），然後登記為 `invalid`
     # The unusable answer is re-asked once (booked as `retried`), then booked as `invalid`
     assert [c.mode for c in gateway.call_log] == ["retried", "invalid"]
 
@@ -532,6 +567,7 @@ def test_unusable_threat_model_and_modeled_criticals_never_ship_or_block(fake_li
     summary = VibeHarnessCommander(config_path=CONFIG, execution_mode="live").run_full_pipeline(
         target_dir=str(target), base_url="http://localhost:59999", output_report_path=str(tmp_path / "r.md")
     )
+    # 4 個建模出的 CRITICAL 威脅只是假設，不是證據；無法使用的輸出讓這次執行結果不確定
     # 4 modeled CRITICAL threats are hypotheses, not evidence; unusable outputs make the run inconclusive
     assert summary.overall_status == "INCONCLUSIVE"
     assert any("unusable output" in r for r in summary.inconclusive_reasons)
@@ -549,7 +585,9 @@ def test_single_file_target_is_analyzed(tmp_path):
 
 
 def test_failed_unclassified_blackbox_test_is_an_evidence_gap(tmp_path, monkeypatch):
-    """A black-box attack test that fails without matching the exploit predicate must count
+    """失敗但不符合攻擊成功判斷條件的黑箱攻擊測試，必須算作模稜兩可的證據——
+    關卡不得再讓這次執行以 READY_TO_SHIP 通過。
+    A black-box attack test that fails without matching the exploit predicate must count
     as ambiguous evidence — the gate may no longer pass the run as READY_TO_SHIP."""
     from vibeharness.core.models import TestExecutionResult
 
@@ -599,7 +637,8 @@ def test_server_returning_404_counts_as_live():
 
 
 def test_server_probe_retries_before_giving_up(monkeypatch):
-    """A slow-starting server gets a few attempts before the harness falls back to in-process mode."""
+    """啟動緩慢的伺服器會獲得幾次嘗試，之後測試框架才退回行程內模式。
+    A slow-starting server gets a few attempts before the harness falls back to in-process mode."""
     import vibeharness.agents.blackbox.scenario_builder as sb_mod
     from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
 
@@ -625,11 +664,12 @@ def test_server_probe_retries_before_giving_up(monkeypatch):
     monkeypatch.setattr(sb_mod.urllib.request, "urlopen", fake)
     monkeypatch.setattr(sb_mod.time, "sleep", lambda s: None)
     assert builder.check_server_live("http://localhost:59998", timeout_sec=0.1) is True
-    assert fake.calls == 2  # failed once, succeeded on the retry
+    assert fake.calls == 2  # 失敗一次，重試後成功 ／ failed once, succeeded on the retry
 
 
 def test_generated_attack_code_targeting_another_host_is_rejected():
-    """'Never target any other host' is enforced by a static check, not only by prompt instruction."""
+    """「絕不以其他主機為目標」由靜態檢查強制執行，而不只靠提示詞指示。
+    'Never target any other host' is enforced by a static check, not only by prompt instruction."""
     import threading
     import http.server
     from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
@@ -658,11 +698,11 @@ def test_generated_attack_code_targeting_another_host_is_rejected():
             "import requests\n"
             "def test_steal():\n"
             "    r = requests.get('http://evil.example.com/api/orders?id=2')\n"
-            "    assert r.status_code == 403\n",       # foreign host -> rejected
+            "    assert r.status_code == 403\n",       # 外部主機 -> 拒絕 ／ foreign host -> rejected
             "def test_ok():\n"
             "    import requests\n"
             f"    r = requests.get('{base_url}/api/orders?id=2')\n"
-            "    assert r.status_code == 403\n",       # declared target -> kept
+            "    assert r.status_code == 403\n",       # 宣告的目標 -> 保留 ／ declared target -> kept
         ]
 
         def responder(agent_id, system, user, **k):
@@ -682,18 +722,25 @@ def test_generated_attack_code_targeting_another_host_is_rejected():
 
 
 def test_url_guard_resolves_ipv6_literals_and_userinfo():
-    """Host extraction must not break on IPv6 literals ('[::1]' parsed as '[') or be
+    """主機擷取不得被 IPv6 字面值弄壞（「[::1]」被解析成「[」），也不得被
+    userinfo（「user@evil.example.com」）騙過；無法解析的字面值採保守失敗。
+    Host extraction must not break on IPv6 literals ('[::1]' parsed as '[') or be
     fooled by userinfo ('user@evil.example.com'); unparseable literals fail closed."""
     check = ThreatScenarioBuilder._hosts_outside_base_url
+    # IPv6 迴路字面值與迴路 base URL 是同一台機器：不是違規者
     # an IPv6 loopback literal is the same machine as a loopback base URL: not an offender
     assert check('requests.get("http://[::1]:8080/admin")', "http://localhost:8000") == []
+    # 宣告的 IPv6 base URL 本身永遠不是違規者
     # the declared IPv6 base URL itself is never an offender
     assert check('urllib.request.urlopen("http://[::1]:8000/api")', "http://[::1]:8000") == []
+    # 真正的外部 IPv6 主機是違規者
     # a real external IPv6 host is an offender
     assert check('requests.get("http://[2001:db8::1]/x")', "http://localhost:8000") == ["http://[2001:db8::1]"]
+    # userinfo 再也藏不住真正的主機
     # userinfo no longer hides the real host
     assert check('requests.get("http://user@evil.example.com/x")', "http://localhost:8000") == [
         "http://user@evil.example.com"]
+    # 無法解析（被截斷）的字面值無法被排除，因此會被標示
     # an unparseable (cut-off) literal cannot be cleared, so it is flagged
     assert check('requests.get("http://[::1", timeout=1)', "http://localhost:8000") == ["http://[::1"]
 
@@ -711,10 +758,13 @@ def test_symbol_relevance_uses_word_boundaries():
         trust_boundary_crossed="b", severity=FindingSeverity.HIGH,
         attack_scenario="no other symbol is named in the scenario", test_verification_goal=""
     )
+    # 整字比對：只有 validate_username 被指名；「username」裡的「user」不得
+    # 把 get_user 拖進來，未被指名的符號也不會納入。
     # Whole-word matching: only validate_username is named; "user" inside "username" must not
     # drag in get_user, and unnamed symbols stay out.
     symbols = [sym("get_user"), sym("validate_username"), sym("process_payment")]
-    context = ThreatScenarioBuilder._code_context(threat, symbols, root_dir=".")
+    context, language = ThreatScenarioBuilder._code_context(threat, symbols, root_dir=".")
+    assert language == "python"
     assert "Symbol: validate_username" in context
     assert "Symbol: get_user" not in context
     assert "Symbol: process_payment" not in context
@@ -760,11 +810,13 @@ def test_report_flags_unknown_status_and_coerces_list_fields():
     )
     threat_model = ThreatModelReport(
         system_description="", entrypoints=[], trust_boundaries=[], assets=[], threats=[]
-    ).model_copy(update={"entrypoints": "/api/users"})  # bypass validation: stray string from a model
+    ).model_copy(update={"entrypoints": "/api/users"})  # 繞過驗證：來自模型的零散字串 ／ bypass validation: stray string from a model
     md = ReportGenerator().generate_markdown_report(summary, MultiModelDebateResult(consensus_summary=""),
                                                     threat_model, [], [], "app")
+    # 無法辨識的判定結果必須標示為未知，不得顯示成 BLOCKED
     # An unrecognized verdict must be flagged as unknown, not shown as BLOCKED
     assert "UNKNOWN STATUS: `MYSTERY_STATUS`" in md
+    # 零散字串會呈現為單一項目，而不是逐字元拆開
     # A stray string renders as one item, not character by character
     assert "`/api/users`" in md
     assert "`/, /a/p/i//u/s/e/r/s`" not in md
@@ -796,6 +848,7 @@ def test_probe_handles_keyword_only_and_skips_decorated_async(executor, tmp_path
     assert results[0].status == TestStatus.PASSED
 
 
+# --- 沙盒強化 -------------------------------------------------------------------
 # --- Sandbox hardening -------------------------------------------------------
 
 def test_sandbox_withholds_secrets_from_generated_code(executor, tmp_path, monkeypatch):
@@ -811,12 +864,16 @@ def test_sandbox_withholds_secrets_from_generated_code(executor, tmp_path, monke
 
 
 def test_hanging_test_does_not_void_the_batch(tmp_path, monkeypatch):
-    """A per-test hang must cost at most a per-test rerun, not the whole batch: the batch
+    """單一測試的卡住最多只能花掉一次單測試重跑，而不是整個批次：批次會作為一個
+    單位逾時，接著可疑的模組會以各自的單測試預算個別重跑。批次層級的逾時是模擬的
+    （真實的 8 秒批次逾時加上真實的子行程重跑，在慢速機器上本質上取決於時序）。
+    A per-test hang must cost at most a per-test rerun, not the whole batch: the batch
     times out as one unit, then the suspicious modules are rerun individually with their
     own per-test budget. The batch-level timeout is simulated (a real 8s batch timeout plus
     real subprocess reruns is inherently timing-dependent on slow machines)."""
     from vibeharness.core.sandbox import TIMEOUT_EXIT_CODE
 
+    # 每個測試 15 秒：在負載高的 Windows 主機上，光一個 pytest 子行程就要約 4 秒，而 HANG 會睡 60 秒
     # 15s per test: one pytest subprocess alone takes ~4s on a loaded Windows host, and HANG sleeps 60s
     executor = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60), per_test_timeout_seconds=15)
     real_execute = executor.sandbox.execute_pytest_files
@@ -834,14 +891,16 @@ def test_hanging_test_does_not_void_the_batch(tmp_path, monkeypatch):
         _test("HANG", "import time\ndef test_hang():\n    time.sleep(60)\n    assert True"),
         _test("BAD", "def test_bad():\n    assert 1 == 2"),
     ], working_dir=str(tmp_path))
-    assert calls["batch_timeouts"] == 1  # the batch timed out and triggered the individual reruns
+    assert calls["batch_timeouts"] == 1  # 批次逾時並觸發了個別重跑 ／ the batch timed out and triggered the individual reruns
     assert [r.status for r in results] == [TestStatus.PASSED, TestStatus.ERROR, TestStatus.FAILED]
     assert "timed out" in results[1].failure_reason
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group kill semantics")
 def test_daemonized_grandchild_cannot_hang_the_sandbox(tmp_path):
-    """A grandchild in a new session survives the process-group kill; the sandbox must
+    """新工作階段中的孫行程能在行程群組終止後存活；沙盒必須以短逾時排空其管線，
+    而不是永遠卡在 communicate() 上。
+    A grandchild in a new session survives the process-group kill; the sandbox must
     drain its pipes with a short timeout instead of blocking on communicate() forever."""
     import subprocess
     import time
@@ -864,6 +923,7 @@ def test_daemonized_grandchild_cannot_hang_the_sandbox(tmp_path):
         )
         elapsed = time.monotonic() - start
         assert exit_code == TIMEOUT_EXIT_CODE
+        # 終止 + 約 5 秒管線排空；若卡住則會跑到 120 秒的孫行程結束
         # kill + ~5s pipe drain; a hang would run until the 120s grandchild exits
         assert elapsed < 20, f"sandbox blocked for {elapsed:.1f}s on a daemonized grandchild"
         assert "timed out" in stderr.lower()
@@ -887,9 +947,12 @@ def test_unimplemented_sandbox_provider_is_rejected(tmp_path):
         VibeHarnessCommander(config_path=str(cfg), execution_mode="mock")
 
 
+# --- CLI 介面 -------------------------------------------------------------------
 # --- CLI surface ---------------------------------------------------------------
 
 def test_litellm_retry_dependency_is_installed():
+    # litellm 在 num_retries > 0（live 模式）時需要 tenacity，但不會自己安裝它；
+    # 若 requirements.txt 哪天把它拿掉，這裡會在 CI 失敗，而不是在使用者第一次 live 呼叫時才失敗。
     # litellm needs tenacity for num_retries > 0 (live mode) but does not install it itself;
     # if requirements.txt ever drops it, this fails in CI instead of at the user's first live call.
     pytest.importorskip("litellm")
@@ -901,7 +964,7 @@ def test_cli_reports_the_package_version():
     from vibeharness import __version__
     proc = subprocess.run(
         [sys.executable, "main.py", "--version"],
-        cwd=REPO_ROOT, capture_output=True, text=True, timeout=60
+        cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60
     )
     assert proc.returncode == 0, proc.stderr
     assert __version__ in proc.stdout
@@ -911,9 +974,9 @@ def test_cli_rejects_unknown_report_format():
     import subprocess
     proc = subprocess.run(
         [sys.executable, "main.py", "--target", EXAMPLES, "--format", "xml"],
-        cwd=REPO_ROOT, capture_output=True, text=True, timeout=60
+        cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60
     )
-    assert proc.returncode == 5  # usage errors must not collide with verdict code 2
+    assert proc.returncode == 5  # 用法錯誤不得與判定結果代碼 2 衝突 ／ usage errors must not collide with verdict code 2
     assert "invalid choice" in (proc.stderr + proc.stdout)
 
 
@@ -923,6 +986,7 @@ def test_cli_exit_code_semantics_are_disjoint():
     assert verdict_exit_code("NEEDS_FIXES") == 1
     assert verdict_exit_code("INCONCLUSIVE") == 3
     assert verdict_exit_code("READY_TO_SHIP") == 0
+    # 未知的判定結果必須採保守失敗，絕不能當成乾淨通過
     # An unknown verdict must fail closed, never as a clean pass
     assert verdict_exit_code("SOMETHING_ELSE") == 3
 
@@ -931,7 +995,7 @@ def test_cli_missing_config_is_usage_error_not_needs_fixes():
     import subprocess
     proc = subprocess.run(
         [sys.executable, "main.py", "--target", EXAMPLES, "--config", "/nonexistent/agents_config.yaml"],
-        cwd=REPO_ROOT, capture_output=True, text=True, timeout=60
+        cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60
     )
     assert proc.returncode == 5
     assert "Agent config not found" in proc.stderr
@@ -946,7 +1010,7 @@ def test_cli_malformed_config_yaml_is_usage_error():
             f.write("global: [unclosed\n")
         proc = subprocess.run(
             [sys.executable, "main.py", "--target", EXAMPLES, "--config", bad],
-            cwd=REPO_ROOT, capture_output=True, text=True, timeout=60
+            cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60
         )
     assert proc.returncode == 5
     assert "not valid YAML" in proc.stderr
@@ -956,11 +1020,12 @@ def test_cli_missing_target_is_usage_error():
     import subprocess
     proc = subprocess.run(
         [sys.executable, "main.py", "--target", "/nonexistent/target/dir"],
-        cwd=REPO_ROOT, capture_output=True, text=True, timeout=60
+        cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60
     )
     assert proc.returncode == 5
 
 
+# --- local_subprocess 資源限制 ------------------------------------------------------------------
 # --- local_subprocess resource limits ------------------------------------------------------------
 
 @pytest.mark.skipif(sys.platform != "linux", reason="RLIMIT_AS is enforced reliably on Linux only")

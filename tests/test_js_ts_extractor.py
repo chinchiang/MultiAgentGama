@@ -1,4 +1,5 @@
-"""JS/TS extractor: real brace matching, literal/comment masking, arrows, class methods, routes."""
+"""JS/TS 擷取器：真正的大括號配對、字面值／註解遮罩、箭頭函式、類別方法、路由。
+JS/TS extractor: real brace matching, literal/comment masking, arrows, class methods, routes."""
 import os
 
 from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
@@ -17,6 +18,7 @@ def _by_name(symbols):
     return {s.name: s for s in symbols}
 
 
+# --- 精確的範圍 -----------------------------------------------------------------------
 # --- Accurate spans -------------------------------------------------------------------
 
 def test_function_span_covers_the_whole_body(tmp_path):
@@ -27,6 +29,7 @@ def test_function_span_covers_the_whole_body(tmp_path):
         "}\n"
     ))
     sym = _by_name(symbols)["handler"]
+    # 共 42 行：沒有固定 25 行的視窗截斷本體
     # 42 lines total: no fixed 25-line window truncating the body
     assert sym.line_start == 1 and sym.line_end == 43
     assert sym.source_code.count("const step = req.body;") == 40
@@ -45,6 +48,7 @@ def test_adjacent_symbols_do_not_duplicate_each_other(tmp_path):
     assert by["first"].line_end == 3 and by["second"].line_start == 5
 
 
+# --- 遮罩：註解、字串與正規表示式字面值無法製造幻影 ----------------------------------
 # --- Masking: comments, strings and regex literals cannot create phantoms --------------
 
 def test_comments_and_strings_do_not_create_phantoms(tmp_path):
@@ -72,6 +76,7 @@ def test_braces_inside_strings_do_not_confuse_matching(tmp_path):
     assert sym.source_code.rstrip().endswith("}")
 
 
+# --- 宣告的各種變體 -------------------------------------------------------------------
 # --- Declaration variants ---------------------------------------------------------------
 
 def test_arrow_function_variants(tmp_path):
@@ -87,6 +92,7 @@ def test_arrow_function_variants(tmp_path):
     assert set(by) == {"one", "two", "three"}
     assert by["two"].line_end == 4
     assert by["two"].parameters == ["a", "b"]
+    # 單一運算式的箭頭函式本體在陳述式結束處停下，而非檔案結尾
     # single-expression arrow bodies stop at the statement, not at file end
     assert by["one"].source_code.strip() == "const one = x => x + 1;"
     assert "x.map(v => v * 2)" in by["three"].source_code
@@ -136,10 +142,12 @@ def test_class_methods_are_extracted_with_control_flow_ignored(tmp_path):
     assert by["Cart.build"].symbol_type == "method"
     assert by["Cart.build"].parameters == ["items"]
     assert by["Cart.total"].line_start == 14
+    # 控制流程陳述式不是方法
     # control flow statements are not methods
     assert "Cart.if" not in by and "Cart.while" not in by
 
 
+# --- 路由 -------------------------------------------------------------------------------
 # --- Routes ------------------------------------------------------------------------------
 
 def test_routes_across_receivers_and_multiline_calls(tmp_path):
@@ -158,6 +166,7 @@ def test_routes_across_receivers_and_multiline_calls(tmp_path):
     assert set(routes) == {
         "GET /api/orders", "POST /api/orders", "DELETE /api/orders/:id", "PATCH /api/orders/:id"
     }
+    # 範圍涵蓋整個回呼，而非固定 15 行的視窗
     # the span covers the whole callback, not a fixed 15-line window
     assert routes["GET /api/orders"].line_start == 1 and routes["GET /api/orders"].line_end == 3
     assert "res.json" in routes["GET /api/orders"].source_code

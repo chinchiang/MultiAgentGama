@@ -5,7 +5,10 @@ from enum import Enum
 
 
 def text_or(value: object, default: str) -> str:
-    """A free-text field from model output: non-blank strings pass, anything else (None, numbers,
+    """來自模型輸出的自由文字欄位：非空白字串直接通過，其他任何值（None、數字、
+    物件、空白）都變成預設值。單靠 `dict.get(key, default)` 並不夠，因為
+    模型回答 `"title": null` 會得到 None，而這些 str 型別的模型隨後會拒絕它。
+    A free-text field from model output: non-blank strings pass, anything else (None, numbers,
     objects, blank) becomes the default. `dict.get(key, default)` alone is not enough, because a
     model answering `"title": null` yields None, which these str-typed models then reject."""
     return value if isinstance(value, str) and value.strip() else default
@@ -37,9 +40,10 @@ class TestStatus(str, Enum):
 
 
 class CodeSymbol(BaseModel):
-    """Extracted function, method, or class symbol from AST."""
+    """從 AST 擷取出的函式、方法或類別符號。
+    Extracted function, method, or class symbol from AST."""
     name: str
-    symbol_type: str  # "function", "class", "method", "route"
+    symbol_type: str  # 符號類型："function"、"class"、"method"、"route" ／ "function", "class", "method", "route"
     file_path: str
     line_start: int
     line_end: int
@@ -51,14 +55,16 @@ class CodeSymbol(BaseModel):
 
 
 class VerificationVote(BaseModel):
-    """One model's independent ruling on a finding it did not report."""
+    """某個模型對一個它自己沒有回報的發現所做的獨立裁決。
+    One model's independent ruling on a finding it did not report."""
     model_alias: str
-    verdict: str  # "confirm", "reject", "unsure", or "corroborated" (the model reported the same defect itself)
+    verdict: str  # "confirm"、"reject"、"unsure" 或 "corroborated"（該模型自己也回報了同一個缺陷） ／ "confirm", "reject", "unsure", or "corroborated" (the model reported the same defect itself)
     reason: str = ""
 
 
 class ReviewFinding(BaseModel):
-    """An observation or potential bug identified by a specific LLM reviewer."""
+    """由特定 LLM 審查者指出的觀察或潛在錯誤。
+    An observation or potential bug identified by a specific LLM reviewer."""
     finding_id: str
     reviewer_name: str
     model_alias: str
@@ -71,35 +77,41 @@ class ReviewFinding(BaseModel):
     root_cause: str
     suspected_vibe_flaw: str
     suggested_test_scenario: str
-    owasp_mapping: Optional[str] = None  # optional taxonomy id from the reviewer, e.g. "LLM01:2026"
-    is_simulated: bool = False  # True when produced by the offline simulation engine, not a real model
+    owasp_mapping: Optional[str] = None  # 審查者給的選填分類法 id，例如 "LLM01:2026" ／ optional taxonomy id from the reviewer, e.g. "LLM01:2026"
+    is_simulated: bool = False  # 由離線模擬引擎產生、而非真實模型時為 True ／ True when produced by the offline simulation engine, not a real model
+    # 重複的回報被合併進這個發現時設定：其他審查者及其發現 id
     # Set when duplicate reports were merged into this finding: the other reviewers and their finding ids
     corroborated_by: List[str] = Field(default_factory=list)
-    corroborating_models: List[str] = Field(default_factory=list)  # model aliases of corroborated_by
+    corroborating_models: List[str] = Field(default_factory=list)  # corroborated_by 對應的模型別名 ／ model aliases of corroborated_by
     merged_finding_ids: List[str] = Field(default_factory=list)
     verification_votes: List[VerificationVote] = Field(default_factory=list)
 
 
 class MultiModelDebateResult(BaseModel):
-    """Outcome of cross-model verification: every finding is ruled on by models that did not report it."""
+    """跨模型驗證的結果：每個發現都由沒有回報它的模型裁決。
+    Outcome of cross-model verification: every finding is ruled on by models that did not report it."""
     confirmed_findings: List[ReviewFinding] = Field(default_factory=list)
     disputed_findings: List[ReviewFinding] = Field(default_factory=list)
     consensus_summary: str
+    # 平手投票下仍保留供測試的發現（它們在 confirmed_findings 裡，但「不是」
+    # 多數確認；「已確認」的統計必須扣掉這個數字，與 consensus_summary 一致）
     # Findings kept for testing despite a tie vote (they are in confirmed_findings but are NOT
     # majority-confirmed; "confirmed" statistics must subtract this, matching consensus_summary)
     undecided_count: int = 0
+    # 與最終決定一致的決定性投票（confirm／reject／corroborated）所占比例；沒有投票時為 None
     # Share of decisive votes (confirm / reject / corroborated) that match the final decision; None without votes
     model_agreement_ratio: Optional[float] = None
-    arbitration_applied: bool = False  # False: no real verifier vote was cast, findings are unfiltered
+    arbitration_applied: bool = False  # False：沒有任何真實的驗證者投票，發現未經過濾 ／ False: no real verifier vote was cast, findings are unfiltered
     is_simulated: bool = False
 
 
 class ThreatItem(BaseModel):
-    """A threat item produced during the Black-box Threat Modeling phase."""
+    """黑箱威脅建模階段產出的威脅項目。
+    A threat item produced during the Black-box Threat Modeling phase."""
     threat_id: str
     stride_category: STRIDECategory
     owasp_mapping: Optional[str] = None
-    atlas_mapping: Optional[str] = None  # MITRE ATLAS technique id(s), e.g. "AML.T0051.001"
+    atlas_mapping: Optional[str] = None  # MITRE ATLAS 技術 id，例如 "AML.T0051.001" ／ MITRE ATLAS technique id(s), e.g. "AML.T0051.001"
     title: str
     description: str
     asset_at_risk: str
@@ -108,10 +120,15 @@ class ThreatItem(BaseModel):
     severity: FindingSeverity
     attack_scenario: str
     test_verification_goal: str
+    # 由離線模擬引擎產生時為 True：其標題／攻擊向量是 `bi()` 雙語字串，進指紋時只取英文半
+    # True when produced by the offline simulation engine: its title / attack vector are bilingual `bi()` strings
+    # and contribute their English half to fingerprints
+    is_simulated: bool = False
 
 
 class ThreatModelReport(BaseModel):
-    """Consolidated threat model of the system under test."""
+    """受測系統的整合威脅模型。
+    Consolidated threat model of the system under test."""
     system_description: str
     entrypoints: List[str] = Field(default_factory=list)
     trust_boundaries: List[str] = Field(default_factory=list)
@@ -121,20 +138,25 @@ class ThreatModelReport(BaseModel):
 
 
 class GeneratedTest(BaseModel):
-    """Specification of an executable test generated by white-box or black-box agents."""
+    """白箱或黑箱代理產生的可執行測試規格。
+    Specification of an executable test generated by white-box or black-box agents."""
     test_id: str
-    test_type: str  # "whitebox_unit", "whitebox_property", "blackbox_security", "blackbox_fuzz"
+    test_type: str  # 測試類型："whitebox_unit"、"whitebox_property"、"blackbox_security"、"blackbox_fuzz" ／ "whitebox_unit", "whitebox_property", "blackbox_security", "blackbox_fuzz"
     target_component: str
     title: str
     code: str
     rationale: str
     expected_outcome: str
-    source_ref: Optional[str] = None  # finding_id / threat_id / symbol this test was derived from
+    source_ref: Optional[str] = None  # 這個測試衍生自的 finding_id／threat_id／符號 ／ finding_id / threat_id / symbol this test was derived from
+    # "python" | "javascript" | "typescript"：決定程式碼閘門、沙盒與報告的程式碼圍欄
+    # "python" | "javascript" | "typescript": picks the code gate, the sandbox and the report fence
+    language: str = "python"
 
 
 class TestExecutionResult(BaseModel):
     __test__ = False
-    """Outcome of running an individual generated test."""
+    """執行單一個產生的測試的結果。
+    Outcome of running an individual generated test."""
     test_id: str
     test_type: str
     status: TestStatus
@@ -146,25 +168,33 @@ class TestExecutionResult(BaseModel):
     is_security_exploit_confirmed: bool = False
     reproduction_poc: Optional[str] = None
     source_ref: Optional[str] = None
+    language: str = "python"
 
 
 class AgentCallRecord(BaseModel):
-    """Provenance of a single agent invocation through the LLM gateway."""
+    """透過 LLM 閘道進行的單次代理呼叫的來源紀錄。
+    Provenance of a single agent invocation through the LLM gateway."""
     agent_id: str
     model_alias: str
     model_name: str
-    mode: str  # "live", "simulated", or "invalid" (live call whose output was unusable)
-    reason: Optional[str] = None  # why simulation was used / why the output was rejected
+    mode: str  # "live"、"simulated" 或 "invalid"（真實呼叫但輸出無法使用） ／ "live", "simulated", or "invalid" (live call whose output was unusable)
+    reason: Optional[str] = None  # 為何使用模擬／為何輸出被拒絕 ／ why simulation was used / why the output was rejected
+    # 實際送出的 system+user 提示詞的 SHA-256，讓稽核能把判定連回它的輸入，
+    # 而報告不必儲存（可能敏感的）目標程式碼
     # SHA-256 of the exact system+user prompt sent, so an audit can tie a verdict to its inputs
     # without the report having to store (possibly sensitive) target code
     prompt_sha256: Optional[str] = None
+    # 答案來自磁碟上的回應快取（真實模型先前對同一提示詞的回答）時為 True，
+    # 因此這次沒有呼叫供應商
     # True when the answer came from the on-disk response cache (a real model's earlier answer to the
     # same prompt), so no provider call was made for it
     cached: bool = False
 
 
 class StaticFinding(BaseModel):
-    """A deterministic rule hit (no model involved), e.g. an unsafe model-artifact load or a
+    """確定性規則的命中（不涉及模型），例如不安全的模型成品載入，或
+    埋在目標中、針對審查者的提示注入。
+    A deterministic rule hit (no model involved), e.g. an unsafe model-artifact load or a
     reviewer-directed prompt injection planted in the target."""
     rule_id: str
     title: str
@@ -176,30 +206,36 @@ class StaticFinding(BaseModel):
     owasp_mapping: Optional[str] = None
     atlas_mapping: Optional[str] = None
     cwe: Optional[str] = None
+    # 命中會動搖模型驅動階段本身的可信度時為 True
+    # （針對 harness 的提示注入、不可見字元）：這是一個證據缺口
     # True when the hit undermines the trustworthiness of the model-driven phases themselves
     # (prompt injection aimed at the harness, invisible characters): it is an evidence gap
     affects_review_integrity: bool = False
 
 
 class RunMetadata(BaseModel):
-    """What produced this report: needed to tie a verdict back to a harness version, a mode and a
+    """產生這份報告的是什麼：日後讀取報告時，需要靠它把判定對應回 harness 版本、
+    模式與目標的修訂版本（稽核軌跡）。
+    What produced this report: needed to tie a verdict back to a harness version, a mode and a
     revision of the target when the report is read later (audit trail)."""
-    generated_at: str  # ISO 8601, UTC
+    generated_at: str  # ISO 8601 格式，UTC 時區 ／ ISO 8601, UTC
     harness_version: str
-    execution_mode: str  # live / hybrid / mock
+    execution_mode: str  # live／hybrid／mock 三者之一 ／ live / hybrid / mock
     config_path: str
     sandbox_provider: str
     target_path: str
-    target_git_commit: Optional[str] = None  # HEAD of the repository containing the target, if any
-    target_git_dirty: Optional[bool] = None  # uncommitted changes under the target at run time
-    file_filters: List[str] = Field(default_factory=list)  # include/exclude/changed-since actually applied
+    target_git_commit: Optional[str] = None  # 包含目標的版本庫的 HEAD（若有） ／ HEAD of the repository containing the target, if any
+    target_git_dirty: Optional[bool] = None  # 執行時目標底下有未提交的變更 ／ uncommitted changes under the target at run time
+    file_filters: List[str] = Field(default_factory=list)  # 實際套用的 include／exclude／changed-since ／ include/exclude/changed-since actually applied
+    node_runtime: Optional[str] = None  # 例如 JS/TS 測試有執行時為 "node v22.22.0"，否則為 None ／ e.g. "node v22.22.0" when JS/TS tests ran, else None
 
 
 class VibeHarnessSummary(BaseModel):
-    """Top-level assessment summary produced by the Commander Harness."""
-    overall_status: str  # "READY_TO_SHIP", "NEEDS_FIXES", "BLOCKED_CRITICAL_RISK", "INCONCLUSIVE"
+    """由 Commander Harness 產出的最上層評估摘要。
+    Top-level assessment summary produced by the Commander Harness."""
+    overall_status: str  # 四種狀態之一："READY_TO_SHIP"、"NEEDS_FIXES"、"BLOCKED_CRITICAL_RISK"、"INCONCLUSIVE" ／ "READY_TO_SHIP", "NEEDS_FIXES", "BLOCKED_CRITICAL_RISK", "INCONCLUSIVE"
     run: Optional[RunMetadata] = None
-    total_whitebox_findings: int  # raw reviewer reports, before duplicates are merged
+    total_whitebox_findings: int  # 審查者的原始回報數，合併重複之前 ／ raw reviewer reports, before duplicates are merged
     distinct_whitebox_findings: Optional[int] = None
     confirmed_whitebox_bugs: int
     whitebox_tests_passed: int
@@ -209,6 +245,8 @@ class VibeHarnessSummary(BaseModel):
     critical_threats_count: int
     blackbox_tests_passed: int
     blackbox_security_breaches: int
+    # 失敗卻不符合利用判斷式的攻擊測試：證據模稜兩可，
+    # 必須人工調查；計為證據缺口（絕不是默默通過）
     # Attack tests that FAILED without matching the exploit predicate: ambiguous evidence that
     # must be investigated manually; counts as an evidence gap (never a silent pass)
     blackbox_tests_failed: int = 0
@@ -219,7 +257,24 @@ class VibeHarnessSummary(BaseModel):
     line_coverage_pct: Optional[float] = None
     detected_language: str = "Python"
     static_findings: List[StaticFinding] = Field(default_factory=list)
+    # 目標匯入的 AI/LLM SDK；非空時會啟用 OWASP LLM Top 10 威脅建模
     # AI/LLM SDKs the target imports; non-empty switches on OWASP LLM Top 10 threat modeling
     ai_components: List[str] = Field(default_factory=list)
     reviewer_models: List[str] = Field(default_factory=list)
     key_recommendations: List[str] = Field(default_factory=list)
+    # --baseline：先前報告已包含的問題列在這裡，且不計入
+    # 判定（whitebox_tests_failed／blackbox_security_breaches／靜態 HIGH+ 只含新的問題）
+    # --baseline: problems the previous report already contained are listed here and not counted
+    # in the verdict (whitebox_tests_failed / blackbox_security_breaches / static HIGH+ hold new ones only)
+    baseline_path: Optional[str] = None
+    baseline_suppressed: List["BaselineSuppressedItem"] = Field(default_factory=list)
+
+
+class BaselineSuppressedItem(BaseModel):
+    kind: str  # 種類："breach" | "whitebox_failure" | "static" ／ "breach" | "whitebox_failure" | "static"
+    id: str
+    title: str
+    fingerprint: str
+
+
+VibeHarnessSummary.model_rebuild()

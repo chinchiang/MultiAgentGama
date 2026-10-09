@@ -1,5 +1,9 @@
 name: live-smoke
 
+# 手動觸發、對真實模型供應商的端對端執行。封閉測試套件用假的 litellm 涵蓋 live 程式路徑；
+# 這是唯一真正打到供應商、檢驗其回答的 JSON 合約、並讓沙盒跑模型寫的測試的檢查。
+# 需要把供應商金鑰設成 repository secrets（ANTHROPIC_API_KEY、ZAI_API_KEY、DEEPSEEK_API_KEY、GEMINI_API_KEY）；
+# 缺金鑰的 agent 在 hybrid 模式會退回模擬，執行結果為 INCONCLUSIVE。
 # Manual, opt-in end-to-end run against real model providers. The hermetic test suite covers the
 # live code paths with a fake litellm; this is the only check that exercises the providers, the
 # JSON contracts of their answers and the sandbox on model-written tests. It needs the provider
@@ -9,15 +13,15 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: "Directory to audit (relative to the checkout)"
+        description: "要稽核的目錄（相對於 checkout）／ Directory to audit (relative to the checkout)"
         default: examples
       mode:
-        description: "live (fail without a key) or hybrid (simulate agents without a key)"
+        description: "live（缺金鑰即失敗）或 hybrid（缺金鑰的 agent 改用模擬）／ live (fail without a key) or hybrid (simulate agents without a key)"
         type: choice
         options: [live, hybrid]
         default: hybrid
       max_model_calls:
-        description: "Cost guard: real model calls allowed for this run"
+        description: "成本防護：本次允許的真實模型呼叫數 ／ Cost guard: real model calls allowed for this run"
         default: "60"
 
 permissions:
@@ -39,7 +43,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.lock
       - run: python -m pip install -r requirements.lock
-      - name: Audit with real models
+      - name: Audit with real models ／ 以真實模型稽核
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
@@ -53,8 +57,10 @@ jobs:
           rc=$?
           set -e
           echo "exit code: $rc"
+          # 判定碼 0-3 是對目標的結論；4（live 呼叫失敗）與 5（harness 錯誤）才是失敗
           # Verdict codes 0-3 are outcomes about the target; 4 (live call failed) and 5 (harness error) are failures
           if [ "$rc" -gt 3 ]; then echo "::error::live run failed (exit $rc)"; exit 1; fi
+          # 同一次執行改輸出 JSON，從回應快取取用：不會再打第二輪供應商
           # Same run as JSON, served from the response cache: no second round of provider calls
           python main.py --target "${{ inputs.target }}" --mode "${{ inputs.mode }}" \
             --max-model-calls 0 --max-files 10 --format json --output live-report.json \

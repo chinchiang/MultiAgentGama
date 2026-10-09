@@ -23,8 +23,8 @@ From the CLI, use `--config <path>` to point at a different file and `--mode` to
 | `max_file_bytes` | `1000000` | Size cap (bytes) for a single source file; larger files are not analyzed and are listed as an evidence gap (minified bundles, generated code). Non-negative integer; `0` / `null` keep the default |
 | `include` | `[]` | Glob list: only files whose path relative to `--target` (or file name) matches one of them are analyzed (e.g. `["src/*"]`); empty = everything. CLI `--include` replaces the list |
 | `exclude` | `[]` | Glob list: matching files are not analyzed (e.g. `["tests/*", "vendor/*", "*.min.js"]`; `vendor` also matches the whole directory); excluded files are not an evidence gap. CLI `--exclude` replaces the list |
-| `cache_dir` | `null` (off) | Response cache directory (created if missing): usable live answers are stored as JSON keyed by model, settings and prompt, and an identical prompt later is served from it with no provider call and no `max_model_calls` spend; the Execution Provenance table shows it as "live (response cache)". CLI `--cache-dir` overrides. The directory holds raw model answers (which may quote the audited code), so treat it like the reports |
-| `retry_invalid_output` | `1` | How many times an unusable answer (not JSON, missing keys, empty) is re-asked, naming the problem, before it is booked `invalid`; every re-ask is a real call against `max_model_calls` and shows as "unusable, re-asked" in the Execution Provenance table. `0` disables; integer 0–5 |
+| `cache_dir` | `null` (off) | Response cache directory (created if missing): usable live answers are stored as JSON keyed by model, settings and prompt, and an identical prompt later is served from it with no provider call and no `max_model_calls` spend; the "執行來源 ／ Execution Provenance" table shows it as "真實（回應快取） ／ live (response cache)". CLI `--cache-dir` overrides. The directory holds raw model answers (which may quote the audited code), so treat it like the reports |
+| `retry_invalid_output` | `1` | How many times an unusable answer (not JSON, missing keys, empty) is re-asked, naming the problem, before it is booked `invalid`; every re-ask is a real call against `max_model_calls` and shows as "無法使用，已重問 ／ unusable, re-asked" in the "執行來源 ／ Execution Provenance" table. `0` disables; integer 0–5 |
 | `max_files` | `50` | Source files analyzed per run; files beyond the cap are listed as an evidence gap (the verdict cannot be `READY_TO_SHIP`). Must be a non-negative integer; `0` / `null` keep the default, a negative or non-integer value fails at startup with `ConfigError` (exit 5) |
 | `sandbox_provider` | `"local_subprocess"` | `local_subprocess` (local subprocess, **not a security boundary**) or `docker` (disposable isolated container); anything else fails at startup |
 | `docker_image` | `"vibeharness-sandbox:latest"` | Docker sandbox image; must ship `pytest`, `pytest-cov`, and the target's dependencies |
@@ -32,7 +32,10 @@ From the CLI, use `--config <path>` to point at a different file and `--mode` to
 | `docker_memory` | `"1g"` | Container memory limit |
 | `docker_cpus` | `"2"` | Container CPU limit |
 | `docker_pids_limit` | `256` | Container process limit |
-| `sandbox_memory_mb` | `2048` | `local_subprocess` only: caps the pytest process tree's address space with `RLIMIT_AS` (POSIX; no effect on Windows) and adds a CPU-time cap of the batch budget + 10 s. `0` disables. Not a security boundary, just a stop on runaway memory / CPU use; the `docker` provider uses `docker_memory` / `docker_cpus` instead |
+| `sandbox_memory_mb` | `2048` | `local_subprocess` only: caps the pytest process tree's address space with `RLIMIT_AS` (POSIX; no effect on Windows) and adds a CPU-time cap of the batch budget + 10 s. `0` disables. The Node sandbox sets no `RLIMIT_AS` (V8 would fail to start) and caps the heap with `--max-old-space-size=<value>` instead, keeping the CPU cap. Not a security boundary, just a stop on runaway memory / CPU use; the `docker` provider uses `docker_memory` / `docker_cpus` instead |
+| `node_bin` | `"node"` | Node executable (name or path) that runs JS/TS tests; detected the first time one is needed, needs >= 20 (>= 22.6 for `.ts`, type stripping). When it is missing or too old, JS/TS tests are reported as ERROR and as an evidence gap, never as a start-up failure |
+| `sandbox_node_provider` | `null` | Sandbox for JS/TS tests: `null` follows `sandbox_provider`; set `local_subprocess` (local Node) or `docker` (Node container, which uses the image's own Node, so the host needs none) on its own. Any other value fails at start-up (exit 5) |
+| `docker_node_image` | `"vibeharness-sandbox-node:latest"` | Node container image (`docker/sandbox-node.Dockerfile`, node:22-slim); the container sets `NODE_PATH=/work/<target>/node_modules`, which only CommonJS honours |
 | `sandbox_timeout_seconds` | `120` | Total timeout for one batched pytest run; on timeout the whole process tree is killed / the container removed |
 | `per_test_timeout_seconds` | `30` | Per-test timeout used when a timed-out batch is re-run test by test |
 
@@ -41,7 +44,7 @@ From the CLI, use `--config <path>` to point at a different file and `--mode` to
 | Value | Behavior |
 | :--- | :--- |
 | `live` | Real models only. A missing key, a model definition without `api_key_env`, or a failed call raises `LLMGatewayError` immediately (the CLI aborts with exit code 4) |
-| `hybrid` (default) | Calls real APIs when keys are present; falls back to the simulation engine on missing keys or failures, disclosed in the report's Execution Provenance |
+| `hybrid` (default) | Calls real APIs when keys are present; falls back to the simulation engine on missing keys or failures, disclosed in the report's "執行來源 ／ Execution Provenance" table |
 | `mock` | Simulation engine only (offline workflow preview; simulated output is unrelated to the target code, so the quality gate never yields `READY_TO_SHIP`) |
 
 ---
@@ -57,6 +60,7 @@ Each **key** is a `model_alias` (referenced by the `agents` section's `model_ali
 | `fallback_model` | Optional | Litellm model string tried **once** after the primary model still fails after `max_retries`; the report records which model was actually used |
 | `api_base` | Optional | Custom API endpoint (e.g. a self-hosted OpenAI-compatible gateway at `https://llm-gateway.example.com/v1`, or a local Ollama at `http://localhost:11434`). **Must be `https://`**; plain `http://` is accepted only for loopback hosts (`localhost` / `127.0.0.1` / `::1`); anything else fails at startup with `ConfigError` (exit 5). Target source code is sent to these endpoints, so only allow-listed endpoints are accepted (OWASP LLM04:2026 Supply Chain) |
 | `aws_profile_name` / `aws_region_name` | Optional | For models that authenticate through the AWS credential chain (e.g. `bedrock/...`), use these instead of `api_key_env`: the named AWS profile (SSO included) and region; a configured profile counts as live credentials |
+| `price_per_million_input` / `price_per_million_output` | Optional | Price per million tokens (USD, non-negative); with both set, `--estimate` prints the model's estimated cost, otherwise tokens only. Never used to control spend (use `max_model_calls`) |
 | `extra_params` | Optional | Extra parameters passed verbatim to litellm (a mapping), e.g. `{thinking: {type: disabled}}` or `{reasoning_effort: low}`, so a reasoning model does not spend the whole output budget thinking; anything but a mapping is a `ConfigError` at start-up |
 | `max_output_tokens` | Optional | Overrides `global.max_output_tokens`. Reasoning models (GLM, DeepSeek, Gemini 3) count thinking tokens against this limit; too small a value yields empty or cut-off answers, reported as "output truncated at the max_output_tokens limit" |
 | `provider` | Optional | **Label only — not read by the code** (routing is determined entirely by the litellm model string) |
@@ -149,6 +153,7 @@ agents:
 global:
   sandbox_provider: "docker"
   docker_image: "vibeharness-sandbox:latest"   # requires docker build -t ... -f docker/sandbox.Dockerfile . first
+  docker_node_image: "vibeharness-sandbox-node:latest"   # when the target has JS/TS: docker build -t ... -f docker/sandbox-node.Dockerfile .
   docker_network: "none"                        # use "host" (Linux) for black-box tests against a running service
   docker_memory: "1g"
   docker_cpus: "2"

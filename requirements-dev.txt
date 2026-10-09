@@ -1,12 +1,14 @@
 -r requirements.txt
+# 這裡全部釘版，讓 CI（tests.yml 的 lint／audit／package job）、本機與 .pre-commit-config.yaml 用同一組工具版本；
+# 升版要刻意為之（Dependabot 會提議）。
 # Everything here is pinned so CI (tests.yml lint / audit / package jobs), local runs and
 # .pre-commit-config.yaml enforce the same tool versions; bump deliberately (Dependabot proposes bumps).
 ruff==0.16.10
-# .pre-commit-config.yaml tracks the ruff-pre-commit mirror, whose tag can lag the pin by a patch
+# .pre-commit-config.yaml 跟的是 ruff-pre-commit 鏡像，其 tag 可能落後釘版一個 patch ／ .pre-commit-config.yaml tracks the ruff-pre-commit mirror, whose tag can lag the pin by a patch
 mypy==2.4.0
-# CI runs pytest with --cov=core --cov=agents --cov=runners --cov=reports (same version as requirements.lock)
+# CI 以 --cov=vibeharness 跑 pytest（版本與 requirements.lock 相同）／ CI runs pytest with --cov=vibeharness (same version as requirements.lock)
 pytest-cov==7.1.0
-# Used by the wheel-packaging job in CI, publish.yml and local release builds
+# CI 的 wheel 打包 job、publish.yml 與本機發布建置使用 ／ Used by the wheel-packaging job in CI, publish.yml and local release builds
 build==1.6.1
-# Used by the CI audit job against requirements.lock
+# CI 的 audit job 對 requirements.lock 使用 ／ Used by the CI audit job against requirements.lock
 pip-audit==2.10.1

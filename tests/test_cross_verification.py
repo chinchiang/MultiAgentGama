@@ -1,4 +1,5 @@
-"""Cross-model verification: no model judges its own finding, and verdicts are decided by vote."""
+"""跨模型驗證：沒有模型會評判自己的發現，判定結果由投票決定。
+Cross-model verification: no model judges its own finding, and verdicts are decided by vote."""
 import json
 import os
 import re
@@ -26,7 +27,8 @@ def _verifier(system):
 
 
 def _install(fake_live, rulings):
-    """rulings: {verifier_alias: {finding_id: verdict}}; records which findings each verifier was shown."""
+    """rulings：{驗證者別名: {發現 id: 判定}}；記錄每個驗證者看到了哪些發現。
+    rulings: {verifier_alias: {finding_id: verdict}}; records which findings each verifier was shown."""
     shown = {}
 
     def responder(system, user):
@@ -48,7 +50,7 @@ def test_no_model_verifies_its_own_or_a_corroborated_finding(fake_live):
     MultiModelDebater(LLMGateway(CONFIG, execution_mode="live")).arbitrate(findings)
     assert sorted(shown["claude"]) == ["B"]
     assert sorted(shown["deepseek"]) == ["A"]
-    assert sorted(shown["glm"]) == ["A"]  # glm already reported B, so it is not asked about B
+    assert sorted(shown["glm"]) == ["A"]  # glm 已經回報過 B，因此不會再問它 B ／ glm already reported B, so it is not asked about B
     assert sorted(shown["gemini"]) == ["A", "B"]
 
 
@@ -60,18 +62,20 @@ def test_majority_decides_and_ties_are_kept(fake_live):
         "gemini": {"A": "unsure", "B": "unsure", "C": "unsure", "D": "unsure"},
     })
     findings = [
-        _finding("A", "claude"),                               # 0 confirm vs 2 reject -> disputed
-        _finding("B", "claude"),                               # 1 vs 1 -> tie, kept
-        _finding("C", "claude"),                               # 0 vs 1 -> disputed
-        _finding("D", "deepseek", corroborating=["glm"]),  # corroborated vs claude reject -> tie, kept
+        _finding("A", "claude"),                               # 0 票確認對 2 票駁回 -> 有爭議 ／ 0 confirm vs 2 reject -> disputed
+        _finding("B", "claude"),                               # 1 對 1 -> 平手，保留 ／ 1 vs 1 -> tie, kept
+        _finding("C", "claude"),                               # 0 對 1 -> 有爭議 ／ 0 vs 1 -> disputed
+        _finding("D", "deepseek", corroborating=["glm"]),  # 佐證對 claude 駁回 -> 平手，保留 ／ corroborated vs claude reject -> tie, kept
     ]
     result = MultiModelDebater(LLMGateway(CONFIG, execution_mode="live")).arbitrate(findings)
     assert result.arbitration_applied
     assert [f.finding_id for f in result.confirmed_findings] == ["B", "D"]
     assert [f.finding_id for f in result.disputed_findings] == ["A", "C"]
+    # B 與 D 平手：保留下來測試，但不算多數確認
     # B and D are ties: kept for testing, but not majority-confirmed
     assert result.undecided_count == 2
     assert len(result.confirmed_findings) - result.undecided_count == 0
+    # 一致的決定性票數：A 2 + C 1 = 7 張決定性票中的 3 張（A 2、B 2、C 1、D 2）
     # Agreeing decisive votes: A 2 + C 1 = 3 of 7 decisive votes (A 2, B 2, C 1, D 2)
     assert abs(result.model_agreement_ratio - 3 / 7) < 1e-9
     votes_a = {v.model_alias: v.verdict for v in result.disputed_findings[0].verification_votes}
@@ -93,6 +97,7 @@ def test_bogus_rulings_are_ignored(fake_live):
         {"index": 0, "verdict": "maybe"}, {"index": 0, "verdict": "reject"}, {"index": 0, "verdict": "confirm"},
     ]}))
     result = MultiModelDebater(LLMGateway(CONFIG, execution_mode="live")).arbitrate([_finding("A", "claude")])
+    # 每個驗證者對每個發現只算第一個有效判定，三位驗證者：3 票駁回
     # Only the first valid ruling per finding from each of the three verifiers counts: 3 rejects
     assert [f.finding_id for f in result.disputed_findings] == ["A"]
     assert len(result.disputed_findings[0].verification_votes) == 3
@@ -105,7 +110,7 @@ def test_unusable_or_unsure_verifiers_leave_findings_unfiltered(fake_live):
     assert not result.arbitration_applied
     assert [f.finding_id for f in result.confirmed_findings] == ["A"]
     assert result.model_agreement_ratio is None
-    assert gateway.invalid_calls  # the unusable verifier output is still disclosed as an evidence gap
+    assert gateway.invalid_calls  # 無法使用的驗證者輸出仍會揭露為證據缺口 ／ the unusable verifier output is still disclosed as an evidence gap
 
 
 def test_verifiers_see_the_code_of_the_finding(fake_live, tmp_path):

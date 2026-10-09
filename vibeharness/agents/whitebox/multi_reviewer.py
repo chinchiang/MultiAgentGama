@@ -5,11 +5,13 @@ from typing import List, Dict, Any, Optional
 from pydantic import ValidationError
 from vibeharness.core.models import CodeSymbol, ReviewFinding, FindingSeverity, text_or
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError, UNCONFIGURED_ALIAS
+from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import render_symbols, batch_symbols
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
 
 logger = logging.getLogger("VibeHarness.MultiReviewer")
 
+# 模型輸出的嚴重度字串若與列舉不符（大小寫怪異、拼錯）就落到這裡
 # Model-emitted severity strings that do not match the enum (odd casing, typos) land here
 _DEFAULT_SEVERITY = FindingSeverity.MEDIUM
 
@@ -19,12 +21,16 @@ REVIEWER_PREFIX = "whitebox_reviewer_"
 
 class HeterogeneousReviewerEnsemble:
     """
+    協調白箱多模型審查集合。審查者來自設定：每個 `whitebox_reviewer_*` 代理都以自己的模型、
+    名稱與專注領域參與。預設陣容是 Claude（邏輯與狀態）、DeepSeek（防禦與資源）、
+    GLM（規格與契約）以及 Gemini（依 OWASP Top 10 for LLM Applications 2026 的 AI/LLM 整合與供應鏈安全）。
     Orchestrates the white-box multi-model review ensemble. Reviewers come from config: every
     `whitebox_reviewer_*` agent is used with its own model, name and focus. The default lineup is
     Claude (logic & state), DeepSeek (defensive & resource), GLM (spec & contract) and Gemini
     (AI/LLM-integration & supply-chain security per the OWASP Top 10 for LLM Applications 2026).
     """
 
+    # 每個符號都會被審查，需要幾個批次就分幾個；一個批次的程式碼清單必須放得進 token 預算
     # Every symbol is reviewed, in as many batches as needed; a batch's code listing fits the token budget
     BATCH_MAX_TOKENS = 10000
     BATCH_MAX_SYMBOLS = 15
@@ -36,21 +42,25 @@ class HeterogeneousReviewerEnsemble:
             if not agent_id.startswith(REVIEWER_PREFIX):
                 continue
             meta = meta if isinstance(meta, dict) else {}
+            # 與閘道相同的解析方式：沒有 model_alias 的審查者就是 `unconfigured`
+            # （hybrid 模式下模擬、live 模式下報錯），報告才能顯示它的呼叫實際去了哪裡
             # Same resolution as the gateway: a reviewer without a model_alias is `unconfigured`
             # (simulated in hybrid, an error in live), so the report shows where its calls really went
             alias = meta.get("model_alias") or UNCONFIGURED_ALIAS
             self.reviewer_agents.append({
                 "agent_id": agent_id,
                 "model_alias": str(alias),
-                "name": text_or(meta.get("name"), f"Reviewer ({alias})"),
-                "focus": text_or(meta.get("focus"), "General correctness and security defects"),
+                "name": text_or(meta.get("name"), bi(f"審查者（{alias}）", f"Reviewer ({alias})")),
+                "focus": text_or(meta.get("focus"), bi("一般正確性與安全缺陷", "General correctness and security defects")),
             })
         if not self.reviewer_agents:
-            logger.warning("No whitebox_reviewer_* agents are configured; the white-box review is skipped.")
+            logger.warning(bi("未設定任何 whitebox_reviewer_* 代理；略過白箱審查。",
+                              "No whitebox_reviewer_* agents are configured; the white-box review is skipped."))
 
     @property
     def distinct_models(self) -> List[str]:
-        """Model aliases in the ensemble; fewer than two means no cross-model verification is possible."""
+        """集合中的模型別名；少於兩個就無法進行跨模型驗證。
+        Model aliases in the ensemble; fewer than two means no cross-model verification is possible."""
         return sorted({r["model_alias"] for r in self.reviewer_agents})
 
     def review_symbols(self, symbols: List[CodeSymbol], root_dir: Optional[str] = None) -> List[ReviewFinding]:
@@ -60,6 +70,9 @@ class HeterogeneousReviewerEnsemble:
         batches = batch_symbols(symbols, root, self.BATCH_MAX_TOKENS, self.BATCH_MAX_SYMBOLS)
         jobs = [(reviewer, batch) for reviewer in self.reviewer_agents for batch in batches]
 
+        # 審查者是彼此獨立的模型，所以它們的呼叫並行執行。一個當掉的批次
+        # 不能丟掉其他所有批次（已經付費的）結果；live 模式的失敗
+        # 仍會往上傳遞，讓執行大聲地失敗。
         # Reviewers are independent models, so their calls run concurrently. A crashed batch
         # must not discard every other batch's (already paid-for) results; live-mode failures
         # still propagate so the run fails loudly.
@@ -72,7 +85,9 @@ class HeterogeneousReviewerEnsemble:
                 except LLMGatewayError:
                     raise
                 except Exception as e:
-                    logger.error(f"Reviewer batch for {job[0]['name']} failed: {type(e).__name__}: {e}")
+                    logger.error(bi(f"{job[0]['name']} 的審查批次失敗：{type(e).__name__}: {e}",
+                                    f"Reviewer batch for {job[0]['name']} failed: {type(e).__name__}: {e}"))
+                    # 記為一次無效呼叫：該批次的發現是缺漏，而不是不存在
                     # Booked as an invalid call: the batch's findings are missing, not absent
                     self.gateway.record_failure(job[0]["agent_id"], f"{type(e).__name__}: {e}")
                     responses.append(({}, False))
@@ -83,24 +98,30 @@ class HeterogeneousReviewerEnsemble:
             model_alias = reviewer["model_alias"]
             raw_findings = resp.get("findings")
             if not isinstance(raw_findings, list):
-                logger.warning(f"Ignoring unusable findings list from {reviewer['name']} (got {type(raw_findings).__name__})")
+                logger.warning(bi(f"略過 {reviewer['name']} 無法使用的發現清單（收到 {type(raw_findings).__name__}）",
+                                  f"Ignoring unusable findings list from {reviewer['name']} (got {type(raw_findings).__name__})"))
                 raw_findings = []
             for item in raw_findings:
                 if not isinstance(item, dict):
                     continue
                 if not text_or(item.get("title"), "") and not text_or(item.get("description"), ""):
+                    # 沒有驗證者或測試產生器可據以行動的內容
                     # Nothing a verifier or test generator could act on
-                    logger.warning(f"Skipping finding without a usable title or description from {reviewer['name']}")
+                    logger.warning(bi(f"略過 {reviewer['name']} 沒有可用標題或描述的發現",
+                                      f"Skipping finding without a usable title or description from {reviewer['name']}"))
                     continue
                 severity_str = str(item.get("severity", "MEDIUM")).upper()
                 try:
                     severity = FindingSeverity(severity_str)
                 except ValueError:
-                    logger.warning(f"Unknown severity '{severity_str.strip()}' from {reviewer['name']}; using MEDIUM")
+                    logger.warning(bi(f"{reviewer['name']} 回傳未知的嚴重度 '{severity_str.strip()}'；改用 MEDIUM",
+                                      f"Unknown severity '{severity_str.strip()}' from {reviewer['name']}; using MEDIUM"))
                     severity = _DEFAULT_SEVERITY
 
                 reported_symbol = item.get("symbol_name") if isinstance(item.get("symbol_name"), str) else None
                 symbol = self._match_symbol(reported_symbol, batch)
+                # 計數器以審查者代理為鍵，因此兩個共用同一 model_alias 的代理
+                # 仍會產生不同的發現 id
                 # Counters are keyed per reviewer agent, so two agents sharing a model_alias
                 # still generate distinct finding ids
                 counters[reviewer["agent_id"]] = counters.get(reviewer["agent_id"], 0) + 1
@@ -113,7 +134,7 @@ class HeterogeneousReviewerEnsemble:
                         symbol_name=symbol.name if symbol else reported_symbol,
                         line_number=symbol.line_start if symbol else None,
                         severity=severity,
-                        title=text_or(item.get("title"), "Potential Defect"),
+                        title=text_or(item.get("title"), bi("潛在缺陷", "Potential Defect")),
                         description=text_or(item.get("description"), ""),
                         root_cause=text_or(item.get("root_cause"), ""),
                         suspected_vibe_flaw=text_or(item.get("suspected_vibe_flaw"), ""),
@@ -122,13 +143,15 @@ class HeterogeneousReviewerEnsemble:
                         is_simulated=simulated
                     ))
                 except ValidationError as e:
-                    logger.warning(f"Skipping unusable finding from {reviewer['name']}: {e}")
+                    logger.warning(bi(f"略過 {reviewer['name']} 無法使用的發現：{e}",
+                                      f"Skipping unusable finding from {reviewer['name']}: {e}"))
 
         return self._unique_finding_ids(all_findings)
 
     @staticmethod
     def _unique_finding_ids(findings: List[ReviewFinding]) -> List[ReviewFinding]:
-        """Disambiguates duplicate ids (e.g. two reviewer agents configured with the same model_alias)."""
+        """消除重複的 id（例如兩個審查者代理設定了相同的 model_alias）。
+        Disambiguates duplicate ids (e.g. two reviewer agents configured with the same model_alias)."""
         seen: Dict[str, int] = {}
         unique = []
         for f in findings:
@@ -139,9 +162,11 @@ class HeterogeneousReviewerEnsemble:
 
     def _review_batch(self, reviewer: Dict[str, str], batch: List[CodeSymbol], root: str):
         name = reviewer["name"]
+        # 模型提示詞：維持英文（雙語的預設名稱／專注領域只貢獻其英文半）
+        # Model prompt: stays English (a bilingual default name / focus contributes its English half only)
         system_prompt = (
-            f"You are {name}, a specialized white-box AI code auditor.\n"
-            f"Your primary focus: {reviewer['focus']}.\n"
+            f"You are {en_only(name)}, a specialized white-box AI code auditor.\n"
+            f"Your primary focus: {en_only(reviewer['focus'])}.\n"
             f"The target codebase was produced via 'vibe coding' (rapid conversational AI generation), "
             f"which frequently passes superficial tests but hides critical logic gaps, lack of defensive boundaries, "
             f"and unhandled exceptions.\n\n"
@@ -168,7 +193,8 @@ class HeterogeneousReviewerEnsemble:
             f"{untrusted_block(render_symbols(batch, root, max_tokens=self.BATCH_MAX_TOKENS))}\n\n"
             f"Please audit against your specialty."
         )
-        logger.info(f"Running white-box audit with reviewer: {name} ({len(batch)} symbols)")
+        logger.info(bi(f"以審查者 {name} 執行白箱稽核（{len(batch)} 個符號）",
+                       f"Running white-box audit with reviewer: {name} ({len(batch)} symbols)"))
         resp = self.gateway.generate(
             reviewer["agent_id"], system_prompt, user_prompt, json_output=True, required_keys=["findings"]
         )
@@ -176,7 +202,11 @@ class HeterogeneousReviewerEnsemble:
 
     @staticmethod
     def _match_symbol(name: Any, batch: List[CodeSymbol]) -> Optional[CodeSymbol]:
-        """Resolves the model-reported symbol name: exact matches win over short-name suffix matches.
+        """解析模型回報的符號名稱：完全相符優先於短名稱字尾相符。
+
+        沒有指名任何符號的發現刻意保持未解析（None）—— 若默默地把它附到批次的第一個符號，
+        泛泛的發現就會得到具體的檔案／符號，進而把目標式測試產生導向錯誤的地方。
+        Resolves the model-reported symbol name: exact matches win over short-name suffix matches.
 
         A finding that names no symbol is deliberately left unresolved (None) — silently attaching
         it to the batch's first symbol gave generic findings a concrete file/symbol that then drove

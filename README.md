@@ -119,6 +119,7 @@ flowchart TD
 6. **兩種沙盒**：生成的測試在暫存目錄中執行，環境變數採白名單（不傳入 API 金鑰，也剔除 `LD_PRELOAD`、`BASH_ENV` 這類注入鍵）。每批測試有逾時（`sandbox_timeout_seconds`）；批次逾時後會逐一重跑，此時每個測試另有單測逾時（`per_test_timeout_seconds`），總時間仍受批次預算限制。逾時會終止整個程序樹（Docker 則移除容器）。
    - `local_subprocess`（預設）：本機子程序；POSIX 上以 `sandbox_memory_mb`（預設 2 GB）限制位址空間並加 CPU 時間上限，擋住失控的消耗（仍不是安全邊界）。
    - `docker`：每批測試在一次性容器中執行——預設無網路、根檔案系統與目標目錄唯讀、移除所有 capabilities、禁止提權、非 root 使用者（harness 以 root 執行時容器改用 `nobody`）、記憶體／CPU／程序數上限。只有該次執行的暫存目錄與 `/tmp`（noexec 的 tmpfs）可寫。
+7. **JS/TS 動態測試執行**：目標檔是 `.js`／`.jsx`／`.mjs`／`.cjs`／`.ts`／`.tsx`／`.mts`／`.cts` 時，白箱測試生成與黑箱 in-process 攻擊測試改以 `node:test` + `node:assert` 的 ES module 生成（第一次需要時才偵測 `node_bin`，需 Node ≥ 20；`.ts` 需 ≥ 22.6 的型別剝除），每個測試模組各自在一個 `node --test` 程序中執行，由 JUnit 報告判定：`AssertionError`／`ERR_ASSERTION` 失敗才算確認突破，目標內拋出的 `TypeError` 算缺陷但不算 exploit，測試自身的 `ReferenceError`／無法解析的匯入算 harness 錯誤。測試以 `file://` URL 匯入目標（提示詞會告知 ESM／CommonJS 的匯入寫法與偵測到的匯出名），裸 specifier 由目標的 `node_modules`（symlink 進執行目錄）解析；靜態閘門同樣拒絕安裝套件（`npm`／`pnpm`／`yarn`／`bun`／`npx`）。Node 沙盒不套 `RLIMIT_AS`（V8 啟動時保留大片位址空間），改以 `--max-old-space-size` 封頂堆積並保留 CPU 上限；`NODE_OPTIONS`／`NODE_PATH` 不從主機轉送。打執行中服務的黑箱 HTTP 攻擊仍一律以 Python（urllib）撰寫。沒有可用的 Node 時，JS/TS 測試列為 ERROR 並寫入證據缺口（「no usable Node runtime」），不會在啟動時失敗；mock 模式的模擬引擎不會生成 JS 測試，缺口為「no JS/TS test was generated」。Docker 下 Node 測試用另一個映像 `docker_node_image`（`docker/sandbox-node.Dockerfile`）。
 
 > ⚠️ **`local_subprocess` 不是安全邊界。** 它以你的使用者權限執行模型生成的程式碼，可讀寫檔案與存取網路。對不信任的目標或 live 模式，請使用 `sandbox_provider: docker`。
 
@@ -144,7 +145,7 @@ VibeHarness 本身就是一個 LLM 應用：待審程式碼是每個審查、驗
 | 動態 DAST／Fuzzing 代理 | 未實作；黑箱測試由威脅模型逐項生成 pytest 攻擊腳本 |
 | Hypothesis 性質測試 | 未內建；模型可自行生成，但需目標環境已安裝 `hypothesis` |
 | `e2b` 沙盒 | 未實作；`sandbox_provider` 支援 `local_subprocess` 與 `docker`，其他值會直接報錯 |
-| JS/TS 測試執行 | 符號擷取為無相依的 lexer（真正的括號配對，供審查與威脅建模）；生成與執行的測試只支援 Python，JS/TS 目標一律列為「只做靜態審查」的證據缺口 |
+| JS/TS 覆蓋率與第三方套件 | JS/TS 測試已可生成並以 Node 執行（見下方「JS/TS 動態測試執行」），但不收集 JS 覆蓋率；TypeScript 只做型別剝除（enum、namespace、參數屬性、裝飾器、tsconfig 路徑別名不支援）；Docker 沙盒內 ESM 的裸 specifier 無法解析（只有 CommonJS 吃 `NODE_PATH`） |
 
 ---
 
@@ -162,7 +163,8 @@ MultiAgentGama/
 │       ├── publish.yml          # 發佈：tag 推送時驗證版本一致、建置 sdist／wheel、上傳 GitHub Release（PyPI 需設 ENABLE_PYPI_PUBLISH）
 │       └── live-smoke.yml       # 手動觸發：以 repo secrets 的真實金鑰對 examples 跑一次 live／hybrid，上傳報告
 ├── docker/
-│   └── sandbox.Dockerfile       # docker 沙盒的基底映像（pytest / pytest-cov / requests）
+│   ├── sandbox.Dockerfile       # docker 沙盒的基底映像（pytest / pytest-cov / requests）
+│   └── sandbox-node.Dockerfile  # docker Node 沙盒的基底映像（node:22-slim，執行 JS/TS 測試）
 ├── vibeharness/                 # 唯一的頂層套件（pip install 後 site-packages 只多這一個目錄）
 │   ├── __init__.py              # 套件版本號（__version__，pyproject 的唯一來源）
 │   ├── cli.py                   # CLI 進入點（vibeharness 指令）
@@ -177,7 +179,7 @@ MultiAgentGama/
 │   │   ├── codecheck.py             # 生成測試的靜態檢查（需有 test_ 函式與斷言；拒絕安裝套件）
 │   │   ├── codecontext.py           # 提供給模型的原始碼與 import 指引（經不受信任程式碼通道）
 │   │   ├── sanitize.py              # 信任邊界：去隱形字元、遮蔽密鑰、不受信任程式碼通道、報告消毒
-│   │   └── sandbox.py               # 沙盒：本機子程序（非安全邊界）與 Docker 容器
+│   │   └── sandbox.py               # 沙盒：本機子程序（非安全邊界）與 Docker 容器；Node 版本各一（node --test）
 │   ├── agents/
 │   │   ├── __init__.py
 │   │   ├── whitebox/
@@ -194,7 +196,7 @@ MultiAgentGama/
 │   │       └── scenario_builder.py  # 威脅轉化可執行攻擊腳本
 │   ├── runners/
 │   │   ├── __init__.py
-│   │   └── test_executor.py         # 沙盒 Pytest 執行器與 PoC 抓取（白箱與黑箱共用）
+│   │   └── test_executor.py         # 沙盒測試執行器（pytest；JS/TS 走 node:test）與 PoC 抓取（白箱與黑箱共用）
 │   ├── reports/
 │   │   ├── __init__.py
 │   │   └── report_generator.py      # Markdown／JSON／SARIF 審計報告生成器
@@ -213,6 +215,7 @@ MultiAgentGama/
 │   ├── test_dedup_and_budget.py        # 重複發現合併與 token 預算內的提示上下文
 │   ├── test_docker_sandbox.py          # Docker 沙盒：路徑映射、容器強化參數、實際執行（有 Docker 時）
 │   ├── test_harness_components.py      # 各元件於 mock 模式下的整合測試
+│   ├── test_js_execution.py            # JS/TS 執行：程式碼閘門、ESM/CJS 偵測、Node JUnit 分類、Node 沙盒（有 node 時實跑）、端對端
 │   ├── test_js_ts_extractor.py         # JS/TS 擷取器：括號配對、字面值／註解遮蔽、箭頭函式、路由
 │   ├── test_model_output_robustness.py # 模型輸出異常時優雅降級、探針回退的揭露
 │   ├── test_p0_regressions.py          # 執行器正確性、自我修復與結果來源誠實性的回歸測試
@@ -225,6 +228,7 @@ MultiAgentGama/
 ├── LICENSE                      # MIT 授權
 ├── SECURITY.md                  # 資安政策：弱點私密通報流程
 ├── MANIFEST.in                  # sdist 額外收錄的 README／CHANGELOG／docs／config 檔案
+├── action.yml                   # composite GitHub Action：目標專案一行引用即可執行稽核（uses: chinchiang/MultiAgentGama@vX.Y.Z）
 ├── pyproject.toml               # 套件中繼資料、vibeharness 指令進入點、pytest／ruff／mypy 設定
 ├── requirements.txt             # 執行期依賴
 ├── requirements-dev.txt         # 開發依賴（ruff、mypy、pytest-cov、build、pip-audit，版本鎖定）
@@ -272,7 +276,7 @@ export GEMINI_API_KEY="AIza..."          # Gemini
 
 任何 agent 都可透過 `model_alias` 指向任一已定義的模型；缺少 `model_alias` 的 agent 會解析為 `unconfigured`（hybrid 模式改用模擬，live 直接失敗）。手上只有一組金鑰也能跑 live 模式——例如只有 Gemini key 時，把 `agents` 區段中所有 `model_alias` 改成 `gemini` 即可（註：`gemini-2.5-flash` 已不再供新申請的 Google API 金鑰使用，請使用 3.x 版本）。但單一模型家族時驗證者不會評審自己模型的發現，沒有任何驗證票、發現不經過濾，且審查者少於兩個模型家族列為證據缺口，判定最好只到 `INCONCLUSIVE`（exit code 3），結果僅供參考。
 
-*註：若未配置 API 金鑰，`hybrid` 模式會退回模擬引擎（Simulation Engine）以便離線體驗工作流。模擬引擎回傳的是**與目標程式碼無關的固定範本**，報告會以 `[SIMULATED]` 與「Execution Provenance」表明確標示，且品質閘門不會因此給出 `READY_TO_SHIP`。*
+*註：若未配置 API 金鑰，`hybrid` 模式會退回模擬引擎（Simulation Engine）以便離線體驗工作流。模擬引擎回傳的是**與目標程式碼無關的固定範本**，報告會以 `[SIMULATED]` 與「執行來源 ／ Execution Provenance」表明確標示，且品質閘門不會因此給出 `READY_TO_SHIP`。*
 
 | `--mode` | 行為 |
 | :--- | :--- |
@@ -286,9 +290,10 @@ export GEMINI_API_KEY="AIza..."          # Gemini
 
 ```bash
 docker build -t vibeharness-sandbox:latest -f docker/sandbox.Dockerfile .
+docker build -t vibeharness-sandbox-node:latest -f docker/sandbox-node.Dockerfile .   # 目標含 JS/TS 時
 ```
 
-在 `vibeharness/config/agents_config.yaml` 設定 `sandbox_provider: "docker"`。可調整 `docker_image`、`docker_network`、`docker_memory`、`docker_cpus`、`docker_pids_limit`。
+在 `vibeharness/config/agents_config.yaml` 設定 `sandbox_provider: "docker"`。可調整 `docker_image`、`docker_network`、`docker_memory`、`docker_cpus`、`docker_pids_limit`；JS/TS 測試的 Node 容器用 `docker_node_image`（`sandbox_node_provider` 預設跟隨 `sandbox_provider`，可單獨設為 `local_subprocess` 讓 JS 測試在本機 Node 執行）。
 
 - 目標目錄以唯讀方式掛載到容器內的 `/work/<目錄名>`；生成測試中的主機絕對路徑會自動改寫為容器路徑。
 - 容器預設**沒有網路**，無法在執行時安裝套件。目標的相依套件需預先裝進映像：以 `FROM vibeharness-sandbox:latest` 建立專案專用映像並 `pip install` 相依套件，再把 `docker_image` 指向它。
@@ -303,9 +308,9 @@ python main.py --target examples --output vibe_harness_report.md
 
 `--target`（`-t`，預設 `examples`）可為目錄或單一檔案；`--output`（`-o`）預設 `vibe_harness_report.md`。`--desc`（`-d`）可提供系統的高階描述供威脅建模參考；`--config`（`-c`）指定其他設定檔；`--verbose`（`-v`）開啟除錯日誌。黑箱測試預設以 in-process 方式直接 import 目標呼叫；只有明確指定 `--base-url`（`-u`，例如 `--base-url http://localhost:8000`；只接受含主機名的 `http://`／`https://`，其他 scheme 為用法錯誤）且該位址有服務回應時，才會改發真實 HTTP 請求。不會自動探測任何預設位址，以免攻擊腳本打到本機上無關的服務；live HTTP 模式下，攻擊程式碼若指向 `--base-url` 以外的主機會被靜態拒絕。範例輸出見 [`docs/sample_report.md`](docs/sample_report.md)。
 
-規模與成本上限可從 CLI 直接覆蓋設定檔：`--max-files`（單次分析的檔案數上限，預設 50，須 ≥ 1；其餘檔案列為 skipped 並記為證據缺口）與 `--max-model-calls`（單次執行的模型呼叫數上限，預設不限制，`0` 亦表示不限制，負數為用法錯誤；重試與 fallback 不另計次；用完時 hybrid 退回模擬並列為證據缺口、live 直接失敗）。檔案篩選：`--include GLOB`／`--exclude GLOB`（可重複，比對相對於 `--target` 的路徑或檔名，例如 `--exclude 'tests/*' --exclude '*.min.js'`；會覆蓋設定檔的 `include`／`exclude`），以及 `--changed-since <git ref>`（只分析相對該 ref 有變更的檔案，含未暫存與未追蹤，適合 PR 檢查：`--changed-since origin/main`）。超過 `max_file_bytes`（預設 1 MB）的檔案不分析並列為證據缺口。模型回應無法使用時會先重問一次（`retry_invalid_output`）再記為 `invalid`。`--output`／`--sarif` 的目錄不可寫時在任何模型呼叫前就以 exit 5 結束；執行中途崩潰或被 Ctrl-C 中斷時，已完成的階段（模型呼叫紀錄、發現、測試結果、威脅）會寫到 `<output>.partial.json`。`--cache-dir DIR` 開啟回應快取：可用的 live 回應存在 DIR，之後相同提示直接取用、不呼叫供應商也不扣預算（適合重跑或切換報告格式）。詳見 [`docs/configuration.md`](docs/configuration.md)。
+執行前可先用 `--estimate` 看規模：它只跑第 1 階段（符號擷取與靜態規則，不呼叫模型），印出每個 agent 與每個模型的預期呼叫數（審查者與威脅建模的次數是精確值，驗證、測試生成與攻擊合成依「每批發現數」等假設列為情境值，另給含重問與自癒修復的最大值）、估計的 prompt／輸出 token，以及設定了 `price_per_million_*` 的模型的估計花費；`--format json` 時寫到 `--output`，exit code 一律 0。規模與成本上限可從 CLI 直接覆蓋設定檔：`--max-files`（單次分析的檔案數上限，預設 50，須 ≥ 1；其餘檔案列為 skipped 並記為證據缺口）與 `--max-model-calls`（單次執行的模型呼叫數上限，預設不限制，`0` 亦表示不限制，負數為用法錯誤；重試與 fallback 不另計次；用完時 hybrid 退回模擬並列為證據缺口、live 直接失敗）。檔案篩選：`--include GLOB`／`--exclude GLOB`（可重複，比對相對於 `--target` 的路徑或檔名，例如 `--exclude 'tests/*' --exclude '*.min.js'`；會覆蓋設定檔的 `include`／`exclude`），以及 `--changed-since <git ref>`（只分析相對該 ref 有變更的檔案，含未暫存與未追蹤，適合 PR 檢查：`--changed-since origin/main`）。超過 `max_file_bytes`（預設 1 MB）的檔案不分析並列為證據缺口。模型回應無法使用時會先重問一次（`retry_invalid_output`）再記為 `invalid`。`--output`／`--sarif` 的目錄不可寫時在任何模型呼叫前就以 exit 5 結束；執行中途崩潰或被 Ctrl-C 中斷時，已完成的階段（模型呼叫紀錄、發現、測試結果、威脅）會寫到 `<output>.partial.json`。`--cache-dir DIR` 開啟回應快取：可用的 live 回應存在 DIR，之後相同提示直接取用、不呼叫供應商也不扣預算（適合重跑或切換報告格式）。詳見 [`docs/configuration.md`](docs/configuration.md)。
 
-報告格式可用 `--format md`（預設）或 `--format json`（機器可讀，含完整的 findings、威脅模型與測試結果，適合接 CI/CD）。兩種格式都會保存每個生成測試的程式碼：Markdown 附錄「Generated Test Code」以可收合區塊列出程式碼與其執行結果（已去除控制字元）；JSON 的 `generated_tests`／`blackbox_generated_tests` 則原封不動保存，可用來稽核或重跑。模型寫的測試也只是假設——「通過」的測試可能是在斷言缺陷本身（例如 `pytest.raises(KeyError)`），請一併檢查斷言是否描述正確的行為：
+報告格式可用 `--format md`（預設）或 `--format json`（機器可讀，含完整的 findings、威脅模型與測試結果，適合接 CI/CD）。兩種格式都會保存每個生成測試的程式碼：Markdown 附錄「產生的測試程式碼（稽核軌跡） ／ Generated Test Code (audit trail)」以可收合區塊列出程式碼與其執行結果（已去除控制字元）；JSON 的 `generated_tests`／`blackbox_generated_tests` 則原封不動保存，可用來稽核或重跑。模型寫的測試也只是假設——「通過」的測試可能是在斷言缺陷本身（例如 `pytest.raises(KeyError)`），請一併檢查斷言是否描述正確的行為：
 
 ```bash
 python main.py --target examples --output report.json --format json
@@ -314,18 +319,29 @@ python main.py --target examples --output report.json --format json
 另可加 `--sarif <路徑>` 一併輸出 [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html) 報告：白箱確認的 findings 會帶檔案/行號位置（依 `line_number` 或符號表解析），黑箱確認的資安突破列為 error 級結果（能從攻擊向量對應到符號時也帶位置）。規則 id 固定為 `vibeharness/whitebox-finding`／`vibeharness/blackbox-breach`，確定性 AI 安全規則則為 `vibeharness/VH-AI-001`～`009`（以 OWASP／ATLAS／CWE 標記 tags），本次執行的 finding／test id 放在 `properties`，因此重新編號不會讓 Code Scanning 的 alert 關掉又重開。SARIF 可上傳到 GitHub Code Scanning，讓缺陷直接顯示在 repo 的 **Security** 頁籤：
 
 ```yaml
-# 目標專案的 .github/workflows/security.yml 範例
-- run: pip install vibeharness-mas   # 若已發佈至 PyPI；否則從 GitHub Release 的 wheel 或原始碼安裝
-- run: vibeharness --target src --output report.md --sarif vibeharness.sarif
+# 目標專案的 .github/workflows/security.yml 範例：本 repo 提供 composite GitHub Action（action.yml）
+- uses: chinchiang/MultiAgentGama@v0.4.0      # 安裝同一個 ref 的套件並執行稽核
+  with:
+    target: src
+    mode: hybrid
+    max-model-calls: "80"
+    changed-since: origin/main                 # PR 檢查：只分析有變更的檔案（可省略）
+    baseline: .vibeharness/baseline.json       # 可選：只有「新出現」的問題才讓 job 失敗
+    fail-on: needs-fixes                       # blocked | needs-fixes | inconclusive | never
   env:
     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
     DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
     GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 - uses: github/codeql-action/upload-sarif@v3
+  if: always()
   with:
     sarif_file: vibeharness.sarif
 ```
+
+Action 的 outputs 有 `verdict`（`READY_TO_SHIP`／`NEEDS_FIXES`／`BLOCKED_CRITICAL_RISK`／`INCONCLUSIVE`，harness 本身失敗時為 `ERROR`）與 `exit-code`；報告、SARIF 與崩潰時的 `.partial.json` 會以 artifact `vibeharness-report` 上傳。不用 Action 的話，`pip install "git+https://github.com/chinchiang/MultiAgentGama@v0.4.0"` 後直接呼叫 `vibeharness` 即可。
+
+**只對新問題把關（`--baseline`）**：把一次 `--format json` 的報告存起來（例如提交到 repo 的 `.vibeharness/baseline.json`），之後以 `--baseline` 指定它：報告中已經存在的白箱測試失敗（以其來源發現識別）、探針失敗、黑箱突破與 HIGH 以上的規則命中仍會列在報告的「基準中的已知問題（不計入） ／ Known from baseline (not counted)」清單與建議中，但不再計入判定與 exit code，只有新出現的問題會讓 CI 失敗。比對 key 與執行次序無關（finding 以檔案相對路徑＋符號＋標題正規化、突破以威脅的 STRIDE 分類＋標題＋攻擊向量、靜態命中以規則＋檔案＋證據但不含行號、探針以符號名），所以模型重新編號或無關的行數位移不會讓舊問題變新的。JSON 報告每個項目都帶 `fingerprint` 欄位；0.3.0 之前沒有該欄位的報告會自動重算。崩潰產生的 `.partial.json` 不能當 baseline。
 
 > 註：SARIF 中的檔案路徑以包含 `--target` 的 git repo 根目錄為基準做相對化（找不到 repo 時才以 `--target` 目錄為基準），所以 `--target src` 也會產生 `src/app.py` 這樣與 Code Scanning 對齊的路徑。
 

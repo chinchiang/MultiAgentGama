@@ -1,4 +1,5 @@
-"""Duplicate-finding merging and token-budgeted prompt context."""
+"""重複發現的合併與受 token 預算限制的提示詞脈絡。
+Duplicate-finding merging and token-budgeted prompt context."""
 import json
 import os
 import re
@@ -24,6 +25,7 @@ def _finding(fid, reviewer, title, root_cause="", symbol="get_order", file_path=
     )
 
 
+# --- 去重 -------------------------------------------------------------------
 # --- Deduplication ----------------------------------------------------------------
 
 def test_same_defect_from_three_models_is_merged_keeping_highest_severity():
@@ -36,6 +38,7 @@ def test_same_defect_from_three_models_is_merged_keeping_highest_severity():
     assert len(merged) == 1
     assert merged[0].finding_id == "WB-DEE-01"
     assert merged[0].severity == FindingSeverity.CRITICAL
+    # 排序後的清單：合併後的紀錄與回報順序無關
     # Sorted lists: the merged record is independent of reporting order
     assert merged[0].corroborated_by == ["Claude", "GLM"]
     assert merged[0].merged_finding_ids == ["WB-CLA-01", "WB-GLM-01"]
@@ -72,26 +75,30 @@ def test_plural_stems_are_handled_without_mangling():
     from vibeharness.agents.whitebox.deduplicator import _stem
     assert _stem("classes") == "class"
     assert _stem("labels") == "label"
-    assert _stem("address") == "address"   # ends in 'ss' — no strip
-    assert _stem("virus") == "virus"       # ends in 'us'
-    assert _stem("analysis") == "analysis" # ends in 'is'
+    assert _stem("address") == "address"   # 以「ss」結尾——不剝除 ／ ends in 'ss' — no strip
+    assert _stem("virus") == "virus"       # 以「us」結尾 ／ ends in 'us'
+    assert _stem("analysis") == "analysis" # 以「is」結尾 ／ ends in 'is'
     assert _stem("vulnerabilities") == "vulnerability"
+    # 四個字元以下的單字維持不動（符合過去的 len > 4 規則）
     # words of four characters or fewer are left alone (matches the historical len > 4 rule)
     assert _stem("keys") == "keys"
 
 
 def test_clustering_is_transitive_and_order_independent():
-    """A~B, B~C must land in one cluster whichever order the models report in."""
+    """A~B、B~C 無論模型以何種順序回報，都必須落在同一個叢集。
+    A~B, B~C must land in one cluster whichever order the models report in."""
     def make(fid, reviewer):
         return _finding(fid, reviewer, "Unhandled KeyError when order id is absent", "dict access order['id']")
     forward = deduplicate_findings([make("A", "Claude"), make("B", "DeepSeek"), make("C", "GLM")])
     reversed_ = deduplicate_findings([make("C", "GLM"), make("B", "DeepSeek"), make("A", "Claude")])
     assert len(forward) == 1 and len(reversed_) == 1
+    # 嚴重度平手：由 finding_id 決定，而非抵達順序
     # Tie on severity: the finding_id decides, not arrival order
     assert forward[0].finding_id == reversed_[0].finding_id == "A"
     assert forward[0].corroborated_by == reversed_[0].corroborated_by
 
 
+# --- Token 預算 ----------------------------------------------------------------
 # --- Token budget --------------------------------------------------------------------
 
 def test_token_estimate_and_truncation():
@@ -121,6 +128,7 @@ def test_class_is_rendered_as_skeleton_without_method_bodies(tmp_path):
     assert "TAX = 0.05" in skeleton
     assert "def total(self, items):" in skeleton
     assert "secret_body_marker" not in skeleton
+    # 方法本體仍恰好出現一次，在該方法自己的區塊中
     # The method body still appears exactly once, in the method's own block
     assert render_symbols(symbols, str(tmp_path), max_tokens=5000).count("secret_body_marker = sum") == 1
 
@@ -167,6 +175,7 @@ def test_reviewer_batches_by_tokens_and_reviews_every_symbol(fake_live, tmp_path
     assert all(estimate_tokens(p) < 700 for p in prompts)
 
 
+# --- 驗證者的發現清單維持在其 token 預算內 -----------------------------------------------
 # --- Verifier findings listing stays within its token budget --------------------------------------
 
 def test_debater_listing_clips_fields_and_keeps_every_index():
@@ -198,6 +207,7 @@ def test_debater_listing_keeps_short_fields_intact():
     assert "defect 2" in listing
 
 
+# --- 符號比對與發現 id ------------------------------------------------------------------
 # --- Symbol matching and finding ids ---------------------------------------------------
 
 def test_match_symbol_prefers_exact_and_never_guesses_for_unnamed_findings(tmp_path):
@@ -208,9 +218,11 @@ def test_match_symbol_prefers_exact_and_never_guesses_for_unnamed_findings(tmp_p
                           line_start=1, line_end=2, signature=name, source_code="pass")
     batch = [sym("Cart.total"), sym("Payment.total")]
     match = HeterogeneousReviewerEnsemble._match_symbol
+    # 完全相同的名稱優先於短名字尾：「Cart.total」不得比對到錯誤的 .total
     # Exact name beats short-name suffix: "Cart.total" must not match the wrong .total
     assert match("Cart.total", batch).name == "Cart.total"
-    assert match("total", batch).name == "Cart.total"  # first suffix match, documented behaviour
+    assert match("total", batch).name == "Cart.total"  # 第一個字尾相符者，已記載的行為 ／ first suffix match, documented behaviour
+    # 未命名的發現保持未解析，而不是釘在批次的第一個符號上
     # An unnamed finding is left unresolved instead of being pinned to the batch's first symbol
     assert match(None, batch) is None
     assert match("", batch) is None
@@ -231,6 +243,7 @@ def test_finding_ids_stay_unique_when_two_agents_share_a_model_alias(fake_live):
             {"symbol_name": "handler", "severity": "HIGH", "title": "y"},
         ]}))
         ensemble = HeterogeneousReviewerEnsemble(LLMGateway(CONFIG, execution_mode="live"))
+        # 兩位審查者指向同一個模型別名；id 不得衝突
         # Both reviewers point at the same model alias; ids must not collide
         ensemble.reviewer_agents = [
             {"agent_id": "whitebox_reviewer_claude", "model_alias": "claude", "name": "R1", "focus": "f"},
@@ -251,7 +264,7 @@ def test_render_symbols_truncates_instead_of_omitting_when_it_fits(tmp_path):
     small, medium = symbols
     budget = estimate_tokens(render_symbols([small], str(tmp_path), max_tokens=10_000)) + 100
     rendered = render_symbols([small, medium], str(tmp_path), max_tokens=budget)
-    assert "def medium" in rendered            # truncated in, not omitted
+    assert "def medium" in rendered            # 截斷後納入，而非省略 ／ truncated in, not omitted
     assert "(truncated)" in rendered
     assert "omitted" not in rendered
     assert estimate_tokens(rendered) <= budget

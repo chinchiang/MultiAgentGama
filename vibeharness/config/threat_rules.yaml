@@ -1,16 +1,18 @@
-# Threat Modeling Rules & Mapping Configuration for Vibe Coding
+# Vibe coding 的威脅建模規則與對應設定 ／ Threat Modeling Rules & Mapping Configuration for Vibe Coding
 #
+# 功能性欄位（由 agents/blackbox/threat_modeler.py 讀入，作為提示詞指引）：
 # Functional fields (parsed by agents/blackbox/threat_modeler.py as prompt guidance):
 #   - stride_categories.<key>.name / common_vibe_bugs
 #   - owasp_api_top10[*].id / name
-#   - owasp_llm_top10_2026[*].id / name / common_vibe_bugs / atlas_techniques (AI-integrated targets only)
+#   - owasp_llm_top10_2026[*].id / name / common_vibe_bugs / atlas_techniques（僅 AI 整合目標 ／ AI-integrated targets only）
+# 本檔其餘欄位（code、description、target_components…）只是文件：harness 不會讀，改了也不影響執行。
 # Everything else in this file (code, description, target_components, ...) is documentation:
 # the harness never reads it, so edits there change nothing at runtime.
 stride_categories:
   spoofing:
     code: "S"
     name: "Spoofing"
-    description: "Illegally accessing and then using another user's authentication information"
+    description: "非法取得並使用他人的驗證資訊 ／ Illegally accessing and then using another user's authentication information"
     target_components: ["Auth headers", "JWT tokens", "Session cookies", "API keys", "Webhook signatures"]
     common_vibe_bugs:
       - "Trusting client-supplied user_id in headers or bodies without token claim validation"
@@ -20,7 +22,7 @@ stride_categories:
   tampering:
     code: "T"
     name: "Tampering"
-    description: "Malicious modification of data, parameters, or configurations"
+    description: "惡意竄改資料、參數或設定 ／ Malicious modification of data, parameters, or configurations"
     target_components: ["Request payloads", "Database records", "URL query params", "Hidden form inputs"]
     common_vibe_bugs:
       - "Mass assignment / parameter injection updating unauthorized columns (e.g. is_admin=true, balance=99999)"
@@ -30,7 +32,7 @@ stride_categories:
   repudiation:
     code: "R"
     name: "Repudiation"
-    description: "Ability to deny performing an action without the system being able to prove it"
+    description: "可以否認做過某個動作而系統無法舉證 ／ Ability to deny performing an action without the system being able to prove it"
     target_components: ["Audit logs", "Transaction histories", "User activity streams"]
     common_vibe_bugs:
       - "Destructive actions (DELETE, transfer funds, role changes) performed without audit logs"
@@ -39,7 +41,7 @@ stride_categories:
   information_disclosure:
     code: "I"
     name: "Information Disclosure"
-    description: "Exposure of information to individuals not authorized to see it"
+    description: "把資訊暴露給無權查看的人 ／ Exposure of information to individuals not authorized to see it"
     target_components: ["Error responses", "Debug endpoints", "PII responses", "Database error logs"]
     common_vibe_bugs:
       - "Direct serialization of database models leaking hashed passwords, internal IDs, or salt"
@@ -49,7 +51,7 @@ stride_categories:
   denial_of_service:
     code: "D"
     name: "Denial of Service"
-    description: "Denying service to valid users through resource exhaustion or crash triggers"
+    description: "以資源耗盡或觸發當機讓合法使用者無法使用服務 ／ Denying service to valid users through resource exhaustion or crash triggers"
     target_components: ["Pagination params", "Regex parsers", "File upload endpoints", "Async task queues"]
     common_vibe_bugs:
       - "Unbounded query parameters (e.g., ?limit=1000000) exhausting memory"
@@ -59,7 +61,7 @@ stride_categories:
   elevation_of_privilege:
     code: "E"
     name: "Elevation of Privilege"
-    description: "Unprivileged user gains privileged access to functional or administrative resources"
+    description: "無權限的使用者取得功能或管理資源的特權存取 ／ Unprivileged user gains privileged access to functional or administrative resources"
     target_components: ["Role checks", "Route middleware", "Multi-tenant boundaries"]
     common_vibe_bugs:
       - "BOLA (Broken Object Level Authorization): user_id A can read/update user_id B's resource"
@@ -98,6 +100,11 @@ owasp_api_top10:
     name: "Unsafe Consumption of APIs"
     severity: "High"
 
+# OWASP Top 10 for LLM Applications 2026（v1.0，2026-08）。只在目標匯入 AI／LLM SDK 時使用
+# （見 agents/whitebox/ai_static_scanner.py）。功能性欄位：id / name / common_vibe_bugs。
+# `cwe` 與 `atlas_tactics` 依 2026 文件附錄 A 的對應表（MITRE ATLAS 內容 v2026.06，tactic 層級）；
+# `atlas_techniques` 是本 harness 自己的 technique 層級對應，已對照 ATLAS 2026.07 內容版本核對。
+# 威脅建模 agent 會被要求用這些 technique id 填 atlas_mapping。
 # OWASP Top 10 for LLM Applications 2026 (v1.0, 2026-08). Used only when the target imports an
 # AI/LLM SDK (see agents/whitebox/ai_static_scanner.py). Functional fields: id / name / common_vibe_bugs.
 # `cwe` and `atlas_tactics` follow the 2026 document's Appendix A mapping tables (MITRE ATLAS content

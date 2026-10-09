@@ -7,18 +7,27 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional, Set, Tuple
 from vibeharness.core.models import ReviewFinding, GeneratedTest, CodeSymbol, text_or
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
-from vibeharness.core.codecheck import check_test_code, strip_code_fences
-from vibeharness.core.codecontext import file_source, fence_language, import_instructions, module_import_name, truncate_to_tokens
+from vibeharness.core.codecheck import check_test_code_for, strip_code_fences
+from vibeharness.core.i18n import bi, en_only
+from vibeharness.core.codecontext import (
+    file_source, fence_language, import_instructions, language_for_file, module_import_name, truncate_to_tokens,
+)
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, prepare_untrusted_code, untrusted_block
 
 logger = logging.getLogger("VibeHarness.TestGenerator")
 
+# 每個發現所顯示目標原始碼的估計 token 預算
 # Estimated-token budget for the target source shown per finding
 CODE_CONTEXT_TOKENS = 4000
 
 
 class WhiteboxTestGenerator:
     """
+    產生可執行的 Pytest 測試案例，鎖定多模型仲裁階段中驗證過的
+    邊界案例缺陷與盲點。
+    包含自我修復迴圈（產生—驗證—修復）。
+    當某個發現沒有可用的模型產生測試時（例如離線模擬），
+    退回由目標自身函式推導出的確定性 None 輸入強健性探測。
     Generates executable Pytest test cases targeting edge-case defects
     and blindspots verified during the multi-model arbitration phase.
     Includes a self-healing loop (Generation-Validation-Repair).
@@ -30,6 +39,7 @@ class WhiteboxTestGenerator:
 
     def __init__(self, gateway: LLMGateway):
         self.gateway = gateway
+        # 上次執行中沒有產生可用模型測試的發現
         # Findings from the last run for which no usable model-generated test was produced
         self.findings_without_model_tests: List[str] = []
 
@@ -46,6 +56,8 @@ class WhiteboxTestGenerator:
         target_file = symbols[0].file_path if symbols else "main.py"
         root = root_dir or os.path.dirname(os.path.abspath(target_file))
 
+        # 發現彼此獨立，所以它們的產生—驗證—修復迴圈並行執行；
+        # 結果依發現順序收集，讓 id、報告與探測維持確定性。
         # Findings are independent, so their generate-validate-heal loops run concurrently;
         # results are collected in finding order so ids, reports and probes stay deterministic.
         with ThreadPoolExecutor(max_workers=min(self.gateway.max_concurrent_calls, len(findings))) as pool:
@@ -58,16 +70,18 @@ class WhiteboxTestGenerator:
                 try:
                     outcomes.append(future.result())
                 except LLMGatewayError:
-                    raise  # strict live mode fails loudly
+                    raise  # 嚴格的 live 模式會大聲地失敗 ／ strict live mode fails loudly
                 except Exception as e:
-                    logger.error(f"Test generation for {finding.finding_id} failed: {type(e).__name__}: {e}")
+                    logger.error(bi(f"{finding.finding_id} 的測試產生失敗：{type(e).__name__}: {e}",
+                                    f"Test generation for {finding.finding_id} failed: {type(e).__name__}: {e}"))
                     outcomes.append(([], False))
 
         generated_tests: List[GeneratedTest] = []
         for finding, (tests, has_valid_test) in zip(findings, outcomes, strict=True):
             generated_tests.extend(tests)
             if not has_valid_test:
-                logger.warning(f"No executable model-generated test for finding {finding.finding_id}; will use target-derived probes.")
+                logger.warning(bi(f"發現 {finding.finding_id} 沒有可執行的模型產生測試；將改用目標推導的探測。",
+                                  f"No executable model-generated test for finding {finding.finding_id}; will use target-derived probes."))
                 self.findings_without_model_tests.append(finding.finding_id)
 
         if self.findings_without_model_tests:
@@ -78,35 +92,62 @@ class WhiteboxTestGenerator:
     def _tests_for_finding(
         self, idx: int, finding: ReviewFinding, symbols: List[CodeSymbol], root: str, target_file: str
     ) -> Tuple[List[GeneratedTest], bool]:
-        """Model-generated (and healed) tests for one finding, and whether any of them is executable."""
+        """為一個發現產生（並修復）的模型測試，以及其中是否有任何一個可執行。
+        Model-generated (and healed) tests for one finding, and whether any of them is executable."""
+        file_path = finding.file_path if finding.file_path not in ("", "unknown") else target_file
+        language = language_for_file(file_path)
+        if language == "python":
+            role = (
+                "You are an expert Python QA Engineer and Test Automation Specialist.\n"
+                "Your job is to generate a robust, executable pytest test module that imports the real "
+                "code under test and asserts correct behavior under the specified edge-case scenario.\n"
+                "Rules: import the target exactly as instructed; every test_ function must assert on the "
+                "target's behavior (assert / pytest.raises); a failing assertion must mean the target is defective; "
+                "do not use the network, do not write files outside tmp_path, do not mock the function under test, "
+                "and never install packages (use only the standard library, pytest and what the target imports).\n\n"
+            )
+            example = ('"import pytest\\nfrom module import func\\n\\ndef test_something():\\n'
+                       '    with pytest.raises(ValueError):\\n        func(None)"')
+        else:
+            role = (
+                "You are an expert JavaScript/TypeScript QA Engineer and Test Automation Specialist.\n"
+                "Your job is to generate a robust, executable ES-module test file for Node's built-in test runner "
+                "(`node:test`) with `node:assert`, importing the real code under test and asserting correct behavior "
+                "under the specified edge-case scenario.\n"
+                "Rules: import the target through the file:// URL exactly as instructed; every test() must assert on "
+                "the target's behavior (assert.* / assert.throws / assert.rejects); a failing assertion must mean the "
+                "target is defective; no network, no files outside os.tmpdir(), do not mock the function under test, "
+                "no third-party test frameworks (no jest/mocha/vitest), and never install packages "
+                "(only node: built-ins and what the target already depends on).\n\n"
+            )
+            example = ('"import { test } from \\"node:test\\";\\nimport assert from \\"node:assert/strict\\";\\n'
+                       'import { func } from \\"file:///abs/module.js\\";\\n\\ntest(\\"rejects null\\", () => {\\n'
+                       '  assert.throws(() => func(null));\\n});"')
         system_prompt = (
-            "You are an expert Python QA Engineer and Test Automation Specialist.\n"
-            "Your job is to generate a robust, executable pytest test module that imports the real "
-            "code under test and asserts correct behavior under the specified edge-case scenario.\n"
-            "Rules: import the target exactly as instructed; every test_ function must assert on the "
-            "target's behavior (assert / pytest.raises); a failing assertion must mean the target is defective; "
-            "do not use the network, do not write files outside tmp_path, do not mock the function under test, "
-            "and never install packages (use only the standard library, pytest and what the target imports).\n\n"
+            f"{role}"
             "Respond in JSON format:\n"
             "{\n"
             f'  "test_id": "WB-TEST-{idx+1:02d}",\n'
             '  "title": "Clear description of test purpose",\n'
             '  "rationale": "Why this test exposes vibe-coding flaws",\n'
             '  "expected_outcome": "Expected assertion or exception handling",\n'
-            '  "code": "import pytest\\nfrom module import func\\n\\ndef test_something():\\n    with pytest.raises(ValueError):\\n        func(None)"\n'
+            f'  "code": {example}\n'
             "}"
             f"{UNTRUSTED_CODE_POLICY}"
         )
 
         user_prompt = (
             f"{self._code_context(finding, symbols, root, target_file)}\n\n"
-            f"Finding Title: {finding.title}\n"
-            f"Description: {finding.description}\n"
-            f"Root Cause: {finding.root_cause}\n"
-            f"Suggested Test Scenario: {finding.suggested_test_scenario}\n"
-            f"Produce an executable Pytest unit test."
+            # 雙語的模擬／預設欄位只送英文半（提示詞維持英文）／ bilingual simulated / default fields send their English half only
+            f"Finding Title: {en_only(finding.title)}\n"
+            f"Description: {en_only(finding.description)}\n"
+            f"Root Cause: {en_only(finding.root_cause)}\n"
+            f"Suggested Test Scenario: {en_only(finding.suggested_test_scenario)}\n"
+            + ("Produce an executable Pytest unit test." if language == "python" else "Produce an executable node:test module.")
         )
 
+        # 模型可能回答一批（{"tests": [...]}）或單一物件（{"code": ...}）；
+        # 其他任何形式都記為無效呼叫，而不是默默產生零個測試。
         # The model may answer with a batch ({"tests": [...]}) or a single object ({"code": ...});
         # anything else is recorded as an invalid call instead of silently producing zero tests.
         resp = self.gateway.generate(
@@ -123,9 +164,10 @@ class WhiteboxTestGenerator:
         tests: List[GeneratedTest] = []
         has_valid_test = False
         for t_idx, t_item in enumerate(tests_data):
+            # 自我修復驗證迴圈；仍然無效的程式碼會保留，以便回報為 ERROR
             # Self-healing validation loop; code that stays invalid is kept so it is reported as ERROR
-            validated_code = self._validate_and_heal(t_item["code"], f"finding {finding.finding_id}")
-            has_valid_test = has_valid_test or check_test_code(validated_code)[0]
+            validated_code = self._validate_and_heal(t_item["code"], f"finding {finding.finding_id}", language=language)
+            has_valid_test = has_valid_test or check_test_code_for(validated_code, language)[0]
 
             test_id = f"WB-TEST-{idx+1:02d}" + (f"-{t_idx+1}" if len(tests_data) > 1 else "")
             tests.append(GeneratedTest(
@@ -135,13 +177,18 @@ class WhiteboxTestGenerator:
                 title=text_or(t_item.get("title"), finding.title),
                 code=validated_code,
                 rationale=text_or(t_item.get("rationale"), finding.suggested_test_scenario),
-                expected_outcome=text_or(t_item.get("expected_outcome"), "Graceful handling without crash"),
-                source_ref=finding.finding_id
+                expected_outcome=text_or(t_item.get("expected_outcome"), bi("妥善處理而不當機", "Graceful handling without crash")),
+                source_ref=finding.finding_id,
+                language=language,
             ))
         return tests, has_valid_test
 
-    def _validate_and_heal(self, code: str, subject: str, max_retries: int = 2) -> str:
+    def _validate_and_heal(self, code: str, subject: str, max_retries: int = 2, language: str = "python") -> str:
         """
+        驗證程式碼可以解析並定義模組層級的 test_ 函式。
+        失敗時請模型修復。回傳可取得的最佳程式碼；
+        無法修復的程式碼原樣回傳，讓執行器將其回報為 ERROR
+        （絕不默默換成一個會通過的空測試）。
         Validates that the code parses and defines a module-level test_ function.
         On failure, asks the model to repair it. Returns the best available code;
         code that could not be repaired is returned unchanged so the executor reports it as ERROR
@@ -150,29 +197,41 @@ class WhiteboxTestGenerator:
         code_to_check = strip_code_fences(code)
 
         for attempt in range(max_retries + 1):
-            is_valid, problem = check_test_code(code_to_check)
+            is_valid, problem = check_test_code_for(code_to_check, language)
             if is_valid:
                 return code_to_check
-            logger.warning(f"Generated test for {subject} is invalid (attempt {attempt+1}): {problem}")
+            logger.warning(bi(f"為 {subject} 產生的測試無效（第 {attempt+1} 次嘗試）：{problem}",
+                              f"Generated test for {subject} is invalid (attempt {attempt+1}): {problem}"))
             if attempt == max_retries:
                 break
-            heal_prompt = (
-                f"The following Python pytest code is invalid: {problem}.\n"
-                f"Fix it so it parses and defines at least one module-level test_ function, "
-                f"and every test_ function asserts on the target's behavior. "
-                f"Output the corrected Python code only:\n\n{code_to_check}"
-            )
-            resp = self.gateway.generate("whitebox_test_generator", "Fix Python Test Code", heal_prompt, json_output=False)
+            if language == "python":
+                heal_prompt = (
+                    f"The following Python pytest code is invalid: {problem}.\n"
+                    f"Fix it so it parses and defines at least one module-level test_ function, "
+                    f"and every test_ function asserts on the target's behavior. "
+                    f"Output the corrected Python code only:\n\n{code_to_check}"
+                )
+                heal_system = "Fix Python Test Code"
+            else:
+                heal_prompt = (
+                    f"The following node:test module is invalid: {problem}.\n"
+                    f"Fix it so it is a valid ES module that defines at least one test() call, "
+                    f"and every test() asserts on the target's behavior with node:assert. "
+                    f"Output the corrected JavaScript code only:\n\n{code_to_check}"
+                )
+                heal_system = "Fix JavaScript Test Code"
+            resp = self.gateway.generate("whitebox_test_generator", heal_system, heal_prompt, json_output=False)
             fixed = strip_code_fences(text_or(resp.get("raw"), ""))
             if not fixed:
-                break  # Nothing to repair with (e.g. simulation engine)
+                break  # 沒有可用來修復的內容（例如模擬引擎） ／ Nothing to repair with (e.g. simulation engine)
             code_to_check = fixed
 
         return code_to_check
 
     @staticmethod
     def _code_context(finding: ReviewFinding, symbols: List[CodeSymbol], root: str, default_file: str) -> str:
-        """Import instructions plus the source the finding refers to (its symbol, else its whole file)."""
+        """匯入說明加上發現所指的原始碼（其符號，否則整個檔案）。
+        Import instructions plus the source the finding refers to (its symbol, else its whole file)."""
         file_path = finding.file_path if finding.file_path not in ("", "unknown") else default_file
         symbol = next((s for s in symbols if s.name == finding.symbol_name and s.file_path == file_path), None)
         if symbol:
@@ -188,13 +247,19 @@ class WhiteboxTestGenerator:
 
     @staticmethod
     def _is_async_def(source: str) -> bool:
-        """Checks the symbol's own def line (decorators may precede it)."""
+        """檢查符號自己的 def 行（前面可能有裝飾器）。
+        Checks the symbol's own def line (decorators may precede it)."""
         match = re.search(r"^\s*(async\s+)?def\s", source, re.MULTILINE)
         return bool(match and match.group(1))
 
     @staticmethod
     def _has_required_params(source: str) -> bool:
-        """True when the function takes at least one argument without a default.
+        """函式至少接受一個沒有預設值的引數時為 True。
+
+        探測會對每個必要引數傳入 None，所以沒有任何必要引數的函式會被原樣呼叫：
+        `main()`、`run_server()`、`reset_db()` 之類會執行它們真正的副作用
+        （或掛到沙盒逾時），卻完全沒有測到 None 輸入。
+        True when the function takes at least one argument without a default.
 
         A probe passes None for every required argument, so a function without any would be
         called as-is: `main()`, `run_server()`, `reset_db()` and friends would execute their real
@@ -214,6 +279,11 @@ class WhiteboxTestGenerator:
 
     def build_offline_probes(self, symbols: List[CodeSymbol], root_dir: Optional[str] = None) -> List[GeneratedTest]:
         """
+        針對至少接受一個必要引數的模組層級同步 Python 函式的確定性 None 輸入強健性探測
+        （沒有引數的函式絕不會被呼叫）。
+        None 輸入下未處理的 TypeError/KeyError/AttributeError/IndexError 回報為失敗；
+        以其他例外（ValueError、自訂錯誤）明確拒絕則算是有防禦的邊界。
+        目標有模組名稱時以模組名稱匯入（讓套件的相對匯入能運作），否則從檔案路徑載入。
         Deterministic None-input robustness probes for module-level synchronous Python functions
         that take at least one required argument (argument-less functions are never invoked).
         An unhandled TypeError/KeyError/AttributeError/IndexError on None inputs is reported as a failure;
@@ -268,10 +338,12 @@ class WhiteboxTestGenerator:
                 test_id=f"WB-PROBE-{probe_no:02d}",
                 test_type="whitebox_probe",
                 target_component=sym.name,
-                title=f"Offline None-input robustness probe: {sym.name}()",
+                title=bi(f"離線 None 輸入強健性探測：{sym.name}()", f"Offline None-input robustness probe: {sym.name}()"),
                 code=code,
-                rationale="Target-derived deterministic probe (no model-generated test available).",
-                expected_outcome="Function rejects or handles None inputs without an unhandled TypeError/KeyError/AttributeError/IndexError.",
+                rationale=bi("由目標推導的確定性探測（沒有可用的模型產生測試）。",
+                             "Target-derived deterministic probe (no model-generated test available)."),
+                expected_outcome=bi("函式拒絕或妥善處理 None 輸入，不會出現未處理的 TypeError/KeyError/AttributeError/IndexError。",
+                                    "Function rejects or handles None inputs without an unhandled TypeError/KeyError/AttributeError/IndexError."),
                 source_ref=sym.name
             ))
         return probes

@@ -1,44 +1,70 @@
-# VibeHarness-MAS Agent Configuration
-# Supports multi-model de-biasing by mapping distinct LLMs to each agent
+# VibeHarness-MAS agent 設定檔 ／ VibeHarness-MAS Agent Configuration
+# 把不同的 LLM 指派給各個 agent，以多模型去偏 ／ Supports multi-model de-biasing by mapping distinct LLMs to each agent
 
 global:
-  execution_mode: "hybrid"  # "live" (calls APIs), "mock" (offline/dry-run for testing), or "hybrid"
-  timeout_seconds: 180            # per LLM request; long JSON at a 16k output cap took Opus over 60s
-  max_retries: 2                  # LLM request retries before falling back to fallback_model
-  max_output_tokens: 16384        # per LLM response (a cap; reasoning tokens count against it); a model's own
+  execution_mode: "hybrid"  # "live"（呼叫真實 API）、"mock"（離線／乾跑，供測試）或 "hybrid" ／ "live" (calls APIs), "mock" (offline/dry-run for testing), or "hybrid"
+  timeout_seconds: 180            # 單次 LLM 請求逾時；16k 輸出上限下的長 JSON 曾讓 Opus 超過 60 秒 ／ per LLM request; long JSON at a 16k output cap took Opus over 60s
+  max_retries: 2                  # 退回 fallback_model 前的 LLM 請求重試次數 ／ LLM request retries before falling back to fallback_model
+  max_output_tokens: 16384        # 單次 LLM 回應上限（封頂值；思考 token 也算在內），模型自己的 max_output_tokens 可覆蓋；4096 在 live 實測會截斷威脅模型
+                                  # per LLM response (a cap; reasoning tokens count against it); a model's own
                                   # max_output_tokens overrides it. 4096 truncated threat models in live runs
-  max_model_calls: null           # cost guard: live model invocations per run (null = unlimited); when exhausted,
+  max_model_calls: null           # 成本防護：每次執行的真實模型呼叫數（null = 不限）；用盡時 hybrid 退回模擬（不可能 READY_TO_SHIP）、live 直接失敗
+                                  # cost guard: live model invocations per run (null = unlimited); when exhausted,
                                   # hybrid falls back to simulation (never READY_TO_SHIP), live fails
-  max_concurrent_calls: 6         # parallel model calls per agent phase
-  max_files: 50                   # source files analyzed per run; the rest are reported as skipped
-  max_file_bytes: 1000000         # a single source file above this size is skipped (evidence gap): bundles, generated code
+  max_concurrent_calls: 6         # 每個 agent 階段的並行模型呼叫數 ／ parallel model calls per agent phase
+  max_files: 50                   # 每次分析的原始碼檔案數，其餘列為 skipped ／ source files analyzed per run; the rest are reported as skipped
+  max_file_bytes: 1000000         # 超過此大小的單一檔案會被略過（證據缺口）：bundle、產生的程式碼 ／ a single source file above this size is skipped (evidence gap): bundles, generated code
+  # include / exclude：以相對於 --target 的路徑（或檔名）比對的 glob；CLI 的 --include/--exclude 會覆蓋這兩個清單，
+  # --changed-since <git ref> 再把範圍縮到有變更的檔案
   # include / exclude: glob patterns against the path relative to --target (or the file name); CLI --include/--exclude
   # override these lists, --changed-since <git ref> further restricts the run to files that changed
-  include: []                     # e.g. ["src/*"]; empty = everything
-  exclude: []                     # e.g. ["tests/*", "vendor/*", "*.min.js"]
-  cache_dir: null                 # directory for the response cache (usable live answers keyed by model + prompt; a hit
+  include: []                     # 例如 ["src/*"]；空 = 全部 ／ e.g. ["src/*"]; empty = everything
+  exclude: []                     # 例如 ["tests/*", "vendor/*", "*.min.js"] ／ e.g. ["tests/*", "vendor/*", "*.min.js"]
+  cache_dir: null                 # 回應快取目錄（可用的 live 回答以模型＋提示為 key；命中時不呼叫供應商、不扣預算）；CLI --cache-dir 可覆蓋。
+                                  # 裡面是原始的模型回答，請比照報告保管。null = 關閉
+                                  # directory for the response cache (usable live answers keyed by model + prompt; a hit
                                   # makes no provider call and costs no budget); CLI --cache-dir overrides. Holds raw
                                   # model answers, so treat it like the reports. null = off
-  retry_invalid_output: 1         # re-ask a model this many times when its answer is unusable (not JSON, missing keys,
+  retry_invalid_output: 1         # 模型回答無法使用（非 JSON、缺欄位、空回應）時再問幾次才記為 `invalid`；每次重問都是計入 max_model_calls 的真實呼叫
+                                  # re-ask a model this many times when its answer is unusable (not JSON, missing keys,
                                   # empty) before booking it `invalid`; each re-ask is a real call against max_model_calls
-  sandbox_provider: "local_subprocess"  # "local_subprocess" (NOT a security boundary) or "docker" (isolated container); e2b is planned
+  sandbox_provider: "local_subprocess"  # "local_subprocess"（不是安全邊界）或 "docker"（隔離容器）；e2b 規劃中 ／ "local_subprocess" (NOT a security boundary) or "docker" (isolated container); e2b is planned
+  # 僅 docker provider；請先建映像：docker build -t vibeharness-sandbox:latest -f docker/sandbox.Dockerfile .
   # docker provider only; build the image first: docker build -t vibeharness-sandbox:latest -f docker/sandbox.Dockerfile .
-  docker_image: "vibeharness-sandbox:latest"  # must contain pytest, pytest-cov and the target's dependencies
-  docker_network: "none"          # "none" blocks all network; black-box tests against a running service need e.g. "host" (Linux)
+  docker_image: "vibeharness-sandbox:latest"  # 需含 pytest、pytest-cov 與目標的相依套件 ／ must contain pytest, pytest-cov and the target's dependencies
+  docker_network: "none"          # "none" 全斷網；黑箱測試要打執行中的服務時需改為例如 "host"（Linux）／ "none" blocks all network; black-box tests against a running service need e.g. "host" (Linux)
   docker_memory: "1g"
   docker_cpus: "2"
   docker_pids_limit: 256
-  sandbox_timeout_seconds: 120    # budget for one batched pytest run
-  sandbox_memory_mb: 2048         # local_subprocess only: address-space cap (RLIMIT_AS, POSIX) for the pytest process
+  # JS/TS 目標：生成的 node:test 模組以 Node 內建 runner 執行（需 >= 20；TypeScript 的型別剝除需 >= 22.6）。
+  # 找不到 runtime 時只是那些測試的證據缺口，不會在啟動時失敗。
+  # JS/TS targets: generated node:test modules run with Node's built-in runner (>= 20; TypeScript needs >= 22.6 for
+  # type stripping). A missing runtime is an evidence gap for those tests, never a start-up failure.
+  node_bin: "node"
+  sandbox_node_provider: null     # null = 跟隨 sandbox_provider；"local_subprocess" 或 "docker" ／ null = follow sandbox_provider; "local_subprocess" or "docker"
+  docker_node_image: "vibeharness-sandbox-node:latest"  # docker build -t vibeharness-sandbox-node:latest -f docker/sandbox-node.Dockerfile .
+  sandbox_timeout_seconds: 120    # 單批 pytest 執行的總預算 ／ budget for one batched pytest run
+  sandbox_memory_mb: 2048         # 僅 local_subprocess：pytest 程序樹的位址空間上限（RLIMIT_AS，POSIX），另加批次預算 + 10 秒的 CPU 時間上限；0 關閉。不是安全邊界
+                                  # local_subprocess only: address-space cap (RLIMIT_AS, POSIX) for the pytest process
                                   # tree, plus a CPU-time cap of the batch budget + 10 s; 0 disables. Not a security boundary
-  per_test_timeout_seconds: 30    # budget per test when a timed-out batch is re-run test by test
+  per_test_timeout_seconds: 30    # 批次逾時後逐測重跑時，每個測試的預算 ／ budget per test when a timed-out batch is re-run test by test
 
 models:
+  # 供應商定義。`model`／`fallback_model` 是 litellm 的模型字串；金鑰從 api_key_env 讀取。
+  # 主模型在 max_retries 之後仍失敗時，fallback_model 會被試一次。
+  # 任何 agent 都可以透過 `model_alias` 指向下面任一模型——例如只有 Gemini 金鑰時，把每個 agent 的 model_alias 都設成
+  # "gemini"（Gemini live 冒煙測試就是這樣跑的）。
+  # 每個模型可選填：`price_per_million_input`／`price_per_million_output`（美元；讓 --estimate 印出費用）、
+  # `max_output_tokens`（覆蓋全域上限）與 `extra_params`（原樣傳給 litellm 的 mapping，例如 {thinking: {type: disabled}}
+  # 或 {reasoning_effort: low}，避免推理模型把整個輸出額度花在思考上）。
+  # 供應鏈（OWASP LLM04:2026）：目標的原始碼會送到這裡列出的每一家供應商，只設定你接受其資料保留條款的供應商；
+  # api_base 必須是 https（loopback 除外）。
   # Provider definitions. `model` / `fallback_model` are litellm model strings; the key is read from api_key_env.
   # fallback_model is tried once when the primary model still fails after max_retries.
   # Any agent can point at any model below via its `model_alias` — e.g. with only a Gemini key,
   # set every agent's model_alias to "gemini" (that is how the Gemini live smoke test runs).
-  # Optional per model: `max_output_tokens` (overrides the global cap) and `extra_params`, a mapping passed
+  # Optional per model: `price_per_million_input` / `price_per_million_output` (USD; lets --estimate print a cost),
+  # `max_output_tokens` (overrides the global cap) and `extra_params`, a mapping passed
   # straight to litellm, e.g. {thinking: {type: disabled}} or {reasoning_effort: low} so a reasoning model
   # does not spend the whole output budget thinking.
   # Supply chain (OWASP LLM04:2026): target source code is sent to every provider listed here, so only
@@ -50,13 +76,14 @@ models:
     provider: "anthropic"
 
   glm:
-    # Zhipu AI / Z.AI GLM via litellm's zai provider
+    # 智譜 AI／Z.AI 的 GLM，經 litellm 的 zai provider ／ Zhipu AI / Z.AI GLM via litellm's zai provider
     model: "zai/glm-5.3"
     api_key_env: "ZAI_API_KEY"
     fallback_model: "zai/glm-5.3-flash"
     provider: "zhipu"
 
   deepseek:
+    # 用帶版本的 id 而不是會變動的 deepseek-chat 別名，供應商端換模型時報告看得出來
     # Versioned ids rather than the moving deepseek-chat alias, so a provider-side swap is visible in reports
     model: "deepseek/deepseek-v4-pro"
     api_key_env: "DEEPSEEK_API_KEY"
@@ -64,14 +91,16 @@ models:
     provider: "deepseek"
 
   gemini:
-    # gemini-2.5-flash is no longer available to new Google API users; use 3.x instead
+    # gemini-2.5-flash 已不開放給新的 Google API 使用者，改用 3.x ／ gemini-2.5-flash is no longer available to new Google API users; use 3.x instead
     model: "gemini/gemini-3.8-flash"
     api_key_env: "GEMINI_API_KEY"
     fallback_model: "gemini/gemini-3.5-flash"
     provider: "google"
 
 agents:
-  # 1. White-Box Agents (Multi-Model Ensemble to eliminate bias)
+  # 1. 白箱 agent（多模型評議，消除單一模型偏差）／ White-Box Agents (Multi-Model Ensemble to eliminate bias)
+  # 每個 whitebox_reviewer_* 項目都會被使用，各有自己的模型、名稱與 focus；增刪項目即可調整陣容。
+  # 四個不同的模型家族讓彼此的盲點不重疊。
   # Every whitebox_reviewer_* entry is used, with its own model, name and focus; add or remove entries
   # to change the ensemble. Four different model families keep their blind spots from overlapping.
   whitebox_reviewer_claude:
@@ -104,6 +133,8 @@ agents:
       decide or act (LLM07) or passed to eval/exec/shell/SQL/HTML (LLM10); also hard-coded credentials and
       unpinned third-party dependencies
 
+  # 跨模型驗證：每個發現交給「其模型沒有回報該發現」的每位驗證者裁決，因此沒有模型會評審自己的發現。
+  # 每個 whitebox_verifier_* 項目都會被使用；移除一個即不用那個模型。
   # Cross-model verification: each finding is ruled on by every verifier whose model did NOT report it,
   # so no model judges its own finding. Every whitebox_verifier_* entry is used; remove one to drop that model.
   whitebox_verifier_claude:
@@ -132,13 +163,16 @@ agents:
     temperature: 0.3
     role: "Generates executable Pytest test modules targeting identified blindspots"
 
-  # 2. Black-Box Agents (Threat-Model Driven)
+  # 2. 黑箱 agent（威脅模型驅動）／ Black-Box Agents (Threat-Model Driven)
   blackbox_threat_modeler:
     name: "STRIDE Threat Modeler Agent"
     model_alias: "claude"
     temperature: 0.2
     role: "Extracts trust boundaries, assets, and builds STRIDE, OWASP API and (for AI-integrated targets) OWASP LLM risk matrix"
 
+  # 選 deepseek 是 live 實測的結果：GLM-5.3 在 12 個攻擊腳本中有 8 個把 16k 輸出額度全花在思考上（空回答），
+  # Gemini 的安全過濾拒絕了一個（"content_filter"）；同一次執行的所有白箱測試都是 DeepSeek 產出的。
+  # 拒絕與空回答會寫進報告，該威脅維持未測試。
   # deepseek, chosen from live runs: GLM-5.3 spent its whole 16k output budget thinking on 8 of 12 attack
   # scripts (empty answers), and Gemini's safety filter refused one ("content_filter"); DeepSeek produced
   # every white-box test of the same run. Refusals and empty answers are reported, the threat stays untested.
@@ -148,4 +182,4 @@ agents:
     temperature: 0.2
     role: "Translates threat scenarios into automated black-box tests (BOLA, Injection, Rate-limit, Prompt injection)"
 
-  # Planned (not yet implemented): a dynamic fuzzing / DAST runner agent.
+  # 規劃中（尚未實作）：動態 fuzzing／DAST runner agent ／ Planned (not yet implemented): a dynamic fuzzing / DAST runner agent.

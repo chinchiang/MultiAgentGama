@@ -1,16 +1,19 @@
-"""Regression tests for the packaging, model-output robustness, execution and SARIF fixes."""
+"""打包、模型輸出穩健性、執行與 SARIF 修正的回歸測試。
+Regression tests for the packaging, model-output robustness, execution and SARIF fixes."""
 import os
 import sys
 
 import pytest
 
 from vibeharness.core.llm_gateway import DEFAULT_CONFIG_PATH
+from vibeharness.core.i18n import en_only
 from vibeharness.agents.blackbox.threat_modeler import DEFAULT_RULES_PATH
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
 
 
+# --- 打包：安裝的 wheel 必須帶有它在執行期解析的預設設定檔 ------------------------------------
 # --- Packaging: the installed wheel must carry the default config it resolves at runtime -----------
 
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="tomllib is Python 3.11+")
@@ -21,6 +24,7 @@ def test_wheel_ships_the_default_config_files():
     for default_path in (DEFAULT_CONFIG_PATH, DEFAULT_RULES_PATH):
         rel = os.path.relpath(default_path, REPO_ROOT).replace(os.sep, "/")
         package_dir, filename = rel.rsplit("/", 1)
+        # 預設值相對於套件解析：vibeharness 底下只放資料的子套件
         # The defaults resolve relative to the package: a data-only sub-package of vibeharness
         assert package_dir == "vibeharness/config", rel
         package = package_dir.replace("/", ".")
@@ -31,7 +35,9 @@ def test_wheel_ships_the_default_config_files():
 
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="tomllib is Python 3.11+")
 def test_no_generic_top_level_packages_are_installed():
-    """`core`, `agents`, `config`, `main`... used to be installed as top-level packages/modules and
+    """`core`、`agents`、`config`、`main`…… 過去被安裝成頂層套件／模組，
+    與 site-packages 中任何同名的東西衝突；現在全部放進命名空間。
+    `core`, `agents`, `config`, `main`... used to be installed as top-level packages/modules and
     collided with anything else of the same name in site-packages; everything is namespaced now."""
     import tomllib
     with open(os.path.join(REPO_ROOT, "pyproject.toml"), "rb") as f:
@@ -41,6 +47,7 @@ def test_no_generic_top_level_packages_are_installed():
     assert cfg["tool"]["setuptools"]["packages"]["find"]["include"] == ["vibeharness*"]
 
 
+# --- 模型輸出：null ／ 型別錯誤的文字欄位必須退回預設值，不得讓管線當機 --------------------
 # --- Model output: null / wrong-typed text fields must fall back, not crash the pipeline ----------
 
 def _threat():
@@ -72,7 +79,7 @@ def test_null_fields_from_the_attack_synthesizer_fall_back_to_the_threat(fake_li
     builder = ThreatScenarioBuilder(LLMGateway(CONFIG, execution_mode="live"))
     tests = builder.build_test_cases_from_threats([_threat()], base_url=None)
     assert len(tests) == 1
-    assert tests[0].title == "Security test for Mass assignment"
+    assert en_only(tests[0].title) == "Security test for Mass assignment"
     assert tests[0].rationale == "send is_admin"
     assert tests[0].expected_outcome == "is_admin stays false"
 
@@ -87,7 +94,7 @@ def test_null_fields_from_the_test_generator_fall_back_to_the_finding(fake_live,
     assert [t.test_type for t in tests] == ["whitebox_unit"]
     assert tests[0].title == "None crash"
     assert tests[0].rationale == "call f(None)"
-    assert tests[0].expected_outcome == "Graceful handling without crash"
+    assert en_only(tests[0].expected_outcome) == "Graceful handling without crash"
 
 
 def test_non_string_test_code_is_ignored_not_fatal(fake_live, tmp_path):
@@ -115,11 +122,12 @@ def test_null_reviewer_fields_fall_back_but_empty_findings_are_dropped(fake_live
     findings = HeterogeneousReviewerEnsemble(LLMGateway(CONFIG, execution_mode="live")).review_symbols(
         symbols, root_dir=str(tmp_path)
     )
-    assert len(findings) == 4  # the usable finding from each reviewer; the empty one is dropped
-    assert all(f.title == "Potential Defect" and f.symbol_name is None for f in findings)
+    assert len(findings) == 4  # 每位審查者各一個可用的發現；空的那個被捨棄 ／ the usable finding from each reviewer; the empty one is dropped
+    assert all(en_only(f.title) == "Potential Defect" and f.symbol_name is None for f in findings)
     assert all(f.description == "x.y crashes on None" and f.root_cause == "" for f in findings)
 
 
+# --- 黑箱：沒有隱含的 live HTTP 目標 ---------------------------------------------------------
 # --- Black-box: no implicit live-HTTP target -----------------------------------------------------
 
 def test_no_base_url_means_in_process_and_no_network_probe(monkeypatch):
@@ -137,7 +145,9 @@ def test_no_base_url_means_in_process_and_no_network_probe(monkeypatch):
 
 @pytest.mark.parametrize("url", ["file:///etc/hostname", "ftp://host/x", "localhost:8000", "http://", "data:text/plain,hi"])
 def test_non_http_base_urls_are_rejected(monkeypatch, tmp_path, url):
-    """urllib opens file:/ftp:/data: URLs too, so `--base-url file:///etc/hostname` once counted as a
+    """urllib 也會開啟 file:／ftp:／data: URL，因此 `--base-url file:///etc/hostname` 曾被當成
+    live 伺服器，並把每個攻擊指令碼切換成 Live HTTP 模式。
+    urllib opens file:/ftp:/data: URLs too, so `--base-url file:///etc/hostname` once counted as a
     live server and switched every attack script into Live HTTP mode."""
     import sys
     from vibeharness import cli as main
@@ -148,6 +158,7 @@ def test_non_http_base_urls_are_rejected(monkeypatch, tmp_path, url):
     with pytest.raises(SystemExit) as exit_info:
         main.main()
     assert exit_info.value.code == main.USAGE_ERROR_EXIT_CODE
+    # 程式庫呼叫端也受到防護：建構器永遠不會探測這種 URL
     # Library callers are guarded too: the builder never probes such a URL
     from vibeharness.core.llm_gateway import LLMGateway
     builder = ThreatScenarioBuilder(LLMGateway(CONFIG, execution_mode="mock"))
@@ -187,6 +198,7 @@ def test_cli_does_not_default_to_a_live_base_url(monkeypatch, tmp_path):
     assert seen["base_url"] is None
 
 
+# --- 執行器：測試框架標頭不得破壞 `from __future__` 匯入 -----------------------------------
 # --- Executor: the harness header must not break `from __future__` imports ----------------------
 
 def _gen_test(code, test_id="T1", test_type="whitebox_unit"):
@@ -220,6 +232,7 @@ def test_header_still_precedes_code_without_future_imports():
     )
 
 
+# --- 威脅建模：來自多個批次的同一個威脅會被合併 ----------------------------------------------
 # --- Threat modeling: the same threat from several batches is merged ---------------------------
 
 def test_identical_threats_from_several_batches_are_merged_keeping_highest_severity():
@@ -232,9 +245,11 @@ def test_identical_threats_from_several_batches_are_merged_keeping_highest_sever
     def responder(agent_id, system_prompt, user_prompt, **k):
         calls["n"] += 1
         return {"threats": [
+            # 同一個威脅，標點／大小寫改寫過，嚴重度每批不同
             # same threat, reworded punctuation/casing, severity differs per batch
             {"threat_id": "THREAT-01", "stride_category": "Tampering", "title": f"Mass Assignment{'!' * calls['n']}",
              "attack_vector": "PUT /users", "severity": "CRITICAL" if calls["n"] == 2 else "MEDIUM"},
+            # 不同的路由是不同的威脅，必須保留
             # a different route is a different threat and must be kept
             {"threat_id": "THREAT-02", "stride_category": "Tampering", "title": "Mass assignment",
              "attack_vector": f"PUT /route{calls['n']}"},
@@ -264,7 +279,10 @@ def test_mock_threat_model_is_not_multiplied_by_batching(tmp_path):
 
 
 def test_structurally_wrong_threat_rules_degrade_to_no_guidance(tmp_path):
-    """threat_rules.yaml is user-editable: a YAML file that parses but has the wrong shape
+    """threat_rules.yaml 可由使用者編輯：能解析但形狀錯誤的 YAML 檔
+    （預期對應表卻給清單、字串項目而非物件）必須略過檢查清單，
+    而不是從每個建模批次拋出 AttributeError。
+    threat_rules.yaml is user-editable: a YAML file that parses but has the wrong shape
     (a list where a mapping is expected, string entries instead of objects) must skip the
     checklist instead of raising AttributeError out of every modeling batch."""
     from vibeharness.core.llm_gateway import LLMGateway
@@ -277,10 +295,11 @@ def test_structurally_wrong_threat_rules_degrade_to_no_guidance(tmp_path):
     )
     tm = AutomatedThreatModeler(LLMGateway(CONFIG, execution_mode="mock"), rules_path=str(rules))
     guidance = tm._rules_guidance()
-    assert "API1 BOLA" in guidance  # the valid entries are still used
+    assert "API1 BOLA" in guidance  # 有效的項目仍會使用 ／ the valid entries are still used
     assert "just a string" not in guidance
 
 
+# --- 離線探針永遠不會呼叫無參數的函式 ---------------------------------------------------------
 # --- Offline probes never invoke argument-less functions ---------------------------------------
 
 def test_probes_skip_functions_without_required_arguments(tmp_path):
@@ -306,6 +325,7 @@ def test_probes_skip_functions_without_required_arguments(tmp_path):
     assert not marker.exists()
 
 
+# --- SARIF：有效的位置、儲存庫根目錄 URI、與執行無關的規則 id -------------------------------
 # --- SARIF: valid locations, repo-root URIs, run-independent rule ids ---------------------------
 
 def _sarif(findings, target, symbols=None, breaches=(), threats=()):
@@ -328,7 +348,7 @@ def test_sarif_never_emits_null_locations(tmp_path):
     run = _sarif([_finding(file_path="unknown"), _finding(finding_id="WB-CLA-02", file_path="")], tmp_path)
     assert len(run["results"]) == 2
     for result in run["results"]:
-        assert "locations" not in result  # an explicit null violates the SARIF schema
+        assert "locations" not in result  # 明確的 null 違反 SARIF 結構描述 ／ an explicit null violates the SARIF schema
 
 
 def test_sarif_uris_are_relative_to_the_enclosing_repository(tmp_path):
@@ -343,7 +363,9 @@ def test_sarif_uris_are_relative_to_the_enclosing_repository(tmp_path):
 
 
 def test_sarif_root_ignores_a_dotfiles_repo_in_the_home_directory(tmp_path, monkeypatch):
-    """A git repo at ~ (a dotfiles/config repo) must not become %SRCROOT% for targets under
+    """位於 ~ 的 git 儲存庫（dotfiles／設定檔儲存庫）不得成為 ~ 底下目標的 %SRCROOT%：
+    SARIF 的 URI 會指向沒有任何 CI 簽出能解析的私人家目錄路徑。
+    A git repo at ~ (a dotfiles/config repo) must not become %SRCROOT% for targets under
     ~: the SARIF URIs would point into a private home path no CI checkout can resolve."""
     from vibeharness.reports.report_generator import ReportGenerator
     real_expanduser = os.path.expanduser
@@ -358,6 +380,7 @@ def test_sarif_root_ignores_a_dotfiles_repo_in_the_home_directory(tmp_path, monk
 
 def test_sarif_rule_ids_and_fingerprints_do_not_depend_on_run_numbering(tmp_path):
     first = _sarif([_finding(file_path="app.py", symbol_name="f", title="None crash in f")], tmp_path)
+    # 下一次執行：同樣的缺陷，被模型重新編號並在措辭上略作修改
     # Next run: same defect, renumbered and cosmetically reworded by the model
     second = _sarif([_finding(finding_id="WB-CLA-07", file_path="app.py", symbol_name="f",
                               title="None-crash in f!")], tmp_path)
@@ -383,6 +406,7 @@ def test_sarif_breach_is_located_at_the_attacked_symbol(tmp_path):
     assert "Mass assignment" in result["message"]["text"]
 
 
+# --- 執行器：以錯誤簽章呼叫目標的測試不是目標的缺陷 ----------------------------------------
 # --- Executor: a test calling the target with the wrong signature is not a target defect --------
 
 def test_wrong_signature_call_in_the_test_is_an_error_not_a_defect(tmp_path):
@@ -393,8 +417,10 @@ def test_wrong_signature_call_in_the_test_is_an_error_not_a_defect(tmp_path):
     results, _ = TestSuiteExecutor(LocalSubprocessSandbox(60)).execute_test_suite([
         _gen_test("from m import g\n\ndef test_a():\n    assert g(1, 2) == 1\n", "TEST-SIG"),
         _gen_test("from m import g\n\ndef test_a():\n    assert g(a=1, b=2) == 1\n", "TEST-KW"),
+        # 同樣的 TypeError 若在目標內部拋出，就是真正的缺陷
         # the same TypeError raised inside the target is a genuine defect
         _gen_test("from m import f\n\ndef test_a():\n    assert f(1) == 1\n", "TARGET-SIG"),
+        # 測試那一行拋出的其他 TypeError 仍算缺陷（例如 None 的處理）
         # other TypeErrors raised by the test line stay defects (e.g. None handling)
         _gen_test("def test_a():\n    assert len(None) == 0\n", "OTHER"),
     ], working_dir=str(tmp_path))
@@ -405,6 +431,7 @@ def test_wrong_signature_call_in_the_test_is_an_error_not_a_defect(tmp_path):
     }
 
 
+# --- Docker：容器內的逾時跟隨該次執行自己的預算 ---------------------------------------------
 # --- Docker: the in-container timeout follows the run's own budget ------------------------------
 
 def test_docker_in_container_timeout_uses_the_per_run_budget(tmp_path, monkeypatch):
@@ -419,6 +446,7 @@ def test_docker_in_container_timeout_uses_the_per_run_budget(tmp_path, monkeypat
     assert budgets == ["30", "120"]
 
 
+# --- 交叉驗證：加引號的索引算數，布林值不算 ---------------------------------------------------
 # --- Cross-verification: quoted indices count, booleans do not -----------------------------------
 
 def test_verifier_accepts_quoted_indices_and_rejects_booleans(fake_live):
@@ -426,6 +454,7 @@ def test_verifier_accepts_quoted_indices_and_rejects_booleans(fake_live):
     from vibeharness.core.llm_gateway import LLMGateway
     from vibeharness.agents.whitebox.debater import MultiModelDebater
     findings = [_finding(finding_id="A", file_path="app.py"), _finding(finding_id="B", file_path="app.py")]
+    # 索引 True 過去會被讀成 1（bool 是 int 的子類別），並對發現 B 投票
     # index True would have been read as 1 (bool subclasses int) and voted on finding B
     fake_live(lambda s, u: json.dumps({"verdicts": [
         {"index": " 0 ", "verdict": "Confirm "}, {"index": True, "verdict": "reject"},
@@ -436,7 +465,9 @@ def test_verifier_accepts_quoted_indices_and_rejects_booleans(fake_live):
 
 
 def test_one_crashed_verifier_batch_does_not_abort_arbitration(fake_live, monkeypatch):
-    """A non-LLM crash in one verifier's batch must not propagate out of the thread pool and
+    """某位驗證者批次中的非 LLM 當機不得從執行緒池傳播出去並丟掉其他驗證者的
+    所有票；live 模式的 LLM 失敗仍會大聲地讓執行失敗。
+    A non-LLM crash in one verifier's batch must not propagate out of the thread pool and
     discard every other verifier's votes; live-mode LLM failures still fail the run loudly."""
     import json
     from vibeharness.core.llm_gateway import LLMGateway
@@ -454,13 +485,15 @@ def test_one_crashed_verifier_batch_does_not_abort_arbitration(fake_live, monkey
     monkeypatch.setattr(debater, "_verify", flaky_verify)
     result = debater.arbitrate(findings)
     votes = [v.verdict for f in result.confirmed_findings for v in f.verification_votes]
-    assert votes == ["confirm", "confirm"]  # glm's and gemini's votes survived deepseek's crash
+    assert votes == ["confirm", "confirm"]  # glm 與 gemini 的票在 deepseek 當機後仍保留 ／ glm's and gemini's votes survived deepseek's crash
+    # 當機已登記，因此關卡把缺少的票視為證據缺口，而不是「unsure」
     # The crash is booked, so the gate sees the missing votes as an evidence gap, not as "unsure"
     crashed = [rec for rec in debater.gateway.invalid_calls if rec.agent_id == "whitebox_verifier_deepseek"]
     assert len(crashed) == 1 and crashed[0].model_alias == "deepseek"
     assert "crashed" in (crashed[0].reason or "") and "RuntimeError: simulated thread crash" in (crashed[0].reason or "")
 
 
+# --- 覆蓋率補強：審查者集成與威脅建模器的降級與退回路徑 ------------------------------------
 # --- Coverage push: degradation and fallback paths of the reviewer ensemble and threat modeler ----
 
 def test_reviewer_ensemble_skips_empty_symbols_without_model_calls():
@@ -476,7 +509,9 @@ def test_reviewer_ensemble_skips_empty_symbols_without_model_calls():
 
 
 def test_one_crashed_reviewer_batch_does_not_abort_the_review(fake_live, tmp_path, monkeypatch):
-    """A non-LLM crash in one reviewer's batch must not discard the other reviewers' findings;
+    """某位審查者批次中的非 LLM 當機不得丟掉其他審查者的發現；
+    live 模式的 LLM 失敗仍會傳播（會被重新拋出，不會被吞掉）。
+    A non-LLM crash in one reviewer's batch must not discard the other reviewers' findings;
     live-mode LLM failures still propagate (they are re-raised, not swallowed)."""
     import json
     from vibeharness.core.llm_gateway import LLMGateway
@@ -495,14 +530,16 @@ def test_one_crashed_reviewer_batch_does_not_abort_the_review(fake_live, tmp_pat
 
     monkeypatch.setattr(ensemble, "_review_batch", flaky_batch)
     findings = ensemble.review_symbols(symbols, root_dir=str(tmp_path))
-    assert [f.title for f in findings] == ["ok", "ok", "ok"]  # claude, glm and gemini survived
+    assert [f.title for f in findings] == ["ok", "ok", "ok"]  # claude、glm 與 gemini 仍保留 ／ claude, glm and gemini survived
     assert all(not f.is_simulated for f in findings)
     crashed = [rec for rec in ensemble.gateway.invalid_calls if rec.agent_id == "whitebox_reviewer_deepseek"]
     assert len(crashed) == 1 and "RuntimeError: simulated thread crash" in (crashed[0].reason or "")
 
 
 def test_a_crashed_reviewer_batch_is_an_evidence_gap(tmp_path, monkeypatch):
-    """A batch that raised produced no findings: the gate must report the gap (with the exception),
+    """拋出例外的批次沒有產生任何發現：關卡必須回報此缺口（附上例外），
+    絕不能讓缺少的審查以乾淨結果通過。
+    A batch that raised produced no findings: the gate must report the gap (with the exception),
     never let the missing review pass as a clean result."""
     from vibeharness.core.harness import VibeHarnessCommander
     target = tmp_path / "app"
@@ -520,7 +557,8 @@ def test_a_crashed_reviewer_batch_is_an_evidence_gap(tmp_path, monkeypatch):
     summary = commander.run_full_pipeline(target_dir=str(target), output_report_path=str(tmp_path / "r.md"))
     assert summary.overall_status != "READY_TO_SHIP"
     gap = [r for r in summary.inconclusive_reasons if "crashed before answering" in r]
-    assert len(gap) == 1 and "whitebox_reviewer_glm (agent call crashed before producing output: ValueError: boom)" in gap[0]
+    assert len(gap) == 1 and "whitebox_reviewer_glm (" in gap[0]
+    assert "agent call crashed before producing output: ValueError: boom)" in gap[0]
 
 
 def test_unknown_reviewer_severity_falls_back_to_medium(fake_live, tmp_path):
@@ -549,7 +587,7 @@ def test_missing_threat_rules_file_degrades_with_warning():
     tm = AutomatedThreatModeler(LLMGateway(CONFIG, execution_mode="mock"), rules_path="Z:/definitely/not/here.yaml")
     assert tm.rules == {}
     report = tm.model_system("desc", [])
-    assert len(report.threats) == 3  # modeling still works, just without the checklist
+    assert len(report.threats) == 3  # 建模仍可運作，只是沒有檢查清單 ／ modeling still works, just without the checklist
 
 
 def test_broken_yaml_threat_rules_degrade_with_warning(tmp_path):
@@ -596,6 +634,7 @@ def test_all_unusable_batches_still_produce_a_default_report(fake_live):
     fake_live(lambda s, u: "I refuse to answer in JSON.")
     report = AutomatedThreatModeler(LLMGateway(CONFIG, execution_mode="live")).model_system("desc", ["/api/users"])
     assert report.threats == []
+    # 報告層級的欄位退回成測試框架自己傳入的值
     # report-level fields fall back to what the harness itself passed in
     assert report.entrypoints == ["/api/users"]
     assert not report.is_simulated
@@ -610,6 +649,7 @@ def test_coverage_extraction_ignores_malformed_totals():
     assert extract("no table at all") is None
 
 
+# --- SARIF 說明文字 -----------------------------------------------------------------------------
 # --- SARIF help text ----------------------------------------------------------------------------
 
 def test_sarif_rules_carry_help_text(tmp_path):

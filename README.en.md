@@ -119,6 +119,7 @@ Every agent's model and prompt live in [`vibeharness/config/agents_config.yaml`]
 6. **Two sandboxes**: generated tests run in a temp directory with an environment-variable allowlist (API keys are never passed in, and injection keys such as `LD_PRELOAD` and `BASH_ENV` are dropped). Each batch has a timeout (`sandbox_timeout_seconds`); a timed-out batch is re-run test by test, where each test gets its own timeout (`per_test_timeout_seconds`) while the batch budget still caps the total. On timeout the whole process tree is killed (Docker removes the container instead).
    - `local_subprocess` (default): a local subprocess; on POSIX its address space is capped by `sandbox_memory_mb` (default 2 GB) plus a CPU-time cap, stopping runaway consumption (still not a security boundary).
    - `docker`: each test batch runs in a disposable container — no network by default, read-only root filesystem and target mount, all capabilities dropped, no privilege escalation, non-root user (when the harness itself runs as root the container runs as `nobody`), and memory/CPU/process limits. Only the run's temp directory and `/tmp` (a noexec tmpfs) are writable.
+7. **JS/TS dynamic test execution**: for `.js` / `.jsx` / `.mjs` / `.cjs` / `.ts` / `.tsx` / `.mts` / `.cts` targets, white-box tests and in-process black-box attack tests are generated as `node:test` + `node:assert` ES modules (`node_bin` is detected the first time one is needed; Node >= 20, and >= 22.6 for `.ts` through type stripping). Each test module runs in its own `node --test` process and is judged from the JUnit report: only an `AssertionError` / `ERR_ASSERTION` failure is a confirmed breach, a `TypeError` thrown inside the target is a defect but not an exploit, and a test-side `ReferenceError` or an unresolvable import is a harness error. Tests import the target through its `file://` URL (the prompt states the ESM / CommonJS import form and the detected exports); bare specifiers resolve from the target's `node_modules` (linked into the run directory); the static gate refuses package installs (`npm` / `pnpm` / `yarn` / `bun` / `npx`) as it does for Python. The Node sandbox sets no `RLIMIT_AS` (V8 reserves a large address space at start-up) and caps the heap with `--max-old-space-size` instead, keeping the CPU cap; `NODE_OPTIONS` / `NODE_PATH` are never forwarded from the host. Black-box HTTP attacks against a running server are still written in Python (urllib). Without a usable Node runtime the JS/TS tests are reported as ERROR and as an evidence gap ("no usable Node runtime"), never as a start-up failure; the mock mode's simulation engine generates no JS test, so the gap reads "no JS/TS test was generated". Under Docker, Node tests use a separate image, `docker_node_image` (`docker/sandbox-node.Dockerfile`).
 
 > ⚠️ **`local_subprocess` is not a security boundary.** It executes model-generated code with your user's permissions, with file and network access. For untrusted targets or live mode, use `sandbox_provider: docker`.
 
@@ -144,7 +145,7 @@ VibeHarness-MAS is itself an LLM application: the target's code is untrusted inp
 | Dynamic DAST / fuzzing agent | Not implemented; black-box tests are generated per threat as pytest attack scripts |
 | Hypothesis property-based testing | Not built in; models may generate it, but the target environment needs `hypothesis` installed |
 | `e2b` sandbox | Not implemented; `sandbox_provider` supports `local_subprocess` and `docker`, anything else fails fast |
-| JS/TS test execution | Symbol extraction is a dependency-free lexer with real brace matching (for review and threat modeling); generated and executed tests support Python only, and JS/TS targets always carry a "reviewed statically only" evidence gap |
+| JS/TS coverage and third-party packages | JS/TS tests are generated and run with Node (see "JS/TS dynamic test execution" below), but JS coverage is not collected; TypeScript is type-stripped only (enums, namespaces, parameter properties, decorators and tsconfig path aliases are unsupported); inside the Docker sandbox bare ESM specifiers do not resolve (only CommonJS honours `NODE_PATH`) |
 
 ---
 
@@ -162,7 +163,8 @@ MultiAgentGama/
 │       ├── publish.yml          # Release: on tag push, verify the version matches, build sdist / wheel, upload to the GitHub Release (PyPI needs ENABLE_PYPI_PUBLISH)
 │       └── live-smoke.yml       # Manual: one live / hybrid run of examples with the repo's provider secrets, reports uploaded
 ├── docker/
-│   └── sandbox.Dockerfile       # Base image for the docker sandbox (pytest / pytest-cov / requests)
+│   ├── sandbox.Dockerfile       # Base image for the docker sandbox (pytest / pytest-cov / requests)
+│   └── sandbox-node.Dockerfile  # Base image for the docker Node sandbox (node:22-slim, runs JS/TS tests)
 ├── vibeharness/                 # the only top-level package (the sole directory a pip install adds to site-packages)
 │   ├── __init__.py              # package version (__version__, pyproject's single source)
 │   ├── cli.py                   # CLI entry point (the vibeharness command)
@@ -177,7 +179,7 @@ MultiAgentGama/
 │   │   ├── codecheck.py             # Static checks on generated tests (needs test_ functions and assertions; refuses package installs)
 │   │   ├── codecontext.py           # Source code and import guidance handed to the models (through the untrusted-code channel)
 │   │   ├── sanitize.py              # Trust-boundary hygiene: invisible chars, secret redaction, untrusted-code channel, output sanitizing
-│   │   └── sandbox.py               # Sandboxes: local subprocess (not a security boundary) and Docker containers
+│   │   └── sandbox.py               # Sandboxes: local subprocess (not a security boundary) and Docker containers; a Node flavour of each (node --test)
 │   ├── agents/
 │   │   ├── __init__.py
 │   │   ├── whitebox/
@@ -213,6 +215,7 @@ MultiAgentGama/
 │   ├── test_dedup_and_budget.py        # Duplicate-finding merge and prompt context within the token budget
 │   ├── test_docker_sandbox.py          # Docker sandbox: path mapping, hardening flags, real execution (when Docker is present)
 │   ├── test_harness_components.py      # Component integration tests in mock mode
+│   ├── test_js_execution.py            # JS/TS execution: code gate, ESM/CJS detection, Node JUnit classification, Node sandboxes (real runs when node exists), end to end
 │   ├── test_js_ts_extractor.py         # JS/TS extractor: brace matching, literal/comment masking, arrow functions, routes
 │   ├── test_model_output_robustness.py # Graceful degradation on malformed model output, probe-fallback disclosure
 │   ├── test_p0_regressions.py          # Executor correctness, self-repair and result-provenance honesty regressions
@@ -225,6 +228,7 @@ MultiAgentGama/
 ├── LICENSE                      # MIT license
 ├── SECURITY.md                  # Security policy: private vulnerability reporting
 ├── MANIFEST.in                  # Extra README / CHANGELOG / docs / config files included in the sdist
+├── action.yml                   # composite GitHub Action: one `uses: chinchiang/MultiAgentGama@vX.Y.Z` line runs the audit in a target repo
 ├── pyproject.toml               # Package metadata, the vibeharness entry point, pytest / ruff / mypy settings
 ├── requirements.txt             # Runtime dependencies
 ├── requirements-dev.txt         # Development dependencies (ruff, mypy, pytest-cov, build, pip-audit; pinned)
@@ -272,7 +276,7 @@ Other limits in the `global` section (effective unless overridden from the CLI):
 
 Any agent can point at any defined model via `model_alias`; an agent without a `model_alias` resolves to `unconfigured` (simulated in hybrid mode, a hard failure in live mode). A single API key is enough to run live mode — for example, with only a Gemini key, change every `model_alias` in the `agents` section to `gemini` (note: `gemini-2.5-flash` is no longer available to newly issued Google API keys; use a 3.x version). With a single model family, though, verifiers never rule on their own model's findings, so there are no verification votes, no findings are filtered, and fewer than two reviewer families is an evidence gap: the best possible verdict is `INCONCLUSIVE` (exit code 3), so treat the result as indicative only.
 
-*Note: without API keys, `hybrid` mode falls back to the simulation engine so you can experience the workflow offline. The simulation returns **fixed templates unrelated to the target code**; the report marks them with `[SIMULATED]` and an "Execution Provenance" section, and the quality gate will never yield `READY_TO_SHIP` because of them.*
+*Note: without API keys, `hybrid` mode falls back to the simulation engine so you can experience the workflow offline. The simulation returns **fixed templates unrelated to the target code**; the report marks them with `[SIMULATED]` and an "執行來源 ／ Execution Provenance" section, and the quality gate will never yield `READY_TO_SHIP` because of them.*
 
 | `--mode` | Behavior |
 | :--- | :--- |
@@ -286,9 +290,10 @@ In simulation mode, white-box tests use deterministic None-input robustness prob
 
 ```bash
 docker build -t vibeharness-sandbox:latest -f docker/sandbox.Dockerfile .
+docker build -t vibeharness-sandbox-node:latest -f docker/sandbox-node.Dockerfile .   # when the target has JS/TS
 ```
 
-Set `sandbox_provider: "docker"` in `vibeharness/config/agents_config.yaml`. Tunables: `docker_image`, `docker_network`, `docker_memory`, `docker_cpus`, `docker_pids_limit`.
+Set `sandbox_provider: "docker"` in `vibeharness/config/agents_config.yaml`. Tunables: `docker_image`, `docker_network`, `docker_memory`, `docker_cpus`, `docker_pids_limit`. JS/TS tests use the Node container `docker_node_image` (`sandbox_node_provider` follows `sandbox_provider` by default and can be set to `local_subprocess` alone to run JS tests with the local Node).
 
 - The target directory is mounted read-only into the container at `/work/<dir name>`; host absolute paths inside generated tests are rewritten to container paths automatically.
 - Containers have **no network** by default, so packages cannot be installed at run time. Pre-install the target's dependencies into the image: build a project-specific image `FROM vibeharness-sandbox:latest`, `pip install` the dependencies, and point `docker_image` at it.
@@ -303,9 +308,9 @@ python main.py --target examples --output vibe_harness_report.md
 
 `--target` (`-t`, default `examples`) accepts a directory or a single file; `--output` (`-o`) defaults to `vibe_harness_report.md`. `--desc` (`-d`) gives the threat modeler a high-level description of the system; `--config` (`-c`) points at another config file; `--verbose` (`-v`) enables debug logging. Black-box tests import the target in-process by default; they send real HTTP requests only when you pass `--base-url` (`-u`, e.g. `--base-url http://localhost:8000`; only `http://`/`https://` URLs with a host name are accepted, any other scheme is a usage error) explicitly and a service answers there. No default address is ever probed, so attack scripts cannot hit an unrelated local service, and in live HTTP mode attack code aimed at any host other than `--base-url` is rejected statically. See [`docs/sample_report.md`](docs/sample_report.md) for example output.
 
-Scale and cost limits can be overridden from the CLI: `--max-files` (number of source files analyzed per run, default 50, must be ≥ 1; the rest are reported as skipped and listed as an evidence gap) and `--max-model-calls` (cap on model invocations per run, unlimited by default; `0` also means unlimited and a negative value is a usage error; retries and the fallback are not counted separately; when exhausted, hybrid falls back to simulation and lists an evidence gap, live fails). File selection: `--include GLOB` / `--exclude GLOB` (repeatable; matched against the path relative to `--target` or the file name, e.g. `--exclude 'tests/*' --exclude '*.min.js'`; they replace the config's `include` / `exclude`), and `--changed-since <git ref>` (only files that changed relative to that ref, including unstaged and untracked ones; made for PR checks: `--changed-since origin/main`). Files above `max_file_bytes` (default 1 MB) are not analyzed and are listed as an evidence gap. An unusable model answer is re-asked once (`retry_invalid_output`) before it is booked `invalid`. An unwritable `--output` / `--sarif` location exits 5 before any model call; when a run crashes or is interrupted, the completed phases (call log, findings, test results, threats) are written to `<output>.partial.json`. `--cache-dir DIR` enables the response cache: usable live answers are stored in DIR and an identical prompt later is served from it without a provider call or budget spend (handy for re-runs or switching the report format). See [`docs/configuration.en.md`](docs/configuration.en.md).
+Before a run, `--estimate` shows its size: it runs Phase 1 only (symbol extraction and the deterministic rules, no model call) and prints the expected calls per agent and per model (reviewer and threat-modeling counts are exact; verification, test generation and attack synthesis are scenario figures from stated assumptions such as findings per batch, with a maximum that includes re-asks and heals), the estimated prompt / output tokens and, for models with `price_per_million_*` configured, the estimated cost; with `--format json` it is written to `--output`; the exit code is always 0. Scale and cost limits can be overridden from the CLI: `--max-files` (number of source files analyzed per run, default 50, must be ≥ 1; the rest are reported as skipped and listed as an evidence gap) and `--max-model-calls` (cap on model invocations per run, unlimited by default; `0` also means unlimited and a negative value is a usage error; retries and the fallback are not counted separately; when exhausted, hybrid falls back to simulation and lists an evidence gap, live fails). File selection: `--include GLOB` / `--exclude GLOB` (repeatable; matched against the path relative to `--target` or the file name, e.g. `--exclude 'tests/*' --exclude '*.min.js'`; they replace the config's `include` / `exclude`), and `--changed-since <git ref>` (only files that changed relative to that ref, including unstaged and untracked ones; made for PR checks: `--changed-since origin/main`). Files above `max_file_bytes` (default 1 MB) are not analyzed and are listed as an evidence gap. An unusable model answer is re-asked once (`retry_invalid_output`) before it is booked `invalid`. An unwritable `--output` / `--sarif` location exits 5 before any model call; when a run crashes or is interrupted, the completed phases (call log, findings, test results, threats) are written to `<output>.partial.json`. `--cache-dir DIR` enables the response cache: usable live answers are stored in DIR and an identical prompt later is served from it without a provider call or budget spend (handy for re-runs or switching the report format). See [`docs/configuration.en.md`](docs/configuration.en.md).
 
-Report formats: `--format md` (default) or `--format json` (machine-readable, with the complete findings, threat model, and test results — suited to CI/CD). Both keep every generated test's code: the Markdown appendix "Generated Test Code" lists each test's code next to its outcome in collapsible blocks (control characters removed), and the JSON `generated_tests` / `blackbox_generated_tests` keep it verbatim for audits or re-runs. Model-written tests are hypotheses too — a "passing" test may be asserting the defect itself (e.g. `pytest.raises(KeyError)`), so check that the assertions describe the correct behaviour:
+Report formats: `--format md` (default) or `--format json` (machine-readable, with the complete findings, threat model, and test results — suited to CI/CD). Both keep every generated test's code: the Markdown appendix "產生的測試程式碼（稽核軌跡） ／ Generated Test Code (audit trail)" lists each test's code next to its outcome in collapsible blocks (control characters removed), and the JSON `generated_tests` / `blackbox_generated_tests` keep it verbatim for audits or re-runs. Model-written tests are hypotheses too — a "passing" test may be asserting the defect itself (e.g. `pytest.raises(KeyError)`), so check that the assertions describe the correct behaviour:
 
 ```bash
 python main.py --target examples --output report.json --format json
@@ -314,18 +319,29 @@ python main.py --target examples --output report.json --format json
 You can also pass `--sarif <path>` to emit a [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html) report alongside: confirmed white-box findings carry file/line locations (resolved from `line_number` or the symbol table), confirmed black-box breaches are error-level results (located at the attacked symbol when the attack vector names one), and deterministic AI-security rule hits use their own rules `vibeharness/VH-AI-001` … `vibeharness/VH-AI-009`, tagged with their OWASP, MITRE ATLAS, and CWE ids. Rule ids are stable (`vibeharness/whitebox-finding` / `vibeharness/blackbox-breach` / `vibeharness/VH-AI-00x`) and the run-specific finding/test ids live in `properties`, so renumbering between runs does not close and reopen Code Scanning alerts. Upload the SARIF to GitHub Code Scanning to surface defects in the repo's **Security** tab:
 
 ```yaml
-# Example .github/workflows/security.yml for the target project
-- run: pip install vibeharness-mas   # if published to PyPI; otherwise install the wheel from the GitHub Release or from source
-- run: vibeharness --target src --output report.md --sarif vibeharness.sarif
+# Example .github/workflows/security.yml for the target project: this repo ships a composite GitHub Action (action.yml)
+- uses: chinchiang/MultiAgentGama@v0.4.0      # installs the package at the same ref and runs the audit
+  with:
+    target: src
+    mode: hybrid
+    max-model-calls: "80"
+    changed-since: origin/main                 # PR checks: only files that changed (optional)
+    baseline: .vibeharness/baseline.json       # optional: only problems that are new fail the job
+    fail-on: needs-fixes                       # blocked | needs-fixes | inconclusive | never
   env:
     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
     DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
     GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 - uses: github/codeql-action/upload-sarif@v3
+  if: always()
   with:
     sarif_file: vibeharness.sarif
 ```
+
+The action's outputs are `verdict` (`READY_TO_SHIP` / `NEEDS_FIXES` / `BLOCKED_CRITICAL_RISK` / `INCONCLUSIVE`, or `ERROR` when the harness itself failed) and `exit-code`; the report, the SARIF and a crash's `.partial.json` are uploaded as the `vibeharness-report` artifact. Without the action, `pip install "git+https://github.com/chinchiang/MultiAgentGama@v0.4.0"` and call `vibeharness` directly.
+
+**Gating on new problems only (`--baseline`)**: keep one `--format json` report (for example committed as `.vibeharness/baseline.json`) and pass it with `--baseline`: failed white-box tests (keyed by their source finding), probe failures, black-box breaches and HIGH+ rule hits it already contains are still listed in the report's "基準中的已知問題（不計入） ／ Known from baseline (not counted)" section and in the recommendations, but no longer count toward the verdict or the exit code, so CI fails only on problems that are new. The keys do not depend on run numbering (a finding is keyed by target-relative path + symbol + normalized title, a breach by the threat's STRIDE category + title + attack vector, a rule hit by rule + file + evidence without the line number, a probe by its symbol), so re-numbered model output or unrelated line shifts never turn an old problem into a new one. Every item in the JSON report carries a `fingerprint` field; reports from before 0.3.0 without it are recomputed. A crash's `.partial.json` cannot serve as a baseline.
 
 > Note: file paths in the SARIF are relativized against the root of the git repository containing `--target` (falling back to the `--target` directory outside a repository), so `--target src` still yields Code-Scanning-aligned paths such as `src/app.py`.
 

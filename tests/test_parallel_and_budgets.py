@@ -1,4 +1,5 @@
-"""Concurrency of test synthesis, the live model-call budget, and the configurable file / worker limits."""
+"""測試合成的並行、live 模型呼叫預算，以及可設定的檔案／工作者上限。
+Concurrency of test synthesis, the live model-call budget, and the configurable file / worker limits."""
 import json
 import os
 import re
@@ -12,6 +13,7 @@ import yaml
 
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError, ConfigError, BUDGET_EXHAUSTED_REASON, PROVENANCE_KEY
 from vibeharness.core.models import FindingSeverity, ReviewFinding, STRIDECategory, ThreatItem, CodeSymbol
+from vibeharness.core.i18n import has_cjk
 from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
 from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
 from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
@@ -46,7 +48,8 @@ def _threat(i):
 
 
 class _ConcurrencyProbe:
-    """A gateway.generate stand-in that records peak parallelism; later items answer first."""
+    """gateway.generate 的替身，記錄並行峰值；較後面的項目會先回答。
+    A gateway.generate stand-in that records peak parallelism; later items answer first."""
 
     def __init__(self, count, key):
         self.count, self.key = count, key
@@ -58,12 +61,13 @@ class _ConcurrencyProbe:
         with self.lock:
             self.in_flight += 1
             self.peak = max(self.peak, self.in_flight)
-        time.sleep(0.05 * (self.count - index))  # finish in reverse order
+        time.sleep(0.05 * (self.count - index))  # 以相反順序完成 ／ finish in reverse order
         with self.lock:
             self.in_flight -= 1
         return {"code": f"def test_{index}():\n    assert {index} == {index}\n", "title": f"for {index}"}
 
 
+# --- 並行仍保持結果的確定性 -----------------------------------------------------------------
 # --- Concurrency keeps results deterministic -----------------------------------------------------
 
 def test_whitebox_generation_runs_concurrently_and_keeps_finding_order(tmp_path):
@@ -171,6 +175,7 @@ def test_strict_live_failures_still_propagate_from_the_pool(tmp_path):
         builder.build_test_cases_from_threats([_threat(0)])
 
 
+# --- live 模型呼叫預算 ----------------------------------------------------------------------
 # --- Live model-call budget ----------------------------------------------------------------------
 
 def test_budget_falls_back_to_simulation_in_hybrid_mode(fake_live, tmp_path):
@@ -221,7 +226,9 @@ def test_invalid_limits_are_config_errors(tmp_path, key, value):
     ("max_output_tokens", "16k"), ("max_output_tokens", 0),
 ])
 def test_invalid_numeric_settings_are_config_errors_at_startup(tmp_path, key, value):
-    """These used to be read only when a call was made: litellm rejected them, and hybrid mode booked
+    """這些設定過去只在發出呼叫時才讀取：litellm 拒絕它們，而 hybrid 模式把失敗登記為
+    「live invocation failed」，然後默默改跑模擬引擎。
+    These used to be read only when a call was made: litellm rejected them, and hybrid mode booked
     the failure as "live invocation failed" and silently ran the simulation engine instead."""
     with pytest.raises(ConfigError, match=key):
         LLMGateway(_config(tmp_path, **{key: value}))
@@ -241,13 +248,16 @@ def test_invalid_per_model_tokens_and_agent_temperature_are_config_errors(tmp_pa
     path.write_text(yaml.safe_dump(bad_agent), encoding="utf-8")
     with pytest.raises(ConfigError, match="whitebox_reviewer_claude.temperature"):
         LLMGateway(str(path), execution_mode="mock")
+    # 隨附的設定檔本身是有效的，而且預期數字的地方給浮點數也沒問題
     # The shipped config itself is valid, and floats are fine where a number is expected
     LLMGateway(_config(tmp_path, timeout_seconds=12.5), execution_mode="mock")
 
 
 @pytest.mark.parametrize("value", [-1, "10", True, 2.5])
 def test_invalid_max_files_in_config_is_a_config_error(tmp_path, value):
-    """The CLI already rejects a bad --max-files; the config path must not quietly accept a negative
+    """CLI 已經會拒絕錯誤的 --max-files；設定檔路徑也不得悄悄接受負的切片
+    （會分析除了一個以外的所有檔案）或字串（int() 剛好能轉換）。
+    The CLI already rejects a bad --max-files; the config path must not quietly accept a negative
     slice (which analyzed all but one file) or a string (which int() happened to convert)."""
     from vibeharness.core.harness import VibeHarnessCommander
     with pytest.raises(ConfigError, match="max_files"):
@@ -263,7 +273,9 @@ def test_zero_or_null_max_files_keeps_the_default(tmp_path):
 
 
 def test_single_reviewer_model_is_an_evidence_gap(tmp_path):
-    """Four reviewer agents on one model cannot cross-verify each other (no model rules on its own
+    """四個審查代理共用一個模型時無法互相交叉驗證（沒有模型會對自己的發現下判定）：
+    這次執行必須在關卡中說明，而不只在終端機上（OWASP LLM07:2026）。
+    Four reviewer agents on one model cannot cross-verify each other (no model rules on its own
     findings): the run must say so in the gate, not only on the console (OWASP LLM07:2026)."""
     from vibeharness.core.harness import VibeHarnessCommander
     with open(CONFIG, encoding="utf-8") as f:
@@ -295,6 +307,7 @@ def test_exhausted_budget_makes_the_run_inconclusive(fake_live, tmp_path):
     assert any("max_model_calls budget (1) was exhausted" in r for r in summary.inconclusive_reasons)
 
 
+# --- 來自設定檔與 CLI 的 max_files ----------------------------------------------------------
 # --- max_files from config and CLI ---------------------------------------------------------------
 
 def test_max_files_comes_from_config(tmp_path):
@@ -339,10 +352,13 @@ def test_cli_rejects_invalid_limits_with_the_usage_exit_code(monkeypatch, tmp_pa
     assert exit_info.value.code == main.USAGE_ERROR_EXIT_CODE
 
 
+# --- 無法使用的回答之後再問一次 -------------------------------------------------------------
 # --- Re-asking after an unusable answer -------------------------------------------------------
 
 def test_unusable_answer_is_re_asked_once_and_the_retry_can_succeed(fake_live):
-    """One-off format slips (prose around the JSON, a missing key) used to turn the whole run
+    """一次性的格式失誤（JSON 周圍的散文、缺一個鍵）過去會讓整次執行變成
+    INCONCLUSIVE；閘道現在會指出問題並再問一次，之後才登記為 `invalid`。
+    One-off format slips (prose around the JSON, a missing key) used to turn the whole run
     INCONCLUSIVE; the gateway now re-asks once, naming the problem, before booking `invalid`."""
     answers = iter(["Sure! Here is my analysis without any JSON.", '{"findings": []}'])
     prompts = []
@@ -357,6 +373,7 @@ def test_unusable_answer_is_re_asked_once_and_the_retry_can_succeed(fake_live):
     assert gw.is_usable(resp) and resp["findings"] == []
     assert [c.mode for c in gw.call_log] == ["retried", "live"]
     assert "could not be used (response is not valid JSON)" in prompts[1] and prompts[1].startswith("audit this")
+    assert not has_cjk(prompts[1])  # 雙語原因只以英文送達模型 ／ the bilingual reason reaches the model in English only
     assert len(fake.calls) == 2 and gw.live_calls_attempted == 2
     assert not gw.invalid_calls and len(gw.retried_calls) == 1
 
@@ -366,6 +383,7 @@ def test_re_ask_respects_the_call_budget_and_is_configurable(fake_live, tmp_path
     gw = LLMGateway(CONFIG, execution_mode="hybrid")
     gw.max_model_calls = 1
     gw.generate("whitebox_reviewer_claude", "sys", "u", required_keys=["findings"])
+    # 沒有預算可以再問：單次嘗試後登記為 invalid
     # No budget left for a re-ask: booked invalid after the single attempt
     assert [c.mode for c in gw.call_log] == ["invalid"] and len(fake.calls) == 1
     gw = LLMGateway(_config(tmp_path, retry_invalid_output=0), execution_mode="hybrid")
@@ -374,6 +392,7 @@ def test_re_ask_respects_the_call_budget_and_is_configurable(fake_live, tmp_path
     gw = LLMGateway(_config(tmp_path, retry_invalid_output=2), execution_mode="hybrid")
     gw.generate("whitebox_reviewer_claude", "sys", "u", required_keys=["findings"])
     assert [c.mode for c in gw.call_log] == ["retried", "retried", "invalid"]
+    # 非 JSON 的呼叫（測試產生器的修復提示詞）永遠不會再問
     # Non-JSON calls (the test-generator heal prompt) are never re-asked
     gw = LLMGateway(CONFIG, execution_mode="live")
     gw.generate("whitebox_test_generator", "sys", "u", json_output=False)
@@ -398,6 +417,7 @@ def test_extra_params_are_passed_to_litellm_and_validated(fake_live, tmp_path):
         LLMGateway(str(path), execution_mode="mock")
 
 
+# --- 檔案選取 -------------------------------------------------------------------------------
 # --- File selection ---------------------------------------------------------------------------
 
 def _tree(tmp_path):
@@ -469,9 +489,9 @@ def test_changed_since_selects_git_changes_and_rejects_bad_refs(tmp_path):
     git("init", "-q", ".")
     git("-c", "user.email=t@t", "-c", "user.name=t", "add", "-A")
     git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "base")
-    (root / "src" / "app.py").write_text("def f_app(x, y):\n    return x + y\n")  # modified, unstaged
-    (root / "src" / "new.py").write_text("def g(x):\n    return x\n")             # untracked
-    (root / "vendor" / "lib.py").write_text("def h(x):\n    return x\n")           # modified, outside target
+    (root / "src" / "app.py").write_text("def f_app(x, y):\n    return x + y\n")  # 已修改，未暫存 ／ modified, unstaged
+    (root / "src" / "new.py").write_text("def g(x):\n    return x\n")             # 未追蹤 ／ untracked
+    (root / "vendor" / "lib.py").write_text("def h(x):\n    return x\n")           # 已修改，在目標之外 ／ modified, outside target
     commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
     changed = commander.changed_files(str(root / "src"), "HEAD")
     assert [os.path.basename(p) for p in changed] == ["app.py", "new.py"]
@@ -487,6 +507,7 @@ def test_changed_since_selects_git_changes_and_rejects_bad_refs(tmp_path):
         no_repo.changed_files(str(root / "src"), "HEAD")
 
 
+# --- 每條失敗路徑的 CLI 結束代碼（行程內執行，讓覆蓋率看得到 vibeharness/cli.py）----
 # --- CLI exit codes for every failure path (in-process, so coverage sees vibeharness/cli.py) ----
 
 def _summary(status):
@@ -507,7 +528,7 @@ def _summary(status):
     (_summary("NEEDS_FIXES"), 1),
     (_summary("BLOCKED_CRITICAL_RISK"), 2),
     (_summary("INCONCLUSIVE"), 3),
-    (_summary("WHATEVER"), 3),  # unknown verdicts fail closed
+    (_summary("WHATEVER"), 3),  # 未知的判定結果採保守失敗 ／ unknown verdicts fail closed
 ])
 def test_cli_maps_every_pipeline_outcome_to_its_exit_code(monkeypatch, tmp_path, capsys, outcome, code):
     from vibeharness import cli
@@ -550,6 +571,7 @@ def test_root_main_py_is_a_launcher_for_the_cli():
     assert main.main is cli.main
 
 
+# --- 回應快取 -------------------------------------------------------------------------------
 # --- Response cache ---------------------------------------------------------------------------
 
 def test_response_cache_serves_repeat_prompts_without_a_provider_call(fake_live, tmp_path):
@@ -560,16 +582,19 @@ def test_response_cache_serves_repeat_prompts_without_a_provider_call(fake_live,
     first = gw.generate("whitebox_reviewer_claude", "sys", "audit", required_keys=["findings"])
     assert first["findings"] and first[PROVENANCE_KEY]["cached"] is False
     assert len(list(cache.glob("*.json"))) == 1 and len(fake.calls) == 1
+    # 第二次相同的提示詞：沒有供應商呼叫、不消耗預算，在呼叫紀錄中標示為已快取
     # Second identical prompt: no provider call, no budget consumed, flagged as cached in the call log
     second = gw.generate("whitebox_reviewer_claude", "sys", "audit", required_keys=["findings"])
     assert second["findings"] == first["findings"] and second[PROVENANCE_KEY]["cached"] is True
     assert len(fake.calls) == 1 and gw.live_calls_attempted == 1
     assert [c.cached for c in gw.call_log] == [False, True] and gw.call_log[-1].mode == "live"
     assert len(gw.cached_calls) == 1
+    # 不同的提示詞、模型設定或代理溫度就是不同的鍵
     # A different prompt, model setting or agent temperature is a different key
     gw.max_model_calls = None
     gw.generate("whitebox_reviewer_claude", "sys", "audit something else", required_keys=["findings"])
     assert len(fake.calls) == 2
+    # 新的閘道（新行程）會重用這些檔案
     # A fresh gateway (new process) reuses the files
     gw2 = LLMGateway(_config(tmp_path, cache_dir=str(cache)), execution_mode="live")
     gw2.generate("whitebox_reviewer_claude", "sys", "audit", required_keys=["findings"])
@@ -582,6 +607,7 @@ def test_unusable_answers_are_never_cached_and_bad_entries_are_ignored(fake_live
     gw = LLMGateway(_config(tmp_path, cache_dir=str(cache), retry_invalid_output=0), execution_mode="hybrid")
     gw.generate("whitebox_reviewer_claude", "sys", "u", required_keys=["findings"])
     assert gw.invalid_calls and not list(cache.glob("*.json"))
+    # 該鍵對應的檔案毀損時視為未命中
     # A corrupt file for the key is treated as a miss
     key = gw._cache_key("claude", gw.models_config["claude"], 0.2, "sys", "u")
     (cache / f"{key}.json").write_text("{corrupt", encoding="utf-8")
@@ -620,9 +646,10 @@ def test_cached_answers_are_labelled_in_the_provenance_table(fake_live, tmp_path
     VibeHarnessCommander(config_path=cfg, execution_mode="live").run_full_pipeline(
         target_dir=str(target), output_report_path=str(tmp_path / "two.md"))
     assert "response cache" not in (tmp_path / "one.md").read_text(encoding="utf-8")
-    assert "🟢 live (response cache)" in (tmp_path / "two.md").read_text(encoding="utf-8")
+    assert "🟢 真實（回應快取） ／ live (response cache)" in (tmp_path / "two.md").read_text(encoding="utf-8")
 
 
+# --- 當機時的部分報告 -----------------------------------------------------------------------
 # --- Partial report on a crash -----------------------------------------------------------------
 
 def test_a_crash_writes_a_partial_report_with_everything_so_far(tmp_path, monkeypatch):

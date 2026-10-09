@@ -1,5 +1,6 @@
 name: tests
 
+# push 只對 master 觸發；pull_request 涵蓋功能分支，PR 不會跑兩次
 # push fires only for master; pull_request covers feature branches, so a PR no longer runs twice
 on:
   push:
@@ -9,7 +10,7 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same PR / branch cancels the superseded run
+# 同一個 PR／分支的新 push 會取消被取代的執行 ／ A newer push to the same PR / branch cancels the superseded run
 concurrency:
   group: tests-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -19,6 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # 第三方 action 釘在 commit SHA（供應鏈強化）；升版時同步改註解裡的 tag
       # Third-party actions are pinned to commit SHAs (supply-chain hardening); bump the tag in the comment
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -26,11 +28,13 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements.lock
+      # 與本機開發相同的釘版 lint 工具（requirements-dev.txt），不用未釘版的最新版
       # Same pinned lint tools as local development (requirements-dev.txt), not unpinned latest
       - run: python -m pip install -r requirements-dev.txt
       - run: ruff check .
       - run: mypy vibeharness/ main.py
 
+  # 對鎖定的相依套件集做已知弱點稽核；每個 PR 都跑，帶進 CVE 的升版會在合併前失敗
   # Known-vulnerability audit of the exact locked dependency set; runs on every PR so a
   # dependency bump that introduces a CVE fails before merge
   audit:
@@ -41,12 +45,15 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
+      # 和其他工具一樣釘在 requirements-dev.txt（Dependabot 會提議升版）
       # Pinned in requirements-dev.txt like every other tool (Dependabot proposes bumps)
       - run: python -m pip install "$(grep '^pip-audit==' requirements-dev.txt)"
+      # --no-deps：鎖定檔已含完整解析後的相依樹（重新產生：`uv pip compile --universal requirements.txt -o requirements.lock`）
       # --no-deps: the lock already contains the fully resolved tree (regenerate with
       # `uv pip compile --universal requirements.txt -o requirements.lock`)
       - run: python -m pip_audit -r requirements.lock --disable-pip --no-deps
 
+  # 安裝後的 wheel 必須在沒有原始碼 checkout 的情況下能跑（曾經漏掉 config/*.yaml）
   # The installed wheel must run without the source checkout (it once shipped without config/*.yaml)
   package:
     runs-on: ubuntu-latest
@@ -58,7 +65,7 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install "$(grep '^build==' requirements-dev.txt)"
       - run: python -m build --wheel
-      - name: Install the wheel and run a mock audit outside the checkout
+      - name: Install the wheel and run a mock audit outside the checkout ／ 安裝 wheel 並在 checkout 之外跑一次 mock 稽核
         run: |
           python -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install dist/*.whl
@@ -75,7 +82,7 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     runs-on: ${{ matrix.os }}
-    # The Linux job builds the sandbox image and runs the real-container tests; budget generously
+    # Linux job 會建沙盒映像並跑真容器測試，時間預算放寬 ／ The Linux job builds the sandbox image and runs the real-container tests; budget generously
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -84,14 +91,27 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: requirements.lock
+      # 可重現的 CI 安裝：用 uv 產生的通用鎖定檔精確釘版（重新產生：uv pip compile --universal requirements.txt -o requirements.lock）
       # Reproducible CI installs: exact pins from the uv-generated universal lock
       # (regenerate with: uv pip compile --universal requirements.txt -o requirements.lock)
       - run: python -m pip install -r requirements.lock
+      # JS/TS 測試以 Node 內建 runner 執行；釘在測試套件驗證過的版本
+      # JS/TS tests run with Node's built-in runner; pin the version the suite is validated against
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - run: echo "VIBEHARNESS_REQUIRE_NODE=1" >> "$GITHUB_ENV"
+        shell: bash
+      # Linux runner 有 Docker：先建沙盒映像，讓真容器測試實跑而不是略過
       # Linux runners have Docker: build the sandbox image so the real-container tests run instead of skipping
       - if: runner.os == 'Linux'
         run: |
           docker build -t vibeharness-sandbox:latest -f docker/sandbox.Dockerfile .
+          docker build -t vibeharness-sandbox-node:latest -f docker/sandbox-node.Dockerfile .
           echo "VIBEHARNESS_REQUIRE_DOCKER=1" >> "$GITHUB_ENV"
+          echo "VIBEHARNESS_REQUIRE_DOCKER_NODE=1" >> "$GITHUB_ENV"
+      # 封閉測試：套件用 mock 模式與假的 litellm，不需要任何 API 金鑰
+      # 覆蓋率門檻＝實測總值減去跨 OS 矩陣的浮動空間；覆蓋率提高時再往上調
       # Hermetic: the suite uses mock mode and a fake litellm, so no API keys are needed
       # Floor is the measured total minus headroom for OS matrix variance; raise as coverage grows
       - run: python -m pytest -q --cov=vibeharness --cov-report=term-missing --cov-fail-under=93

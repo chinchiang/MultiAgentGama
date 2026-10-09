@@ -1,8 +1,10 @@
-"""Regression tests: malformed model output degrades gracefully, and probe fallback is disclosed."""
+"""回歸測試：格式錯誤的模型輸出會優雅降級，且探針退回機制會被揭露。
+Regression tests: malformed model output degrades gracefully, and probe fallback is disclosed."""
 import json
 import os
 
-from vibeharness.core.llm_gateway import LLMGateway, PROVENANCE_KEY
+from vibeharness.core.llm_gateway import LLMGateway, PROVENANCE_KEY, REASON_NOT_VALID_JSON
+from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.models import (
     AgentCallRecord,
     CodeSymbol,
@@ -45,6 +47,7 @@ def _threat():
     )
 
 
+# --- 威脅建模器：格式錯誤的輸出必須降級，不得讓管線當機 -----------------------------------
 # --- Threat modeler: malformed output must degrade, not crash the pipeline -----------------------
 
 def test_malformed_threat_entries_are_skipped():
@@ -57,7 +60,7 @@ def test_malformed_threat_entries_are_skipped():
 def test_non_list_threats_and_string_list_fields_fall_back():
     gw = LLMGateway(CONFIG, execution_mode="mock")
     gw.generate = lambda *a, **k: {
-        "threats": {"threat_id": "T1"},  # object instead of a list
+        "threats": {"threat_id": "T1"},  # 物件而非清單 ／ object instead of a list
         "system_description": 42,
         "entrypoints": "not a list",
         "trust_boundaries": [1, 2],
@@ -79,7 +82,9 @@ def _big_symbol(name, lines=500):
 
 
 def test_large_targets_are_threat_modeled_in_batches():
-    """Every symbol must be visible to the threat modeler: like the reviewers, symbols are
+    """每個符號都必須讓威脅建模器看得到：和審查者一樣，符號會分批，
+    單一提示詞的 token 上限不能再悄悄丟掉目標的大部分內容。
+    Every symbol must be visible to the threat modeler: like the reviewers, symbols are
     batched so a single-prompt token cap can no longer silently drop most of the target."""
     gw = LLMGateway(CONFIG, execution_mode="mock")
     prompts = []
@@ -88,6 +93,7 @@ def test_large_targets_are_threat_modeled_in_batches():
     def responder(agent_id, system_prompt, user_prompt, **k):
         state["n"] += 1
         prompts.append(user_prompt)
+        # 每個批次都回報相同且衝突的 threat_id，以證明重新編號有效
         # every batch reports the same colliding threat_id to prove renumbering works
         return {
             "threats": [{"threat_id": "THREAT-01", "stride_category": "Tampering", "title": f"t{state['n']}"}],
@@ -97,12 +103,15 @@ def test_large_targets_are_threat_modeled_in_batches():
     gw.generate = responder
     symbols = [_big_symbol(f"f{i}") for i in range(30)]
     report = AutomatedThreatModeler(gw).model_system("desc", ["/api/users"], symbols=symbols, root_dir=".")
-    assert state["n"] > 1  # batching actually happened
+    assert state["n"] > 1  # 確實有分批 ／ batching actually happened
+    # 每個符號恰好出現在一個批次提示詞中：沒有省略，也沒有重複
     # every symbol is shown in exactly one batch prompt: nothing omitted, nothing duplicated
     shown = [sym for p in prompts for sym in symbols if f"Symbol: {sym.name} " in p]
     assert sorted(s.name for s in shown) == sorted(s.name for s in symbols)
+    # 衝突的模型威脅 id 會重新編號成唯一且確定性的序列
     # colliding model threat ids are renumbered into a unique, deterministic sequence
     assert [t.threat_id for t in report.threats] == [f"THREAT-{i:02d}" for i in range(1, state["n"] + 1)]
+    # 報告層級的欄位來自第一個可用的批次，而非最後一個
     # report-level fields come from the first usable batch, not the last
     assert report.entrypoints == ["/api/batch"]
 
@@ -121,6 +130,7 @@ def test_invalid_batch_does_not_kill_threat_modeling():
 
     gw.generate = responder
     report = AutomatedThreatModeler(gw).model_system("desc", ["/api/users"], symbols=[_big_symbol("a"), _big_symbol("b")], root_dir=".")
+    # 批次 1 無法使用，批次 2 仍貢獻了它的威脅與報告層級欄位
     # batch 1 was unusable, batch 2 still contributed its threat and the report-level fields
     assert [t.threat_id for t in report.threats] == ["THREAT-01"]
     assert report.entrypoints == ["/api/valid"]
@@ -135,7 +145,7 @@ def test_wrong_typed_threat_fields_are_coerced_not_fatal():
     t = AutomatedThreatModeler(gw).model_system("desc", ["/api/users"]).threats[0]
     assert t.severity == FindingSeverity.HIGH
     assert t.owasp_mapping is None
-    assert t.title == "Unclassified Threat"
+    assert t.title == bi("未分類的威脅", "Unclassified Threat")
     assert t.attack_vector == "REST API"
     assert t.stride_category == STRIDECategory.TAMPERING
 
@@ -147,6 +157,7 @@ def test_missing_threat_id_gets_a_positional_default():
     assert [t.threat_id for t in report.threats] == ["THREAT-01", "THREAT-02"]
 
 
+# --- 審查者／辯論者／情境建構器：同一類的格式錯誤輸出 --------------------------------------
 # --- Reviewer / debater / scenario builder: same class of malformed output ------------------------
 
 def test_malformed_reviewer_findings_are_skipped(fake_live, tmp_path):
@@ -211,6 +222,7 @@ def test_generator_tracks_findings_with_and_without_model_tests(fake_live, tmp_p
     assert gen.findings_without_model_tests == []
 
 
+# --- 測試框架：探針退回是證據缺口，絕不是通往 READY_TO_SHIP 的無聲捷徑 ---------------------
 # --- Harness: probe fallback is an evidence gap, never a silent path to READY_TO_SHIP -------------
 
 def test_probe_fallback_is_disclosed_and_blocks_ready_to_ship(fake_live, tmp_path):
@@ -235,7 +247,7 @@ def test_probe_fallback_is_disclosed_and_blocks_ready_to_ship(fake_live, tmp_pat
         if "code-review verifier" in system:
             return json.dumps({"verdicts": [{"index": 0, "verdict": "confirm", "reason": "real"}]})
         if "QA Engineer" in system:
-            return '{"unrelated": true}'  # valid JSON, but no usable test
+            return '{"unrelated": true}'  # 合法的 JSON，但沒有可用的測試 ／ valid JSON, but no usable test
         if "Threat Modeling Specialist" in system:
             return json.dumps({"threats": [threat]})
         if "Offensive Security" in system:
@@ -250,6 +262,8 @@ def test_probe_fallback_is_disclosed_and_blocks_ready_to_ship(fake_live, tmp_pat
         target_dir=str(target), base_url="http://localhost:59999", output_report_path=str(tmp_path / "r.md"),
         output_sarif_path=str(tmp_path / "r.sarif")
     )
+    # 每個執行過的測試都通過（探針與黑箱防禦），其他也沒有缺漏；
+    # 在這次修正之前，只有未揭露的探針退回會讓結果成為 READY_TO_SHIP。
     # Every executed test passes (probe and black-box defense) and nothing else is missing;
     # only the undisclosed probe fallback would have allowed READY_TO_SHIP before this fix.
     assert summary.whitebox_tests_passed == 1
@@ -264,12 +278,14 @@ def test_probe_fallback_is_disclosed_and_blocks_ready_to_ship(fake_live, tmp_pat
     assert sarif["version"] == "2.1.0"
     wb_rules = {r["id"] for r in sarif["runs"][0]["tool"]["driver"]["rules"]}
     assert "vibeharness/whitebox-finding" in wb_rules
+    # 已確認的發現從擷取出的符號表解析出其行號
     # The confirmed finding resolves its line from the extracted symbol table
     wb_result = next(r for r in sarif["runs"][0]["results"] if r["properties"].get("findingId") == "WB-CLA-01")
     assert wb_result["locations"][0]["physicalLocation"]["region"]["startLine"] == 1
     assert wb_result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"].endswith("app.py")
 
 
+# --- 報告：模型提供的文字不能破壞 Markdown 表格 ---------------------------------------------
 # --- Report: model-provided text cannot break Markdown tables --------------------------------------
 
 def test_report_table_cells_escape_pipes():
@@ -356,6 +372,8 @@ def test_sarif_report_structure_levels_and_locations(tmp_path):
     run = payload["runs"][0]
     assert payload["version"] == "2.1.0"
     assert run["tool"]["driver"]["name"] == "VibeHarness-MAS"
+    # 有爭議的發現與已防禦的黑箱結果不會回報；規則 id 跨執行
+    # 穩定，而執行專屬的 id 放在 properties 中
     # Disputed finding and the defended black-box result are not reported; rule ids are stable
     # across runs and the run-specific ids live in the properties
     assert [r["ruleId"] for r in run["results"]] == [
@@ -363,9 +381,10 @@ def test_sarif_report_structure_levels_and_locations(tmp_path):
     ]
     by_id = {r["properties"].get("findingId") or r["properties"]["testId"]: r for r in run["results"]}
     assert list(by_id) == ["WB-CLA-01", "WB-DEE-01", "BB-T1-01"]
-    assert by_id["WB-CLA-01"]["level"] == "error"          # CRITICAL
-    assert by_id["WB-DEE-01"]["level"] == "warning"        # MEDIUM
+    assert by_id["WB-CLA-01"]["level"] == "error"          # 嚴重 ／ CRITICAL
+    assert by_id["WB-DEE-01"]["level"] == "warning"        # 中等 ／ MEDIUM
     assert by_id["BB-T1-01"]["level"] == "error"
+    # 行號來自 finding.line_number 與符號表；URI 相對於目標，使用正斜線
     # Line from finding.line_number and from the symbol table; URI relative to the target, forward slashes
     loc1 = by_id["WB-CLA-01"]["locations"][0]["physicalLocation"]
     assert loc1["region"]["startLine"] == 7
@@ -373,9 +392,11 @@ def test_sarif_report_structure_levels_and_locations(tmp_path):
     assert loc1["artifactLocation"]["uriBaseId"] == "%SRCROOT%"
     loc2 = by_id["WB-DEE-01"]["locations"][0]["physicalLocation"]
     assert loc2["region"]["startLine"] == 42
+    # 此突破的威脅沒有指名任何擷取出的符號：沒有位置（省略，絕不是 null）
     # The breach's threat names no extracted symbol: no location (omitted, never null)
     assert "locations" not in by_id["BB-T1-01"]
     assert "defense bypassed" in by_id["BB-T1-01"]["message"]["text"]
+    # 規則陣列的索引與結果上的 ruleIndex 對齊
     # Rules array indices line up with ruleIndex on results
     rules = run["tool"]["driver"]["rules"]
     for r in run["results"]:
@@ -391,28 +412,37 @@ def test_sarif_uri_relativization(tmp_path):
     assert uri("./pkg/mod.py", str(tmp_path)) == "pkg/mod.py"
     assert uri(str(tmp_path / "elsewhere" / "x.py"), str(tmp_path / "a")) == "x.py"
     assert uri("", str(tmp_path)) is None
+    # 在 Windows 上不同磁碟機無法相對化：退回只用檔名
     # A different drive cannot be made relative on Windows: fall back to the file name
     assert uri("E:\\other\\x.py", r"D:\work\proj") == "x.py"
+    # 同一磁碟機在 Windows 與 POSIX 主機上都能一致地相對化
     # Same drive relativizes consistently on Windows and on POSIX hosts
     assert uri(r"D:\proj\app.py", r"D:\proj") == "app.py"
 
 
 def test_clean_and_parse_json_robustness():
     gw = LLMGateway(CONFIG, execution_mode="mock")
+    # 1. 純粹合法的 JSON
     # 1. Pure valid JSON
     assert gw._clean_and_parse_json('{"key": "value"}') == {"key": "value"}
+    # 2. 帶 json ／ JSON ／ 無語言標籤的 Markdown 圍欄
     # 2. Markdown fences with json / JSON / no lang tag
     assert gw._clean_and_parse_json('```json\n{"key": 1}\n```') == {"key": 1}
     assert gw._clean_and_parse_json('```JSON\n{"key": 2}\n```') == {"key": 2}
     assert gw._clean_and_parse_json('```\n{"key": 3}\n```') == {"key": 3}
+    # 3. 沒有圍欄的對話式包裝
     # 3. Conversational wrapper without fences
     assert gw._clean_and_parse_json('Sure! Here is the output:\n{"key": 4}\nHope this helps!') == {"key": 4}
+    # 4. 真正的 JSON 區塊之前有非 JSON 的大括號文字
     # 4. Text with prior non-JSON braces before the real JSON block
     assert gw._clean_and_parse_json('Note: {ignore this invalid}\nReal output:\n{"key": 5}') == {"key": 5}
+    # 5. 未關閉的程式碼圍欄
     # 5. Unclosed code fence
     assert gw._clean_and_parse_json('```json\n{"key": 6}\n') == {"key": 6}
+    # 6. 完全不是 JSON 的文字回傳 None（沒有模型可能撞上的哨兵字典）
     # 6. Completely non-JSON text returns None (no sentinel dict a model could collide with)
     assert gw._clean_and_parse_json('Sorry, I cannot help with that.') is None
+    # 7. 模型回聲一個形狀像解析失敗的字典，也只是普通字典，不是錯誤
     # 7. A model echoing a parse-failure-shaped dict is just a normal dict, not an error
     assert gw._clean_and_parse_json('{"error": "JSONDecodeError", "raw_content": "hi"}') == {
         "error": "JSONDecodeError", "raw_content": "hi"
@@ -422,16 +452,20 @@ def test_clean_and_parse_json_robustness():
 def test_validate_output_any_of_keys():
     assert LLMGateway._validate_output({"tests": []}, True, None, ["tests", "code"]) is None
     assert LLMGateway._validate_output({"code": "def test_x(): pass"}, True, None, ["tests", "code"]) is None
-    assert LLMGateway._validate_output(None, True, None, ["tests", "code"]) == "response is not valid JSON"
+    assert LLMGateway._validate_output(None, True, None, ["tests", "code"]) == REASON_NOT_VALID_JSON
+    assert en_only(REASON_NOT_VALID_JSON) == "response is not valid JSON"
     problem = LLMGateway._validate_output({"oops": 1}, True, None, ["tests", "code"])
     assert problem is not None and "none of the expected" in problem
+    # 全部必備（all-of）的語意不變
     # all-of semantics are unchanged
-    assert LLMGateway._validate_output({"a": 1}, True, ["a", "b"], None) == "response is missing required key(s): b"
+    assert en_only(LLMGateway._validate_output({"a": 1}, True, ["a", "b"], None)) == "response is missing required key(s): b"
     assert LLMGateway._validate_output({"a": 1, "b": 2}, True, ["a", "b"], None) is None
 
 
 def test_garbage_json_object_is_recorded_as_invalid_call(fake_live):
-    """A live response that parses as JSON but has none of the expected keys must be
+    """一個能解析成 JSON 但沒有任何預期鍵的 live 回應，必須以 mode「invalid」
+    （附上原因）記錄下來，而不是當成剛好產生零個結果的成功呼叫。
+    A live response that parses as JSON but has none of the expected keys must be
     recorded with mode 'invalid' (with its reason), not treated as a successful call that
     just happens to produce zero results."""
     import json
@@ -446,7 +480,8 @@ def test_garbage_json_object_is_recorded_as_invalid_call(fake_live):
 
 
 def test_reports_carry_run_metadata_and_a_schema_version(tmp_path):
-    """A report read later must say which harness version, mode and target revision produced it."""
+    """日後讀取的報告必須說明是哪個測試框架版本、模式與目標修訂產生它的。
+    A report read later must say which harness version, mode and target revision produced it."""
     import json
     from vibeharness import __version__
     from vibeharness.core.harness import VibeHarnessCommander
@@ -469,4 +504,4 @@ def test_reports_carry_run_metadata_and_a_schema_version(tmp_path):
     commander.run_full_pipeline(target_dir=str(target), output_report_path=str(tmp_path / "r.md"))
     md = (tmp_path / "r.md").read_text(encoding="utf-8")
     assert f"by VibeHarness-MAS {__version__} (mode `mock`, sandbox `local_subprocess`)" in md
-    assert "**Target revision**:" in md and "**Config**:" in md
+    assert "／ Target revision**:" in md and "／ Config**:" in md  # 雙語標籤，值在其後 ／ bilingual label, value after it

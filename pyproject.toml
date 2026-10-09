@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vibeharness-mas"
-# Single source of truth for the version: vibeharness/__init__.py
+# 版本的唯一來源：vibeharness/__init__.py ／ Single source of truth for the version: vibeharness/__init__.py
 dynamic = ["version"]
-description = "Multi-agent white-box and threat-modeled black-box testing harness for vibe-coded projects"
+description = "Multi-agent white-box and threat-modeled black-box testing harness for vibe-coded projects ／ 針對 vibe coding 專案的多代理白箱與威脅建模黑箱測試 harness"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -19,13 +19,14 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Operating System :: OS Independent",
 ]
-# pytest / pytest-cov are runtime dependencies: the sandbox executes generated tests with them
+# pytest／pytest-cov 是執行期相依：沙盒用它們執行生成的測試 ／ pytest / pytest-cov are runtime dependencies: the sandbox executes generated tests with them
 dependencies = [
     "pydantic>=2.5.0,<3.0",
     "pyyaml>=6.0",
+    # litellm 版本變動快、主版本之間有破壞性變更：設上限（與 requirements.txt 一致）
     # litellm is fast-moving with breaking changes between majors: cap it (matches requirements.txt)
     "litellm>=1.40.0,<2.0",
-    # litellm does not pull this in itself; live mode with retries fails without it
+    # litellm 不會自己帶入這個套件；沒有它 live 模式的重試會失敗 ／ litellm does not pull this in itself; live mode with retries fails without it
     "tenacity>=8.2.0",
     "pytest>=8.0.0",
     "pytest-cov>=5.0.0",
@@ -41,6 +42,9 @@ vibeharness = "vibeharness.cli:main"
 version = { attr = "vibeharness.__version__" }
 
 [tool.setuptools.packages.find]
+# 所有東西都在單一的 `vibeharness` 命名空間下（core／agents／runners／reports／config 過去是頂層套件，
+# 會與其他同名的已安裝套件互撞）。`vibeharness.config` 是純資料套件：gateway 與威脅建模 agent 以套件相對路徑
+# 找預設 YAML，所以 wheel 必須附帶 vibeharness/config/*.yaml
 # Everything ships under the single `vibeharness` namespace (core / agents / runners / reports / config
 # used to be top-level packages that collided with other installed packages of the same generic names).
 # `vibeharness.config` is a data-only package: the gateway and the threat modeler resolve their default
@@ -52,7 +56,7 @@ include = ["vibeharness*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Keep generated-test runs from picking up the harness's own tests or sample targets
+# 避免生成測試的執行撿到 harness 自己的測試或範例目標 ／ Keep generated-test runs from picking up the harness's own tests or sample targets
 norecursedirs = ["examples", "docs"]
 
 [tool.ruff]
@@ -60,13 +64,13 @@ line-length = 120
 target-version = "py310"
 
 [tool.ruff.lint]
-# Conservative: real errors and likely bugs only, no style enforcement
+# 保守：只抓真正的錯誤與可能的 bug，不管風格 ／ Conservative: real errors and likely bugs only, no style enforcement
 select = ["E4", "E7", "E9", "F", "B"]
 
 [tool.mypy]
 python_version = "3.10"
-# litellm / rich ship no type stubs
+# litellm／rich 沒有型別 stub ／ litellm / rich ship no type stubs
 ignore_missing_imports = true
-# Also type-check function bodies without annotations (free correctness win: no new errors surfaced)
+# 沒有註解的函式本體也做型別檢查（白賺的正確性：沒有冒出新錯誤）／ Also type-check function bodies without annotations (free correctness win: no new errors surfaced)
 check_untyped_defs = true
 files = ["vibeharness", "main.py"]
