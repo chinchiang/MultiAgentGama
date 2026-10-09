@@ -142,6 +142,7 @@ VibeHarness 本身就是一個 LLM 應用：待審程式碼是每個審查、驗
 
 | 功能 | 現況 |
 | :--- | :--- |
+| 突變測試延伸 | v1 只支援 Python（見核心特性第 8 點）；JS/TS 變異、納入基準線與 SARIF、逐運算子統計尚未實作 |
 | 動態 DAST／Fuzzing 代理 | 未實作；黑箱測試由威脅模型逐項生成 pytest 攻擊腳本 |
 | Hypothesis 性質測試 | 未內建；模型可自行生成，但需目標環境已安裝 `hypothesis` |
 | `e2b` 沙盒 | 未實作；`sandbox_provider` 支援 `local_subprocess` 與 `docker`，其他值會直接報錯 |

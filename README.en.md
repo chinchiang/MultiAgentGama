@@ -142,6 +142,7 @@ VibeHarness-MAS is itself an LLM application: the target's code is untrusted inp
 
 | Feature | Status |
 | :--- | :--- |
+| Mutation testing extensions | v1 is Python only (core feature 8); JS/TS mutants, baseline and SARIF integration and per-operator statistics are not implemented |
 | Dynamic DAST / fuzzing agent | Not implemented; black-box tests are generated per threat as pytest attack scripts |
 | Hypothesis property-based testing | Not built in; models may generate it, but the target environment needs `hypothesis` installed |
 | `e2b` sandbox | Not implemented; `sandbox_provider` supports `local_subprocess` and `docker`, anything else fails fast |
