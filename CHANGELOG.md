@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-09
+
+選用的突變測試（Mutation Testing），用來檢查通過的白箱測試是否真的抓得到行為改變。
+
 ### 新增
 
 - 突變測試（選用、預設關閉）：`--mutation`／`--no-mutation` 開關（優先於設定檔 `global.mutation_testing`）、`--mutation-max-mutants N`，以及設定鍵 `mutation_testing`、`mutation_max_mutants`、`mutation_timeout_seconds`、`mutation_min_score`。對通過的 Python 白箱測試所涵蓋的函式做確定性的單一 token 改動，在複本上重跑測試並計算分數；只產生證據缺口，不影響 `NEEDS_FIXES`／`BLOCKED_CRITICAL_RISK`。報告新增 Mutation Score 列與「存活的變異體」段落，JSON 帶 `summary.mutation`，`RunMetadata` 記錄最終開關與來源，`--estimate` 在開啟時列出變異體上限，composite Action 新增 `mutation` input。

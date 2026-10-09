@@ -11,7 +11,7 @@ branding:
   color: purple
 
 # 用法（在目標 repo 中）／ Usage (in the target repository):
-#   - uses: chinchiang/MultiAgentGama@v0.4.0
+#   - uses: chinchiang/MultiAgentGama@v0.5.0
 #     with:
 #       target: src
 #       mode: hybrid

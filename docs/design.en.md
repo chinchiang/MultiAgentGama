@@ -2,7 +2,7 @@
 
 English ｜ [正體中文（臺灣）](design.md)
 
-This document describes the design of VibeHarness-MAS: why it is built the way it is, how each component works, how data flows between phases, how the quality gate decides, the sandbox security model, and the known limitations. It corresponds to `vibeharness/__init__.py` version `0.4.0` (`[0.4.0]` in `CHANGELOG.md`, 2026-10-09; the previous `[0.3.0]` included the six gaps this document's chapter 16 originally listed and the five deep-review fixes) and covers the changes of `[0.4.0]` (`--baseline`, `--estimate`, JS/TS dynamic test execution, bilingual zh-TW / en output). Every `path:line` reference is to the files at commit `df92b3d`.
+This document describes the design of VibeHarness-MAS: why it is built the way it is, how each component works, how data flows between phases, how the quality gate decides, the sandbox security model, and the known limitations. It corresponds to `vibeharness/__init__.py` version `0.5.0` (`[0.5.0]` in `CHANGELOG.md`, 2026-10-09, adding optional mutation testing; the previous `[0.4.0]` brought `--baseline`, `--estimate`, JS/TS dynamic test execution and bilingual zh-TW / en output). Every `path:line` reference is to the files at commit `553ff27`.
 
 How this document relates to the others:
 
@@ -834,6 +834,7 @@ Six items were fixed on 2026-10-08 (see `[0.3.0]` in `CHANGELOG.md`): crashed re
 | `--estimate`: calls, tokens and cost without calling a model | nobody knew what a run would cost before starting it; a `max_model_calls` set too low only showed up as a mid-run fallback to simulation | scenario figures rest on assumptions, not measurements | 0.4.0 |
 | JS/TS run dynamically with Node's built-in runner; one process per module; no `RLIMIT_AS` | JS/TS targets were reviewed statically only and stayed INCONCLUSIVE forever; Node's junit reporter does not name the file; V8 aborts under `RLIMIT_AS` | no JS coverage; TypeScript is type stripping only; one extra Node start-up per module | 0.4.0 |
 | every fixed output string is bilingual "中文 ／ English" (`bi`); model prompts and machine-readable fields stay English | Taiwanese users should read the report and the console directly, without changing CI substring checks, baseline / SARIF fingerprints or model prompts | longer output; every string is maintained in two languages | 0.4.0 |
+| mutation testing is off by default, Python only and adds evidence gaps only; token splicing instead of `ast.unparse`; runs on a scratch copy | coverage cannot tell whether passing tests would catch a behaviour change; live runs showed passing tests that asserted the defect itself | one sandbox batch per mutant; equivalent mutants make the score a lower bound only | 0.5.0 |
 
 ---
 
