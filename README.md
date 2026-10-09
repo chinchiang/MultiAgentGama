@@ -276,7 +276,7 @@ export GEMINI_API_KEY="AIza..."          # Gemini
 
 任何 agent 都可透過 `model_alias` 指向任一已定義的模型；缺少 `model_alias` 的 agent 會解析為 `unconfigured`（hybrid 模式改用模擬，live 直接失敗）。手上只有一組金鑰也能跑 live 模式——例如只有 Gemini key 時，把 `agents` 區段中所有 `model_alias` 改成 `gemini` 即可（註：`gemini-2.5-flash` 已不再供新申請的 Google API 金鑰使用，請使用 3.x 版本）。但單一模型家族時驗證者不會評審自己模型的發現，沒有任何驗證票、發現不經過濾，且審查者少於兩個模型家族列為證據缺口，判定最好只到 `INCONCLUSIVE`（exit code 3），結果僅供參考。
 
-*註：若未配置 API 金鑰，`hybrid` 模式會退回模擬引擎（Simulation Engine）以便離線體驗工作流。模擬引擎回傳的是**與目標程式碼無關的固定範本**，報告會以 `[SIMULATED]` 與「Execution Provenance」表明確標示，且品質閘門不會因此給出 `READY_TO_SHIP`。*
+*註：若未配置 API 金鑰，`hybrid` 模式會退回模擬引擎（Simulation Engine）以便離線體驗工作流。模擬引擎回傳的是**與目標程式碼無關的固定範本**，報告會以 `[SIMULATED]` 與「執行來源 ／ Execution Provenance」表明確標示，且品質閘門不會因此給出 `READY_TO_SHIP`。*
 
 | `--mode` | 行為 |
 | :--- | :--- |
@@ -310,7 +310,7 @@ python main.py --target examples --output vibe_harness_report.md
 
 執行前可先用 `--estimate` 看規模：它只跑第 1 階段（符號擷取與靜態規則，不呼叫模型），印出每個 agent 與每個模型的預期呼叫數（審查者與威脅建模的次數是精確值，驗證、測試生成與攻擊合成依「每批發現數」等假設列為情境值，另給含重問與自癒修復的最大值）、估計的 prompt／輸出 token，以及設定了 `price_per_million_*` 的模型的估計花費；`--format json` 時寫到 `--output`，exit code 一律 0。規模與成本上限可從 CLI 直接覆蓋設定檔：`--max-files`（單次分析的檔案數上限，預設 50，須 ≥ 1；其餘檔案列為 skipped 並記為證據缺口）與 `--max-model-calls`（單次執行的模型呼叫數上限，預設不限制，`0` 亦表示不限制，負數為用法錯誤；重試與 fallback 不另計次；用完時 hybrid 退回模擬並列為證據缺口、live 直接失敗）。檔案篩選：`--include GLOB`／`--exclude GLOB`（可重複，比對相對於 `--target` 的路徑或檔名，例如 `--exclude 'tests/*' --exclude '*.min.js'`；會覆蓋設定檔的 `include`／`exclude`），以及 `--changed-since <git ref>`（只分析相對該 ref 有變更的檔案，含未暫存與未追蹤，適合 PR 檢查：`--changed-since origin/main`）。超過 `max_file_bytes`（預設 1 MB）的檔案不分析並列為證據缺口。模型回應無法使用時會先重問一次（`retry_invalid_output`）再記為 `invalid`。`--output`／`--sarif` 的目錄不可寫時在任何模型呼叫前就以 exit 5 結束；執行中途崩潰或被 Ctrl-C 中斷時，已完成的階段（模型呼叫紀錄、發現、測試結果、威脅）會寫到 `<output>.partial.json`。`--cache-dir DIR` 開啟回應快取：可用的 live 回應存在 DIR，之後相同提示直接取用、不呼叫供應商也不扣預算（適合重跑或切換報告格式）。詳見 [`docs/configuration.md`](docs/configuration.md)。
 
-報告格式可用 `--format md`（預設）或 `--format json`（機器可讀，含完整的 findings、威脅模型與測試結果，適合接 CI/CD）。兩種格式都會保存每個生成測試的程式碼：Markdown 附錄「Generated Test Code」以可收合區塊列出程式碼與其執行結果（已去除控制字元）；JSON 的 `generated_tests`／`blackbox_generated_tests` 則原封不動保存，可用來稽核或重跑。模型寫的測試也只是假設——「通過」的測試可能是在斷言缺陷本身（例如 `pytest.raises(KeyError)`），請一併檢查斷言是否描述正確的行為：
+報告格式可用 `--format md`（預設）或 `--format json`（機器可讀，含完整的 findings、威脅模型與測試結果，適合接 CI/CD）。兩種格式都會保存每個生成測試的程式碼：Markdown 附錄「產生的測試程式碼（稽核軌跡） ／ Generated Test Code (audit trail)」以可收合區塊列出程式碼與其執行結果（已去除控制字元）；JSON 的 `generated_tests`／`blackbox_generated_tests` 則原封不動保存，可用來稽核或重跑。模型寫的測試也只是假設——「通過」的測試可能是在斷言缺陷本身（例如 `pytest.raises(KeyError)`），請一併檢查斷言是否描述正確的行為：
 
 ```bash
 python main.py --target examples --output report.json --format json
@@ -341,7 +341,7 @@ python main.py --target examples --output report.json --format json
 
 Action 的 outputs 有 `verdict`（`READY_TO_SHIP`／`NEEDS_FIXES`／`BLOCKED_CRITICAL_RISK`／`INCONCLUSIVE`，harness 本身失敗時為 `ERROR`）與 `exit-code`；報告、SARIF 與崩潰時的 `.partial.json` 會以 artifact `vibeharness-report` 上傳。不用 Action 的話，`pip install "git+https://github.com/chinchiang/MultiAgentGama@v0.3.0"` 後直接呼叫 `vibeharness` 即可。
 
-**只對新問題把關（`--baseline`）**：把一次 `--format json` 的報告存起來（例如提交到 repo 的 `.vibeharness/baseline.json`），之後以 `--baseline` 指定它：報告中已經存在的確認發現、黑箱突破、探針失敗與 HIGH 以上的規則命中仍會列在報告的「Known from baseline」清單與建議中，但不再計入判定與 exit code，只有新出現的問題會讓 CI 失敗。比對 key 與執行次序無關（finding 以檔案相對路徑＋符號＋標題正規化、突破以威脅的 STRIDE 分類＋標題＋攻擊向量、靜態命中以規則＋檔案＋證據但不含行號、探針以符號名），所以模型重新編號或無關的行數位移不會讓舊問題變新的。JSON 報告每個項目都帶 `fingerprint` 欄位；0.3.0 之前沒有該欄位的報告會自動重算。崩潰產生的 `.partial.json` 不能當 baseline。
+**只對新問題把關（`--baseline`）**：把一次 `--format json` 的報告存起來（例如提交到 repo 的 `.vibeharness/baseline.json`），之後以 `--baseline` 指定它：報告中已經存在的確認發現、黑箱突破、探針失敗與 HIGH 以上的規則命中仍會列在報告的「基準中的已知問題（不計入） ／ Known from baseline (not counted)」清單與建議中，但不再計入判定與 exit code，只有新出現的問題會讓 CI 失敗。比對 key 與執行次序無關（finding 以檔案相對路徑＋符號＋標題正規化、突破以威脅的 STRIDE 分類＋標題＋攻擊向量、靜態命中以規則＋檔案＋證據但不含行號、探針以符號名），所以模型重新編號或無關的行數位移不會讓舊問題變新的。JSON 報告每個項目都帶 `fingerprint` 欄位；0.3.0 之前沒有該欄位的報告會自動重算。崩潰產生的 `.partial.json` 不能當 baseline。
 
 > 註：SARIF 中的檔案路徑以包含 `--target` 的 git repo 根目錄為基準做相對化（找不到 repo 時才以 `--target` 目錄為基準），所以 `--target src` 也會產生 `src/app.py` 這樣與 Code Scanning 對齊的路徑。
 

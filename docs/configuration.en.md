@@ -23,8 +23,8 @@ From the CLI, use `--config <path>` to point at a different file and `--mode` to
 | `max_file_bytes` | `1000000` | Size cap (bytes) for a single source file; larger files are not analyzed and are listed as an evidence gap (minified bundles, generated code). Non-negative integer; `0` / `null` keep the default |
 | `include` | `[]` | Glob list: only files whose path relative to `--target` (or file name) matches one of them are analyzed (e.g. `["src/*"]`); empty = everything. CLI `--include` replaces the list |
 | `exclude` | `[]` | Glob list: matching files are not analyzed (e.g. `["tests/*", "vendor/*", "*.min.js"]`; `vendor` also matches the whole directory); excluded files are not an evidence gap. CLI `--exclude` replaces the list |
-| `cache_dir` | `null` (off) | Response cache directory (created if missing): usable live answers are stored as JSON keyed by model, settings and prompt, and an identical prompt later is served from it with no provider call and no `max_model_calls` spend; the Execution Provenance table shows it as "live (response cache)". CLI `--cache-dir` overrides. The directory holds raw model answers (which may quote the audited code), so treat it like the reports |
-| `retry_invalid_output` | `1` | How many times an unusable answer (not JSON, missing keys, empty) is re-asked, naming the problem, before it is booked `invalid`; every re-ask is a real call against `max_model_calls` and shows as "unusable, re-asked" in the Execution Provenance table. `0` disables; integer 0–5 |
+| `cache_dir` | `null` (off) | Response cache directory (created if missing): usable live answers are stored as JSON keyed by model, settings and prompt, and an identical prompt later is served from it with no provider call and no `max_model_calls` spend; the "執行來源 ／ Execution Provenance" table shows it as "真實（回應快取） ／ live (response cache)". CLI `--cache-dir` overrides. The directory holds raw model answers (which may quote the audited code), so treat it like the reports |
+| `retry_invalid_output` | `1` | How many times an unusable answer (not JSON, missing keys, empty) is re-asked, naming the problem, before it is booked `invalid`; every re-ask is a real call against `max_model_calls` and shows as "無法使用，已重問 ／ unusable, re-asked" in the "執行來源 ／ Execution Provenance" table. `0` disables; integer 0–5 |
 | `max_files` | `50` | Source files analyzed per run; files beyond the cap are listed as an evidence gap (the verdict cannot be `READY_TO_SHIP`). Must be a non-negative integer; `0` / `null` keep the default, a negative or non-integer value fails at startup with `ConfigError` (exit 5) |
 | `sandbox_provider` | `"local_subprocess"` | `local_subprocess` (local subprocess, **not a security boundary**) or `docker` (disposable isolated container); anything else fails at startup |
 | `docker_image` | `"vibeharness-sandbox:latest"` | Docker sandbox image; must ship `pytest`, `pytest-cov`, and the target's dependencies |
@@ -44,7 +44,7 @@ From the CLI, use `--config <path>` to point at a different file and `--mode` to
 | Value | Behavior |
 | :--- | :--- |
 | `live` | Real models only. A missing key, a model definition without `api_key_env`, or a failed call raises `LLMGatewayError` immediately (the CLI aborts with exit code 4) |
-| `hybrid` (default) | Calls real APIs when keys are present; falls back to the simulation engine on missing keys or failures, disclosed in the report's Execution Provenance |
+| `hybrid` (default) | Calls real APIs when keys are present; falls back to the simulation engine on missing keys or failures, disclosed in the report's "執行來源 ／ Execution Provenance" table |
 | `mock` | Simulation engine only (offline workflow preview; simulated output is unrelated to the target code, so the quality gate never yields `READY_TO_SHIP`) |
 
 ---
