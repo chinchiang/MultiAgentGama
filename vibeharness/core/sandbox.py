@@ -345,7 +345,9 @@ def rewrite_host_paths(text: str, mapping: List[Tuple[str, str]], windows: Optio
         container = next(c for i, (_, c) in enumerate(alternatives) if match.group(f"g{i}") is not None)
         return container + re.sub(separator, "/", match.group("tail"))
 
-    return pattern.sub(replace, text)
+    # A Windows file URL carries the drive after the authority (file:///C:/proj/x.mjs); once the
+    # drive path becomes /work/proj the URL must keep exactly three slashes (file:///work/proj/x.mjs)
+    return pattern.sub(replace, text).replace("file:////", "file:///")
 
 
 class DockerSandbox(LocalSubprocessSandbox):

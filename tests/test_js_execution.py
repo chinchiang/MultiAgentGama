@@ -441,15 +441,27 @@ def test_parse_node_version_and_detect():
     assert path is None and version is None and "no usable Node runtime" in problem
 
 
-def test_detect_node_rejects_old_or_odd_binaries(tmp_path, monkeypatch):
-    fake = tmp_path / "node"
-    fake.write_text("#!/bin/sh\necho v18.20.0\n", encoding="utf-8")
-    fake.chmod(0o755)
-    monkeypatch.setenv("PATH", str(tmp_path))
+def test_detect_node_rejects_old_or_odd_binaries(monkeypatch):
+    import vibeharness.core.sandbox as sandbox_mod
+    monkeypatch.setattr(sandbox_mod.shutil, "which", lambda name: "/fake/bin/node")
+    answers = iter(["v18.20.0\n", "banana\n"])
+    monkeypatch.setattr(sandbox_mod.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout=next(answers), stderr=""))
     path, version, problem = detect_node("node")
     assert path is None and version == (18, 20, 0) and "below the minimum" in problem
-    fake.write_text("#!/bin/sh\necho banana\n", encoding="utf-8")
     assert "not a version" in detect_node("node")[2]
+
+    def broken(*a, **k):
+        raise OSError("exec format error")
+    monkeypatch.setattr(sandbox_mod.subprocess, "run", broken)
+    assert "--version failed" in detect_node("node")[2]
+
+
+def test_windows_file_url_is_rewritten_for_the_container():
+    from vibeharness.core.sandbox import rewrite_host_paths
+    code = 'import { f } from "file:///D:/work/proj/svc.mjs";\n'
+    mapping = [(r"D:\work\proj", "/work/proj"), (r"D:\work", "/work")]
+    assert rewrite_host_paths(code, mapping, windows=True) == 'import { f } from "file:///work/proj/svc.mjs";\n'
 
 
 def test_node_test_command_flags():
