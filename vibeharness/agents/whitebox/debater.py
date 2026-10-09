@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
 from vibeharness.core.models import ReviewFinding, MultiModelDebateResult, VerificationVote, CodeSymbol
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError, UNCONFIGURED_ALIAS
-from vibeharness.core.i18n import bi
+from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import render_symbols, truncate_to_tokens
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
 
@@ -246,10 +246,13 @@ class MultiModelDebater:
             f = findings[i]
             blocks.append(
                 f"[{local}] {f.severity.value} | {f.file_path} :: {f.symbol_name or '-'}\n"
-                f"    Title: {truncate_to_tokens(f.title or '', per_field, marker=' (truncated)')}\n"
-                f"    Description: {truncate_to_tokens(f.description or '', per_field, marker=' (truncated)')}\n"
-                f"    Cause: {truncate_to_tokens(f.root_cause or '', per_field, marker=' (truncated)')}\n"
-                f"    Scenario: {truncate_to_tokens(f.suggested_test_scenario or '', per_field, marker=' (truncated)')}"
+                # 模擬引擎與預設值產生的雙語欄位只送英文半，提示詞維持英文；真實模型的文字沒有分隔符，原樣通過
+                # Bilingual fields from the simulation engine or defaults contribute their English half only, so the
+                # prompt stays English; real model text has no separator and passes through unchanged
+                f"    Title: {truncate_to_tokens(en_only(f.title or ''), per_field, marker=' (truncated)')}\n"
+                f"    Description: {truncate_to_tokens(en_only(f.description or ''), per_field, marker=' (truncated)')}\n"
+                f"    Cause: {truncate_to_tokens(en_only(f.root_cause or ''), per_field, marker=' (truncated)')}\n"
+                f"    Scenario: {truncate_to_tokens(en_only(f.suggested_test_scenario or ''), per_field, marker=' (truncated)')}"
             )
         return "\n".join(blocks)
 

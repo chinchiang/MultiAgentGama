@@ -10,7 +10,7 @@ import os
 from vibeharness.core.models import ThreatItem, GeneratedTest, CodeSymbol, text_or
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
 from vibeharness.core.codecheck import check_test_code_for, strip_code_fences
-from vibeharness.core.i18n import bi
+from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import render_symbols, import_instructions, language_for_file
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
 
@@ -264,9 +264,10 @@ class ThreatScenarioBuilder:
             f"STRIDE Category: {threat.stride_category.value}\n"
             f"OWASP Mapping: {threat.owasp_mapping}\n"
             + (f"MITRE ATLAS Mapping: {threat.atlas_mapping}\n" if threat.atlas_mapping else "")
-            + f"Attack Vector: {threat.attack_vector}\n"
-            f"Attack Scenario: {threat.attack_scenario}\n"
-            f"Defense Verification Goal: {threat.test_verification_goal}\n\n"
+            # 雙語的模擬／預設欄位只送英文半（提示詞維持英文）／ bilingual simulated / default fields send their English half only
+            + f"Attack Vector: {en_only(threat.attack_vector)}\n"
+            f"Attack Scenario: {en_only(threat.attack_scenario)}\n"
+            f"Defense Verification Goal: {en_only(threat.test_verification_goal)}\n\n"
             f"{context}"
             f"{closing}"
         )

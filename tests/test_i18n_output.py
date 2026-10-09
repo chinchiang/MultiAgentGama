@@ -221,3 +221,47 @@ def test_assertion_fallback_and_js_runner_reasons_are_bilingual(tmp_path):
         "X", [{"name": "test_x", "time": 0.0, "outcome": "failure", "message": "", "details": "", "stdout": "", "stderr": ""}],
     )
     assert fallback.failure_reason == "於 my case 期間斷言失敗 ／ Assertion failed during my case"
+
+
+def test_bilingual_data_fields_reach_live_prompts_in_english_only(fake_live, tmp_path):
+    """hybrid 模式下模擬引擎的雙語發現／威脅會當作資料進入 live 的驗證者、測試生成與攻擊合成提示詞：只送英文半。
+    In hybrid mode the simulation engine's bilingual findings / threats reach the live verifier, test-generation and
+    attack-synthesis prompts as data: only the English half is sent."""
+    import json
+    from vibeharness.agents.whitebox.debater import MultiModelDebater
+    from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
+    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.core.models import FindingSeverity, ReviewFinding, STRIDECategory, ThreatItem
+
+    (tmp_path / "svc.py").write_text("def login(user, password):\n    return user\n", encoding="utf-8")
+    symbols = ASTExtractor().parse_file(str(tmp_path / "svc.py"))
+    prompts = []
+
+    def responder(system, user):
+        prompts.append(user)
+        if "verdicts" in system:
+            return json.dumps({"verdicts": [{"index": 0, "verdict": "confirm", "reason": "ok"}]})
+        return json.dumps({"tests": []})
+    fake_live(responder)
+    gateway = LLMGateway(CONFIG, execution_mode="live")
+    finding = ReviewFinding(
+        finding_id="WB-SIM-01", reviewer_name="r", model_alias="claude", file_path=str(tmp_path / "svc.py"),
+        symbol_name="login", severity=FindingSeverity.HIGH, title=SEP.join(["密碼回傳", "Password echoed"]),
+        description=SEP.join(["描述", "Description"]), root_cause=SEP.join(["根因", "Root cause"]),
+        suspected_vibe_flaw="", suggested_test_scenario=SEP.join(["情境", "Scenario"]),
+    )
+    MultiModelDebater(gateway).arbitrate([finding])
+    WhiteboxTestGenerator(gateway).generate_tests_for_findings([finding], symbols, root_dir=str(tmp_path))
+    threat = ThreatItem(
+        threat_id="THREAT-01", stride_category=STRIDECategory.SPOOFING, title=SEP.join(["標題", "Title"]),
+        description="", asset_at_risk="a", attack_vector=SEP.join(["呼叫 login", "call login"]),
+        trust_boundary_crossed="b", severity=FindingSeverity.HIGH,
+        attack_scenario=SEP.join(["攻擊 login", "attack login"]), test_verification_goal=SEP.join(["目標", "goal"]),
+    )
+    ThreatScenarioBuilder(gateway).build_test_cases_from_threats([threat], base_url=None, symbols=symbols,
+                                                                  root_dir=str(tmp_path))
+    assert len(prompts) >= 3
+    for user in prompts:
+        assert not has_cjk(user), user[:200]
+        assert "Password echoed" in user or "attack login" in user or "login" in user

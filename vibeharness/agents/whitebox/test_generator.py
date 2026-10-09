@@ -8,7 +8,7 @@ from typing import List, Optional, Set, Tuple
 from vibeharness.core.models import ReviewFinding, GeneratedTest, CodeSymbol, text_or
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
 from vibeharness.core.codecheck import check_test_code_for, strip_code_fences
-from vibeharness.core.i18n import bi
+from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import (
     file_source, fence_language, import_instructions, language_for_file, module_import_name, truncate_to_tokens,
 )
@@ -138,10 +138,11 @@ class WhiteboxTestGenerator:
 
         user_prompt = (
             f"{self._code_context(finding, symbols, root, target_file)}\n\n"
-            f"Finding Title: {finding.title}\n"
-            f"Description: {finding.description}\n"
-            f"Root Cause: {finding.root_cause}\n"
-            f"Suggested Test Scenario: {finding.suggested_test_scenario}\n"
+            # 雙語的模擬／預設欄位只送英文半（提示詞維持英文）／ bilingual simulated / default fields send their English half only
+            f"Finding Title: {en_only(finding.title)}\n"
+            f"Description: {en_only(finding.description)}\n"
+            f"Root Cause: {en_only(finding.root_cause)}\n"
+            f"Suggested Test Scenario: {en_only(finding.suggested_test_scenario)}\n"
             + ("Produce an executable Pytest unit test." if language == "python" else "Produce an executable node:test module.")
         )
 
