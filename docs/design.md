@@ -2,7 +2,7 @@
 
 [English](design.en.md) ｜ 正體中文（臺灣）
 
-本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.3.0`（`CHANGELOG.md` 的 `[0.3.0]`，2026-10-09，含本文第 16 章原先列出的六項缺口修正與深入審視的五項修正），並涵蓋其後 `[Unreleased]` 的變更（`--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。文中的 `path:line` 引用以 commit `c2c6aec` 的檔案為準。
+本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.3.0`（`CHANGELOG.md` 的 `[0.3.0]`，2026-10-09，含本文第 16 章原先列出的六項缺口修正與深入審視的五項修正），並涵蓋其後 `[Unreleased]` 的變更（`--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。文中的 `path:line` 引用以 commit `1db4f6e` 的檔案為準。
 
 與其他文件的分工：
 
@@ -27,7 +27,7 @@ Vibe coding（以自然語言提示驅動的程式產生）常見的缺陷型態
 
 這六條原則貫穿所有模組，後面每一章都會指出它們落在哪裡：
 
-1. **以執行結果為準。** 模型的發現與威脅只是假設。只有實際執行過的測試，或者不經模型的確定性規則，才能讓閘門 fail 或 block（`vibeharness/core/harness.py:627-634`）。
+1. **以執行結果為準。** 模型的發現與威脅只是假設。只有實際執行過的測試，或者不經模型的確定性規則，才能讓閘門 fail 或 block（`vibeharness/core/harness.py:665-672`）。
 2. **證據缺口 fail closed。** 任何讓判定不可信的情況（用到模擬引擎、模型輸出無效、測試沒跑、威脅沒測、檔案沒分析）都記成 evidence gap，判定最多是 `INCONCLUSIVE`（exit 3）；未知的判定字串也以 exit 3 結束（`vibeharness/cli.py:52-70`）。
 3. **異構模型去偏差，沒有單一仲裁者。** 四個不同模型家族各自審查；每筆發現由「沒有回報它」的模型投票，模型不評審自己的發現（`vibeharness/agents/whitebox/debater.py:71-81`）。
 4. **威脅建模先行。** 黑箱測試由 STRIDE／OWASP 威脅矩陣逐項推導，不做盲目的暴力測試。
@@ -111,52 +111,52 @@ flowchart TD
 
 ## 3. 執行流程（Pipeline）
 
-`VibeHarnessCommander.run_full_pipeline`（`vibeharness/core/harness.py:265-734`）是六個線性階段，沒有狀態機的分支或回退；整段包在一個 `try` 裡，任何例外或 Ctrl-C 都先寫出部分報告再往上拋（見本章末）。每個階段的輸入、輸出與失敗處理如下。
+`VibeHarnessCommander.run_full_pipeline`（`vibeharness/core/harness.py:303-772`）是六個線性階段，沒有狀態機的分支或回退；整段包在一個 `try` 裡，任何例外或 Ctrl-C 都先寫出部分報告再往上拋（見本章末）。每個階段的輸入、輸出與失敗處理如下。
 
-### Phase 1：符號擷取與確定性規則（`vibeharness/core/harness.py:310-348`）
+### Phase 1：符號擷取與確定性規則（`vibeharness/core/harness.py:348-386`）
 
-- `select_symbols`（`vibeharness/core/harness.py:127-145`）呼叫 `ASTExtractor.parse_directory(target, max_files, include, exclude, only_files, max_file_bytes)` 走訪目標，排除 `.`開頭目錄與 `SKIPPED_DIRS`（`venv`、`__pycache__`、`node_modules`、`dist`、`build`、`site-packages`）；目錄與檔名都排序，結果確定（`vibeharness/agents/whitebox/ast_extractor.py:85-145`）。超過 `max_files` 的檔案進 `skipped_files`，解析失敗的進 `parse_failures`，實際分析的進 `analyzed_files`。
-- **檔案篩選**：`--include`／`--exclude`（或設定檔 `global.include`／`exclude`）經 `_selected`（`vibeharness/agents/whitebox/ast_extractor.py:148-157`）以 fnmatch 比對相對路徑或檔名，exclude 優先；`--changed-since <ref>` 由 `changed_files`（`vibeharness/core/harness.py:180-200`）用 git 列出相對該 ref 有變更的檔案（含暫存、未暫存、未追蹤）當 `only_files`，ref 無法解析或目標不在 repo 內是 `ValueError`（exit 5）。被篩掉的檔案只計入 `filtered_out`，不是 evidence gap（使用者明示）。超過 `max_file_bytes`（預設 1 MB）的檔案由 `_too_large`（`vibeharness/agents/whitebox/ast_extractor.py:160-164`）放進 `oversized_files`，是 evidence gap #10。套用的篩選條件印在 console 並寫進 `RunMetadata.file_filters`。
-- 單一檔案目標時，`work_dir` 取所在目錄（`work_dir_for`，`vibeharness/core/harness.py:122-125`，於 `:317` 呼叫），測試與 import 都以這個目錄為根。
-- 偵測到的語言排序後輸出；沒有偵測到任何語言時預設 `["Python"]`（`vibeharness/core/harness.py:326`）。
-- `AISecurityStaticScanner.scan_files(analyzed_files)` 在任何模型看到程式碼之前執行（`vibeharness/core/harness.py:335`），結果不可能被 prompt injection 影響。它同時產出 `ai_components`（目標 import 的 AI SDK），決定後面要不要套 OWASP LLM Top 10。
+- `select_symbols`（`vibeharness/core/harness.py:136-154`）呼叫 `ASTExtractor.parse_directory(target, max_files, include, exclude, only_files, max_file_bytes)` 走訪目標，排除 `.`開頭目錄與 `SKIPPED_DIRS`（`venv`、`__pycache__`、`node_modules`、`dist`、`build`、`site-packages`）；目錄與檔名都排序，結果確定（`vibeharness/agents/whitebox/ast_extractor.py:85-145`）。超過 `max_files` 的檔案進 `skipped_files`，解析失敗的進 `parse_failures`，實際分析的進 `analyzed_files`。
+- **檔案篩選**：`--include`／`--exclude`（或設定檔 `global.include`／`exclude`）經 `_selected`（`vibeharness/agents/whitebox/ast_extractor.py:148-157`）以 fnmatch 比對相對路徑或檔名，exclude 優先；`--changed-since <ref>` 由 `changed_files`（`vibeharness/core/harness.py:189-209`）用 git 列出相對該 ref 有變更的檔案（含暫存、未暫存、未追蹤）當 `only_files`，ref 無法解析或目標不在 repo 內是 `ValueError`（exit 5）。被篩掉的檔案只計入 `filtered_out`，不是 evidence gap（使用者明示）。超過 `max_file_bytes`（預設 1 MB）的檔案由 `_too_large`（`vibeharness/agents/whitebox/ast_extractor.py:160-164`）放進 `oversized_files`，是 evidence gap #10。套用的篩選條件印在 console 並寫進 `RunMetadata.file_filters`。
+- 單一檔案目標時，`work_dir` 取所在目錄（`work_dir_for`，`vibeharness/core/harness.py:131-134`，於 `:355` 呼叫），測試與 import 都以這個目錄為根。
+- 偵測到的語言排序後輸出；沒有偵測到任何語言時預設 `["Python"]`（`vibeharness/core/harness.py:364`）。
+- `AISecurityStaticScanner.scan_files(analyzed_files)` 在任何模型看到程式碼之前執行（`vibeharness/core/harness.py:373`），結果不可能被 prompt injection 影響。它同時產出 `ai_components`（目標 import 的 AI SDK），決定後面要不要套 OWASP LLM Top 10。
 
-### Phase 2：多模型審查、去重、交叉驗證（`vibeharness/core/harness.py:350-380`）
+### Phase 2：多模型審查、去重、交叉驗證（`vibeharness/core/harness.py:388-418`）
 
 - `review_symbols` 把符號分批，對每個「reviewer × batch」平行呼叫模型。
 - `deduplicate_findings` 合併同一缺陷的多份回報，並把其他模型記在 `corroborating_models`。
 - `MultiModelDebater.arbitrate` 讓非作者模型投票，產出 `MultiModelDebateResult`。
-- 審查者的 `distinct_models` 少於兩個時，console 警告（`vibeharness/core/harness.py:357-360`）之外也是 evidence gap（第 10.2 節 #7）：同一模型的多份副本彼此同意是一致，不是佐證。
+- 審查者的 `distinct_models` 少於兩個時，console 警告（`vibeharness/core/harness.py:395-398`）之外也是 evidence gap（第 10.2 節 #7）：同一模型的多份副本彼此同意是一致，不是佐證。
 
-### Phase 3：白箱測試生成與執行（`vibeharness/core/harness.py:382-406`）
+### Phase 3：白箱測試生成與執行（`vibeharness/core/harness.py:420-444`）
 
 - 對 `confirmed_findings`（含平手保留的 undecided）逐筆生成測試；發現所在檔案的語言（`language_for_file`）決定提示詞是 pytest 還是 `node:test` 模組，並寫進 `GeneratedTest.language`；沒有可用模型測試的發現記進 `findings_without_model_tests`，並補上離線探針（只針對 Python）。
 - `execute_test_suite(..., collect_coverage=True)` 回傳每個測試的結果與行覆蓋率（只有 Python；JS 測試在 Node 沙盒各自執行，第 9.5 節）。覆蓋率只是資訊，不影響判定。
-- `wb_errored` 同時計入 `ERROR` 與 `SKIPPED`（`vibeharness/core/harness.py:400`）。
+- `wb_errored` 同時計入 `ERROR` 與 `SKIPPED`（`vibeharness/core/harness.py:438`）。
 
-### Phase 4：威脅建模（`vibeharness/core/harness.py:408-426`）
+### Phase 4：威脅建模（`vibeharness/core/harness.py:446-464`）
 
 - `entrypoints` 用偵測到的 route，沒有時用 `["HTTP/REST Endpoints"]`。
 - 符號分批、route 優先、平行呼叫；各批威脅合併並去重。
 
-### Phase 5：攻擊測試合成與執行（`vibeharness/core/harness.py:428-463`）
+### Phase 5：攻擊測試合成與執行（`vibeharness/core/harness.py:466-501`）
 
-- 每個威脅合成一個測試；合成失敗、程式碼為空、或指向非目標主機的威脅不會有測試，進 `untested_threats`（`vibeharness/core/harness.py:456-457`）。
+- 每個威脅合成一個測試；合成失敗、程式碼為空、或指向非目標主機的威脅不會有測試，進 `untested_threats`（`vibeharness/core/harness.py:494-495`）。
 - 結果分四類：`bb_passed`（防禦成立）、`bb_breaches`（`is_security_exploit_confirmed`）、`bb_failed_unclassified`（FAILED 但不符合 exploit 判定）、`bb_errored`。
 
-### Phase 6：閘門與報告（`vibeharness/core/harness.py:465-731`）
+### Phase 6：閘門與報告（`vibeharness/core/harness.py:503-769`）
 
-- 收集 20 項 evidence gap（第 10 章），有 `--baseline` 時先用 `compare_with_baseline` 把已知問題從 blocking 證據中剔除（`:604-626`，第 10.5 節），判定，產生建議，用 `_target_revision`（`:170-178`）取目標的 git commit 與 dirty 狀態組 `RunMetadata`（`:648-660`），組 `VibeHarnessSummary`，寫出 Markdown 或 JSON（JSON 另經 `annotate_report_payload` 加 `fingerprint`，`:702-708`），另可寫 SARIF。
-- SARIF 不帶測試程式碼（`vibeharness/core/harness.py:700-701`、`:717-718`）；Markdown 與 JSON 會。
+- 收集 20 項 evidence gap（第 10 章），有 `--baseline` 時先用 `compare_with_baseline` 把已知問題從 blocking 證據中剔除（`:642-664`，第 10.5 節），判定，產生建議，用 `_target_revision`（`:179-187`）取目標的 git commit 與 dirty 狀態組 `RunMetadata`（`:686-698`），組 `VibeHarnessSummary`，寫出 Markdown 或 JSON（JSON 另經 `annotate_report_payload` 加 `fingerprint`，`:740-746`），另可寫 SARIF。
+- SARIF 不帶測試程式碼（`vibeharness/core/harness.py:738-739`、`:755-756`）；Markdown 與 JSON 會。
 
 ### 失敗處理的共同模式
 
 每個會呼叫模型的階段都用同一套規則（`vibeharness/agents/whitebox/multi_reviewer.py:76-93` 是代表）：
 
 - `LLMGatewayError` 往上拋。live 模式的失敗要大聲，CLI 以 exit 4 結束。
-- 其他例外記 log，該批當成空結果，其餘批次不受影響。審查與驗證的批次還會呼叫 `gateway.record_failure`，把這次崩潰記成一筆 `invalid` 呼叫（`vibeharness/core/llm_gateway.py:569-580`），所以缺席的那批會成為 evidence gap #3，不會被當成「沒有發現」。
+- 其他例外記 log，該批當成空結果，其餘批次不受影響。審查與驗證的批次還會呼叫 `gateway.record_failure`，把這次崩潰記成一筆 `invalid` 呼叫（`vibeharness/core/llm_gateway.py:563-574`），所以缺席的那批會成為 evidence gap #3，不會被當成「沒有發現」。
 - 空結果會在後續階段變成 evidence gap（沒有測試、威脅未測），不會變成「通過」。
-- **崩潰時的部分報告**：六階段中任何例外或 Ctrl-C 都會先由 `_write_partial_report`（`vibeharness/core/harness.py:736-770`）把已完成階段的結果寫到 `<output>.partial.json`（`partial: true`、`schema_version`、`phase_reached`、錯誤型別與經 `_safe_reason` 遮蔽的訊息、完整 `agent_calls`，以及 `progress` 裡每個階段結束時放進去的靜態命中、發現、驗證結果、白箱測試與結果、威脅、黑箱測試與結果），再 `raise`（`:732-734`）；已付費的模型結果不歸零。CLI 對 Ctrl-C 以 `INTERRUPTED_EXIT_CODE` 130 結束並說明只有 partial 報告（`vibeharness/cli.py:286-290`），其他崩潰印 traceback 後 exit 5。partial 報告不能當 `--baseline`。
+- **崩潰時的部分報告**：六階段中任何例外或 Ctrl-C 都會先由 `_write_partial_report`（`vibeharness/core/harness.py:774-808`）把已完成階段的結果寫到 `<output>.partial.json`（`partial: true`、`schema_version`、`phase_reached`、錯誤型別與經 `_safe_reason` 遮蔽的訊息、完整 `agent_calls`，以及 `progress` 裡每個階段結束時放進去的靜態命中、發現、驗證結果、白箱測試與結果、威脅、黑箱測試與結果），再 `raise`（`:770-772`）；已付費的模型結果不歸零。CLI 對 Ctrl-C 以 `INTERRUPTED_EXIT_CODE` 130 結束並說明只有 partial 報告（`vibeharness/cli.py:286-290`），其他崩潰印 traceback 後 exit 5。partial 報告不能當 `--baseline`。
 
 ---
 
@@ -185,7 +185,7 @@ flowchart TD
 
 兩個設計重點：
 
-- `confirmed_whitebox_bugs` 是 `len(confirmed_findings) - undecided_count`（`vibeharness/core/harness.py:666`）。平手保留的發現在 `confirmed_findings` 裡，但不算「多數確認」。
+- `confirmed_whitebox_bugs` 是 `len(confirmed_findings) - undecided_count`（`vibeharness/core/harness.py:704`）。平手保留的發現在 `confirmed_findings` 裡，但不算「多數確認」。
 - `text_or(value, default)`（`vibeharness/core/models.py:7-14`）處理模型回傳 `"title": null` 的情況：非空字串才採用，其他一律換成預設值。所有解析模型輸出的地方都用它。
 
 ---
@@ -196,12 +196,12 @@ flowchart TD
 
 ### 5.1 三種模式與決策順序
 
-`generate`（`vibeharness/core/llm_gateway.py:336-470`）依序檢查，第一個成立的決定走模擬：
+`generate`（`vibeharness/core/llm_gateway.py:330-464`）依序檢查，第一個成立的決定走模擬：
 
 1. `execution_mode == "mock"`
 2. `litellm` 沒安裝
 3. 沒有憑證（`is_live_configured`：有 `aws_profile_name` 就算有，否則看 `api_key_env` 指的環境變數）
-4. 回應快取未命中（`:374-380`；命中時不需要預算，第 5.5 節）且 `max_model_calls` 預算用完（`_reserve_live_call`，`vibeharness/core/llm_gateway.py:274-281`，用 `threading.Lock` 在真正呼叫前扣額度）
+4. 回應快取未命中（`:412-418`；命中時不需要預算，第 5.5 節）且 `max_model_calls` 預算用完（`_reserve_live_call`，`vibeharness/core/llm_gateway.py:268-275`，用 `threading.Lock` 在真正呼叫前扣額度）
 
 | 模式 | 上述任一成立 | 真實呼叫失敗 |
 | :--- | :--- | :--- |
@@ -215,26 +215,26 @@ flowchart TD
 
 - `live`：模型回了可用的 JSON。回應來自回應快取時仍是 `live`，但 `cached=True`，報告標為「真實（回應快取） ／ live (response cache)」。
 - `simulated`：用了模擬引擎，`reason` 說明為什麼。
-- `invalid`：模型有回，但輸出不能用。`generate` 回傳只含 `_provenance` 的 dict，呼叫端拿不到資料。`reason` 會具體到：空回應（附 `finish_reason`，例如 `content_filter`）、`finish_reason == "length"` 時標「輸出在 max_output_tokens 上限（N）被截斷；… ／ output truncated at the max_output_tokens limit (N); …」（`vibeharness/core/llm_gateway.py:431-446`）。審查或驗證批次在 gateway 之外崩潰時，呼叫端用 `record_failure`（`:569-580`）補記一筆 `invalid`，`reason` 以 `REASON_CALL_CRASHED`（「代理呼叫在產生輸出前就當掉 ／ agent call crashed before producing output」，`:40`）開頭並附例外。
+- `invalid`：模型有回，但輸出不能用。`generate` 回傳只含 `_provenance` 的 dict，呼叫端拿不到資料。`reason` 會具體到：空回應（附 `finish_reason`，例如 `content_filter`）、`finish_reason == "length"` 時標「輸出在 max_output_tokens 上限（N）被截斷；… ／ output truncated at the max_output_tokens limit (N); …」（`vibeharness/core/llm_gateway.py:425-440`）。審查或驗證批次在 gateway 之外崩潰時，呼叫端用 `record_failure`（`:563-574`）補記一筆 `invalid`，`reason` 以 `REASON_CALL_CRASHED`（「代理呼叫在產生輸出前就當掉 ／ agent call crashed before producing output」，`:40`）開頭並附例外。
 
-- `retried`：模型有回但輸出不能用，而且還有重問額度：這筆記下原因後以 `_RETRY_SUFFIX` 說明問題再問一次（`:447-455`）；只是揭露（報告標「無法使用，已重問 ／ unusable, re-asked」），不是 evidence gap。重問後仍不能用才記 `invalid`。
+- `retried`：模型有回但輸出不能用，而且還有重問額度：這筆記下原因後以 `_RETRY_SUFFIX` 說明問題再問一次（`:485-493`）；只是揭露（報告標「無法使用，已重問 ／ unusable, re-asked」），不是 evidence gap。重問後仍不能用才記 `invalid`。
 
-`used_simulation`、`invalid_calls`、`budget_exhausted_calls` 三個屬性讓閘門直接從 `call_log` 判斷 evidence gap；`retried_calls`（`:295-299`）與 `cached_calls`（`:592-594`）只供報告揭露。
+`used_simulation`、`invalid_calls`、`budget_exhausted_calls` 三個屬性讓閘門直接從 `call_log` 判斷 evidence gap；`retried_calls`（`:333-337`）與 `cached_calls`（`:630-632`）只供報告揭露。
 
 ### 5.3 輸出驗證
 
-- `required_keys`：全部要在。`required_keys_any`：至少一個要在（`_validate_output`，`vibeharness/core/llm_gateway.py:550-567`）。目前只有測試生成器用 `required_keys_any=["tests", "code"]`。
-- **無效輸出先重問**：`json_output=True` 的呼叫得到非 JSON、缺欄位或空回應時，依 `global.retry_invalid_output`（預設 `DEFAULT_RETRY_INVALID_OUTPUT = 1`，`:45`；啟動時驗證為 0–5 的整數）重問，提示附上 `_RETRY_SUFFIX`（`:50-53`）說明上次的問題並要求只回 JSON（後綴本身是英文，帶入的原因先經 `en_only` 只取英文半，`:454`，所以提示詞不含中文）；每次重問都經 `_reserve_live_call` 扣 `max_model_calls`，預算用完就不重問，直接記 `invalid`（`:447-459`）。
+- `required_keys`：全部要在。`required_keys_any`：至少一個要在（`_validate_output`，`vibeharness/core/llm_gateway.py:544-561`）。目前只有測試生成器用 `required_keys_any=["tests", "code"]`。
+- **無效輸出先重問**：`json_output=True` 的呼叫得到非 JSON、缺欄位或空回應時，依 `global.retry_invalid_output`（預設 `DEFAULT_RETRY_INVALID_OUTPUT = 1`，`:45`；啟動時驗證為 0–5 的整數）重問，提示附上 `_RETRY_SUFFIX`（`:50-53`）說明上次的問題並要求只回 JSON（後綴本身是英文，帶入的原因先經 `en_only` 只取英文半，`:492`，所以提示詞不含中文）；每次重問都經 `_reserve_live_call` 扣 `max_model_calls`，預算用完就不重問，直接記 `invalid`（`:485-497`）。
 - `json_output=False` 時永遠不會被判 invalid，也不重問（測試生成的修復呼叫用這條路徑，見第 16 章）。
-- `_clean_and_parse_json`（`vibeharness/core/llm_gateway.py:596-663`）四層容錯：閉合的 code fence、直接 JSON、未閉合的 fence、第一個 `{` 到最後一個 `}`（失敗再逐一試每個 `{`）。全部失敗回 `None`，不回哨兵 dict，因為模型可能剛好回出一個長得像哨兵的 dict。
-- try 只包住網路呼叫（`vibeharness/core/llm_gateway.py:400-415`）。解析與驗證的 bug 會直接崩潰（exit 5），不會被包裝成「退回模擬」。
+- `_clean_and_parse_json`（`vibeharness/core/llm_gateway.py:590-657`）四層容錯：閉合的 code fence、直接 JSON、未閉合的 fence、第一個 `{` 到最後一個 `}`（失敗再逐一試每個 `{`）。全部失敗回 `None`，不回哨兵 dict，因為模型可能剛好回出一個長得像哨兵的 dict。
+- try 只包住網路呼叫（`vibeharness/core/llm_gateway.py:394-409`）。解析與驗證的 bug 會直接崩潰（exit 5），不會被包裝成「退回模擬」。
 
-### 5.4 真實呼叫的細節（`_complete`，`vibeharness/core/llm_gateway.py:472-538`）
+### 5.4 真實呼叫的細節（`_complete`，`vibeharness/core/llm_gateway.py:466-532`）
 
 - 參數：`temperature`、`drop_params=True`（模型不支援的取樣參數直接丟掉，不讓整次呼叫失敗；Bedrock 上的 Opus 5.5 只接受 `temperature=1`）、`timeout`、`num_retries`（litellm 內部重試，這是 `tenacity` 的唯一用途）、`max_tokens`。
 - API key 用 `os.getenv(env_var)` 明確傳入，所以 litellm 預設環境變數名不同的供應商（Z.AI 的 GLM）也能驗證。
 - Bedrock 走 `aws_profile_name`／`aws_region_name`。
-- `models.<alias>.extra_params`（`:517-519`）原封不動併入 litellm 參數，例如 `thinking: {type: disabled}` 或 `reasoning_effort: low`，讓推理模型不要把輸出額度全花在思考（live 實測 GLM 的主要失敗原因）；啟動時驗證為 mapping（`:239-241`），也是回應快取 key 的一部分。
+- `models.<alias>.extra_params`（`:511-513`）原封不動併入 litellm 參數，例如 `thinking: {type: disabled}` 或 `reasoning_effort: low`，讓推理模型不要把輸出額度全花在思考（live 實測 GLM 的主要失敗原因）；啟動時驗證為 mapping（`:233-235`），也是回應快取 key 的一部分。
 - 候選順序：`[model, fallback_model]`。主模型（含 litellm 重試）失敗後，`fallback_model` 再試一次。回傳實際用到的模型名稱，報告會顯示。
 - `_max_output_tokens`：模型自己的值優先於 global，預設 16384（`vibeharness/core/llm_gateway.py:35`）。會思考的模型把思考 token 也算在這個上限內，4096 曾讓威脅模型 JSON 被截斷。
 
@@ -242,21 +242,21 @@ flowchart TD
 
 `global.cache_dir` 或 CLI `--cache-dir` 開啟後，可用的 live 回應存在磁碟上，相同目標、相同設定的重跑不花錢、答案相同：
 
-- `set_cache_dir`（`vibeharness/core/llm_gateway.py:166-178`）建立目錄並確認可寫，否則 `ConfigError`（exit 5）。
-- key 是 `_cache_key`（`:180-186`）：alias、model、`fallback_model`、temperature、`max_output_tokens`、`extra_params` 與完整 system／user prompt 的 sha256。目標程式碼一改，提示就不同，不會錯用舊答案；換模型或改設定也不會命中。
-- `generate` 在扣預算前先查快取（`:374-380`）：命中時不呼叫供應商、不扣 `max_model_calls`，紀錄仍是 `live` 但 `cached=True`（`:423-429`），「執行來源 ／ Execution Provenance」表標「真實（回應快取） ／ live (response cache)」（`vibeharness/reports/report_generator.py:210-214`）。
-- 只有通過驗證的回應才寫入（`_cache_write`，`:199-214`）：先寫暫存檔再 `os.replace` 原子取代，平行的 agent 寫同一個 key 時讀端不會看到半截檔案；損壞或缺 `raw_text` 的快取檔視同未命中（`_cache_read`，`:188-197`）。重問後才成功的回應以重問提示為 key 另存（`:425-427`）。
+- `set_cache_dir`（`vibeharness/core/llm_gateway.py:160-172`）建立目錄並確認可寫，否則 `ConfigError`（exit 5）。
+- key 是 `_cache_key`（`:174-180`）：alias、model、`fallback_model`、temperature、`max_output_tokens`、`extra_params` 與完整 system／user prompt 的 sha256。目標程式碼一改，提示就不同，不會錯用舊答案；換模型或改設定也不會命中。
+- `generate` 在扣預算前先查快取（`:368-374`）：命中時不呼叫供應商、不扣 `max_model_calls`，紀錄仍是 `live` 但 `cached=True`（`:417-423`），「執行來源 ／ Execution Provenance」表標「真實（回應快取） ／ live (response cache)」（`vibeharness/reports/report_generator.py:210-214`）。
+- 只有通過驗證的回應才寫入（`_cache_write`，`:193-208`）：先寫暫存檔再 `os.replace` 原子取代，平行的 agent 寫同一個 key 時讀端不會看到半截檔案；損壞或缺 `raw_text` 的快取檔視同未命中（`_cache_read`，`:182-191`）。重問後才成功的回應以重問提示為 key 另存（`:419-421`）。
 - 快取目錄含模型原始回應（可能引用目標程式碼），要當成報告一樣保護；`--estimate` 不預測快取命中。
 
 ### 5.6 安全控制
 
-- **只允許 https**：`_validate_endpoints`（`vibeharness/core/llm_gateway.py:140-164`）在建構時檢查每個 `api_base`，`http://` 只放行 `localhost`、`127.0.0.1`、`::1`。目標程式碼會送到這些端點，所以不能讓設定錯誤把程式碼明文送到任意主機。
-- **`prompt_sha256`**：`sha256(system + "\x00" + user)`（`vibeharness/core/llm_gateway.py:362`），四種 mode 都記錄。稽核時可以把判定對回確切的輸入，而報告不必保存程式碼。
-- **`unconfigured` 別名**（`UNCONFIGURED_ALIAS`，`vibeharness/core/llm_gateway.py:59`、`:358`）：agent 沒有 `model_alias`，或指到不存在的別名時，沒有模型也沒有金鑰。hybrid 走模擬、live 失敗。舊版會默默改走 `gpt-4o`，這是刻意移除的行為。
-- **供應商錯誤訊息先遮蔽**：`_safe_reason`（`:256-261`）對每筆 `reason`、`LLMGatewayError` 訊息與 litellm 的失敗 log 先 `redact_secrets` 再去控制字元，因為 HTTP 用戶端的例外可能回顯帶金鑰的 URL 或標頭。
-- **數值設定在啟動時驗證**：`_validate_settings`（`:216-242`）見第 13.1 節；寫錯不再等到呼叫時由 litellm 失敗、hybrid 再悄悄退回模擬。
+- **只允許 https**：`_validate_endpoints`（`vibeharness/core/llm_gateway.py:134-158`）在建構時檢查每個 `api_base`，`http://` 只放行 `localhost`、`127.0.0.1`、`::1`。目標程式碼會送到這些端點，所以不能讓設定錯誤把程式碼明文送到任意主機。
+- **`prompt_sha256`**：`sha256(system + "\x00" + user)`（`vibeharness/core/llm_gateway.py:356`），四種 mode 都記錄。稽核時可以把判定對回確切的輸入，而報告不必保存程式碼。
+- **`unconfigured` 別名**（`UNCONFIGURED_ALIAS`，`vibeharness/core/llm_gateway.py:59`、`:352`）：agent 沒有 `model_alias`，或指到不存在的別名時，沒有模型也沒有金鑰。hybrid 走模擬、live 失敗。舊版會默默改走 `gpt-4o`，這是刻意移除的行為。
+- **供應商錯誤訊息先遮蔽**：`_safe_reason`（`:250-255`）對每筆 `reason`、`LLMGatewayError` 訊息與 litellm 的失敗 log 先 `redact_secrets` 再去控制字元，因為 HTTP 用戶端的例外可能回顯帶金鑰的 URL 或標頭。
+- **數值設定在啟動時驗證**：`_validate_settings`（`:210-236`）見第 13.1 節；寫錯不再等到呼叫時由 litellm 失敗、hybrid 再悄悄退回模擬。
 
-### 5.7 模擬引擎（`vibeharness/core/llm_gateway.py:665-761`）
+### 5.7 模擬引擎（`vibeharness/core/llm_gateway.py:659-755`）
 
 模擬回應是與目標程式碼無關的固定範本，存在的目的是讓流程能離線跑通。它刻意不捏造證據：
 
@@ -344,9 +344,9 @@ flowchart TD
 ### 6.6 白箱測試生成（`vibeharness/agents/whitebox/test_generator.py`）
 
 - 每筆 confirmed finding 呼叫一次 `whitebox_test_generator`，平行處理、依 finding 順序收集（`:61-85`）。發現所在檔案的語言（`language_for_file`，`:98`）決定 prompt 是 pytest 還是 `node:test` 模組（`:99-125`），並寫進 `GeneratedTest.language`。
-- 輸出契約接受 `{"tests": [...]}` 或單一 `{"code": ...}`，`required_keys_any=["tests", "code"]`（`:152-155`）。
-- `_validate_and_heal`（`:185-228`）：用 `check_test_code_for` 依語言驗證；不過就送該語言的修復 prompt（`json_output=False`，`:222`），最多 2 次。修不好的程式碼**原樣保留**，由執行器報 ERROR，不會換成一定通過的空測試。
-- 一筆 finding 沒有任何合法測試時記進 `findings_without_model_tests`（evidence gap），並觸發 `build_offline_probes`（`:279-348`）：最多 10 個，只針對 `.py` 的同步模組級函式、名稱不以 `__` 開頭、且**至少有一個必填參數**（`_has_required_params`，`:255-277`；否則 `main()`、`run_server()` 會被真的執行）。探針對所有必填參數傳 `None`，TypeError／KeyError／AttributeError／IndexError 轉成 AssertionError（FAILED），其他例外視為已防禦；目標有模組名時以 `importlib.import_module` 載入（套件的相對匯入才能成立），否則從檔案路徑載入（`:311-320`）。
+- 輸出契約接受 `{"tests": [...]}` 或單一 `{"code": ...}`，`required_keys_any=["tests", "code"]`（`:153-156`）。
+- `_validate_and_heal`（`:186-229`）：用 `check_test_code_for` 依語言驗證；不過就送該語言的修復 prompt（`json_output=False`，`:223`），最多 2 次。修不好的程式碼**原樣保留**，由執行器報 ERROR，不會換成一定通過的空測試。
+- 一筆 finding 沒有任何合法測試時記進 `findings_without_model_tests`（evidence gap），並觸發 `build_offline_probes`（`:280-349`）：最多 10 個，只針對 `.py` 的同步模組級函式、名稱不以 `__` 開頭、且**至少有一個必填參數**（`_has_required_params`，`:256-278`；否則 `main()`、`run_server()` 會被真的執行）。探針對所有必填參數傳 `None`，TypeError／KeyError／AttributeError／IndexError 轉成 AssertionError（FAILED），其他例外視為已防禦；目標有模組名時以 `importlib.import_module` 載入（套件的相對匯入才能成立），否則從檔案路徑載入（`:312-321`）。
 - test id：`WB-TEST-{NN}`，同一 finding 多個測試加 `-{k}`；探針是 `WB-PROBE-{NN}`，`test_type="whitebox_probe"`。
 
 ---
@@ -378,8 +378,8 @@ flowchart TD
 
 ### 7.3 對閘門的影響
 
-- 任何規則命中 CRITICAL／HIGH → `NEEDS_FIXES`（`static_blocking`，`vibeharness/core/harness.py:599-601`、`:629-630`；`--baseline` 時只算新的命中）。
-- VH-AI-008／009 屬 `REVIEW_INTEGRITY_RULES`（`:130`），`affects_review_integrity=True`，列為 evidence gap（`vibeharness/core/harness.py:505-514`）：模型階段的結論可能已被操弄，所以不可能 `READY_TO_SHIP`。
+- 任何規則命中 CRITICAL／HIGH → `NEEDS_FIXES`（`static_blocking`，`vibeharness/core/harness.py:637-639`、`:667-668`；`--baseline` 時只算新的命中）。
+- VH-AI-008／009 屬 `REVIEW_INTEGRITY_RULES`（`:130`），`affects_review_integrity=True`，列為 evidence gap（`vibeharness/core/harness.py:543-552`）：模型階段的結論可能已被操弄，所以不可能 `READY_TO_SHIP`。
 
 ---
 
@@ -403,8 +403,8 @@ flowchart TD
 ### 8.2 攻擊測試合成（`vibeharness/agents/blackbox/scenario_builder.py`）
 
 - **兩種模式**（`:158-176`）：`--base-url` 先經 `validate_base_url`（`:24-43`；CLI 在 `vibeharness/cli.py:224-228` 也呼叫）確認是帶主機名的 http(s) URL，否則用法錯誤（exit 5）：`urllib` 也能開 `file:`／`ftp:`／`data:`，過去 `file:///etc/hostname` 會被當成「伺服器存活」。只有使用者明確給 `--base-url` 才會 `check_server_live`（`vibeharness/agents/blackbox/scenario_builder.py:65-78`）探測（3 次、間隔 0.5 秒；任何 HTTP 狀態碼都算活著）。探測成功走 **Live HTTP**（只能對 base URL 發請求），否則走 **In-Process Contract**（import 目標直接呼叫，不開伺服器、不用網路）。預設不探測任何位址，避免攻擊腳本打到本機無關的服務。
-- 每個威脅平行合成一個測試，`required_keys=["code"]`（`:274-276`）；目標是 JS/TS 時 in-process 模式改要 `node:test` 模組（`:225-237`），Live HTTP 攻擊不論目標語言一律 Python（`:218-219`）。以下情況該威脅變 untested：code 為空（`:280-285`）；Live 模式下 `_hosts_outside_base_url`（`:111-143`）找到指向非目標主機的 URL 字面值（用 `urlsplit().hostname`，IPv6 與帶帳密的 URL 都正確解析；解析失敗一律視為違規，fail closed；loopback 主機彼此視為同一台）。
-- code 沒通過 `check_test_code_for` 時仍保留（`:295-300`），讓執行器報 ERROR 而不是默默丟掉。
+- 每個威脅平行合成一個測試，`required_keys=["code"]`（`:275-277`）；目標是 JS/TS 時 in-process 模式改要 `node:test` 模組（`:225-237`），Live HTTP 攻擊不論目標語言一律 Python（`:218-219`）。以下情況該威脅變 untested：code 為空（`:281-286`）；Live 模式下 `_hosts_outside_base_url`（`:111-143`）找到指向非目標主機的 URL 字面值（用 `urlsplit().hostname`，IPv6 與帶帳密的 URL 都正確解析；解析失敗一律視為違規，fail closed；loopback 主機彼此視為同一台）。
+- code 沒通過 `check_test_code_for` 時仍保留（`:296-301`），讓執行器報 ERROR 而不是默默丟掉。
 - `_code_context`（`:81-104`）用整詞比對 attack_vector 與 attack_scenario 中出現的符號名稱；沒有命中時給全部符號（route 優先）；同時回傳第一個相關符號所在檔案的語言，決定測試語言。
 - test id：`BB-TEST-{threat_id}`，`source_ref = threat_id`，harness 用它判斷哪些威脅有測試。
 
@@ -425,10 +425,10 @@ JS/TS 測試走 `check_js_test_code`（`:179-211`，第 9.5 節）；`check_test
 
 ### 9.2 執行器（`vibeharness/runners/test_executor.py`）
 
-- **一測試一模組**：`execute_test_suite`（`:112-146`）先依 `language` 分成 Python 與 JS 兩組，各交給 `_run_group`（`:182-331`）；每個測試寫成 `test_vh_NNN.py`（JS 為 `.mjs`，編號用全域索引所以跨組唯一），先過 `check_test_code_for`，不過的直接 ERROR「產生的測試無法執行（…）；未執行 ／ Generated test is not executable (…); not run」（`:204-212`）。一個壞掉的測試不會影響其他測試。
-- **header**（`_python_header`，`:149-168`）：先 insert 上層目錄再 insert 目標目錄，所以目標排在 `sys.path[0]`，上層目錄的同名模組不會遮蔽被測模組；JS 的 header 只有註解（`_js_header`，`:171-180`），因為 `import` 會與模組自己的 `import { test }` 衝突。`_split_future_imports` 讓 header 插在 docstring 與 `from __future__` 之後（`:372-400`）。`_header_field` 剝除換行，模型給的 metadata 無法從 `#`／`//` 注釋跳出注入程式碼（`:403-413`）。
-- **批次逾時**（`:268-275`）：Python 整批逾時且模組數 > 1 時，`_run_individually`（`:333-369`）逐一重跑，每個用 `per_test_timeout_seconds`，總時間不超過沙盒的批次預算；超出預算的模組標 `not_rerun`。此時覆蓋率設為 `None`。
-- **結果歸因**（`:281-330`、`_aggregate` `:507-592`；JS 的對應規則見第 9.5 節）：
+- **一測試一模組**：`execute_test_suite`（`:115-149`）先依 `language` 分成 Python 與 JS 兩組，各交給 `_run_group`（`:185-334`）；每個測試寫成 `test_vh_NNN.py`（JS 為 `.mjs`，編號用全域索引所以跨組唯一），先過 `check_test_code_for`，不過的直接 ERROR「產生的測試無法執行（…）；未執行 ／ Generated test is not executable (…); not run」（`:207-215`）。一個壞掉的測試不會影響其他測試。
+- **header**（`_python_header`，`:152-171`）：先 insert 上層目錄再 insert 目標目錄，所以目標排在 `sys.path[0]`，上層目錄的同名模組不會遮蔽被測模組；JS 的 header 只有註解（`_js_header`，`:174-183`），因為 `import` 會與模組自己的 `import { test }` 衝突。`_split_future_imports` 讓 header 插在 docstring 與 `from __future__` 之後（`:375-403`）。`_header_field` 剝除換行，模型給的 metadata 無法從 `#`／`//` 注釋跳出注入程式碼（`:406-416`）。
+- **批次逾時**（`:271-278`）：Python 整批逾時且模組數 > 1 時，`_run_individually`（`:336-372`）逐一重跑，每個用 `per_test_timeout_seconds`，總時間不超過沙盒的批次預算；超出預算的模組標 `not_rerun`。此時覆蓋率設為 `None`。
+- **結果歸因**（`:284-333`、`_aggregate` `:510-595`；JS 的對應規則見第 9.5 節）：
 
 | 情況 | 狀態與原因 |
 | :--- | :--- |
@@ -440,11 +440,11 @@ JS/TS 測試走 `check_js_test_code`（`:179-211`，第 9.5 節）；`check_test
 | failure 以 ImportError／ModuleNotFoundError／NameError／SyntaxError／IndentationError 開頭 | ERROR（測試或 harness 的問題，不是目標缺陷） |
 | failure 是呼叫簽名錯誤的 TypeError，且最內層 frame 在 `test_vh_*.py` | ERROR（測試用錯簽名；同樣訊息發生在目標內仍算 FAILED） |
 | error 發生在目標端且是 import／語法錯誤（`_raised_in_target_code`） | ERROR「目標程式碼已損壞，此測試從未實際執行到它 ／ Target code is broken and was never exercised by this test」（`REASON_TARGET_BROKEN`），歸因給目標 |
-| 其他 failure | FAILED；`test_type == "blackbox_security"` 且訊息是 `AssertionError`、`assert ...`、`Failed:`（`pytest.fail`）時 `is_security_exploit_confirmed=True` 並產生 PoC（`:524-535`） |
+| 其他 failure | FAILED；`test_type == "blackbox_security"` 且訊息是 `AssertionError`、`assert ...`、`Failed:`（`pytest.fail`）時 `is_security_exploit_confirmed=True` 並產生 PoC（`:527-538`） |
 | 全部 skipped | SKIPPED |
 | 部分 skipped | PASSED，但 `failure_reason` 註明只有執行的案例驗證了邊界 |
 
-stdout／stderr 各截到 500 字，traceback 截到 2000 字（`_result`，`:704-729`）。
+stdout／stderr 各截到 500 字，traceback 截到 2000 字（`_result`，`:716-741`）。
 
 ### 9.3 本機子程序沙盒（`LocalSubprocessSandbox`，`vibeharness/core/sandbox.py:91-345`）
 
@@ -491,10 +491,10 @@ docker run --rm --name vibeharness-<uuid12>
 - **靜態閘門**：`check_js_test_code`（`vibeharness/core/codecheck.py:179-211`）：遮蔽後原始碼的括號配對（`_js_balanced`，`:162-170`）、拒絕 `npm`／`pnpm`／`yarn`／`bun` 的安裝指令與 `npx`（`_JS_INSTALL_RE`，`:152`）以及 `child_process` 搭配安裝工具、至少一個 `test()`／`it()`、每個測試呼叫的範圍內要有 `assert`／`expect(`／`throw`／`.throws`／`.rejects`（`_JS_ASSERT_RE`，`:151`）。沒有 JS parser，這是 lexer 層級的近似；Node 執行時報的語法錯誤歸為 harness 錯誤，不是目標缺陷。
 - **本機 Node 沙盒**：`NodeSubprocessSandbox`（`vibeharness/core/sandbox.py:686-725`）沿用 `LocalSubprocessSandbox` 的驅動與逾時處理。`detect_node`（`:620-640`）解析 `node_bin`，要求 ≥ `MIN_NODE_VERSION`（20.0.0，`:607`），TypeScript 要 ≥ `MIN_NODE_VERSION_TS`（22.6.0，`:608`，`--experimental-strip-types`）。`node_test_command`（`:643-657`）組出 `node --test`：spec reporter 到 stdout、junit reporter 到 `junit.xml`、`--max-old-space-size=<sandbox_memory_mb>` 封頂 heap；**不套 `RLIMIT_AS`**（V8 啟動就保留大量位址空間，會直接 abort），`_limits` 只留 CPU 秒數（`:721-722`）。`link_node_modules`（`:660-683`）把目標的 `node_modules` 以 symlink（Windows 用 junction）連進 run dir，裸 specifier 才能從測試檔向上解析；做不到時退回 `NODE_PATH`（只有 CommonJS 認得）。環境加 `NODE_ENV=test`；`NODE_OPTIONS`／`NODE_REPL_EXTERNAL_MODULE` 在 `_CUSTOM_ENV_DENY_RE` 內。
 - **Docker Node 沙盒**：`NodeDockerSandbox`（`:728-773`）用同一組 hardening 旗標，映像 `DEFAULT_DOCKER_NODE_IMAGE`（`vibeharness-sandbox-node:latest`，`:609`；`docker/sandbox-node.Dockerfile`），`NODE_PATH=/work/<name>/node_modules`。
-- **建立時機**：harness 的 `_build_node_sandbox`（`vibeharness/core/harness.py:202-242`）是 `TestSuiteExecutor` 的 `js_sandbox_factory`，第一個 JS 測試出現時才呼叫（`_js_sandbox_or_none`，`vibeharness/runners/test_executor.py:98-110`）；依 `sandbox_node_provider`（預設沿用 `sandbox_provider`；啟動時驗證，非法值與非整數的 `sandbox_memory_mb` 直接 exit 5）選本機或 Docker：`docker` 用映像檔自帶的 Node（`_docker_node_version` 以 `docker run <image> node --version` 讀版本決定 TypeScript 支援），不需要主機上的 node。沒有可用的 Node 不是啟動失敗，而是 evidence gap；沙盒建立成功後才把實際執行環境寫進 `RunMetadata.node_runtime`。工廠只把 `SandboxUnavailableError`／`OSError` 揭露為缺口，其他例外照常拋出。
-- **執行器**：JS 組的每個模組各自在一個 `node --test` 程序裡、用 `per_test_timeout_seconds` 執行（`vibeharness/runners/test_executor.py:236-259`），因為 Node 的 junit reporter 不標示頂層測試所屬的檔案；`_parse_junit`（`:428-505`）以 `module` 參數把所有 case 指派給該模組，並往上找 `<testsuite name>` 當備援。從未進入 `test()` 的檔案層級「通過」case 不算通過（空檔案不能是 PASSED），失敗的保留為該模組的載入錯誤，並把 runner 的 stdout 補進 details（`:250-259`），因為 junit body 只寫「test failed」而真正的 `ERR_MODULE_NOT_FOUND` 在 stdout。沒有 JS 沙盒時每個 JS 測試 ERROR「JavaScript/TypeScript 測試未執行 ／ JavaScript/TypeScript test was not run」（`REASON_JS_NOT_RUN`，`:132-136`）；TypeScript 遇到不支援型別剝除的 Node 也是 ERROR（`:137-141`）。
+- **建立時機**：harness 的 `_build_node_sandbox`（`vibeharness/core/harness.py:211-268`）是 `TestSuiteExecutor` 的 `js_sandbox_factory`，第一個 JS 測試出現時才呼叫（`_js_sandbox_or_none`，`vibeharness/runners/test_executor.py:98-113`）；依 `sandbox_node_provider`（預設沿用 `sandbox_provider`；啟動時驗證，非法值與非整數的 `sandbox_memory_mb` 直接 exit 5）選本機或 Docker：`docker` 用映像檔自帶的 Node（`_docker_node_version` 以 `docker run <image> node --version` 讀版本決定 TypeScript 支援），不需要主機上的 node。沒有可用的 Node 不是啟動失敗，而是 evidence gap；沙盒建立成功後才把實際執行環境寫進 `RunMetadata.node_runtime`。工廠只把 `SandboxUnavailableError`／`OSError` 揭露為缺口，其他例外照常拋出。
+- **執行器**：JS 組的每個模組各自在一個 `node --test` 程序裡、用 `per_test_timeout_seconds` 執行（`vibeharness/runners/test_executor.py:239-262`），因為 Node 的 junit reporter 不標示頂層測試所屬的檔案；`_parse_junit`（`:431-508`）以 `module` 參數把所有 case 指派給該模組，並往上找 `<testsuite name>` 當備援。從未進入 `test()` 的檔案層級「通過」case 不算通過（空檔案不能是 PASSED），失敗的保留為該模組的載入錯誤，並把 runner 的 stdout 補進 details（`:253-262`），因為 junit body 只寫「test failed」而真正的 `ERR_MODULE_NOT_FOUND` 在 stdout。沒有 JS 沙盒時每個 JS 測試 ERROR「JavaScript/TypeScript 測試未執行 ／ JavaScript/TypeScript test was not run」（`REASON_JS_NOT_RUN`，`:135-139`）；TypeScript 遇到不支援型別剝除的 Node 也是 ERROR（`:140-144`）。
 - **JS JUnit 分類**（`vibeharness/runners/test_executor.py`）：`_js_is_harness_failure`（`:637-647`）：例外摘要（`_js_exception_summary`，不是整段 junit 內文——斷言失敗的內文可能提到目標拋出的 `SyntaxError`）含 `_JS_HARNESS_MARKERS`（`:58-60`：`ERR_MODULE_NOT_FOUND`、`Cannot find module`、`ERR_REQUIRE_ESM`、`SyntaxError` 等）或測試檔內層 frame 的 `ReferenceError`／`TypeError`；`_js_raised_in_target_code`（`:650-656`）看 V8 堆疊第一個（最內層）frame 是否不在 `test_vh_*`；`_js_exception_summary`（`:659-671`）取 junit body 的 `cause:` 行（跳過加引號的 `'test failed'`）、否則第一個不是「Error: test failed」佔位的 `XError:` 行、否則 message；`_js_is_assertion`（`:674-680`）：`ERR_ASSERTION`／`AssertionError`／`Error: expect(` 才算黑箱確認突破。目標內的 `TypeError` 是 FAILED（缺陷），不是 exploit；目標端的載入錯誤歸為「目標程式碼已損壞… ／ Target code is broken…」（`REASON_TARGET_BROKEN`）。
-- **證據缺口**（`vibeharness/core/harness.py:552-577`）三句：偵測到 JS/TS 但沒有生成任何 JS 測試（mock 模式必然如此，#13）；生成了但無法執行（`js_runner_unavailable_reason`／`node_runtime_problem`，#14）；TypeScript 測試因 Node < 22.6 未跑（#15）。其他語言維持「…只做了靜態審查 ／ …reviewed statically only」（#16）。
+- **證據缺口**（`vibeharness/core/harness.py:590-615`）三句：偵測到 JS/TS 但沒有生成任何 JS 測試（mock 模式必然如此，#13）；生成了但無法執行（`js_runner_unavailable_reason`／`node_runtime_problem`，#14）；TypeScript 測試因 Node < 22.6 未跑（#15）。其他語言維持「…只做了靜態審查 ／ …reviewed statically only」（#16）。
 - **設定**：`node_bin`（預設 `node`）、`sandbox_node_provider`（`local_subprocess`／`docker`）、`docker_node_image`。
 - **限制**：不收 JS 覆蓋率（`NodeSubprocessSandbox._extract_coverage_percent` 回 `None`，`vibeharness/core/sandbox.py:724-725`；console 標「行涵蓋率（Python） ／ Line Coverage (Python)」）；TypeScript 只做型別剝除（enum、namespace、parameter property、decorator 不支援）；Docker 內 ESM 的裸 specifier 無法解析（`NODE_PATH` 只對 CommonJS 有效）。
 
@@ -502,7 +502,7 @@ docker run --rm --name vibeharness-<uuid12>
 
 ## 10. 品質閘門（Quality Gate）
 
-### 10.1 判定順序（`vibeharness/core/harness.py:627-634`）
+### 10.1 判定順序（`vibeharness/core/harness.py:665-672`）
 
 ```mermaid
 flowchart TD
@@ -519,9 +519,9 @@ flowchart TD
 
 因為順序如此，mock 模式下探針 FAILED 會得到 NEEDS_FIXES（exit 1），不是 INCONCLUSIVE：探針是真的執行過的證據。
 
-有 `--baseline` 時，`bb_breaches`、`wb_failed` 與 `static_blocking` 在判定前先換成 `compare_with_baseline` 算出的「新問題」（`:604-626`，第 10.5 節）；已知問題仍在報告裡，但不決定判定與 exit code。
+有 `--baseline` 時，`bb_breaches`、`wb_failed` 與 `static_blocking` 在判定前先換成 `compare_with_baseline` 算出的「新問題」（`:642-664`，第 10.5 節）；已知問題仍在報告裡，但不決定判定與 exit code。
 
-### 10.2 Evidence gap 完整清單（`vibeharness/core/harness.py:474-593`）
+### 10.2 Evidence gap 完整清單（`vibeharness/core/harness.py:512-631`）
 
 出現任何一項就不可能 `READY_TO_SHIP`。每條訊息都由 `bi()` 組成「中文 ／ English」（第 11.5 節），下表的「條件」欄是摘要，不是逐字引用：
 
@@ -560,19 +560,19 @@ flowchart TD
 | 5 | 設定或用法錯誤：`--target` 不存在、`ConfigError`、`SandboxUnavailableError`、`--output`／`--sarif` 不可寫、`--changed-since` 的 ref 無法解析、`--base-url` 不是帶主機名的 http(s) URL（`validate_base_url`）、`--cache-dir` 不可建立或不可寫、`--baseline` 不是本工具的完整 JSON 報告（`.partial.json` 也拒絕）、CLI 誤用（argparse 的 exit 2 被改成 5，避免與 BLOCKED 撞號）、未預期的崩潰（印完整 traceback；已完成階段在 `<output>.partial.json`） |
 | 130 | Ctrl-C 中斷（128 + SIGINT，`INTERRUPTED_EXIT_CODE`，`:24`、`:286-290`），未寫出完整報告；已完成階段在 `<output>.partial.json` |
 
-### 10.4 建議的排序（`_build_recommendations`，`vibeharness/core/harness.py:772-810`）
+### 10.4 建議的排序（`_build_recommendations`，`vibeharness/core/harness.py:810-848`）
 
-已確認的突破 → 確定性規則 HIGH 以上命中 → 白箱 FAILED → 未分類的黑箱 FAILED → 未測試的威脅 → 有 evidence gap 時的提示 → 都沒有時的預設文字。有 `--baseline` 時傳入的是過濾後的結果，另在最後加一條列出未計入的已知問題（`:641-646`）。
+已確認的突破 → 確定性規則 HIGH 以上命中 → 白箱 FAILED → 未分類的黑箱 FAILED → 未測試的威脅 → 有 evidence gap 時的提示 → 都沒有時的預設文字。有 `--baseline` 時傳入的是過濾後的結果，另在最後加一條列出未計入的已知問題（`:679-684`）。
 
 ### 10.5 `--baseline`：只對新問題失敗（`vibeharness/core/baseline.py`）
 
 CI 的閘門要能「只對新問題失敗」，就需要不隨每次執行重新編號的身分：`WB-CLA-01`、`THREAT-03`、`BB-TEST-THREAT-03` 都是模型這一輪的編號，下一輪可能換號。
 
-- **載入**：CLI 的 `--baseline <report.json>` 經 `load_baseline`（`:191-211`）讀取：必須是 `tool == "vibeharness-mas"` 的完整 JSON 報告，`partial: true` 的崩潰報告與其他工具的 JSON 一律拒絕（`ValueError` → exit 5），因為對不完整的清單比對會把新問題藏起來。
-- **Key 與執行次序無關**（`fingerprint`，`:42-43`，sha1）：`static_key`（`:67-72`）= 規則＋目標相對路徑＋正規化 evidence，**不含行號**（上方無關的修改不該讓已知命中變成新的；SARIF 的 fingerprint 另保留行號給 Code Scanning）；`finding_key`（`:75-76`）= 相對路徑＋符號＋正規化 title；`probe_key`（`:79-82`）= 探針的符號；`whitebox_failure_key`（`:85-92`）= 該測試所來自的 finding 的 key（探針用符號；對不回 finding 的失敗是 `None`，永遠算新）；`breach_key`（`:95-102`）= 威脅的 STRIDE 類別＋正規化 title＋正規化 attack_vector（沒有威脅時退回 test id）。`target_relative`（`:46-64`）純字串運算，別台機器產生的報告對同一個檔案給同一個 key；`normalize`（`:36-39`）去大小寫與標點、保留任何文字的字母與數字（中文標題各自不同），對 `bi()` 字串只取英文半；SARIF 的 partialFingerprints 直接共用這兩個函式，模型改寫措辭不影響。
-- **讀舊報告**：`_keys_from_report`（`:123-188`）優先用報告裡的 `fingerprint` 欄位，0.3.0 的報告沒有該欄位時用同一組函式重算。進基準線的白箱 key 只來自 **FAILED** 的結果（經其發現識別）：已確認但上次測試通過的發現不算已知，這次失敗就是新問題。
-- **比對**：Phase 6 的 `compare_with_baseline`（`:253-299`；`vibeharness/core/harness.py:608-626`）把 blocking 證據分成新的與已知的：已知的進 `suppressed`（`BaselineSuppressedItem`：`kind`、`id`、`title`、`fingerprint`），`wb_failed`、`bb_breaches`、`static_blocking` 只計新的，`_build_recommendations` 收到的也是過濾後的結果。已知問題仍在各表中，Markdown 多一段「基準中的已知問題（不計入） ／ Known from baseline (not counted)」（`vibeharness/reports/report_generator.py:152-160`），建議多一條；`summary.baseline_path`／`baseline_suppressed` 進報告。
-- **寫新報告**：`--format json` 時 `annotate_report_payload`（`:214-241`）替靜態命中、確認發現、FAILED 的白箱結果與確認的突破加上 `fingerprint`（只是新增欄位，`schema_version` 不變），所以這一輪的 JSON 可以直接當下一輪的 baseline；composite Action 的 `baseline` input 就是這個用法。
+- **載入**：CLI 的 `--baseline <report.json>` 經 `load_baseline`（`:192-212`）讀取：必須是 `tool == "vibeharness-mas"` 的完整 JSON 報告，`partial: true` 的崩潰報告與其他工具的 JSON 一律拒絕（`ValueError` → exit 5），因為對不完整的清單比對會把新問題藏起來。
+- **Key 與執行次序無關**（`fingerprint`，`:45-47`，sha1）：`static_key`（`:71-76`）= 規則＋目標相對路徑＋正規化 evidence，**不含行號**（上方無關的修改不該讓已知命中變成新的；SARIF 的 fingerprint 另保留行號給 Code Scanning）；`finding_key`（`:79-80`）= 相對路徑＋符號＋正規化 title；`probe_key`（`:83-86`）= 探針的符號；`whitebox_failure_key`（`:89-96`）= 該測試所來自的 finding 的 key（探針用符號；對不回 finding 的失敗是 `None`，永遠算新）；`breach_key`（`:99-106`）= 威脅的 STRIDE 類別＋正規化 title＋正規化 attack_vector（沒有威脅時退回 test id）。`target_relative`（`:50-68`）純字串運算，別台機器產生的報告對同一個檔案給同一個 key；`normalize`（`:36-43`）去大小寫與標點、保留任何文字的字母與數字（中文標題各自不同），對 `bi()` 字串只取英文半；SARIF 的 partialFingerprints 直接共用這兩個函式，模型改寫措辭不影響。
+- **讀舊報告**：`_keys_from_report`（`:127-189`）優先用報告裡的 `fingerprint` 欄位，0.3.0 的報告沒有該欄位時用同一組函式重算。進基準線的白箱 key 只來自 **FAILED** 的結果（經其發現識別）：已確認但上次測試通過的發現不算已知，這次失敗就是新問題。
+- **比對**：Phase 6 的 `compare_with_baseline`（`:254-300`；`vibeharness/core/harness.py:646-664`）把 blocking 證據分成新的與已知的：已知的進 `suppressed`（`BaselineSuppressedItem`：`kind`、`id`、`title`、`fingerprint`），`wb_failed`、`bb_breaches`、`static_blocking` 只計新的，`_build_recommendations` 收到的也是過濾後的結果。已知問題仍在各表中，Markdown 多一段「基準中的已知問題（不計入） ／ Known from baseline (not counted)」（`vibeharness/reports/report_generator.py:152-160`），建議多一條；`summary.baseline_path`／`baseline_suppressed` 進報告。
+- **寫新報告**：`--format json` 時 `annotate_report_payload`（`:215-242`）替靜態命中、確認發現、FAILED 的白箱結果與確認的突破加上 `fingerprint`（只是新增欄位，`schema_version` 不變），所以這一輪的 JSON 可以直接當下一輪的 baseline；composite Action 的 `baseline` input 就是這個用法。
 
 ---
 
@@ -583,21 +583,21 @@ CI 的閘門要能「只對新問題失敗」，就需要不隨每次執行重�
 - 標頭帶 `RunMetadata`（`:114-125`）：產生時間、harness 版本、模式、沙盒、目標的 git 修訂（有未提交變更時註明）、設定檔路徑、套用的檔案篩選。
 - 只要有模擬呼叫就在最上方顯示 SIMULATED 警示，依比例標 ALL 或 SOME（`:128-140`）。
 - §1 判定、`--baseline` 時的「基準中的已知問題（不計入） ／ Known from baseline (not counted)」清單（`:152-160`）、evidence gap（每條經 `markdown_safe`，`:161-165`）、指標表（含「確定性 AI 資安規則命中 ／ Deterministic AI-Security Rule Hits」）、reviewer models、AI components、確定性規則表、「執行來源 ／ Execution Provenance」表（依 agent／model／mode／reason 分組計數，mode 另分出「真實（回應快取） ／ live (response cache)」與「無法使用，已重問 ／ unusable, re-asked」，`:210-214`）。共識率在未套用驗證時顯示「N/A（未套用驗證） ／ N/A (verification not applied)」（`:172-175`）。
-- §2 confirmed 與 disputed findings（含各票）、白箱結果表。§3 威脅表（含 MITRE ATLAS 欄）。§4 黑箱結果、PoC、未測試威脅（id 經 `_code_span`，`:312-313`）。§5 建議。PoC 與測試程式碼的圍欄依 `language` 標 `python`／`javascript`／`typescript`（`_fence_lang`，`:714-715`）。
-- §6「產生的測試程式碼（稽核軌跡） ／ Generated Test Code (audit trail)」（`HEADING_GENERATED_TESTS`，`:55`；`_generated_tests_section`，`:724-772`）：每個測試一個 `<details>`，程式碼與執行結果並列。live 實測發現有「通過」的測試其實在斷言缺陷本身，沒有程式碼就無法稽核。fence 依內容中最長的反引號自動加長（`_fence`，`:718-722`）。
+- §2 confirmed 與 disputed findings（含各票）、白箱結果表。§3 威脅表（含 MITRE ATLAS 欄）。§4 黑箱結果、PoC、未測試威脅（id 經 `_code_span`，`:312-313`）。§5 建議。PoC 與測試程式碼的圍欄依 `language` 標 `python`／`javascript`／`typescript`（`_fence_lang`，`:706-707`）。
+- §6「產生的測試程式碼（稽核軌跡） ／ Generated Test Code (audit trail)」（`HEADING_GENERATED_TESTS`，`:55`；`_generated_tests_section`，`:716-764`）：每個測試一個 `<details>`，程式碼與執行結果並列。live 實測發現有「通過」的測試其實在斷言缺陷本身，沒有程式碼就無法稽核。fence 依內容中最長的反引號自動加長（`_fence`，`:710-714`）。
 
 ### 11.2 JSON（`generate_json_report`，`:330-361`）
 
-頂層鍵：`tool`、`schema_version`、`target_path`、`summary`（含 `run`，即 `RunMetadata`）、`whitebox.{debate, test_results, generated_tests}`、`threat_model`、`blackbox_test_results`、`blackbox_generated_tests`。全部是 `model_dump()`，程式碼原封不動保存。`schema_version` 是 `JSON_SCHEMA_VERSION = "1"`（`:42`）：只在欄位改名、移除或語義改變時遞增，新增欄位不動。harness 在寫檔前另呼叫 `annotate_report_payload` 替靜態命中、確認發現、FAILED 的白箱結果與確認突破加上 `fingerprint`（`vibeharness/core/harness.py:702-708`，第 10.5 節）。
+頂層鍵：`tool`、`schema_version`、`target_path`、`summary`（含 `run`，即 `RunMetadata`）、`whitebox.{debate, test_results, generated_tests}`、`threat_model`、`blackbox_test_results`、`blackbox_generated_tests`。全部是 `model_dump()`，程式碼原封不動保存。`schema_version` 是 `JSON_SCHEMA_VERSION = "1"`（`:42`）：只在欄位改名、移除或語義改變時遞增，新增欄位不動。harness 在寫檔前另呼叫 `annotate_report_payload` 替靜態命中、確認發現、FAILED 的白箱結果與確認突破加上 `fingerprint`（`vibeharness/core/harness.py:740-746`，第 10.5 節）。
 
 ### 11.3 SARIF 2.1.0（`generate_sarif_report`，`:363-545`）
 
 - 三類固定 ruleId（`:35-39`）：`vibeharness/VH-AI-00x`（level 依 severity，tags 帶 OWASP／ATLAS／CWE）、`vibeharness/whitebox-finding`（warning）、`vibeharness/blackbox-breach`（error）。GitHub Code Scanning 以 ruleId 加 fingerprint 追蹤 alert，用每次執行的 `WB-CLA-01` 當 ruleId 會讓重新編號關掉又重開 alert。本次執行的 id 放在 `properties.findingId`／`testId`／`threatId`。
 - 每條規則帶 `help.text`／`help.markdown`（`add_rule`，`:390-403`）：確定性規則附修復建議與 OWASP／ATLAS／CWE 對應（`:410-415`），白箱規則說明要用報告中的測試驗證假設（`:432-444`），黑箱規則說明用 PoC 重現並補上缺的授權／驗證（`:488-500`）；GitHub Code Scanning 的 alert 頁只顯示 `help`，沒有它就沒有修復指引。
-- level 對照（`_sarif_level`，`:610-617`）：CRITICAL／HIGH → error，MEDIUM → warning，LOW／INFO → note。`runs[0].properties` 另帶 `overall_status`、`target`、`generated_at`、`execution_mode`、`target_git_commit`（`:537-542`）。
-- URI 相對於 `%SRCROOT%`（`_location`，`:548-554`）。`_sarif_root`（`:574-598`）往上找含 `.git` 的目錄，**家目錄本身除外**（dotfiles repo 不會被當成根），找不到就用目標目錄。比較用 `os.path.samefile`，Windows 8.3 短檔名與大小寫差異都能處理（`_same_path`，`:601-607`）。
-- 位置未知時省略 `locations`，不輸出 `null`；`file_path == "unknown"` 不產生 URI（`_sarif_uri`，`:620-644`、`:475-478`）。
-- fingerprint：白箱用（uri、symbol、正規化 title），黑箱用（STRIDE、正規化 title、正規化 attack_vector），黑箱突破盡量定位到攻擊向量提到的符號（`_threat_symbol`，`:563-571`）。
+- level 對照（`_sarif_level`，`:605-612`）：CRITICAL／HIGH → error，MEDIUM → warning，LOW／INFO → note。`runs[0].properties` 另帶 `overall_status`、`target`、`generated_at`、`execution_mode`、`target_git_commit`（`:537-542`）。
+- URI 相對於 `%SRCROOT%`（`_location`，`:548-554`）。`_sarif_root`（`:569-593`）往上找含 `.git` 的目錄，**家目錄本身除外**（dotfiles repo 不會被當成根），找不到就用目標目錄。比較用 `os.path.samefile`，Windows 8.3 短檔名與大小寫差異都能處理（`_same_path`，`:596-602`）。
+- 位置未知時省略 `locations`，不輸出 `null`；`file_path == "unknown"` 不產生 URI（`_sarif_uri`，`:615-639`、`:475-478`）。
+- fingerprint：白箱用（uri、symbol、正規化 title），黑箱用（STRIDE、正規化 title、正規化 attack_vector），黑箱突破盡量定位到攻擊向量提到的符號（`_threat_symbol`，`:558-566`）。
 - `confirmed_findings` 包含平手保留與驗證未生效時原樣保留的發現（含模擬的），都會進 SARIF；只能從 `properties.simulated` 區分。
 
 ### 11.4 報告消毒
@@ -607,7 +607,7 @@ CI 的閘門要能「只對新問題失敗」，就需要不隨每次執行重�
 ### 11.5 中／英雙語輸出（`vibeharness/core/i18n.py`）
 
 - 所有固定的使用者可見字串都以 `bi(zh, en)`（`:17`）組成「中文 ／ English」，分隔符 `SEP = " ／ "`（`:12`，全形斜線 U+FF0F 前後各一個半形空格）：Markdown 報告的標題、標籤與表頭（以常數匯出，例如 `HEADING_GENERATED_TESTS`、`METRIC_TABLE_HEADER`，`vibeharness/reports/report_generator.py:46-84`）、console 的階段標題與 evidence gap、CLI 訊息、`--estimate` 輸出、執行器的失敗原因（`REASON_*`，`vibeharness/runners/test_executor.py:17-32`）、gateway 的退回／無效輸出／崩潰原因（`BUDGET_EXHAUSTED_REASON`、`REASON_NOT_VALID_JSON`、`REASON_CALL_CRASHED`，`vibeharness/core/llm_gateway.py:38-40`）、確定性規則的標題與修復建議、模擬引擎的固定內容、SARIF 的規則說明與 `help`。
-- 英文半與雙語化之前逐字相同，所以以子字串比對的 CI 檢查、`--baseline` 與 SARIF 的 fingerprint 都不受影響：`normalize`（`vibeharness/core/baseline.py:36-39`，SARIF 共用）先以 `en_only` 取英文半再取各種文字的字母與數字，所以 `bi()` 字串的中文半永遠不進 key，而模型自己寫的中文標題仍各自不同。
+- 英文半與雙語化之前逐字相同，所以以子字串比對的 CI 檢查、`--baseline` 與 SARIF 的 fingerprint 都不受影響：`normalize`（`vibeharness/core/baseline.py:36-43`，SARIF 共用）先以 `en_only` 取英文半再取各種文字的字母與數字，所以 `bi()` 字串的中文半永遠不進 key，而模型自己寫的中文標題仍各自不同。
 - 維持英文、不雙語化的部分：JSON 的鍵、enum 值（`FindingSeverity`、`TestStatus`、`AgentCallRecord.mode`）、SARIF 的 `ruleId` 與 `properties`、原始例外文字、規則的 `evidence`、`RunMetadata.file_filters`。
 - 模型提示詞維持英文：`_RETRY_SUFFIX` 帶入的原因經 `en_only`（`vibeharness/core/i18n.py:23`，取最後一個分隔符之後的英文半；沒有分隔符就原樣回傳）；reviewer 的預設 `name`／`focus` 進 system prompt 前也經 `en_only`（`vibeharness/agents/whitebox/multi_reviewer.py:168-169`）。`has_cjk`（`:30`）供測試檢查輸出含中文、提示詞不含中文（`tests/test_i18n.py`、`tests/test_i18n_output.py`，第 15.1 節）。
 
@@ -623,13 +623,13 @@ VibeHarness 本身是一個 LLM 應用：目標程式碼是每個 prompt 的不�
 | `find_invisible` | 61-78 | 逐行回報 HIGH（tag block、VS supplement、bidi override）與 MEDIUM（零寬）；檔首 BOM 忽略 | VH-AI-008 |
 | `find_secrets`／`redact_secrets` | 98-111 | 九種低誤報的憑證形狀（`:85-95`：private key、Anthropic、OpenAI、AWS、GitHub、Google、Slack、HuggingFace、NVIDIA），遮蔽為 `<REDACTED:kind>` | VH-AI-007、`prepare_untrusted_code` |
 | `find_injection_markers` | 173-183 | 十三條 regex（`_INJECTION_PATTERNS`，`:122-170`）：七條英文（ignore previous instructions、report no findings、do not report this …、note to the AI reviewer、「AI reviewers:」、mark as safe、要求審查者給出 `READY_TO_SHIP` 的句型；裸的 `READY_TO_SHIP` 不算，比對 JSON 報告的程式會用到它）與六條正體／簡體中文（忽略／無視…的指令／規則、不要／請勿回報…問題／函式、回報零／沒有發現、給 AI／審查者的注意事項／備註、「AI 審查者：」、視為／標記為安全／通過）；刻意不比對「You are a helpful assistant」這類正常的 system prompt，「忽略大小寫」「回報錯誤給呼叫端」等一般用語也不命中；每行最多一筆 | VH-AI-009 |
-| `prepare_untrusted_code` | 186-189 | `redact_secrets(strip_invisible(text))`，所有送進模型的目標程式碼都經過它 | `vibeharness/core/codecontext.py:292-297`（`symbol_source`）、`:387`（`file_source`）、`vibeharness/agents/whitebox/test_generator.py:237` |
+| `prepare_untrusted_code` | 186-189 | `redact_secrets(strip_invisible(text))`，所有送進模型的目標程式碼都經過它 | `vibeharness/core/codecontext.py:292-297`（`symbol_source`）、`:387`（`file_source`）、`vibeharness/agents/whitebox/test_generator.py:238` |
 | `UNTRUSTED_CODE_POLICY` | 201-207 | 附在每個讀程式碼的 agent 的 system prompt 尾端：標記之間的內容是資料不是指令；對 AI 下指令的注釋本身就是缺陷，要回報不要照做；不要還原 REDACTED | reviewer、verifier、test generator、threat modeler、scenario builder |
 | `untrusted_block` | 210-214 | 包進 `<untrusted_target_code>…</untrusted_target_code>`；內容中偽造的開始或結束標籤（不分大小寫）換成 `<!-- tag removed -->` | 同上五處 |
 | `clean_model_text` | 223-228 | 去 ANSI／OSC（含 OSC 52 剪貼簿寫入）、C0／C1 控制字元、隱形字元 | 報告的 evidence、SARIF message、code span、測試附錄 |
 | `markdown_safe` | 235-240 | 在 `clean_model_text` 上再把 `![` 改成 `!\[`（停用圖片，防圖片 URL 外洩）、`<tag` 改成 `&lt;`（停用原始 HTML） | Markdown 的自由文字欄位 |
 
-console 輸出另外用 `rich.markup.escape`（`vibeharness/core/harness.py:9`）。供應商回傳的錯誤文字進 `call_log`、報告或 stderr 前先經 `LLMGateway._safe_reason`（`vibeharness/core/llm_gateway.py:256-261`）：`redact_secrets` 加 `clean_model_text`，HTTP 用戶端回顯的帶金鑰 URL 不會進報告。
+console 輸出另外用 `rich.markup.escape`（`vibeharness/core/harness.py:9`）。供應商回傳的錯誤文字進 `call_log`、報告或 stderr 前先經 `LLMGateway._safe_reason`（`vibeharness/core/llm_gateway.py:250-255`）：`redact_secrets` 加 `clean_model_text`，HTTP 用戶端回顯的帶金鑰 URL 不會進報告。
 
 **資料外送**：目標原始碼會送到 `agents` 區段指到的每一家供應商（送出前已去隱形字元、遮蔽憑證）。`api_base` 只允許 https。每次呼叫記 `prompt_sha256`。這些控制減少但不能消除注入成功的可能，所以閘門從不只憑模型的「沒有發現」就放行。
 
@@ -645,9 +645,9 @@ console 輸出另外用 `rich.markup.escape`（`vibeharness/core/harness.py:9`�
 
 - `global`：執行模式、逾時、重試、token 上限、`retry_invalid_output`、`cache_dir`、`max_model_calls`、`max_concurrent_calls`、`max_files`、`max_file_bytes`、`include`／`exclude`、沙盒參數（`sandbox_provider`、`sandbox_timeout_seconds`、`per_test_timeout_seconds`、`sandbox_memory_mb`、`docker_*`、`node_bin`、`sandbox_node_provider`、`docker_node_image`）。CLI 的 `--include`／`--exclude` 覆蓋設定檔的清單、`--changed-since` 加 `only_files`、`--cache-dir` 覆蓋 `cache_dir`、`--max-files`／`--max-model-calls` 覆蓋對應值（`vibeharness/cli.py:237-250`）。
 - `models`：每個鍵是一個 `model_alias`，值是 litellm model string、`api_key_env`、`fallback_model`，選填 `api_base`、`aws_profile_name`／`aws_region_name`、`max_output_tokens`、`extra_params`（原封不動傳給 litellm 的 mapping）、`price_per_million_input`／`price_per_million_output`（只給 `--estimate` 算花費，單位 USD）。預設四個別名：claude、glm、deepseek、gemini，都用帶版本號的 id，供應商端換模型時報告會看到。
-- `agents`：每個鍵是一個 `agent_id`。gateway 只讀 `model_alias` 與 `temperature`（`vibeharness/core/llm_gateway.py:358-359`）；`name` 與 `focus` 只有 `whitebox_reviewer_*` 讀（`vibeharness/agents/whitebox/multi_reviewer.py:53-54`）。`role`、`models.*.provider` 程式不讀。缺 `model_alias` 的 agent 在 gateway、reviewer 與 debater 都解析為 `unconfigured`。
-- 上限類設定都經 `LLMGateway._positive_int`（`vibeharness/core/llm_gateway.py:264-272`）驗證：`max_model_calls`、`max_concurrent_calls`（`:120-125`）、`max_files`／`max_file_bytes`（`vibeharness/core/harness.py:108-109`）、`sandbox_memory_mb`（`:238`、`:249`）；負數、bool、非整數是 `ConfigError`（exit 5），0 或 null 代表「未設定」而沿用預設（`sandbox_memory_mb` 的 0 是關閉）。
-- 其餘數值設定由 `_validate_settings`（`vibeharness/core/llm_gateway.py:216-242`）在建構時用 `_number`（`:245-253`）檢查：`timeout_seconds` ≥ 1、`max_retries` 整數 ≥ 0、全域與每個模型的 `max_output_tokens` 整數 ≥ 1、每個 agent 的 `temperature` 0–2、`retry_invalid_output` 整數 0–5、`price_per_million_input`／`_output` ≥ 0、`extra_params` 必須是 mapping；bool 不算數字。過去這些只在呼叫時讀取，`timeout_seconds: "abc"` 會讓 litellm 失敗、hybrid 再悄悄退回模擬，只留下 INCONCLUSIVE。
+- `agents`：每個鍵是一個 `agent_id`。gateway 只讀 `model_alias` 與 `temperature`（`vibeharness/core/llm_gateway.py:352-353`）；`name` 與 `focus` 只有 `whitebox_reviewer_*` 讀（`vibeharness/agents/whitebox/multi_reviewer.py:53-54`）。`role`、`models.*.provider` 程式不讀。缺 `model_alias` 的 agent 在 gateway、reviewer 與 debater 都解析為 `unconfigured`。
+- 上限類設定都經 `LLMGateway._positive_int`（`vibeharness/core/llm_gateway.py:258-266`）驗證：`max_model_calls`、`max_concurrent_calls`（`:114-119`）、`max_files`／`max_file_bytes`（`vibeharness/core/harness.py:117-118`）、`sandbox_memory_mb`（`:110`、`:247`、`:287`）；負數、bool、非整數是 `ConfigError`（exit 5），0 或 null 代表「未設定」而沿用預設（`sandbox_memory_mb` 的 0 是關閉）。
+- 其餘數值設定由 `_validate_settings`（`vibeharness/core/llm_gateway.py:210-236`）在建構時用 `_number`（`:239-247`）檢查：`timeout_seconds` ≥ 1、`max_retries` 整數 ≥ 0、全域與每個模型的 `max_output_tokens` 整數 ≥ 1、每個 agent 的 `temperature` 0–2、`retry_invalid_output` 整數 0–5、`price_per_million_input`／`_output` ≥ 0、`extra_params` 必須是 mapping；bool 不算數字。過去這些只在呼叫時讀取，`timeout_seconds: "abc"` 會讓 litellm 失敗、hybrid 再悄悄退回模擬，只留下 INCONCLUSIVE。
 
 ### 13.2 擴充點
 
@@ -659,7 +659,7 @@ console 輸出另外用 `rich.markup.escape`（`vibeharness/core/harness.py:9`�
 | 接新供應商 | 在 `models` 加別名；任何 litellm 支援的字串都可以 |
 | 單一金鑰跑 live | 所有 `model_alias` 指向同一個別名。但同一模型家族無法交叉驗證：作者與驗證者是同一模型，沒有任何發現會得到票 |
 | 調整威脅建模指引 | 改 `threat_rules.yaml` 中會進 prompt 的欄位（第 8.1 節的表） |
-| 新沙盒 | 繼承 `LocalSubprocessSandbox`，覆寫 `_prepare_code`、`_build_command`、`_after_timeout`、`_limits`（`vibeharness/core/sandbox.py:194-260` 的 hook；`DockerSandbox` 與 `NodeSubprocessSandbox` 就是這樣做的），並在 `_build_sandbox`（`vibeharness/core/harness.py:245-263`）或 JS 用的 `_build_node_sandbox`（`:202-242`）登記 |
+| 新沙盒 | 繼承 `LocalSubprocessSandbox`，覆寫 `_prepare_code`、`_build_command`、`_after_timeout`、`_limits`（`vibeharness/core/sandbox.py:194-260` 的 hook；`DockerSandbox` 與 `NodeSubprocessSandbox` 就是這樣做的），並在 `_build_sandbox`（`vibeharness/core/harness.py:283-301`）或 JS 用的 `_build_node_sandbox`（`:211-268`）登記 |
 
 其餘 agent（`whitebox_test_generator`、`blackbox_threat_modeler`、`blackbox_test_synthesizer`）由程式以固定 agent_id 呼叫，設定只控制模型與溫度。
 
@@ -757,14 +757,14 @@ mutation testing、DAST／fuzzing、hypothesis、e2b 沙盒。JS/TS 測試執行
 
 ### 16.2 行為上的缺口
 
-- 測試生成的修復呼叫用 `json_output=False`（`vibeharness/agents/whitebox/test_generator.py:222`），永遠不會被判 invalid，也不會被重問；修不好的程式碼仍會在執行時報 ERROR，所以不會變成「通過」。
+- 測試生成的修復呼叫用 `json_output=False`（`vibeharness/agents/whitebox/test_generator.py:223`），永遠不會被判 invalid，也不會被重問；修不好的程式碼仍會在執行時報 ERROR，所以不會變成「通過」。
 - 模型回應無法使用時會重問 `retry_invalid_output` 次（預設 1，`vibeharness/core/llm_gateway.py` 的 `generate`）：第一次嘗試記為 `retried`（報告揭露、不是 evidence gap），仍失敗才記 `invalid`；每次重問都扣 `max_model_calls`。
 - `--changed-since` 只看 git 的變更清單；被改到的檔案會整個送審，不會只送變更的符號。崩潰或 Ctrl-C 時會把已完成階段寫到 `<output>.partial.json`（`_write_partial_report`），完整報告仍只在六階段都跑完才產生。
 - `call_log` 依執行緒完成順序寫入，Execution Provenance 表的列序每次可能不同；預算用完時哪幾次呼叫改走模擬也取決於時序。
 - 威脅建模與攻擊合成的批次崩潰不經 `record_failure`：前者的缺席以「該批沒有威脅」呈現，後者以 untested 威脅呈現，都仍是 evidence gap，但原因不會寫進 `call_log`。
 - JS/TS 的 Next.js route 會同時以 function 與 route 兩個符號送審（`vibeharness/agents/whitebox/ast_extractor.py:556-566`）。
 - `--baseline` 以 finding 的 key 判斷白箱失敗是否已知：模型測試對不回 confirmed finding（`source_ref` 不在其中）時永遠算新；探針只以符號名為 key，同名函式搬到另一個檔案仍視為同一筆。
-- `vibeharness/reports/report_generator.py:175` 的「N/A（沒有決定性投票） ／ N/A (no decisive votes)」分支（console 端 `vibeharness/core/harness.py:372` 相同）實際走不到：`arbitration_applied=True` 蘊含 `real_votes > 0`，也就是 `decisive > 0`。
+- `vibeharness/reports/report_generator.py:175` 的「N/A（沒有決定性投票） ／ N/A (no decisive votes)」分支（console 端 `vibeharness/core/harness.py:410` 相同）實際走不到：`arbitration_applied=True` 蘊含 `real_votes > 0`，也就是 `decisive > 0`。
 
 以下六點在 2026-10-08 修正（見 `CHANGELOG.md` 的 `[0.3.0]`）：審查／驗證批次崩潰不進 `call_log`；單一 reviewer 模型只印警告；Markdown 的 evidence gap 與未測試威脅清單未消毒；缺 `model_alias` 時顯示的 alias 與實際路由不一致；root 下兩個 Docker 測試對不存在的 run_dir 做 `chmod`；設定檔 `max_files` 負數未驗證。
 
@@ -824,7 +824,7 @@ mutation testing、DAST／fuzzing、hypothesis、e2b 沙盒。JS/TS 測試執行
 
 ## 18. 附錄
 
-行號對應 commit `c2c6aec` 之後的程式碼；核對方式為 `grep -n "def 名稱" 檔案`。
+行號對應 commit `1db4f6e` 之後的程式碼；核對方式為 `grep -n "def 名稱" 檔案`。
 
 ### 18.1 關鍵常數
 
@@ -836,19 +836,19 @@ mutation testing、DAST／fuzzing、hypothesis、e2b 沙盒。JS/TS 測試執行
 | `DEFAULT_MAX_CONCURRENT_CALLS` | 6 | `vibeharness/core/llm_gateway.py:32` |
 | `DEFAULT_MAX_OUTPUT_TOKENS` | 16384 | `vibeharness/core/llm_gateway.py:35` |
 | `DEFAULT_RETRY_INVALID_OUTPUT` | 1 | `vibeharness/core/llm_gateway.py:45` |
-| `timeout_seconds`（預設） | 180 | `vibeharness/core/llm_gateway.py:503`（啟動時驗證 `:224`） |
+| `timeout_seconds`（預設） | 180 | `vibeharness/core/llm_gateway.py:497`（啟動時驗證 `:218`） |
 | `_ASCII_CHARS_PER_TOKEN` | 3.5 | `vibeharness/core/codecontext.py:23` |
 | `_MIN_TRUNCATED_BLOCK_TOKENS` | 80 | `vibeharness/core/codecontext.py:27` |
 | `SIMILARITY_THRESHOLD` | 0.6 | `vibeharness/agents/whitebox/deduplicator.py:23` |
 | `FINDINGS_PER_CALL` | 15 | `vibeharness/agents/whitebox/debater.py:35` |
 | `MAX_PROBES` | 10 | `vibeharness/agents/whitebox/test_generator.py:38` |
-| heal `max_retries` | 2 | `vibeharness/agents/whitebox/test_generator.py:185` |
+| heal `max_retries` | 2 | `vibeharness/agents/whitebox/test_generator.py:186` |
 | `PROBE_ATTEMPTS`／`PROBE_RETRY_DELAY_SEC` | 3／0.5 | `vibeharness/agents/blackbox/scenario_builder.py:62-63` |
 | `TIMEOUT_EXIT_CODE`／`EXECUTION_FAILURE_EXIT_CODE` | 124／125 | `vibeharness/core/sandbox.py:23-26` |
 | `_POST_KILL_DRAIN_SECONDS` | 5.0 | `vibeharness/core/sandbox.py:34` |
 | `MIN_NODE_VERSION`／`MIN_NODE_VERSION_TS` | 20.0.0／22.6.0 | `vibeharness/core/sandbox.py:607-608` |
 | `DEFAULT_DOCKER_NODE_IMAGE` | vibeharness-sandbox-node:latest | `vibeharness/core/sandbox.py:609` |
-| `sandbox_timeout_seconds`／`per_test_timeout_seconds`（預設） | 120／30 | `vibeharness/core/harness.py:247`、`:94` |
+| `sandbox_timeout_seconds`／`per_test_timeout_seconds`（預設） | 120／30 | `vibeharness/core/harness.py:285`、`:94` |
 | `DEFAULT_SANDBOX_MEMORY_MB` | 2048 | `vibeharness/core/harness.py:46` |
 | `_MAX_HITS_PER_RULE_PER_FILE` | 20 | `vibeharness/agents/whitebox/ai_static_scanner.py:131` |
 | `USAGE_ERROR_EXIT_CODE` | 5 | `vibeharness/cli.py:21` |
@@ -859,22 +859,22 @@ mutation testing、DAST／fuzzing、hypothesis、e2b 沙盒。JS/TS 測試執行
 ### 18.2 關鍵函式索引
 
 - `vibeharness/cli.py`：`verdict_exit_code` 52、`_writable_location` 73、`main` 84
-- `vibeharness/core/harness.py`：`work_dir_for` 122、`select_symbols` 127、`changed_files` 180、`_build_node_sandbox` 202、`_build_sandbox` 245、`run_full_pipeline` 265、evidence gap 474-593、baseline 比對 608-626、判定 627-634、`_write_partial_report` 736、`_build_recommendations` 773
-- `vibeharness/core/llm_gateway.py`：`_validate_endpoints` 140、`set_cache_dir` 166、`_cache_key` 180、`_cache_read` 188、`_cache_write` 199、`_validate_settings` 216、`_number` 245、`_safe_reason` 256、`_positive_int` 264、`_reserve_live_call` 274、`is_live_configured` 325、`generate` 336、`_complete` 472、`_max_output_tokens` 540、`_validate_output` 551、`record_failure` 569、`_record` 582、`_clean_and_parse_json` 596、`_generate_simulated_response` 665
-- `vibeharness/core/i18n.py`：`bi` 17、`en_only` 23、`has_cjk` 30
+- `vibeharness/core/harness.py`：`work_dir_for` 131、`select_symbols` 136、`changed_files` 189、`_build_node_sandbox` 211、`_build_sandbox` 283、`run_full_pipeline` 303、evidence gap 474-593、baseline 比對 608-626、判定 627-634、`_write_partial_report` 774、`_build_recommendations` 811
+- `vibeharness/core/llm_gateway.py`：`_validate_endpoints` 134、`set_cache_dir` 160、`_cache_key` 174、`_cache_read` 182、`_cache_write` 193、`_validate_settings` 210、`_number` 239、`_safe_reason` 250、`_positive_int` 258、`_reserve_live_call` 268、`is_live_configured` 319、`generate` 330、`_complete` 466、`_max_output_tokens` 534、`_validate_output` 545、`record_failure` 563、`_record` 576、`_clean_and_parse_json` 590、`_generate_simulated_response` 659
+- `vibeharness/core/i18n.py`：`bi` 17、`en_only` 23、`zh_only` 30、`has_cjk` 37
 - `vibeharness/core/codecontext.py`：`estimate_tokens` 30、`truncate_to_tokens` 35、`import_root` 55、`module_import_name` 77、`language_for_file` 100、`target_file_url` 111、`js_module_kind` 143、`js_exported_names` 175、`import_instructions` 202、`js_import_instructions` 230、`class_skeleton` 261、`symbol_source` 292、`render_symbol` 300、`render_symbols` 317、`batch_symbols` 353、`file_source` 377
 - `vibeharness/core/codecheck.py`：`strip_code_fences` 18、`_has_assertion` 41、`check_test_code` 81、`_package_install_call` 114、`check_js_test_code` 179、`check_test_code_for` 214
 - `vibeharness/core/sanitize.py`：`strip_invisible` 53、`find_invisible` 61、`find_secrets` 98、`redact_secrets` 108、`find_injection_markers` 173、`prepare_untrusted_code` 186、`untrusted_block` 210、`clean_model_text` 223、`markdown_safe` 235
 - `vibeharness/core/sandbox.py`：`filter_custom_env` 65、`build_safe_env` 82、`execute_pytest_files` 142、`_limits` 252、`_apply_limits` 263、`_run` 283、`_kill_tree` 324、`rewrite_host_paths` 368、`DockerSandbox._verify_available` 452、`_user` 501、`DockerSandbox._build_command` 514、`_docker_run_prefix` 545、`_after_timeout` 589、`detect_node` 620、`node_test_command` 643、`link_node_modules` 660、`NodeSubprocessSandbox` 686、`NodeDockerSandbox` 728
-- `vibeharness/core/baseline.py`：`static_key` 67、`finding_key` 75、`probe_key` 79、`whitebox_failure_key` 85、`breach_key` 95、`_keys_from_report` 123、`load_baseline` 191、`annotate_report_payload` 214、`compare_with_baseline` 253
+- `vibeharness/core/baseline.py`：`static_key` 71、`finding_key` 79、`probe_key` 83、`whitebox_failure_key` 89、`breach_key` 99、`_keys_from_report` 127、`load_baseline` 192、`annotate_report_payload` 215、`compare_with_baseline` 254
 - `vibeharness/core/estimate.py`：`estimate_run` 85、`estimate_lines` 232
 - `vibeharness/agents/whitebox/ast_extractor.py`：`parse_directory` 85、`_selected` 148、`_too_large` 160、`_parse_python_file` 166、`_parse_js_ts_file` 196、`_mask_source` 223、`_extract_js_functions` 425、`_extract_js_routes` 535、`_extract_python_function` 704
 - `vibeharness/agents/whitebox/ai_static_scanner.py`：`scan_files` 161、`_scan_text_rules` 198、`_scan_python` 206、`_call_rules` 273、`_taint_rule` 302、`_dedupe` 361
 - `vibeharness/agents/whitebox/multi_reviewer.py`：`__init__` 38、`review_symbols` 66、`_review_batch` 163、`_match_symbol` 204
 - `vibeharness/agents/whitebox/deduplicator.py`：`_similar` 45、`_same_location` 52、`deduplicate_findings` 60
-- `vibeharness/agents/whitebox/debater.py`：`arbitrate` 57、`_verify` 174、`_parse_index` 223、`_build_listing` 236、`_code_context` 256
-- `vibeharness/agents/whitebox/test_generator.py`：`generate_tests_for_findings` 46、`_tests_for_finding` 92、`_validate_and_heal` 185、`_has_required_params` 255、`build_offline_probes` 279
+- `vibeharness/agents/whitebox/debater.py`：`arbitrate` 57、`_verify` 174、`_parse_index` 223、`_build_listing` 236、`_code_context` 259
+- `vibeharness/agents/whitebox/test_generator.py`：`generate_tests_for_findings` 46、`_tests_for_finding` 92、`_validate_and_heal` 186、`_has_required_params` 256、`build_offline_probes` 280
 - `vibeharness/agents/blackbox/threat_modeler.py`：`_rules_guidance` 84、`_llm_rules_guidance` 118、`model_system` 174、`_merge_duplicate_threats` 285、`_parse_threats` 308
 - `vibeharness/agents/blackbox/scenario_builder.py`：`validate_base_url` 24、`check_server_live` 65、`_code_context` 81、`_hosts_outside_base_url` 111、`build_test_cases_from_threats` 145、`_test_for_threat` 202
-- `vibeharness/runners/test_executor.py`：`_js_sandbox_or_none` 98、`execute_test_suite` 112、`_run_group` 182、`_run_individually` 333、`_split_future_imports` 372、`_parse_junit` 428、`_aggregate` 507、`_is_harness_failure` 595、`_raised_in_target_code` 620、`_js_is_harness_failure` 637、`_js_raised_in_target_code` 650、`_js_exception_summary` 659、`_js_is_assertion` 674、`_is_assertion` 683
-- `vibeharness/reports/report_generator.py`：`generate_markdown_report` 95、`generate_json_report` 330、`generate_sarif_report` 363、`add_rule` 390、`_sarif_root` 574、`_sarif_uri` 620、`_generated_tests_section` 724
+- `vibeharness/runners/test_executor.py`：`_js_sandbox_or_none` 98、`execute_test_suite` 115、`_run_group` 185、`_run_individually` 336、`_split_future_imports` 375、`_parse_junit` 431、`_aggregate` 510、`_is_harness_failure` 598、`_raised_in_target_code` 623、`_js_is_harness_failure` 640、`_js_raised_in_target_code` 657、`_js_exception_summary` 666、`_js_is_assertion` 686、`_is_assertion` 695
+- `vibeharness/reports/report_generator.py`：`generate_markdown_report` 95、`generate_json_report` 330、`generate_sarif_report` 363、`add_rule` 390、`_sarif_root` 569、`_sarif_uri` 615、`_generated_tests_section` 716
