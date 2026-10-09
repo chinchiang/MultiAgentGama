@@ -22,6 +22,7 @@ from vibeharness.core.models import (
 )
 from vibeharness.core.llm_gateway import LLMGateway, DEFAULT_CONFIG_PATH
 from vibeharness.core.sandbox import LocalSubprocessSandbox, DockerSandbox, DEFAULT_DOCKER_IMAGE
+from vibeharness.core.baseline import Baseline, annotate_report_payload, compare_with_baseline
 from vibeharness.agents.whitebox.ast_extractor import ASTExtractor, DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES
 from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
 from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
@@ -90,6 +91,8 @@ class VibeHarnessCommander:
         self.include_patterns: List[str] = self._pattern_list(global_cfg.get("include"), "include")
         self.exclude_patterns: List[str] = self._pattern_list(global_cfg.get("exclude"), "exclude")
         self.changed_since: Optional[str] = None
+        # --baseline: a previous JSON report; problems it already contains are reported but not counted
+        self.baseline: Optional[Baseline] = None
 
     @staticmethod
     def _pattern_list(value: Any, key: str) -> List[str]:
@@ -430,6 +433,27 @@ class VibeHarnessCommander:
             static_blocking = [
                 f for f in static_findings if f.severity in (FindingSeverity.CRITICAL, FindingSeverity.HIGH)
             ]
+            # --baseline: only problems the previous report did not contain decide the verdict; the known
+            # ones stay in the tables and are listed under "Known from baseline"
+            gate_wb_results, gate_bb_results = wb_results, bb_results
+            suppressed: List[Any] = []
+            if self.baseline is not None:
+                comparison = compare_with_baseline(
+                    self.baseline, target_dir, static_blocking, wb_results, debate_result.confirmed_findings,
+                    bb_results, threat_report.threats
+                )
+                suppressed = comparison.suppressed
+                static_blocking = comparison.new_static_blocking
+                known_ids = {s.id for s in suppressed if s.kind != "static"}
+                gate_wb_results = [r for r in wb_results if not (r.status == TestStatus.FAILED and r.test_id in known_ids)]
+                gate_bb_results = [r for r in bb_results if not (r.is_security_exploit_confirmed and r.test_id in known_ids)]
+                wb_failed = len(comparison.new_whitebox_failures)
+                bb_breaches = len(comparison.new_breaches)
+                if suppressed:
+                    self.console.print(
+                        f"[yellow][!] Baseline: {len(suppressed)} known problem(s) from {escape(self.baseline.path)} "
+                        f"are reported but not counted ({escape(', '.join(s.id for s in suppressed))})[/yellow]"
+                    )
             if bb_breaches > 0:
                 overall_status = "BLOCKED_CRITICAL_RISK"
             elif wb_failed > 0 or static_blocking:
@@ -442,8 +466,13 @@ class VibeHarnessCommander:
                 self.console.print(f"[yellow][!] Evidence gap: {reason}[/yellow]")
 
             recommendations = self._build_recommendations(
-                wb_results, bb_results, threat_report, untested_threats, inconclusive_reasons, static_blocking
+                gate_wb_results, gate_bb_results, threat_report, untested_threats, inconclusive_reasons, static_blocking
             )
+            if suppressed:
+                recommendations.append(
+                    f"{len(suppressed)} problem(s) already in the baseline were not counted; they are still present: "
+                    + ", ".join(f"`{s.id}`" for s in suppressed)
+                )
 
             commit, dirty = self._target_revision(target_dir)
             run_meta = RunMetadata(
@@ -480,7 +509,9 @@ class VibeHarnessCommander:
                 key_recommendations=recommendations,
                 static_findings=static_findings,
                 ai_components=ai_components,
-                reviewer_models=reviewer_models
+                reviewer_models=reviewer_models,
+                baseline_path=self.baseline.path if self.baseline else None,
+                baseline_suppressed=suppressed,
             )
 
             # Output report
@@ -495,7 +526,12 @@ class VibeHarnessCommander:
             # The tests' code is part of the audit trail (md / json); SARIF carries findings only
             test_args: Dict[str, Any] = dict(whitebox_tests=wb_tests, blackbox_tests=bb_tests)
             if output_format == "json":
-                md_content = self.reporter.generate_json_report(**report_args, **test_args)
+                payload = json.loads(self.reporter.generate_json_report(**report_args, **test_args))
+                annotate_report_payload(
+                    payload, target_dir, static_findings, debate_result.confirmed_findings, wb_results, bb_results,
+                    threat_report.threats
+                )
+                md_content = json.dumps(payload, indent=2, ensure_ascii=False, default=str)
             else:
                 md_content = self.reporter.generate_markdown_report(**report_args, **test_args)
 

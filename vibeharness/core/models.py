@@ -223,3 +223,17 @@ class VibeHarnessSummary(BaseModel):
     ai_components: List[str] = Field(default_factory=list)
     reviewer_models: List[str] = Field(default_factory=list)
     key_recommendations: List[str] = Field(default_factory=list)
+    # --baseline: problems the previous report already contained are listed here and not counted
+    # in the verdict (whitebox_tests_failed / blackbox_security_breaches / static HIGH+ hold new ones only)
+    baseline_path: Optional[str] = None
+    baseline_suppressed: List["BaselineSuppressedItem"] = Field(default_factory=list)
+
+
+class BaselineSuppressedItem(BaseModel):
+    kind: str  # "breach" | "whitebox_failure" | "static"
+    id: str
+    title: str
+    fingerprint: str
+
+
+VibeHarnessSummary.model_rebuild()

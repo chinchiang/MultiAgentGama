@@ -10,6 +10,7 @@ from vibeharness.core.harness import VibeHarnessCommander, force_utf8_stdio
 from vibeharness.core.llm_gateway import LLMGatewayError, ConfigError, DEFAULT_CONFIG_PATH
 from vibeharness.core.sandbox import SandboxUnavailableError
 from vibeharness.agents.blackbox.scenario_builder import validate_base_url
+from vibeharness.core.baseline import load_baseline
 
 # Exit codes reserved for harness/usage problems. Verdict codes (0/1/2/3/4) are documented in
 # the README; these must never collide with them, or CI would misread a crashed run as a verdict.
@@ -141,6 +142,14 @@ def main():
              "unstaged or untracked), e.g. 'origin/main' in a PR check; the target must be inside a git repo"
     )
     parser.add_argument(
+        "--baseline",
+        metavar="REPORT_JSON",
+        default=None,
+        help="A previous --format json report: findings, breaches and HIGH+ rule hits it already contains are "
+             "listed but no longer decide the verdict / exit code, so CI reacts to new problems only "
+             "(a .partial.json from a crashed run is refused)"
+    )
+    parser.add_argument(
         "--cache-dir",
         metavar="DIR",
         default=None,
@@ -206,6 +215,8 @@ def main():
             commander.changed_since = args.changed_since
         if args.cache_dir:
             commander.gateway.set_cache_dir(args.cache_dir)
+        if args.baseline:
+            commander.baseline = load_baseline(args.baseline)
     except (ConfigError, ValueError, SandboxUnavailableError) as e:
         print(f"Error: harness configuration problem: {e}", file=sys.stderr)
         sys.exit(USAGE_ERROR_EXIT_CODE)

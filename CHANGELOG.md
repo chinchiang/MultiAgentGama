@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+### 新增
+- **`--baseline <report.json>`**：指定一份先前的 JSON 報告後，其中已存在的確認發現、黑箱突破、探針失敗與 HIGH 以上的規則命中仍列在報告（新段落「Known from baseline (not counted)」與建議）但不計入判定與 exit code，CI 只對新問題失敗。比對 key 與執行次序無關：finding＝目標相對路徑＋符號＋標題正規化、突破＝威脅的 STRIDE 分類＋標題＋攻擊向量、靜態命中＝規則＋檔案＋證據（不含行號）、探針＝符號名。JSON 報告的靜態命中、確認發現、失敗的白箱測試與突破新增 `fingerprint` 欄位（schema 版本不變）；0.3.0 的報告沒有該欄位會自動重算；崩潰的 `.partial.json` 與非本工具的 JSON 會被拒絕（exit 5）。`VibeHarnessSummary` 新增 `baseline_path`／`baseline_suppressed`
+- **composite GitHub Action（`action.yml`）**：目標專案以 `uses: chinchiang/MultiAgentGama@vX.Y.Z` 一行執行稽核；inputs 含 `target`、`mode`、`max-model-calls`、`max-files`、`changed-since`、`baseline`、`output`／`format`、`sarif`、`extra-args`、`python-version`、`fail-on`（`blocked`／`needs-fixes`／`inconclusive`／`never`）；outputs `verdict`、`exit-code`、`report`、`sarif`；報告、SARIF 與 `.partial.json` 上傳為 artifact。安裝來源為同一個 action ref 的 git 套件（PyPI 發布後可改）；actions 以 SHA 釘版
+
 ## [0.3.0] - 2026-10-09
 
 依 OWASP Top 10 for LLM Applications 2026 與 MITRE ATLAS 修正設計：白箱評議陣容改為 Claude／DeepSeek／GLM／Gemini，並加上確定性 AI 安全規則與信任邊界防護。

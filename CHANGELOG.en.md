@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Added
+- **`--baseline <report.json>`**: with a previous JSON report, the confirmed findings, black-box breaches, probe failures and HIGH+ rule hits it already contains are still reported (new "Known from baseline (not counted)" section and a recommendation) but no longer count toward the verdict or the exit code, so CI fails on new problems only. Keys are independent of run numbering: a finding = target-relative path + symbol + normalized title, a breach = the threat's STRIDE category + title + attack vector, a rule hit = rule + file + evidence (no line number), a probe = its symbol. The JSON report's static hits, confirmed findings, failed white-box tests and breaches gain a `fingerprint` field (schema version unchanged); 0.3.0 reports without it are recomputed; a crash's `.partial.json` or a foreign JSON file is refused (exit 5). `VibeHarnessSummary` gains `baseline_path` / `baseline_suppressed`
+- **Composite GitHub Action (`action.yml`)**: a target repository runs the audit with one `uses: chinchiang/MultiAgentGama@vX.Y.Z` line; inputs `target`, `mode`, `max-model-calls`, `max-files`, `changed-since`, `baseline`, `output` / `format`, `sarif`, `extra-args`, `python-version` and `fail-on` (`blocked` / `needs-fixes` / `inconclusive` / `never`); outputs `verdict`, `exit-code`, `report`, `sarif`; the report, SARIF and `.partial.json` are uploaded as an artifact. The package is installed from the same action ref via git (switchable to PyPI once published); actions are SHA-pinned
+
 ## [0.3.0] - 2026-10-09
 
 Design corrections against the OWASP Top 10 for LLM Applications 2026 and MITRE ATLAS: the white-box ensemble becomes Claude / DeepSeek / GLM / Gemini, with deterministic AI-security rules and trust-boundary controls.

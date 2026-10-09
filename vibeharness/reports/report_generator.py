@@ -90,6 +90,14 @@ class ReportGenerator:
             "BLOCKED_CRITICAL_RISK": "🔴 **FAIL: BLOCKED BY CRITICAL RISKS**",
         }.get(summary.overall_status, f"⚠️ **UNKNOWN STATUS: `{summary.overall_status}`**")
         md.append(f"### Verdict: {status_badge}\n")
+        if summary.baseline_path:
+            md.append(f"**Baseline**: `{self._cell(summary.baseline_path)}` — "
+                      f"{len(summary.baseline_suppressed)} known problem(s) reported but not counted in the verdict  ")
+            if summary.baseline_suppressed:
+                md.append("\n**Known from baseline (not counted):**")
+                for item in summary.baseline_suppressed:
+                    md.append(f"- `{self._cell(item.id)}` ({item.kind}): {markdown_safe(item.title)}")
+            md.append("")
         if summary.inconclusive_reasons:
             md.append("**Evidence gaps:**")
             for reason in summary.inconclusive_reasons:

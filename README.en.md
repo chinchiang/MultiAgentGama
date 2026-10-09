@@ -225,6 +225,7 @@ MultiAgentGama/
 ├── LICENSE                      # MIT license
 ├── SECURITY.md                  # Security policy: private vulnerability reporting
 ├── MANIFEST.in                  # Extra README / CHANGELOG / docs / config files included in the sdist
+├── action.yml                   # composite GitHub Action: one `uses: chinchiang/MultiAgentGama@vX.Y.Z` line runs the audit in a target repo
 ├── pyproject.toml               # Package metadata, the vibeharness entry point, pytest / ruff / mypy settings
 ├── requirements.txt             # Runtime dependencies
 ├── requirements-dev.txt         # Development dependencies (ruff, mypy, pytest-cov, build, pip-audit; pinned)
@@ -314,18 +315,29 @@ python main.py --target examples --output report.json --format json
 You can also pass `--sarif <path>` to emit a [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html) report alongside: confirmed white-box findings carry file/line locations (resolved from `line_number` or the symbol table), confirmed black-box breaches are error-level results (located at the attacked symbol when the attack vector names one), and deterministic AI-security rule hits use their own rules `vibeharness/VH-AI-001` … `vibeharness/VH-AI-009`, tagged with their OWASP, MITRE ATLAS, and CWE ids. Rule ids are stable (`vibeharness/whitebox-finding` / `vibeharness/blackbox-breach` / `vibeharness/VH-AI-00x`) and the run-specific finding/test ids live in `properties`, so renumbering between runs does not close and reopen Code Scanning alerts. Upload the SARIF to GitHub Code Scanning to surface defects in the repo's **Security** tab:
 
 ```yaml
-# Example .github/workflows/security.yml for the target project
-- run: pip install vibeharness-mas   # if published to PyPI; otherwise install the wheel from the GitHub Release or from source
-- run: vibeharness --target src --output report.md --sarif vibeharness.sarif
+# Example .github/workflows/security.yml for the target project: this repo ships a composite GitHub Action (action.yml)
+- uses: chinchiang/MultiAgentGama@v0.3.0      # installs the package at the same ref and runs the audit
+  with:
+    target: src
+    mode: hybrid
+    max-model-calls: "80"
+    changed-since: origin/main                 # PR checks: only files that changed (optional)
+    baseline: .vibeharness/baseline.json       # optional: only problems that are new fail the job
+    fail-on: needs-fixes                       # blocked | needs-fixes | inconclusive | never
   env:
     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
     DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
     GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 - uses: github/codeql-action/upload-sarif@v3
+  if: always()
   with:
     sarif_file: vibeharness.sarif
 ```
+
+The action's outputs are `verdict` (`READY_TO_SHIP` / `NEEDS_FIXES` / `BLOCKED_CRITICAL_RISK` / `INCONCLUSIVE`, or `ERROR` when the harness itself failed) and `exit-code`; the report, the SARIF and a crash's `.partial.json` are uploaded as the `vibeharness-report` artifact. Without the action, `pip install "git+https://github.com/chinchiang/MultiAgentGama@v0.3.0"` and call `vibeharness` directly.
+
+**Gating on new problems only (`--baseline`)**: keep one `--format json` report (for example committed as `.vibeharness/baseline.json`) and pass it with `--baseline`: confirmed findings, black-box breaches, probe failures and HIGH+ rule hits it already contains are still listed in the report's "Known from baseline" section and in the recommendations, but no longer count toward the verdict or the exit code, so CI fails only on problems that are new. The keys do not depend on run numbering (a finding is keyed by target-relative path + symbol + normalized title, a breach by the threat's STRIDE category + title + attack vector, a rule hit by rule + file + evidence without the line number, a probe by its symbol), so re-numbered model output or unrelated line shifts never turn an old problem into a new one. Every item in the JSON report carries a `fingerprint` field; reports from before 0.3.0 without it are recomputed. A crash's `.partial.json` cannot serve as a baseline.
 
 > Note: file paths in the SARIF are relativized against the root of the git repository containing `--target` (falling back to the `--target` directory outside a repository), so `--target src` still yields Code-Scanning-aligned paths such as `src/app.py`.
 

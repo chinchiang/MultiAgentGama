@@ -225,6 +225,7 @@ MultiAgentGama/
 ├── LICENSE                      # MIT 授權
 ├── SECURITY.md                  # 資安政策：弱點私密通報流程
 ├── MANIFEST.in                  # sdist 額外收錄的 README／CHANGELOG／docs／config 檔案
+├── action.yml                   # composite GitHub Action：目標專案一行引用即可執行稽核（uses: chinchiang/MultiAgentGama@vX.Y.Z）
 ├── pyproject.toml               # 套件中繼資料、vibeharness 指令進入點、pytest／ruff／mypy 設定
 ├── requirements.txt             # 執行期依賴
 ├── requirements-dev.txt         # 開發依賴（ruff、mypy、pytest-cov、build、pip-audit，版本鎖定）
@@ -314,18 +315,29 @@ python main.py --target examples --output report.json --format json
 另可加 `--sarif <路徑>` 一併輸出 [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html) 報告：白箱確認的 findings 會帶檔案/行號位置（依 `line_number` 或符號表解析），黑箱確認的資安突破列為 error 級結果（能從攻擊向量對應到符號時也帶位置）。規則 id 固定為 `vibeharness/whitebox-finding`／`vibeharness/blackbox-breach`，確定性 AI 安全規則則為 `vibeharness/VH-AI-001`～`009`（以 OWASP／ATLAS／CWE 標記 tags），本次執行的 finding／test id 放在 `properties`，因此重新編號不會讓 Code Scanning 的 alert 關掉又重開。SARIF 可上傳到 GitHub Code Scanning，讓缺陷直接顯示在 repo 的 **Security** 頁籤：
 
 ```yaml
-# 目標專案的 .github/workflows/security.yml 範例
-- run: pip install vibeharness-mas   # 若已發佈至 PyPI；否則從 GitHub Release 的 wheel 或原始碼安裝
-- run: vibeharness --target src --output report.md --sarif vibeharness.sarif
+# 目標專案的 .github/workflows/security.yml 範例：本 repo 提供 composite GitHub Action（action.yml）
+- uses: chinchiang/MultiAgentGama@v0.3.0      # 安裝同一個 ref 的套件並執行稽核
+  with:
+    target: src
+    mode: hybrid
+    max-model-calls: "80"
+    changed-since: origin/main                 # PR 檢查：只分析有變更的檔案（可省略）
+    baseline: .vibeharness/baseline.json       # 可選：只有「新出現」的問題才讓 job 失敗
+    fail-on: needs-fixes                       # blocked | needs-fixes | inconclusive | never
   env:
     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
     DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
     GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 - uses: github/codeql-action/upload-sarif@v3
+  if: always()
   with:
     sarif_file: vibeharness.sarif
 ```
+
+Action 的 outputs 有 `verdict`（`READY_TO_SHIP`／`NEEDS_FIXES`／`BLOCKED_CRITICAL_RISK`／`INCONCLUSIVE`，harness 本身失敗時為 `ERROR`）與 `exit-code`；報告、SARIF 與崩潰時的 `.partial.json` 會以 artifact `vibeharness-report` 上傳。不用 Action 的話，`pip install "git+https://github.com/chinchiang/MultiAgentGama@v0.3.0"` 後直接呼叫 `vibeharness` 即可。
+
+**只對新問題把關（`--baseline`）**：把一次 `--format json` 的報告存起來（例如提交到 repo 的 `.vibeharness/baseline.json`），之後以 `--baseline` 指定它：報告中已經存在的確認發現、黑箱突破、探針失敗與 HIGH 以上的規則命中仍會列在報告的「Known from baseline」清單與建議中，但不再計入判定與 exit code，只有新出現的問題會讓 CI 失敗。比對 key 與執行次序無關（finding 以檔案相對路徑＋符號＋標題正規化、突破以威脅的 STRIDE 分類＋標題＋攻擊向量、靜態命中以規則＋檔案＋證據但不含行號、探針以符號名），所以模型重新編號或無關的行數位移不會讓舊問題變新的。JSON 報告每個項目都帶 `fingerprint` 欄位；0.3.0 之前沒有該欄位的報告會自動重算。崩潰產生的 `.partial.json` 不能當 baseline。
 
 > 註：SARIF 中的檔案路徑以包含 `--target` 的 git repo 根目錄為基準做相對化（找不到 repo 時才以 `--target` 目錄為基準），所以 `--target src` 也會產生 `src/app.py` 這樣與 Code Scanning 對齊的路徑。
 
