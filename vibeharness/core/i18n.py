@@ -27,6 +27,13 @@ def en_only(text: str) -> str:
     return tail if sep else text
 
 
+def zh_only(text: str) -> str:
+    """取雙語字串的中文半（最後一個分隔符之前）；沒有分隔符就原樣回傳。
+    The Chinese half of a bilingual string (before the last separator); unchanged when there is none."""
+    head, sep, _tail = text.rpartition(SEP)
+    return head if sep else text
+
+
 def has_cjk(text: str) -> bool:
     """文字是否含有中日韓表意文字（供測試檢查雙語與提示詞純英文）。
     Whether the text contains CJK ideographs (tests use it to check bilingual output and English-only prompts)."""

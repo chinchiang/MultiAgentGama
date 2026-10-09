@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional, List
 import yaml
 
 from vibeharness.core.models import AgentCallRecord
-from vibeharness.core.i18n import SEP, bi, en_only
+from vibeharness.core.i18n import bi, en_only, zh_only
 from vibeharness.core.sanitize import clean_model_text, redact_secrets
 
 try:
@@ -60,12 +60,6 @@ UNCONFIGURED_ALIAS = "unconfigured"
 
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
-
-def _zh_only(text: str) -> str:
-    """雙語字串的中文半（最後一個分隔符之前）；沒有分隔符就原樣回傳。
-    The Chinese half of a bilingual string (before the last separator); unchanged when there is none."""
-    head, sep, _tail = text.rpartition(SEP)
-    return head if sep else text
 
 
 class LLMGatewayError(RuntimeError):
@@ -439,7 +433,7 @@ class LLMGateway:
                     # Reasoning models spend part of the budget thinking; say so instead of blaming the format
                     limit = self._max_output_tokens(model_info)
                     reason = bi(
-                        f"輸出在 max_output_tokens 上限（{limit}）被截斷；{_zh_only(reason)}。"
+                        f"輸出在 max_output_tokens 上限（{limit}）被截斷；{zh_only(reason)}。"
                         "請提高此模型的 max_output_tokens（推理 token 也計入此上限）",
                         f"output truncated at the max_output_tokens limit ({limit}); "
                         f"{en_only(reason)}. Raise max_output_tokens for this model (reasoning tokens count against it)"

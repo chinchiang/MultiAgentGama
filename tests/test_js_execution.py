@@ -21,7 +21,7 @@ from vibeharness.core.harness import VibeHarnessCommander
 from vibeharness.core.models import GeneratedTest, TestStatus
 from vibeharness.core.sandbox import (
     DEFAULT_DOCKER_NODE_IMAGE, MIN_NODE_VERSION, TIMEOUT_EXIT_CODE, NodeDockerSandbox, NodeSubprocessSandbox,
-    detect_node, node_test_command, parse_node_version,
+    SandboxUnavailableError, detect_node, node_test_command, parse_node_version,
 )
 from vibeharness.runners.test_executor import (
     TestSuiteExecutor, POC_HEADER_JS, REASON_NOT_RUN_CORRECTLY, REASON_TARGET_BROKEN,
@@ -416,11 +416,19 @@ def test_executor_without_js_runner_reports_every_js_test_as_not_run(tmp_path):
     assert results[1].status == TestStatus.PASSED
 
     def boom():
-        raise RuntimeError("docker image missing")
+        raise SandboxUnavailableError("docker image missing")
     executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=boom)
     results, _ = executor.execute_test_suite([_js_test("J", GOOD)], working_dir=str(tmp_path))
-    assert "RuntimeError: docker image missing" in results[0].failure_reason
-    assert executor.js_runner_unavailable_reason == "RuntimeError: docker image missing"
+    assert "SandboxUnavailableError: docker image missing" in results[0].failure_reason
+    assert executor.js_runner_unavailable_reason == "SandboxUnavailableError: docker image missing"
+
+    # 沙盒可用性以外的例外（程式缺陷、設定錯誤）照常拋出，不會被當成證據缺口吞掉
+    # Exceptions other than sandbox availability (bugs, configuration errors) propagate instead of becoming a gap
+    def bug():
+        raise RuntimeError("a bug in the factory")
+    executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=bug)
+    with pytest.raises(RuntimeError, match="a bug in the factory"):
+        executor.execute_test_suite([_js_test("J", GOOD)], working_dir=str(tmp_path))
 
     executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: None)
     results, _ = executor.execute_test_suite([_js_test("J", GOOD)], working_dir=str(tmp_path))
@@ -758,11 +766,29 @@ def test_other_languages_keep_the_static_only_gap(tmp_path):
 
 def test_harness_node_sandbox_provider_selection(tmp_path, monkeypatch):
     commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
-    monkeypatch.setattr("vibeharness.core.harness.detect_node", lambda node_bin: ("/usr/bin/node", (22, 9, 0), None))
+    # docker provider：用映像檔自帶的 Node，主機沒有 node 也能建；TS 支援看映像檔的版本
+    # docker provider: the image's own Node, built even without a host node; TS support follows the image's version
+    monkeypatch.setattr("vibeharness.core.harness.detect_node", lambda node_bin: (None, None, "no usable Node runtime found"))
+    monkeypatch.setattr(VibeHarnessCommander, "_docker_node_version", staticmethod(lambda image, docker_bin="docker": (22, 9, 0)))
     commander.sandbox_node_provider = "docker"
+    commander.ast_extractor.analyzed_files = ["/app/x.ts"]
     monkeypatch.setattr(NodeDockerSandbox, "_verify_available", lambda self: None)
     sandbox = commander._build_node_sandbox()
-    assert isinstance(sandbox, NodeDockerSandbox) and commander.node_runtime == "node v22.9.0"
+    assert isinstance(sandbox, NodeDockerSandbox) and sandbox.supports_typescript and sandbox.strip_types
+    assert commander.node_runtime == f"docker {DEFAULT_DOCKER_NODE_IMAGE} (node v22.9.0)"
+    assert commander.node_runtime_problem is None and commander.node_typescript_problem is None
+    # 映像檔版本查不到：假設可用；映像檔太舊：TS 列為問題 ／ unknown image version: assumed adequate; an old image: TS problem
+    monkeypatch.setattr(VibeHarnessCommander, "_docker_node_version", staticmethod(lambda image, docker_bin="docker": None))
+    assert commander._build_node_sandbox().supports_typescript and commander.node_runtime == f"docker {DEFAULT_DOCKER_NODE_IMAGE}"
+    monkeypatch.setattr(VibeHarnessCommander, "_docker_node_version", staticmethod(lambda image, docker_bin="docker": (20, 1, 0)))
+    assert not commander._build_node_sandbox().supports_typescript
+    assert "TypeScript tests need Node >= 22.6" in commander.node_typescript_problem
+    # 映像檔缺失：建構失敗，node_runtime 不得宣稱有執行環境 ／ missing image: construction fails, node_runtime must not claim one
+    commander.node_runtime = None
+    monkeypatch.setattr(NodeDockerSandbox, "_verify_available", lambda self: (_ for _ in ()).throw(SandboxUnavailableError("no image")))
+    with pytest.raises(SandboxUnavailableError):
+        commander._build_node_sandbox()
+    assert commander.node_runtime is None
     commander.sandbox_node_provider = "firecracker"
     with pytest.raises(ValueError, match="not implemented"):
         commander._build_node_sandbox()
@@ -772,3 +798,47 @@ def test_harness_node_sandbox_provider_selection(tmp_path, monkeypatch):
     sandbox = commander._build_node_sandbox()
     assert isinstance(sandbox, NodeSubprocessSandbox) and not sandbox.supports_typescript and not sandbox.strip_types
     assert "TypeScript tests need Node >= 22.6" in commander.node_typescript_problem
+
+
+def test_bad_node_settings_fail_at_start_up(tmp_path):
+    """sandbox_node_provider／sandbox_memory_mb 的設定錯誤在建構時就失敗（exit 5），不會在第一個 JS 測試才變成證據缺口。
+    Bad sandbox_node_provider / sandbox_memory_mb settings fail at construction (exit 5) instead of surfacing as an
+    evidence gap at the first JS test."""
+    import yaml
+    base = yaml.safe_load(open(CONFIG, encoding="utf-8"))
+    for key, value, match in (("sandbox_node_provider", "e2b", "not implemented"), ("sandbox_memory_mb", "abc", "sandbox_memory_mb")):
+        cfg = {**base, "global": {**base["global"], key: value}}
+        path = tmp_path / f"{key}.yaml"
+        path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+        with pytest.raises(Exception, match=match):
+            VibeHarnessCommander(config_path=str(path), execution_mode="mock")
+
+
+def test_breach_whose_body_mentions_a_target_syntax_error_stays_a_breach():
+    """assert.doesNotThrow 失敗時內文會提到目標拋出的 SyntaxError：那是斷言失敗（突破），不是 harness 錯誤。
+    When assert.doesNotThrow fails the body mentions the SyntaxError the target threw: that is an assertion failure
+    (a breach), not a harness error."""
+    case = _case("Got unwanted exception.\nActual message: \"Unexpected token\"",
+                 "Error [ERR_TEST_FAILURE]: Got unwanted exception.\n  cause: AssertionError [ERR_ASSERTION]: Got unwanted "
+                 "exception.\n  Actual message: \"Unexpected token\"\n      at TestContext.<anonymous> (file:///run/test_vh_000.mjs:7:10) {\n"
+                 "    actual: SyntaxError: Unexpected token u in JSON at position 0\n        at JSON.parse (<anonymous>)\n"
+                 "        at handler (file:///app/svc.mjs:3:15)\n    code: 'ERR_ASSERTION'\n  }")
+    assert not TestSuiteExecutor._js_is_harness_failure(case)
+    result = TestSuiteExecutor(sandbox=None)._aggregate(_js_test("BB", "x", test_type="blackbox_security"), "BB", [case])
+    assert result.status == TestStatus.FAILED and result.is_security_exploit_confirmed
+
+
+def test_action_extra_args_keep_quotes_and_do_not_expand_globs(tmp_path):
+    """action.yml 的 extra-args 切字：引號有效、glob 不對 workspace 展開（文件範例 --exclude 'tests/*' 必須可用）。
+    action.yml extra-args splitting: quotes work and globs are not expanded against the workspace (the documented
+    example --exclude 'tests/*' must work)."""
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash unavailable")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "a.py").write_text("", encoding="utf-8")
+    (tmp_path / "tests" / "b.py").write_text("", encoding="utf-8")
+    snippet = next(line.strip() for line in open("action.yml", encoding="utf-8") if line.strip().startswith("set -f; eval"))
+    out = subprocess.run([bash, "-c", snippet + '; printf "%s\\n" "${extra[@]}"'], cwd=tmp_path, capture_output=True,
+                         text=True, encoding="utf-8", env={**os.environ, "VH_EXTRA": "--exclude 'tests/*' --cache-dir .c"})
+    assert out.stdout.splitlines() == ["--exclude", "tests/*", "--cache-dir", ".c"]

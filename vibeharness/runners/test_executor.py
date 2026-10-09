@@ -6,7 +6,7 @@ import logging
 import xml.etree.ElementTree as ET
 from typing import Callable, List, Tuple, Optional, Dict, Set
 from vibeharness.core.models import GeneratedTest, TestExecutionResult, TestStatus
-from vibeharness.core.sandbox import LocalSubprocessSandbox, TIMEOUT_EXIT_CODE
+from vibeharness.core.sandbox import LocalSubprocessSandbox, SandboxUnavailableError, TIMEOUT_EXIT_CODE
 from vibeharness.core.codecheck import check_test_code_for
 from vibeharness.core.i18n import bi
 
@@ -103,7 +103,10 @@ class TestSuiteExecutor:
             else:
                 try:
                     self._js_sandbox = self._js_sandbox_factory()
-                except Exception as e:  # 缺少 docker 映像檔、壞掉的 node 執行檔：會揭露，但不致命 ／ a missing docker image, a broken node binary: disclosed, not fatal
+                except (SandboxUnavailableError, OSError) as e:
+                    # 缺少 docker 映像檔、壞掉的 node 執行檔：會揭露，但不致命；設定錯誤已在啟動時驗證，其餘例外照常拋出
+                    # a missing docker image, a broken node binary: disclosed, not fatal; configuration errors are
+                    # validated at start-up, any other exception propagates
                     self.js_runner_unavailable_reason = f"{type(e).__name__}: {e}"
                 if self._js_sandbox is None and not self.js_runner_unavailable_reason:
                     self.js_runner_unavailable_reason = REASON_NO_NODE_RUNTIME
@@ -639,10 +642,14 @@ class TestSuiteExecutor:
         該模組本身拋出的測試端 ReferenceError／TypeError。
         A node:test failure caused by the generated module (unresolvable import, syntax) or by a
         test-side ReferenceError/TypeError raised from the module itself."""
-        text = f"{case.get('message') or ''}\n{case.get('details') or ''}"
-        if any(marker in text for marker in _JS_HARNESS_MARKERS):
-            return True
+        # 只看 Node 回報的例外本身（cause 行或第一個 XError 行）：斷言失敗的內文可能提到目標拋出的
+        # SyntaxError（例如 assert.doesNotThrow 的 actual），整段比對會把真正的突破降級成 harness 錯誤
+        # Only the exception Node reports (the cause line or the first XError line): an assertion failure's body may
+        # mention a SyntaxError the target threw (e.g. assert.doesNotThrow's actual), and matching the whole body
+        # would downgrade a genuine breach to a harness error
         summary = TestSuiteExecutor._js_exception_summary(case)
+        if any(marker in summary for marker in _JS_HARNESS_MARKERS):
+            return True
         return summary.startswith(_JS_TEST_SIDE_ERRORS) and not TestSuiteExecutor._js_raised_in_target_code(case) \
             and bool(_V8_FRAME_RE.search(case.get("details") or ""))
 
@@ -665,9 +672,14 @@ class TestSuiteExecutor:
         cause = _JS_CAUSE_RE.search(details)
         if cause:
             return cause.group(1).strip().rstrip("{").strip()[:300]
-        line = _JS_ERROR_LINE_RE.search(details)
-        if line:
-            return line.group(1).strip()[:300]
+        # 檔案層級失敗的 junit 內文只有「Error: test failed」佔位行，真正的錯誤（例如 ERR_MODULE_NOT_FOUND）
+        # 在 runner 輸出裡；跳過佔位行，取第一個有內容的 XError 行
+        # A file-level failure's junit body only has the "Error: test failed" placeholder; the real error (e.g.
+        # ERR_MODULE_NOT_FOUND) is in the runner output, so skip the placeholder and take the first real XError line
+        for line in _JS_ERROR_LINE_RE.finditer(details):
+            text = line.group(1).strip()
+            if not text.startswith("Error: test failed"):
+                return text[:300]
         return (case.get("message") or "").strip()[:300]
 
     @staticmethod

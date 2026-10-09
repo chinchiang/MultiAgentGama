@@ -123,8 +123,10 @@ runs:
         [ -n "$VH_CHANGED_SINCE" ] && args+=(--changed-since "$VH_CHANGED_SINCE")
         [ -n "$VH_BASELINE" ] && args+=(--baseline "$VH_BASELINE")
         [ -n "$VH_SARIF" ] && args+=(--sarif "$VH_SARIF")
-        # shellcheck disable=SC2206
-        extra=($VH_EXTRA)
+        # extra-args 依 shell 規則切字（引號有效，例如 --exclude 'tests/*'），且 set -f 讓 glob 不會對 workspace 展開
+        # extra-args is split by shell rules (quotes work, e.g. --exclude 'tests/*') and set -f keeps globs from
+        # expanding against the workspace
+        set -f; eval "extra=($VH_EXTRA)"; set +f
         vibeharness "${args[@]}" "${extra[@]}"
         rc=$?
         set -e

@@ -25,7 +25,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 
 from pydantic import BaseModel, Field
 
-from vibeharness.core.i18n import bi
+from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.models import (
     BaselineSuppressedItem, ReviewFinding, StaticFinding, TestExecutionResult, ThreatItem,
 )
@@ -34,12 +34,16 @@ TOOL_NAME = "vibeharness-mas"
 
 
 def normalize(text: Optional[str]) -> str:
-    """模型文字的不分大小寫與標點形式，讓鍵在表面措辭改寫後仍存活。
-    Case/punctuation-insensitive form of model text, so keys survive cosmetic rewording."""
-    return " ".join(re.findall(r"[a-z0-9]+", (text or "").lower()))
+    """模型文字的不分大小寫與標點形式，讓鍵在表面措辭改寫後仍存活。任何文字的字母與數字都算
+    （中文標題各自不同，不會塌成空字串）；`bi()` 產生的雙語字串只取英文半，所以 0.3.0 的鍵不變。
+    Case/punctuation-insensitive form of model text, so keys survive cosmetic rewording. Letters and digits of
+    any script count (Chinese titles stay distinct instead of collapsing to ""); a bilingual `bi()` string
+    contributes its English half only, so keys from 0.3.0 are unchanged."""
+    return " ".join(re.findall(r"[^\W_]+", en_only(text or "").lower()))
 
 
 def fingerprint(*parts: str) -> str:
+    """SARIF partialFingerprints 與基準線鍵共用的雜湊 ／ The hash shared by SARIF partialFingerprints and baseline keys."""
     return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
 
 
@@ -138,15 +142,12 @@ def _keys_from_report(payload: Dict[str, Any]) -> Baseline:
             except Exception:
                 continue
         baseline.static.add(key)
+    # 已確認的發現本身不會決定判定，只有「其測試失敗」才會：所以只有 FAILED 的白箱結果（經其發現識別）
+    # 進基準線；上次通過（防線守住）的發現這次失敗就是新問題，不能被壓下
+    # A confirmed finding never decides the verdict on its own, only a FAILED test for it does: so only FAILED
+    # white-box results (keyed by their finding) seed the baseline; a finding whose test passed last time and
+    # fails now is a new problem and must not be suppressed
     debate = (payload.get("whitebox") or {}).get("debate") if isinstance(payload.get("whitebox"), dict) else {}
-    for item in _dicts((debate or {}).get("confirmed_findings")):
-        key = item.get("fingerprint")
-        if not isinstance(key, str):
-            try:
-                key = finding_key(ReviewFinding(**item), target)
-            except Exception:
-                continue
-        baseline.findings.add(key)
     findings_by_id: Dict[str, ReviewFinding] = {}
     for item in _dicts((debate or {}).get("confirmed_findings")):
         try:

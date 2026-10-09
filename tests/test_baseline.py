@@ -104,10 +104,16 @@ def test_a_report_without_fingerprint_fields_is_recomputed(tmp_path):
     static = StaticFinding(rule_id="VH-AI-007", title="t", severity=FindingSeverity.HIGH,
                            file_path=os.path.join(EXAMPLES, "m.py"), line_number=3, evidence="aws-access-key literal")
     probe = TestExecutionResult(test_id="WB-PROBE-01", test_type="whitebox_probe", status=TestStatus.FAILED, source_ref="get_user_profile")
+    failed_for_finding = TestExecutionResult(test_id="WB-TEST-01", test_type="whitebox_unit", status=TestStatus.FAILED,
+                                             source_ref=finding.finding_id)
+    defended = finding.model_copy(update={"finding_id": "WB-CLA-02", "title": "a defended finding"})
+    passed_for_defended = TestExecutionResult(test_id="WB-TEST-02", test_type="whitebox_unit", status=TestStatus.PASSED,
+                                              source_ref=defended.finding_id)
     payload = {
         "tool": "vibeharness-mas", "schema_version": "1", "target_path": EXAMPLES,
         "summary": {"static_findings": [static.model_dump()], "run": {"generated_at": "2026-10-09T00:00:00+00:00"}},
-        "whitebox": {"debate": {"confirmed_findings": [finding.model_dump()]}, "test_results": [probe.model_dump()]},
+        "whitebox": {"debate": {"confirmed_findings": [finding.model_dump(), defended.model_dump()]},
+                     "test_results": [probe.model_dump(), failed_for_finding.model_dump(), passed_for_defended.model_dump()]},
         "threat_model": {"threats": [threat.model_dump()]},
         "blackbox_test_results": [breach.model_dump()],
     }
@@ -116,6 +122,9 @@ def test_a_report_without_fingerprint_fields_is_recomputed(tmp_path):
     loaded = bl.load_baseline(str(path))
     assert loaded.generated_at == "2026-10-09T00:00:00+00:00" and loaded.size == 4
     assert bl.finding_key(finding, EXAMPLES) in loaded.findings and bl.probe_key(probe) in loaded.findings
+    # 上次測試通過（防線守住）的確認發現不進基準線：它這次若失敗就是新問題
+    # A confirmed finding whose test passed (boundary defended) is not seeded: a failure for it next time is new
+    assert bl.finding_key(defended, EXAMPLES) not in loaded.findings
     assert bl.static_key(static, EXAMPLES) in loaded.static
     assert bl.breach_key(breach, threat) in loaded.breaches
 
@@ -206,3 +215,27 @@ def test_composite_action_is_well_formed():
     steps = action["runs"]["steps"]
     assert all("@" in s["uses"] and len(s["uses"].split("@")[1].split()[0]) == 40 for s in steps if "uses" in s), "actions must be SHA-pinned"
     assert any(s.get("id") == "audit" for s in steps)
+
+
+def test_keys_distinguish_cjk_titles_and_ignore_the_chinese_half_of_bilingual_text():
+    """中文標題各自不同（不會塌成空字串而共用一個鍵）；`bi()` 字串只取英文半，所以 0.3.0 的鍵不變。
+    CJK titles stay distinct (they no longer collapse to "" and share one key); a `bi()` string is keyed by its
+    English half, so keys from 0.3.0 are unchanged."""
+    from vibeharness.core.i18n import bi
+    t1 = _threat().model_copy(update={"title": "大量指派管理員欄位"})
+    t2 = _threat().model_copy(update={"title": "跨租戶資料竄改"})
+    breach = TestExecutionResult(test_id="BB-TEST-THREAT-01", test_type="blackbox_security", status=TestStatus.FAILED,
+                                 is_security_exploit_confirmed=True, source_ref="THREAT-01")
+    assert bl.breach_key(breach, t1) != bl.breach_key(breach, t2)
+    assert bl.normalize("大量指派管理員欄位") != "" and bl.normalize("Mass_Assignment, v2!") == "mass assignment v2"
+    plain = _threat().model_copy(update={"title": "Mass assignment of admin fields"})
+    bilingual = _threat().model_copy(update={"title": bi("大量指派管理員欄位", "Mass assignment of admin fields")})
+    assert bl.breach_key(breach, plain) == bl.breach_key(breach, bilingual)
+
+
+def test_sarif_fingerprints_use_the_same_helpers_as_the_baseline():
+    """SARIF 的 partialFingerprints 與基準線鍵共用同一套 normalize／fingerprint，不會各自漂移。
+    SARIF partialFingerprints and baseline keys share one normalize / fingerprint pair, so they cannot drift apart."""
+    from vibeharness.reports import report_generator as rg
+    assert rg.normalize is bl.normalize and rg.fingerprint is bl.fingerprint
+    assert not hasattr(rg.ReportGenerator, "_normalize") and not hasattr(rg.ReportGenerator, "_fingerprint")

@@ -1,4 +1,3 @@
-import hashlib
 import html
 import json
 import os
@@ -17,6 +16,7 @@ from vibeharness.core.models import (
     FindingSeverity,
     StaticFinding
 )
+from vibeharness.core.baseline import fingerprint, normalize
 from vibeharness.core.i18n import bi
 from vibeharness.core.sanitize import clean_model_text, markdown_safe
 
@@ -421,7 +421,7 @@ class ReportGenerator:
                 "ruleIndex": idx,
                 "level": self._sarif_level(sf.severity),
                 "message": {"text": f"{sf.title}: {clean_model_text(sf.evidence)}" if sf.evidence else sf.title},
-                "partialFingerprints": {"vibeharness/v1": self._fingerprint(uri or "", sf.rule_id, str(sf.line_number))},
+                "partialFingerprints": {"vibeharness/v1": fingerprint(uri or "", sf.rule_id, str(sf.line_number))},
                 "properties": {"severity": sf.severity.value, "owasp": sf.owasp_mapping or "",
                                "atlas": sf.atlas_mapping or "", "cwe": sf.cwe or "", "deterministic": True},
             }
@@ -460,8 +460,8 @@ class ReportGenerator:
                 "ruleIndex": rule_index[SARIF_RULE_WHITEBOX],
                 "level": level,
                 "message": {"text": desc},
-                "partialFingerprints": {"vibeharness/v1": self._fingerprint(
-                    uri or "", f.symbol_name or "", self._normalize(f.title)
+                "partialFingerprints": {"vibeharness/v1": fingerprint(
+                    uri or "", f.symbol_name or "", normalize(f.title)
                 )},
                 "properties": {
                     "findingId": f.finding_id,
@@ -507,8 +507,8 @@ class ReportGenerator:
                 "ruleIndex": rule_index[SARIF_RULE_BLACKBOX],
                 "level": "error",
                 "message": {"text": clean_model_text(text)},
-                "partialFingerprints": {"vibeharness/v1": self._fingerprint(
-                    *((threat.stride_category.value, self._normalize(threat.title), self._normalize(threat.attack_vector))
+                "partialFingerprints": {"vibeharness/v1": fingerprint(
+                    *((threat.stride_category.value, normalize(threat.title), normalize(threat.attack_vector))
                       if threat else (r.test_id, r.source_ref or ""))
                 )},
                 "properties": {"testId": r.test_id, "threatId": r.source_ref or "", "security_breach": True,
@@ -553,11 +553,6 @@ class ReportGenerator:
             }
         }
 
-    @staticmethod
-    def _normalize(text: str) -> str:
-        """模型文字的不分大小寫與標點的形式，讓指紋能撐過表面上的改寫。
-        Case/punctuation-insensitive form of model text, so fingerprints survive cosmetic rewording."""
-        return " ".join(re.findall(r"[a-z0-9]+", (text or "").lower()))
 
     @staticmethod
     def _threat_symbol(threat: ThreatItem, symbols: Optional[List[CodeSymbol]]) -> Optional[CodeSymbol]:
@@ -657,9 +652,6 @@ class ReportGenerator:
                 return max(1, candidates[0].line_start)
         return 1
 
-    @staticmethod
-    def _fingerprint(*parts: str) -> str:
-        return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
 
     @staticmethod
     def _status_label(status: TestStatus, failed_label: str = STATUS_FAILED) -> str:

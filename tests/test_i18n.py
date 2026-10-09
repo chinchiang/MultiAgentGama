@@ -319,3 +319,12 @@ def test_every_comment_line_is_bilingual():
             if not covered:
                 offenders.append(f"{os.path.relpath(path, REPO_ROOT)}:{lineno}: {text.strip()[:80]}")
     assert offenders == [], "\n".join(offenders)
+
+
+def test_zh_only_mirrors_en_only():
+    """`zh_only` 取中文半，與 `en_only` 成對；沒有分隔符時原樣回傳。
+    `zh_only` returns the Chinese half, the counterpart of `en_only`; text without a separator is unchanged."""
+    from vibeharness.core.i18n import bi, en_only, zh_only
+    text = bi("中文", "English")
+    assert zh_only(text) == "中文" and en_only(text) == "English"
+    assert zh_only("plain") == "plain"
