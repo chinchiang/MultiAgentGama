@@ -146,7 +146,7 @@ flowchart TD
 
 ### Phase 6：閘門與報告（`vibeharness/core/harness.py:567-833`）
 
-- 收集 20 項 evidence gap（第 10 章），有 `--baseline` 時先用 `compare_with_baseline` 把已知問題從 blocking 證據中剔除（`:706-728`，第 10.5 節），判定，產生建議，用 `_target_revision`（`:180-188`）取目標的 git commit 與 dirty 狀態組 `RunMetadata`（`:750-762`），組 `VibeHarnessSummary`，寫出 Markdown 或 JSON（JSON 另經 `annotate_report_payload` 加 `fingerprint`，`:804-810`），另可寫 SARIF。
+- 收集 20 項 evidence gap（第 10 章），有 `--baseline` 時先用 `compare_with_baseline`（`:710-715`，§10.5）把已知問題從 blocking 證據中剔除（`:706-728`，第 10.5 節），判定，產生建議，用 `_target_revision`（`:180-188`）取目標的 git commit 與 dirty 狀態組 `RunMetadata`（`:750-762`），組 `VibeHarnessSummary`，寫出 Markdown 或 JSON（JSON 另經 `annotate_report_payload` 加 `fingerprint`，`:804-810`），另可寫 SARIF。
 - SARIF 不帶測試程式碼（`vibeharness/core/harness.py:802-803`、`:819-820`）；Markdown 與 JSON 會。
 
 ### 失敗處理的共同模式

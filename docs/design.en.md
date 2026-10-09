@@ -146,7 +146,7 @@ Every model call goes through `LLMGateway.generate`; every generated test goes t
 
 ### Phase 6: gate and reports (`vibeharness/core/harness.py:567-833`)
 
-- Collect the 20 evidence gaps (chapter 10); with `--baseline`, first remove the known problems from the blocking evidence through `compare_with_baseline` (`:275-321`, section 10.5); decide; build recommendations; take the target's git commit and dirty state with `_target_revision` (`:180-188`) into `RunMetadata` (`:750-762`); assemble `VibeHarnessSummary`; write Markdown or JSON (JSON additionally gets `fingerprint` fields through `annotate_report_payload`, `:804-810`), optionally SARIF.
+- Collect the 20 evidence gaps (chapter 10); with `--baseline`, first remove the known problems from the blocking evidence through `compare_with_baseline` (`:710-715`, section 10.5); decide; build recommendations; take the target's git commit and dirty state with `_target_revision` (`:180-188`) into `RunMetadata` (`:750-762`); assemble `VibeHarnessSummary`; write Markdown or JSON (JSON additionally gets `fingerprint` fields through `annotate_report_payload`, `:804-810`), optionally SARIF.
 - SARIF carries no test code (`vibeharness/core/harness.py:802-803`, `:819-820`); Markdown and JSON do.
 
 ### The shared failure-handling pattern
