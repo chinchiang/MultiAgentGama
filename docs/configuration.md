@@ -42,6 +42,7 @@ CLI 啟動時可用 `--config <路徑>` 改用其他設定檔、`--mode` 覆蓋 
 | `mutation_max_mutants` | `20` | 單次執行的變異體上限（≥ 1）；超過時截斷並列為證據缺口。CLI `--mutation-max-mutants` 可覆蓋 |
 | `mutation_timeout_seconds` | 同 `per_test_timeout_seconds` | 每個變異體那一批沙盒的逾時（秒）；逾時視為殺死 |
 | `mutation_min_score` | `70` | 分數（百分比，0–100）低於此值就列為證據缺口，不會造成 `NEEDS_FIXES` |
+| `mutation_max_copy_mb` | `200` | 暫存複本的大小上限（MB，≥ 1）。複本略過與符號擷取相同的目錄（`SKIPPED_DIRS`、點開頭）、位元組碼與指向目錄的符號連結；超過上限就不執行並列為證據缺口。單一檔案目標會以所在目錄為工作目錄，特別容易碰到 |
 
 ### `execution_mode` 行為
 

@@ -27,7 +27,7 @@ Reviewing such code with a single LLM has three problems: the model presents hyp
 
 Six principles run through every module; each later chapter points to where they land:
 
-1. **Executed evidence decides.** Model findings and modeled threats are hypotheses. Only tests that actually ran, or deterministic rules that involve no model, can fail or block the gate (`vibeharness/core/harness.py:810-817`).
+1. **Executed evidence decides.** Model findings and modeled threats are hypotheses. Only tests that actually ran, or deterministic rules that involve no model, can fail or block the gate (`vibeharness/core/harness.py:813-820`).
 2. **Evidence gaps fail closed.** Anything that makes the verdict untrustworthy (the simulation engine was used, model output was invalid, tests did not run, threats were not tested, files were not analyzed) is recorded as an evidence gap and the verdict is at best `INCONCLUSIVE` (exit 3); an unknown verdict string also exits 3 (`vibeharness/cli.py:52-70`).
 3. **Heterogeneous models for de-biasing, no single arbiter.** Four model families review independently; each finding is voted on by the models that did not report it, and no model judges its own finding (`vibeharness/agents/whitebox/debater.py:71-81`).
 4. **Threat modeling first.** Black-box tests are derived item by item from a STRIDE/OWASP threat matrix, never from blind brute force.
@@ -111,56 +111,56 @@ Every model call goes through `LLMGateway.generate`; every generated test goes t
 
 ## 3. Pipeline
 
-`VibeHarnessCommander.run_full_pipeline` (`vibeharness/core/harness.py:402-928`) is six linear phases with no state-machine branches or rollbacks; the whole body sits in one `try`, so any exception or Ctrl-C writes a partial report before propagating (see the end of this chapter). Each phase's inputs, outputs and failure handling:
+`VibeHarnessCommander.run_full_pipeline` (`vibeharness/core/harness.py:404-931`) is six linear phases with no state-machine branches or rollbacks; the whole body sits in one `try`, so any exception or Ctrl-C writes a partial report before propagating (see the end of this chapter). Each phase's inputs, outputs and failure handling:
 
-### Phase 1: symbol extraction and deterministic rules (`vibeharness/core/harness.py:447-485`)
+### Phase 1: symbol extraction and deterministic rules (`vibeharness/core/harness.py:449-487`)
 
 - `select_symbols` (`vibeharness/core/harness.py:148-166`) calls `ASTExtractor.parse_directory(target, max_files, include, exclude, only_files, max_file_bytes)`, which walks the target, skipping dot-directories and `SKIPPED_DIRS` (`venv`, `__pycache__`, `node_modules`, `dist`, `build`, `site-packages`); directories and file names are sorted, so the result is deterministic (`vibeharness/agents/whitebox/ast_extractor.py:85-145`). Files beyond `max_files` go to `skipped_files`, unparseable files to `parse_failures`, analyzed files to `analyzed_files`.
 - **File selection**: `--include` / `--exclude` (or `global.include` / `exclude` in the config) are fnmatch-ed by `_selected` (`vibeharness/agents/whitebox/ast_extractor.py:148-157`) against the relative path or the file name, exclude winning; `--changed-since <ref>` has `changed_files` (`vibeharness/core/harness.py:201-221`) ask git for the files changed relative to that ref (committed, staged, unstaged and untracked) and passes them as `only_files`; an unresolvable ref or a target outside a repository is a `ValueError` (exit 5). Filtered-out files are only counted in `filtered_out`, never an evidence gap (the user asked). Files above `max_file_bytes` (default 1 MB) go to `oversized_files` through `_too_large` (`vibeharness/agents/whitebox/ast_extractor.py:160-164`) and are evidence gap #10. The filters applied are printed on the console and stored in `RunMetadata.file_filters`.
-- For a single-file target, `work_dir` is the containing directory (`work_dir_for`, `vibeharness/core/harness.py:143-146`, called at `:454`); tests and imports are rooted there.
-- Detected languages are sorted; with none detected the default is `["Python"]` (`vibeharness/core/harness.py:463`).
-- `AISecurityStaticScanner.scan_files(analyzed_files)` runs before any model sees the code (`vibeharness/core/harness.py:472`), so prompt injection cannot affect it. It also yields `ai_components` (the AI SDKs the target imports), which decides whether the OWASP LLM Top 10 is applied later.
+- For a single-file target, `work_dir` is the containing directory (`work_dir_for`, `vibeharness/core/harness.py:143-146`, called at `:456`); tests and imports are rooted there.
+- Detected languages are sorted; with none detected the default is `["Python"]` (`vibeharness/core/harness.py:465`).
+- `AISecurityStaticScanner.scan_files(analyzed_files)` runs before any model sees the code (`vibeharness/core/harness.py:474`), so prompt injection cannot affect it. It also yields `ai_components` (the AI SDKs the target imports), which decides whether the OWASP LLM Top 10 is applied later.
 
-### Phase 2: multi-model review, dedup, cross-verification (`vibeharness/core/harness.py:487-517`)
+### Phase 2: multi-model review, dedup, cross-verification (`vibeharness/core/harness.py:489-519`)
 
 - `review_symbols` batches the symbols and calls the model in parallel for every reviewer × batch.
 - `deduplicate_findings` merges reports of the same defect and records the other models in `corroborating_models`.
 - `MultiModelDebater.arbitrate` has the non-author models vote and produces a `MultiModelDebateResult`.
-- When the reviewers' `distinct_models` number fewer than two, the console warns (`vibeharness/core/harness.py:494-497`) and it is also an evidence gap (section 10.2, #7): copies of one model agreeing is consistency, not corroboration.
+- When the reviewers' `distinct_models` number fewer than two, the console warns (`vibeharness/core/harness.py:496-499`) and it is also an evidence gap (section 10.2, #7): copies of one model agreeing is consistency, not corroboration.
 
-### Phase 3: white-box test generation and execution (`vibeharness/core/harness.py:519-545`)
+### Phase 3: white-box test generation and execution (`vibeharness/core/harness.py:521-547`)
 
 - One test per `confirmed_findings` entry (including undecided ties); the language of the finding's file (`language_for_file`) decides whether the prompt asks for a pytest or a `node:test` module and is stored in `GeneratedTest.language`; findings with no usable model test are recorded in `findings_without_model_tests` and offline probes (Python only) are added.
 - `execute_test_suite(..., collect_coverage=True)` returns each test's result and line coverage (Python only; JS tests run one by one in the Node sandbox, section 9.5). Coverage is informational and never affects the verdict.
-- `wb_errored` counts both `ERROR` and `SKIPPED` (`vibeharness/core/harness.py:537`).
+- `wb_errored` counts both `ERROR` and `SKIPPED` (`vibeharness/core/harness.py:539`).
 
-### Phase 3.5: mutation testing (optional, `vibeharness/core/harness.py:547-572`; the core is `vibeharness/core/mutation.py`)
+### Phase 3.5: mutation testing (optional, `vibeharness/core/harness.py:549-575`; the core is `vibeharness/core/mutation.py`)
 
-Off by default. The switch resolves as `--mutation` / `--no-mutation` (wins) > `global.mutation_testing` > off; the final value and its source (`cli` / `config` / `default`) are recorded in `RunMetadata.mutation_enabled` / `mutation_source` (`set_mutation`, `vibeharness/core/harness.py:241`). Coverage only measures which lines ran; mutation testing makes small deterministic changes to check that passing tests really fail when behaviour changes, and calls no model.
+Off by default. The switch resolves as `--mutation` / `--no-mutation` (wins) > `global.mutation_testing` > off; the final value and its source (`cli` / `config` / `default`) are recorded in `RunMetadata.mutation_enabled` / `mutation_source` (`set_mutation`, `vibeharness/core/harness.py:243`). Coverage only measures which lines ran; mutation testing makes small deterministic changes to check that passing tests really fail when behaviour changes, and calls no model.
 
 - **Candidate tests**: `eligible_tests` keeps only tests that `PASSED`, have `language == "python"` and a `test_type` of `whitebox_unit` / `whitebox_property`. Probes (`whitebox_probe`) swallow exceptions and nearly always pass, so they carry no signal and are excluded. The target function is found by mapping the test's `source_ref` back to `confirmed_findings` (`file_path` / `symbol_name`); non-`.py` files are skipped.
 - **Mutation sites**: `find_mutation_sites` changes a single token inside a function body only: arithmetic `+ - * /`, comparison `== != < <= > >=`, boolean `and` / `or`, removing `not`, constants `True` / `False` and `0` / `1`; docstrings and `__init__` are left alone. AST positions are UTF-8 byte offsets, so token positions come from `tokenize` (character columns) instead; `ast.unparse` is deliberately not used (it drops comments and formatting). `apply_mutation` splices the token into the original text and re-parses; a result that does not parse, or whose AST equals the original (an equivalent mutant), is dropped.
 - **Determinism and cap**: `select_sites` takes sites round-robin over the sorted (file, symbol) groups with no randomness; beyond `mutation_max_mutants` (default 20) the list is cut and flagged `truncated`.
-- **Isolation**: `run_mutation_testing` copies the target once into a scratch directory (skipping `.git`, `node_modules`, `__pycache__`), overwrites only the one file in the copy per mutant and restores it in `finally`; the user's target is never written and the scratch directory is removed at the end. Absolute paths embedded in test bodies are rewritten to the copy with `rewrite_host_paths`, otherwise a mutant would silently test the unmutated original. A baseline run on the unmutated copy comes first; if the tests do not all pass, the step is skipped with a reason.
+- **Isolation**: `run_mutation_testing` copies the target once into a scratch directory (leaving out the `SKIPPED_DIRS` and dot-directories symbol extraction skips, bytecode and symlinks to directories; the size is estimated first and above `mutation_max_copy_mb`, default 200 MB, the step is skipped with a reason), overwrites only the one file in the copy per mutant and restores it in `finally`; the user's target is never written and the scratch directory is removed at the end. Absolute paths embedded in test bodies are rewritten to the copy with `rewrite_host_paths`, otherwise a mutant would silently test the unmutated original. A baseline run on the unmutated copy comes first; if the tests do not all pass, the step is skipped with a reason.
 - **Verdict per mutant**: one sandbox batch per mutant (`TestSuiteExecutor.run_mutant_batch`, `vibeharness/runners/test_executor.py:155`; it does not use the re-run-test-by-test path after a timeout). Any failing test or a batch timeout means killed; all passing means survived; no report, an unparsable report, errors or a harness failure such as NameError / ImportError means invalid and is not scored. Score = killed ÷ (killed + survived), rounded to one decimal; equivalent mutants cannot be decided, so it is a lower bound.
 - **Effect on the gate**: evidence gaps only (section 10.2 #21); never `NEEDS_FIXES` / `BLOCKED_CRITICAL_RISK`. One gap each when the score is below `mutation_min_score` (default 70), the list was truncated, or it was requested but has no conclusion (no eligible test, copy failed, the whole step crashed). When off, nothing is added and behaviour matches 0.4.0. Surviving mutants also enter the recommendations (`file:line`).
 - **Report**: a Mutation Score row in the metrics table (N/A when not run) and a "Surviving Mutants" section; JSON carries `summary.mutation`; SARIF and the baseline v1 do not include it. `--estimate` lists the mutant ceiling when on (one sandbox batch each).
 - **Limits**: Python only; no JS/TS and no per-operator statistics yet; Docker on macOS or a remote daemon may be unable to mount `/tmp`.
 
-### Phase 4: threat modeling (`vibeharness/core/harness.py:574-592`)
+### Phase 4: threat modeling (`vibeharness/core/harness.py:577-595`)
 
 - `entrypoints` are the detected routes, or `["HTTP/REST Endpoints"]` when there are none.
 - Symbols are batched (routes first) and modeled in parallel; threats from all batches are merged and de-duplicated.
 
-### Phase 5: attack synthesis and execution (`vibeharness/core/harness.py:594-629`)
+### Phase 5: attack synthesis and execution (`vibeharness/core/harness.py:597-632`)
 
-- One test per threat; a threat whose synthesis failed, returned empty code, or targeted a host other than the target gets no test and lands in `untested_threats` (`vibeharness/core/harness.py:620-621`).
+- One test per threat; a threat whose synthesis failed, returned empty code, or targeted a host other than the target gets no test and lands in `untested_threats` (`vibeharness/core/harness.py:623-624`).
 - Results fall into four classes: `bb_passed` (defense held), `bb_breaches` (`is_security_exploit_confirmed`), `bb_failed_unclassified` (FAILED but not matching the exploit predicate), `bb_errored`.
 
-### Phase 6: gate and reports (`vibeharness/core/harness.py:631-928`)
+### Phase 6: gate and reports (`vibeharness/core/harness.py:634-931`)
 
-- Collect the 21 evidence gaps (chapter 10); with `--baseline`, first remove the known problems from the blocking evidence through `compare_with_baseline` (`:791-795`, section 10.5); decide; build recommendations; take the target's git commit and dirty state with `_target_revision` (`:191-199`) into `RunMetadata` (`:839-853`); assemble `VibeHarnessSummary`; write Markdown or JSON (JSON additionally gets `fingerprint` fields through `annotate_report_payload`, `:896-902`), optionally SARIF.
-- SARIF carries no test code (`vibeharness/core/harness.py:894-895`, `:911-912`); Markdown and JSON do.
+- Collect the 21 evidence gaps (chapter 10); with `--baseline`, first remove the known problems from the blocking evidence through `compare_with_baseline` (`:794-798`, section 10.5); decide; build recommendations; take the target's git commit and dirty state with `_target_revision` (`:191-199`) into `RunMetadata` (`:842-856`); assemble `VibeHarnessSummary`; write Markdown or JSON (JSON additionally gets `fingerprint` fields through `annotate_report_payload`, `:899-905`), optionally SARIF.
+- SARIF carries no test code (`vibeharness/core/harness.py:897-898`, `:914-915`); Markdown and JSON do.
 
 ### The shared failure-handling pattern
 
@@ -169,7 +169,7 @@ Every model-calling phase follows the same rules (`vibeharness/agents/whitebox/m
 - `LLMGatewayError` propagates. A live-mode failure must be loud; the CLI exits 4.
 - Any other exception is logged, the batch becomes an empty result, and the other batches are unaffected. Review and verification batches additionally call `gateway.record_failure`, booking the crash as an `invalid` call (`vibeharness/core/llm_gateway.py:563-574`), so the missing batch becomes evidence gap #3 instead of reading as "nothing found".
 - Empty results surface later as evidence gaps (no tests, untested threats), never as a pass.
-- **Partial report on crash**: any exception or Ctrl-C in the six phases first has `_write_partial_report` (`vibeharness/core/harness.py:930-964`) write the completed phases to `<output>.partial.json` (`partial: true`, `schema_version`, `phase_reached`, the error type and its `_safe_reason`-redacted message, the full `agent_calls`, and whatever each finished phase put into `progress`: static hits, findings, the debate result, white-box tests and results, threats, black-box tests and results), then `raise`s (`:926-928`); paid-for model answers are not lost. The CLI exits with `INTERRUPTED_EXIT_CODE` 130 on Ctrl-C and says only a partial report exists (`vibeharness/cli.py:310-314`); any other crash prints the traceback and exits 5. A partial report cannot serve as a `--baseline`.
+- **Partial report on crash**: any exception or Ctrl-C in the six phases first has `_write_partial_report` (`vibeharness/core/harness.py:933-967`) write the completed phases to `<output>.partial.json` (`partial: true`, `schema_version`, `phase_reached`, the error type and its `_safe_reason`-redacted message, the full `agent_calls`, and whatever each finished phase put into `progress`: static hits, findings, the debate result, white-box tests and results, threats, black-box tests and results), then `raise`s (`:929-931`); paid-for model answers are not lost. The CLI exits with `INTERRUPTED_EXIT_CODE` 130 on Ctrl-C and says only a partial report exists (`vibeharness/cli.py:310-314`); any other crash prints the traceback and exits 5. A partial report cannot serve as a `--baseline`.
 
 ---
 
@@ -198,7 +198,7 @@ All types live in `vibeharness/core/models.py` as Pydantic `BaseModel`s. The JSO
 
 Two design points:
 
-- `confirmed_whitebox_bugs` is `len(confirmed_findings) - undecided_count` (`vibeharness/core/harness.py:859`). Tie-kept findings are in `confirmed_findings` but are not "majority-confirmed".
+- `confirmed_whitebox_bugs` is `len(confirmed_findings) - undecided_count` (`vibeharness/core/harness.py:862`). Tie-kept findings are in `confirmed_findings` but are not "majority-confirmed".
 - `text_or(value, default)` (`vibeharness/core/models.py:7-14`) handles a model answering `"title": null`: only a non-blank string is accepted, anything else becomes the default. Every place that parses model output uses it.
 
 ---
@@ -214,7 +214,7 @@ Two design points:
 1. `execution_mode == "mock"`
 2. `litellm` is not installed
 3. no credentials (`is_live_configured`: an `aws_profile_name` counts, otherwise the environment variable named by `api_key_env`)
-4. the response cache misses (`:511-517`; a hit needs no budget, section 5.5) and the `max_model_calls` budget is exhausted (`_reserve_live_call`, `vibeharness/core/llm_gateway.py:268-275`, claims the slot under a `threading.Lock` before the real call)
+4. the response cache misses (`:513-519`; a hit needs no budget, section 5.5) and the `max_model_calls` budget is exhausted (`_reserve_live_call`, `vibeharness/core/llm_gateway.py:268-275`, claims the slot under a `threading.Lock` before the real call)
 
 | Mode | Any of the above holds | The real call fails |
 | :--- | :--- | :--- |
@@ -230,14 +230,14 @@ Every call writes an `AgentCallRecord`:
 - `simulated`: the simulation engine was used; `reason` says why.
 - `invalid`: the model answered but the output was unusable. `generate` returns a dict holding only `_provenance`, so the caller gets no data. The `reason` is specific: an empty response (with `finish_reason`, e.g. `content_filter`), or "輸出在 max_output_tokens 上限（N）被截斷；… ／ output truncated at the max_output_tokens limit (N); …" when `finish_reason == "length"` (`vibeharness/core/llm_gateway.py:425-440`). When a review or verification batch crashes outside the gateway, the caller books an `invalid` record through `record_failure` (`:563-574`) whose `reason` starts with `REASON_CALL_CRASHED` ("代理呼叫在產生輸出前就當掉 ／ agent call crashed before producing output", `:40`) and carries the exception.
 
-- `retried`: the model answered, the output was unusable, and a re-ask was still allowed: the record keeps the reason and the prompt is sent again with `_RETRY_SUFFIX` naming the problem (`:611-619`); disclosed (the report shows "無法使用，已重問 ／ unusable, re-asked") but not an evidence gap. Only a still-unusable answer is then booked `invalid`.
+- `retried`: the model answered, the output was unusable, and a re-ask was still allowed: the record keeps the reason and the prompt is sent again with `_RETRY_SUFFIX` naming the problem (`:614-622`); disclosed (the report shows "無法使用，已重問 ／ unusable, re-asked") but not an evidence gap. Only a still-unusable answer is then booked `invalid`.
 
-The `used_simulation`, `invalid_calls` and `budget_exhausted_calls` properties let the gate read evidence gaps straight off the `call_log`; `retried_calls` (`:432-436`) and `cached_calls` (`:775-777`) exist for report disclosure only.
+The `used_simulation`, `invalid_calls` and `budget_exhausted_calls` properties let the gate read evidence gaps straight off the `call_log`; `retried_calls` (`:434-438`) and `cached_calls` (`:778-780`) exist for report disclosure only.
 
 ### 5.3 Output validation
 
 - `required_keys`: all must be present. `required_keys_any`: at least one must be (`_validate_output`, `vibeharness/core/llm_gateway.py:544-561`). Only the test generator uses `required_keys_any=["tests", "code"]` today.
-- **Re-ask on invalid output**: when a `json_output=True` call yields non-JSON, a missing key or an empty response, it is re-asked up to `global.retry_invalid_output` times (default `DEFAULT_RETRY_INVALID_OUTPUT = 1`, `:50`; validated at start-up as an integer 0–5) with `_RETRY_SUFFIX` (`:58-61`) appended to the prompt, naming the previous problem and demanding JSON only (the suffix itself is English and the reason goes through `en_only` first, `:618`, so only its English half reaches the model); every re-ask claims `max_model_calls` through `_reserve_live_call`, and once the budget is gone the answer is booked `invalid` without a re-ask (`:611-623`).
+- **Re-ask on invalid output**: when a `json_output=True` call yields non-JSON, a missing key or an empty response, it is re-asked up to `global.retry_invalid_output` times (default `DEFAULT_RETRY_INVALID_OUTPUT = 1`, `:50`; validated at start-up as an integer 0–5) with `_RETRY_SUFFIX` (`:58-61`) appended to the prompt, naming the previous problem and demanding JSON only (the suffix itself is English and the reason goes through `en_only` first, `:621`, so only its English half reaches the model); every re-ask claims `max_model_calls` through `_reserve_live_call`, and once the budget is gone the answer is booked `invalid` without a re-ask (`:614-626`).
 - With `json_output=False` a call is never judged invalid and never re-asked (the test generator's repair call uses this path; see chapter 16).
 - `_clean_and_parse_json` (`vibeharness/core/llm_gateway.py:590-657`) has four layers of tolerance: a closed code fence, direct JSON, an unclosed fence, first `{` to last `}` (then each `{` to the last `}`). When all fail it returns `None`, not a sentinel dict, because a model could legitimately echo a sentinel-shaped dict.
 - Only the network call is inside the try (`vibeharness/core/llm_gateway.py:394-409`). A bug in parsing or validation crashes (exit 5) rather than being masked as a fallback to simulation.
@@ -391,8 +391,8 @@ Model reviewers produce hypotheses, and an injected target can talk them out of 
 
 ### 7.3 Effect on the gate
 
-- Any CRITICAL / HIGH hit → `NEEDS_FIXES` (`static_blocking`, `vibeharness/core/harness.py:782-784`, `:812-813`; under `--baseline` only new hits count).
-- VH-AI-008 / 009 are `REVIEW_INTEGRITY_RULES` (`:130`): `affects_review_integrity=True` and an evidence gap (`vibeharness/core/harness.py:669-678`), because the model phases may have been manipulated, so `READY_TO_SHIP` is impossible.
+- Any CRITICAL / HIGH hit → `NEEDS_FIXES` (`static_blocking`, `vibeharness/core/harness.py:785-787`, `:815-816`; under `--baseline` only new hits count).
+- VH-AI-008 / 009 are `REVIEW_INTEGRITY_RULES` (`:130`): `affects_review_integrity=True` and an evidence gap (`vibeharness/core/harness.py:672-681`), because the model phases may have been manipulated, so `READY_TO_SHIP` is impossible.
 
 ---
 
@@ -504,10 +504,10 @@ When the target is `.js` / `.jsx` / `.mjs` / `.cjs` / `.ts` / `.tsx` / `.mts` / 
 - **Static gate**: `check_js_test_code` (`vibeharness/core/codecheck.py:179-211`): balanced delimiters on the masked source (`_js_balanced`, `:162-170`), no `npm` / `pnpm` / `yarn` / `bun` install commands or `npx` (`_JS_INSTALL_RE`, `:152`) and no `child_process` combined with an installer, at least one `test()` / `it()`, and `assert` / `expect(` / `throw` / `.throws` / `.rejects` inside every test call's span (`_JS_ASSERT_RE`, `:151`). There is no JS parser, so this is a lexer-level approximation; a syntax error Node reports at run time is a harness error, not a target defect.
 - **Local Node sandbox**: `NodeSubprocessSandbox` (`vibeharness/core/sandbox.py:686-725`) reuses `LocalSubprocessSandbox`'s driver and timeout handling. `detect_node` (`:620-640`) resolves `node_bin` and requires ≥ `MIN_NODE_VERSION` (20.0.0, `:607`), with TypeScript needing ≥ `MIN_NODE_VERSION_TS` (22.6.0, `:608`, `--experimental-strip-types`). `node_test_command` (`:643-657`) builds `node --test`: the spec reporter on stdout, the junit reporter into `junit.xml`, `--max-old-space-size=<sandbox_memory_mb>` capping the heap; **no `RLIMIT_AS`** (V8 reserves a large address space at start-up and aborts under one), so `_limits` keeps only the CPU-seconds cap (`:721-722`). `link_node_modules` (`:660-683`) links the target's `node_modules` into the run dir (a symlink, a junction on Windows) so bare specifiers resolve upward from the test file; when that fails it falls back to `NODE_PATH`, which only CommonJS honours. The environment adds `NODE_ENV=test`; `NODE_OPTIONS` / `NODE_REPL_EXTERNAL_MODULE` are in `_CUSTOM_ENV_DENY_RE`.
 - **Docker Node sandbox**: `NodeDockerSandbox` (`:728-773`) uses the same hardening flags with the image `DEFAULT_DOCKER_NODE_IMAGE` (`vibeharness-sandbox-node:latest`, `:609`; `docker/sandbox-node.Dockerfile`) and `NODE_PATH=/work/<name>/node_modules`.
-- **When it is built**: the harness's `_build_node_sandbox` (`vibeharness/core/harness.py:302-351`) is the `TestSuiteExecutor`'s `js_sandbox_factory`, called the first time a JS test exists (`_js_sandbox_or_none`, `vibeharness/runners/test_executor.py:102-117`); `sandbox_node_provider` (defaulting to `sandbox_provider`; validated at start-up, an unknown value or a non-integer `sandbox_memory_mb` exits 5) picks local or Docker: `docker` uses the image's own Node and needs no node on the host: `NodeDockerSandbox` is built first (the image must exist), then `_docker_node_version` (`:350-371`) reads `node --version` inside the container with the same `docker run` prefix as the tests (`_docker_run_prefix`: same user, mounts, limits) to decide TypeScript support, with an in-container `timeout` backstop and `_after_timeout` removing the container on a host-side timeout; when it cannot be read nothing is guessed (TypeScript is reported as not run, JS still runs). The Python and Node sandboxes share the settings `__init__` validates once through `_sandbox_settings` (timeout, memory; when either sandbox uses docker also pids (-1 = unlimited), network, memory, cpus, docker_bin); the Node provider and image are added by `_validate_node_settings` (`:284-296`, `_node_cfg`). A missing Node runtime is not a start-up failure but an evidence gap; the runtime actually used goes into `RunMetadata.node_runtime` only once the sandbox exists. The factory discloses only `SandboxUnavailableError` / `OSError` as a gap; any other exception propagates.
+- **When it is built**: the harness's `_build_node_sandbox` (`vibeharness/core/harness.py:304-353`) is the `TestSuiteExecutor`'s `js_sandbox_factory`, called the first time a JS test exists (`_js_sandbox_or_none`, `vibeharness/runners/test_executor.py:102-117`); `sandbox_node_provider` (defaulting to `sandbox_provider`; validated at start-up, an unknown value or a non-integer `sandbox_memory_mb` exits 5) picks local or Docker: `docker` uses the image's own Node and needs no node on the host: `NodeDockerSandbox` is built first (the image must exist), then `_docker_node_version` (`:350-371`) reads `node --version` inside the container with the same `docker run` prefix as the tests (`_docker_run_prefix`: same user, mounts, limits) to decide TypeScript support, with an in-container `timeout` backstop and `_after_timeout` removing the container on a host-side timeout; when it cannot be read nothing is guessed (TypeScript is reported as not run, JS still runs). The Python and Node sandboxes share the settings `__init__` validates once through `_sandbox_settings` (timeout, memory; when either sandbox uses docker also pids (-1 = unlimited), network, memory, cpus, docker_bin); the Node provider and image are added by `_validate_node_settings` (`:284-296`, `_node_cfg`). A missing Node runtime is not a start-up failure but an evidence gap; the runtime actually used goes into `RunMetadata.node_runtime` only once the sandbox exists. The factory discloses only `SandboxUnavailableError` / `OSError` as a gap; any other exception propagates.
 - **Executor**: every module of the JS group runs in its own `node --test` process under `per_test_timeout_seconds` (`vibeharness/runners/test_executor.py:274-297`), because Node's junit reporter does not name the file a top-level test came from; `_parse_junit` (`:466-543`) assigns every case to the module through its `module` parameter and searches the enclosing `<testsuite name>` as a fallback. A file-level "passed" case for a file that never reached a `test()` does not count as a pass (an empty file must not be PASSED); a failing one is kept as the module's load error with the runner's stdout prepended to its details (`:288-297`), since the junit body only says "test failed" while the real `ERR_MODULE_NOT_FOUND` is on stdout. Without a JS sandbox every JS test is ERROR "JavaScript/TypeScript 測試未執行 ／ JavaScript/TypeScript test was not run" (`REASON_JS_NOT_RUN`, `:139-143`); a TypeScript test on a Node that cannot strip types is ERROR too (`:144-148`).
 - **JS JUnit classification** (`vibeharness/runners/test_executor.py`): `_js_is_harness_failure` (`:644-660`): a file-level case (the module never loaded) is always a harness error; otherwise the exception summary (`_js_exception_summary`, not the whole junit body, whose assertion text may mention a `SyntaxError` the target threw) carries one of `_JS_HARNESS_MARKERS` (`:58-60`: `ERR_MODULE_NOT_FOUND`, `Cannot find module`, `ERR_REQUIRE_ESM`, `SyntaxError`, ...) or a `ReferenceError` / `TypeError` whose innermost frame is in the test file; `_js_raised_in_target_code` (`:663-669`) checks whether the first (innermost) V8 frame is outside `test_vh_*`; `_js_exception_summary` (`:672-699`) takes the junit body's `cause:` line (skipping a quoted `'test failed'`), else, among the `XError:` lines that are not the "Error: test failed" placeholder, the one carrying a harness marker (the folded runner output may contain Error lines the target printed itself), else the first, else the message; `_js_is_assertion` (`:702-708`): only `ERR_ASSERTION` / `AssertionError` / `Error: expect(` count as a confirmed black-box breach. A `TypeError` inside the target is FAILED (a defect), not an exploit; a load error on the target side becomes "目標程式碼已損壞… ／ Target code is broken…" (`REASON_TARGET_BROKEN`).
-- **Evidence gaps** (`vibeharness/core/harness.py:735-760`), three sentences: JS/TS detected but no JS test generated (always the case in mock mode, #13); generated but could not run (`js_runner_unavailable_reason` / `node_runtime_problem`, #14); TypeScript tests not run because Node < 22.6 (#15). Other languages keep "…只做了靜態審查 ／ …reviewed statically only" (#16).
+- **Evidence gaps** (`vibeharness/core/harness.py:738-763`), three sentences: JS/TS detected but no JS test generated (always the case in mock mode, #13); generated but could not run (`js_runner_unavailable_reason` / `node_runtime_problem`, #14); TypeScript tests not run because Node < 22.6 (#15). Other languages keep "…只做了靜態審查 ／ …reviewed statically only" (#16).
 - **Settings**: `node_bin` (default `node`), `sandbox_node_provider` (`local_subprocess` / `docker`), `docker_node_image`.
 - **Limits**: no JS coverage (`NodeSubprocessSandbox._extract_coverage_percent` returns `None`, `vibeharness/core/sandbox.py:724-725`; the console says "行涵蓋率（Python） ／ Line Coverage (Python)"); TypeScript is type stripping only (no enums, namespaces, parameter properties or decorators); bare ESM specifiers do not resolve inside Docker (`NODE_PATH` only works for CommonJS).
 
@@ -515,7 +515,7 @@ When the target is `.js` / `.jsx` / `.mjs` / `.cjs` / `.ts` / `.tsx` / `.mts` / 
 
 ## 10. The quality gate
 
-### 10.1 Verdict order (`vibeharness/core/harness.py:810-817`)
+### 10.1 Verdict order (`vibeharness/core/harness.py:813-820`)
 
 ```mermaid
 flowchart TD
@@ -532,9 +532,9 @@ Only three things can make the verdict BLOCKED or NEEDS_FIXES: a black-box test 
 
 Because of this order, a FAILED probe in mock mode yields NEEDS_FIXES (exit 1), not INCONCLUSIVE: the probe is executed evidence.
 
-Under `--baseline`, `bb_breaches`, `wb_failed` and `static_blocking` are replaced before the verdict by the "new problems" that `compare_with_baseline` computes (`:787-809`, section 10.5); known problems stay in the report but do not decide the verdict or the exit code.
+Under `--baseline`, `bb_breaches`, `wb_failed` and `static_blocking` are replaced before the verdict by the "new problems" that `compare_with_baseline` computes (`:790-812`, section 10.5); known problems stay in the report but do not decide the verdict or the exit code.
 
-### 10.2 The complete evidence-gap list (`vibeharness/core/harness.py:638-777`)
+### 10.2 The complete evidence-gap list (`vibeharness/core/harness.py:641-780`)
 
 Any one of these rules out `READY_TO_SHIP`. Every message is a `bi()` "中文 ／ English" string (section 11.5); the Condition column summarizes it rather than quoting it:
 
@@ -574,9 +574,9 @@ Any one of these rules out `READY_TO_SHIP`. Every message is a `bi()` "中文 �
 | 5 | configuration or usage error: missing `--target`, `ConfigError`, `SandboxUnavailableError`, an unwritable `--output` / `--sarif`, an unresolvable `--changed-since` ref, a `--base-url` that is not an http(s) URL with a host name (`validate_base_url`), a `--cache-dir` that cannot be created or written, a `--baseline` that is not a complete JSON report of this tool (a `.partial.json` is refused too), CLI misuse (argparse's exit 2 is remapped to 5 so it cannot collide with BLOCKED), or an unexpected crash (full traceback printed; the completed phases are in `<output>.partial.json`) |
 | 130 | interrupted with Ctrl-C (128 + SIGINT, `INTERRUPTED_EXIT_CODE`, `:24`, `:310-314`); no full report written, the completed phases are in `<output>.partial.json` |
 
-### 10.4 Recommendation order (`_build_recommendations`, `vibeharness/core/harness.py:966-1004`)
+### 10.4 Recommendation order (`_build_recommendations`, `vibeharness/core/harness.py:969-1007`)
 
-Confirmed breaches → deterministic HIGH+ hits → white-box FAILED → unclassified black-box FAILED → untested threats → a hint when evidence gaps exist → a default line when nothing else applies. Under `--baseline` the filtered results are passed in, and one more line lists the known problems that were not counted (`:832-837`).
+Confirmed breaches → deterministic HIGH+ hits → white-box FAILED → unclassified black-box FAILED → untested threats → a hint when evidence gaps exist → a default line when nothing else applies. Under `--baseline` the filtered results are passed in, and one more line lists the known problems that were not counted (`:835-840`).
 
 ### 10.5 `--baseline`: fail on new problems only (`vibeharness/core/baseline.py`)
 
@@ -585,7 +585,7 @@ A CI gate that reacts only to new problems needs identities that survive re-numb
 - **Loading**: the CLI's `--baseline <report.json>` goes through `load_baseline` (`:213-233`): it must be a complete JSON report with `tool == "vibeharness-mas"`; a crashed run's `partial: true` report and any other tool's JSON are refused (`ValueError` → exit 5), because comparing against an incomplete list would hide new problems.
 - **Keys independent of run order** (`fingerprint`, `:52-54`, sha1): `static_key` (`:78-83`) = rule + target-relative path + normalized evidence, **without the line number** (an unrelated edit above the hit must not turn a known hit into a new one; the SARIF fingerprint keeps the line for Code Scanning); `finding_key` (`:86-88`) = relative path + symbol + normalized title; `probe_key` (`:91-94`) = the probe's symbol; `whitebox_failure_key` (`:97-104`) = the key of the finding the test was generated for (a probe uses its symbol; a failure that cannot be tied to a finding is `None` and always new); `breach_key` (`:107-115`) = the threat's STRIDE category + normalized title + normalized attack_vector (falling back to the test id without a threat). `target_relative` (`:57-75`) is pure string work, so a report from another machine yields the same key for the same file; `normalize` (`:36-41`) drops case and punctuation while keeping letters and digits of any script (CJK titles stay distinct) with pure ASCII keyed as in 0.3.0; `key_text` (`:44-49`) takes the English half only for simulation-engine items (`is_simulated`, whose titles are bilingual `bi()` strings) and real model text enters the key as is; the SARIF partialFingerprints share these functions, so cosmetic rewording by the model does not matter.
 - **Reading an old report**: `_keys_from_report` (`:136-210`) prefers the report's `fingerprint` fields and recomputes them with the same functions for 0.3.0 reports that lack them. White-box keys enter the baseline only from **FAILED** results (keyed by their finding): a confirmed finding whose test passed last time is not known, so a failure for it now is a new problem.
-- **Comparing**: Phase 6's `compare_with_baseline` (`:275-321`; `vibeharness/core/harness.py:791-809`) splits the blocking evidence into new and known: known items go to `suppressed` (`BaselineSuppressedItem`: `kind`, `id`, `title`, `fingerprint`), `wb_failed`, `bb_breaches` and `static_blocking` hold new ones only, and `_build_recommendations` receives the filtered results too. Known problems stay in every table, the Markdown gains a "基準中的已知問題（不計入） ／ Known from baseline (not counted)" section (`vibeharness/reports/report_generator.py:155-163`) and one more recommendation; `summary.baseline_path` / `baseline_suppressed` are in the report.
+- **Comparing**: Phase 6's `compare_with_baseline` (`:275-321`; `vibeharness/core/harness.py:794-812`) splits the blocking evidence into new and known: known items go to `suppressed` (`BaselineSuppressedItem`: `kind`, `id`, `title`, `fingerprint`), `wb_failed`, `bb_breaches` and `static_blocking` hold new ones only, and `_build_recommendations` receives the filtered results too. Known problems stay in every table, the Markdown gains a "基準中的已知問題（不計入） ／ Known from baseline (not counted)" section (`vibeharness/reports/report_generator.py:155-163`) and one more recommendation; `summary.baseline_path` / `baseline_suppressed` are in the report.
 - **Writing a new report**: with `--format json`, `annotate_report_payload` (`:236-263`) adds `fingerprint` to the static hits, confirmed findings, FAILED white-box results and confirmed breaches (an addition only; `schema_version` is unchanged), so this run's JSON can serve directly as the next run's baseline; the composite Action's `baseline` input is exactly that.
 
 ---
@@ -602,7 +602,7 @@ A CI gate that reacts only to new problems needs identities that survive re-numb
 
 ### 11.2 JSON (`generate_json_report`, `:353-384`)
 
-Top-level keys: `tool`, `schema_version`, `target_path`, `summary` (including `run`, the `RunMetadata`), `whitebox.{debate, test_results, generated_tests}`, `threat_model`, `blackbox_test_results`, `blackbox_generated_tests`. Everything is `model_dump()`, and test code is stored verbatim. `schema_version` is `JSON_SCHEMA_VERSION = "1"` (`:42`): bumped only when a field is renamed, removed or changes meaning; additions keep it. Before writing, the harness also calls `annotate_report_payload` to add `fingerprint` to the static hits, confirmed findings, FAILED white-box results and confirmed breaches (`vibeharness/core/harness.py:896-902`, section 10.5).
+Top-level keys: `tool`, `schema_version`, `target_path`, `summary` (including `run`, the `RunMetadata`), `whitebox.{debate, test_results, generated_tests}`, `threat_model`, `blackbox_test_results`, `blackbox_generated_tests`. Everything is `model_dump()`, and test code is stored verbatim. `schema_version` is `JSON_SCHEMA_VERSION = "1"` (`:42`): bumped only when a field is renamed, removed or changes meaning; additions keep it. Before writing, the harness also calls `annotate_report_payload` to add `fingerprint` to the static hits, confirmed findings, FAILED white-box results and confirmed breaches (`vibeharness/core/harness.py:899-905`, section 10.5).
 
 ### 11.3 SARIF 2.1.0 (`generate_sarif_report`, `:386-569`)
 
@@ -660,7 +660,7 @@ Field details are in [`configuration.md`](configuration.en.md); this chapter cov
 - `global`: execution mode, timeouts, retries, token caps, `retry_invalid_output`, `cache_dir`, `max_model_calls`, `max_concurrent_calls`, `max_files`, `max_file_bytes`, `include` / `exclude`, sandbox parameters (`sandbox_provider`, `sandbox_timeout_seconds`, `per_test_timeout_seconds`, `sandbox_memory_mb`, `docker_*`, `node_bin`, `sandbox_node_provider`, `docker_node_image`). The CLI's `--include` / `--exclude` override the config lists, `--changed-since` adds `only_files`, `--cache-dir` overrides `cache_dir`, and `--max-files` / `--max-model-calls` override their values (`vibeharness/cli.py:257-274`).
 - `models`: each key is a `model_alias` holding a litellm model string, `api_key_env`, `fallback_model`, and optionally `api_base`, `aws_profile_name` / `aws_region_name`, `max_output_tokens`, `extra_params` (a mapping passed to litellm as is) and `price_per_million_input` / `price_per_million_output` (used only by `--estimate` to price the run, in USD). Four default aliases: claude, glm, deepseek, gemini, all with versioned ids so a provider-side swap shows up in the report.
 - `agents`: each key is an `agent_id`. The gateway reads only `model_alias` and `temperature` (`vibeharness/core/llm_gateway.py:352-353`); `name` and `focus` are read only for `whitebox_reviewer_*` (`vibeharness/agents/whitebox/multi_reviewer.py:53-54`). `role` and `models.*.provider` are never read. An agent without `model_alias` resolves to `unconfigured` in the gateway, the reviewer ensemble and the debater alike.
-- The limit settings are all validated by `LLMGateway._positive_int` (`vibeharness/core/llm_gateway.py:258-266`): `max_model_calls`, `max_concurrent_calls` (`:114-119`), `max_files` / `max_file_bytes` (`vibeharness/core/harness.py:129-130`), `sandbox_memory_mb` (`:255`); a negative, boolean or non-integer value is a `ConfigError` (exit 5); 0 or null means "unset" and keeps the default (for `sandbox_memory_mb`, 0 disables).
+- The limit settings are all validated by `LLMGateway._positive_int` (`vibeharness/core/llm_gateway.py:258-266`): `max_model_calls`, `max_concurrent_calls` (`:114-119`), `max_files` / `max_file_bytes` (`vibeharness/core/harness.py:129-130`), `sandbox_memory_mb` (`:257`); a negative, boolean or non-integer value is a `ConfigError` (exit 5); 0 or null means "unset" and keeps the default (for `sandbox_memory_mb`, 0 disables).
 - The other numeric settings are checked at construction by `_validate_settings` (`vibeharness/core/llm_gateway.py:210-236`) through `_number` (`:239-247`): `timeout_seconds` ≥ 1, `max_retries` an integer ≥ 0, the global and every per-model `max_output_tokens` an integer ≥ 1, every agent's `temperature` within 0–2, `retry_invalid_output` an integer 0–5, `price_per_million_input` / `_output` ≥ 0, and `extra_params` a mapping; booleans are not numbers. These used to be read only at call time, so `timeout_seconds: "abc"` failed inside litellm and hybrid mode quietly fell back to simulation, leaving only INCONCLUSIVE.
 
 ### 13.2 Extension points
@@ -673,7 +673,7 @@ Field details are in [`configuration.md`](configuration.en.md); this chapter cov
 | add a provider | add an alias under `models`; any litellm-supported string works |
 | run live with a single key | point every `model_alias` at the same alias; but one model family cannot cross-verify: author and verifier are the same model, so no finding gets a vote |
 | tune threat-modeling guidance | edit the `threat_rules.yaml` fields that reach the prompt (table in section 8.1) |
-| a new sandbox | subclass `LocalSubprocessSandbox`, override the `_prepare_code`, `_build_command`, `_after_timeout`, `_limits` hooks (`vibeharness/core/sandbox.py:194-260`; `DockerSandbox` and `NodeSubprocessSandbox` do exactly that) and register it in `_build_sandbox` (`vibeharness/core/harness.py:378-400`) or, for JS, `_build_node_sandbox` (`:302-351`) |
+| a new sandbox | subclass `LocalSubprocessSandbox`, override the `_prepare_code`, `_build_command`, `_after_timeout`, `_limits` hooks (`vibeharness/core/sandbox.py:194-260`; `DockerSandbox` and `NodeSubprocessSandbox` do exactly that) and register it in `_build_sandbox` (`vibeharness/core/harness.py:380-402`) or, for JS, `_build_node_sandbox` (`:304-353`) |
 
 The remaining agents (`whitebox_test_generator`, `blackbox_threat_modeler`, `blackbox_test_synthesizer`) are called by fixed agent id; the config only controls their model and temperature.
 
@@ -779,7 +779,7 @@ DAST / fuzzing, hypothesis, the e2b sandbox (mutation testing is implemented for
 - Crashed threat-modeling and attack-synthesis batches do not go through `record_failure`: the former shows up as "no threats from that batch", the latter as an untested threat; both are still evidence gaps, but the reason is not in `call_log`.
 - A Next.js route in JS/TS is reviewed twice, as a function symbol and as a route symbol (`vibeharness/agents/whitebox/ast_extractor.py:556-566`).
 - `--baseline` decides whether a white-box failure is known through its finding's key: a model test that cannot be tied to a confirmed finding (`source_ref` not among them) is always new; a probe is keyed by symbol name only, so a same-named function moved to another file still counts as the same item.
-- The "N/A（沒有決定性投票） ／ N/A (no decisive votes)" branch at `vibeharness/reports/report_generator.py:178` (and its console twin at `vibeharness/core/harness.py:509`) is unreachable: `arbitration_applied=True` implies `real_votes > 0`, hence `decisive > 0`.
+- The "N/A（沒有決定性投票） ／ N/A (no decisive votes)" branch at `vibeharness/reports/report_generator.py:178` (and its console twin at `vibeharness/core/harness.py:511`) is unreachable: `arbitration_applied=True` implies `real_votes > 0`, hence `decisive > 0`.
 
 Six items were fixed on 2026-10-08 (see `[0.3.0]` in `CHANGELOG.md`): crashed review / verification batches not reaching `call_log`; a single reviewer model only warning; the Markdown evidence-gap and untested-threat lists bypassing sanitization; the displayed alias disagreeing with the routed one when `model_alias` was missing; two Docker tests chmod-ing a non-existent run dir under root; a negative `max_files` in the config going unvalidated.
 
@@ -864,23 +864,24 @@ Line numbers refer to the code after commit `df92b3d`; verify with `grep -n "def
 | `_POST_KILL_DRAIN_SECONDS` | 5.0 | `vibeharness/core/sandbox.py:34` |
 | `MIN_NODE_VERSION` / `MIN_NODE_VERSION_TS` | 20.0.0 / 22.6.0 | `vibeharness/core/sandbox.py:607-608` |
 | `DEFAULT_DOCKER_NODE_IMAGE` | vibeharness-sandbox-node:latest | `vibeharness/core/sandbox.py:609` |
-| `sandbox_timeout_seconds` / `per_test_timeout_seconds` (defaults) | 120 / 30 | `vibeharness/core/harness.py:254`, `:105` |
+| `sandbox_timeout_seconds` / `per_test_timeout_seconds` (defaults) | 120 / 30 | `vibeharness/core/harness.py:256`, `:105` |
 | `DEFAULT_SANDBOX_MEMORY_MB` | 2048 | `vibeharness/core/harness.py:51` |
 | `_MAX_HITS_PER_RULE_PER_FILE` | 20 | `vibeharness/agents/whitebox/ai_static_scanner.py:131` |
 | `USAGE_ERROR_EXIT_CODE` | 5 | `vibeharness/cli.py:21` |
 | `INTERRUPTED_EXIT_CODE` | 130 | `vibeharness/cli.py:24` |
 | `JSON_SCHEMA_VERSION` | "1" | `vibeharness/reports/report_generator.py:42` |
 | `DEFAULT_MUTATION_MAX_MUTANTS` / `DEFAULT_MUTATION_MIN_SCORE` | 20 / 70.0 | `vibeharness/core/harness.py:53-54` |
-| `ELIGIBLE_TEST_TYPES` | `whitebox_unit`, `whitebox_property` | `vibeharness/core/mutation.py:31` |
+| `ELIGIBLE_TEST_TYPES` | `whitebox_unit`, `whitebox_property` | `vibeharness/core/mutation.py:32` |
+| `DEFAULT_MAX_COPY_MB` | 200 | `vibeharness/core/mutation.py:36` |
 | `SEP` | `" ／ "` (U+FF0F with one ASCII space on each side) | `vibeharness/core/i18n.py:12` |
 
 ### 18.2 Key function index
 
 - `vibeharness/cli.py`: `verdict_exit_code` 52, `_writable_location` 73, `main` 84
-- `vibeharness/core/harness.py`: `work_dir_for` 143, `select_symbols` 148, `changed_files` 201, `_mutation_settings` 224, `set_mutation` 241, `_sandbox_settings` 248, `_validate_node_settings` 288, `_build_node_sandbox` 302, `_docker_node_version` 354, `_build_sandbox` 378, `run_full_pipeline` 402, evidence gaps 638-777, baseline comparison 787-809, verdict 810-817, `_write_partial_report` 930, `_build_recommendations` 967
+- `vibeharness/core/harness.py`: `work_dir_for` 143, `select_symbols` 148, `changed_files` 201, `_mutation_settings` 224, `set_mutation` 243, `_sandbox_settings` 250, `_validate_node_settings` 290, `_build_node_sandbox` 304, `_docker_node_version` 356, `_build_sandbox` 380, `run_full_pipeline` 404, evidence gaps 638-777, baseline comparison 787-809, verdict 810-817, `_write_partial_report` 933, `_build_recommendations` 970
 - `vibeharness/core/llm_gateway.py`: `_validate_endpoints` 134, `set_cache_dir` 160, `_cache_key` 174, `_cache_read` 182, `_cache_write` 193, `_validate_settings` 210, `_number` 239, `_safe_reason` 250, `_positive_int` 258, `_reserve_live_call` 268, `is_live_configured` 319, `generate` 330, `_complete` 466, `_max_output_tokens` 534, `_validate_output` 545, `record_failure` 563, `_record` 576, `_clean_and_parse_json` 590, `_generate_simulated_response` 659
 - `vibeharness/core/i18n.py`: `bi` 17, `en_only` 23, `zh_only` 30, `has_cjk` 37
-- `vibeharness/core/mutation.py`: `find_mutation_sites` 98, `apply_mutation` 147, `select_sites` 168, `eligible_tests` 185, `run_mutation_testing` 206
+- `vibeharness/core/mutation.py`: `find_mutation_sites` 103, `apply_mutation` 152, `select_sites` 173, `eligible_tests` 190, `_copy_ignore` 207, `_copy_size` 223, `run_mutation_testing` 246
 - `vibeharness/core/codecontext.py`: `estimate_tokens` 30, `truncate_to_tokens` 35, `import_root` 55, `module_import_name` 77, `language_for_file` 100, `target_file_url` 111, `js_module_kind` 143, `js_exported_names` 175, `import_instructions` 202, `js_import_instructions` 230, `class_skeleton` 261, `symbol_source` 292, `render_symbol` 300, `render_symbols` 317, `batch_symbols` 353, `file_source` 377
 - `vibeharness/core/codecheck.py`: `strip_code_fences` 18, `_has_assertion` 41, `check_test_code` 81, `_package_install_call` 114, `check_js_test_code` 179, `check_test_code_for` 214
 - `vibeharness/core/sanitize.py`: `strip_invisible` 53, `find_invisible` 61, `find_secrets` 98, `redact_secrets` 108, `find_injection_markers` 173, `prepare_untrusted_code` 186, `untrusted_block` 210, `clean_model_text` 223, `markdown_safe` 235

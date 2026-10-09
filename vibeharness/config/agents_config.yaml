@@ -56,6 +56,7 @@ global:
   mutation_max_mutants: 20        # 變異體上限，每個變異體一次沙盒批次 ／ mutant cap, one sandbox batch per mutant
   mutation_timeout_seconds: 30    # 每個變異體的批次逾時（逾時算殺死）；預設同 per_test_timeout_seconds ／ per-mutant batch timeout (a timeout counts as killed); defaults to per_test_timeout_seconds
   mutation_min_score: 70          # 百分比，低於它就加證據缺口 ／ percent, below it an evidence gap is added
+  mutation_max_copy_mb: 200       # 複本大小上限（略過 SKIPPED_DIRS 後），超過就略過並記原因 ／ copy size cap (after SKIPPED_DIRS); above it the step is skipped with a reason
   per_test_timeout_seconds: 30    # 批次逾時後逐測重跑時，每個測試的預算 ／ budget per test when a timed-out batch is re-run test by test
 
 models:

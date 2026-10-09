@@ -31,7 +31,7 @@ from vibeharness.core.sandbox import (
     NodeDockerSandbox, NodeSubprocessSandbox, detect_node, parse_node_version,
 )
 from vibeharness.core.baseline import Baseline, annotate_report_payload, compare_with_baseline
-from vibeharness.core.mutation import run_mutation_testing
+from vibeharness.core.mutation import DEFAULT_MAX_COPY_MB, run_mutation_testing
 from vibeharness.core.i18n import bi
 from vibeharness.agents.whitebox.ast_extractor import ASTExtractor, DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES
 from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
@@ -236,7 +236,9 @@ class VibeHarnessCommander:
         timeout = LLMGateway._positive_int(global_cfg.get("mutation_timeout_seconds", per_test), "mutation_timeout_seconds") or per_test
         min_score = global_cfg.get("mutation_min_score", DEFAULT_MUTATION_MIN_SCORE)
         LLMGateway._number(min_score, "mutation_min_score", 0, 100)
-        return {"enabled": bool(enabled), "max_mutants": max_mutants, "timeout": timeout, "min_score": float(min_score)}
+        max_copy_mb = LLMGateway._positive_int(global_cfg.get("mutation_max_copy_mb", DEFAULT_MAX_COPY_MB), "mutation_max_copy_mb") or DEFAULT_MAX_COPY_MB
+        return {"enabled": bool(enabled), "max_mutants": max_mutants, "timeout": timeout, "min_score": float(min_score),
+                "max_copy_mb": max_copy_mb}
 
     def set_mutation(self, enabled: bool, source: str = "cli") -> None:
         """依 CLI 旗標開啟或關閉突變測試（優先於設定檔）。
@@ -553,6 +555,7 @@ class VibeHarnessCommander:
                     mutation_report = run_mutation_testing(
                         self.executor.run_mutant_batch, wb_tests, wb_results, debate_result.confirmed_findings, symbols,
                         work_dir, self._mutation_cfg["max_mutants"], self._mutation_cfg["timeout"],
+                        self._mutation_cfg["max_copy_mb"],
                     )
                 except Exception as e:  # 突變測試出錯不能拖垮整個稽核：揭露為證據缺口 ／ a mutation failure must not sink the audit: disclosed as an evidence gap
                     logger.error(bi(f"突變測試失敗：{type(e).__name__}", f"Mutation testing failed: {type(e).__name__}") + f": {self.gateway._safe_reason(str(e))}")
