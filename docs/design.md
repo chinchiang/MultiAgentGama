@@ -848,7 +848,7 @@ mutation testing、DAST／fuzzing、hypothesis、e2b 沙盒。JS/TS 測試執行
 | `_POST_KILL_DRAIN_SECONDS` | 5.0 | `vibeharness/core/sandbox.py:34` |
 | `MIN_NODE_VERSION`／`MIN_NODE_VERSION_TS` | 20.0.0／22.6.0 | `vibeharness/core/sandbox.py:607-608` |
 | `DEFAULT_DOCKER_NODE_IMAGE` | vibeharness-sandbox-node:latest | `vibeharness/core/sandbox.py:609` |
-| `sandbox_timeout_seconds`／`per_test_timeout_seconds`（預設） | 120／30 | `vibeharness/core/harness.py:323`、`:96` |
+| `sandbox_timeout_seconds`／`per_test_timeout_seconds`（預設） | 120／30 | `vibeharness/core/harness.py:213`、`:96` |
 | `DEFAULT_SANDBOX_MEMORY_MB` | 2048 | `vibeharness/core/harness.py:48` |
 | `_MAX_HITS_PER_RULE_PER_FILE` | 20 | `vibeharness/agents/whitebox/ai_static_scanner.py:131` |
 | `USAGE_ERROR_EXIT_CODE` | 5 | `vibeharness/cli.py:21` |
