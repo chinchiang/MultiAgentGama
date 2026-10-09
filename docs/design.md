@@ -2,7 +2,7 @@
 
 [English](design.en.md) ｜ 正體中文（臺灣）
 
-本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.3.0`（`CHANGELOG.md` 的 `[0.3.0]`，2026-10-09，含本文第 16 章原先列出的六項缺口修正與深入審視的五項修正），並涵蓋其後 `[Unreleased]` 的變更（`--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。文中的 `path:line` 引用以 commit `df92b3d` 的檔案為準。
+本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.4.0`（`CHANGELOG.md` 的 `[0.4.0]`，2026-10-09；前一版 `[0.3.0]` 含本文第 16 章原先列出的六項缺口修正與深入審視的五項修正），涵蓋 `[0.4.0]` 的變更（`--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。文中的 `path:line` 引用以 commit `df92b3d` 的檔案為準。
 
 與其他文件的分工：
 
@@ -815,10 +815,10 @@ mutation testing、DAST／fuzzing、hypothesis、e2b 沙盒。JS/TS 測試執行
 | 所有程式搬進單一頂層套件 `vibeharness/`（CLI 為 `vibeharness.cli`，根目錄 `main.py` 只是薄殼） | `core`／`config`／`main` 等通用名稱安裝進 site-packages 會與其他套件互撞，也會遮蔽使用者專案自己的 `config` | import 路徑全部改變（breaking） | 0.3.0 |
 | 回應快取、崩潰時的部分報告、`local_subprocess` 資源上限、SARIF `help`、中文注入標記、手動 live smoke workflow | 重跑整輪要再付一次錢；崩潰讓已付費的結果歸零；生成測試可吃光主機記憶體；Code Scanning 的 alert 沒有修復指引；中文專案的注入句型看不到；live 路徑只靠人工驗證 | 快取目錄含模型回應；RLIMIT 只在 POSIX | 0.3.0 |
 | `--include`／`--exclude`／`--changed-since`、`max_file_bytes`；報告帶 run metadata 與 `schema_version` | 中型以上專案超過 `max_files` 就永遠 INCONCLUSIVE；報告讀起來不知道是哪個版本、哪個 commit、哪種模式產生的 | 篩掉的檔案不算 evidence gap（使用者明示） | 0.3.0 |
-| `--baseline`：與執行次序無關的 fingerprint，只有新問題決定判定 | CI 要能只對新問題失敗；每輪重新編號的 id 做不到 | 已知問題仍會在報告裡出現；對不回 finding 的失敗永遠算新 | Unreleased |
-| `--estimate`：不呼叫模型的呼叫數、token 與花費估算 | 開跑前不知道一輪要花多少；`max_model_calls` 設太低只會在中途退回模擬 | 情境值依假設，不是量測 | Unreleased |
-| JS/TS 以 Node 內建 runner 動態執行；一模組一程序；不套 `RLIMIT_AS` | JS/TS 目標過去只有靜態審查，永遠 INCONCLUSIVE；Node 的 junit reporter 不標示檔案；V8 在 `RLIMIT_AS` 下直接 abort | 不收 JS 覆蓋率；TypeScript 只做型別剝除；每個模組多一次 Node 啟動 | Unreleased |
-| 所有固定輸出字串改為「中文 ／ English」雙語（`bi`）；模型提示詞與機器可讀欄位維持英文 | 臺灣的使用者要能直接讀報告與 console，又不能讓 CI 的子字串檢查、baseline／SARIF fingerprint 或模型提示詞改變 | 輸出變長；每個字串要維護兩種語言 | Unreleased |
+| `--baseline`：與執行次序無關的 fingerprint，只有新問題決定判定 | CI 要能只對新問題失敗；每輪重新編號的 id 做不到 | 已知問題仍會在報告裡出現；對不回 finding 的失敗永遠算新 | 0.4.0 |
+| `--estimate`：不呼叫模型的呼叫數、token 與花費估算 | 開跑前不知道一輪要花多少；`max_model_calls` 設太低只會在中途退回模擬 | 情境值依假設，不是量測 | 0.4.0 |
+| JS/TS 以 Node 內建 runner 動態執行；一模組一程序；不套 `RLIMIT_AS` | JS/TS 目標過去只有靜態審查，永遠 INCONCLUSIVE；Node 的 junit reporter 不標示檔案；V8 在 `RLIMIT_AS` 下直接 abort | 不收 JS 覆蓋率；TypeScript 只做型別剝除；每個模組多一次 Node 啟動 | 0.4.0 |
+| 所有固定輸出字串改為「中文 ／ English」雙語（`bi`）；模型提示詞與機器可讀欄位維持英文 | 臺灣的使用者要能直接讀報告與 console，又不能讓 CI 的子字串檢查、baseline／SARIF fingerprint 或模型提示詞改變 | 輸出變長；每個字串要維護兩種語言 | 0.4.0 |
 
 ---
 
