@@ -36,7 +36,7 @@ from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
 from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
 from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
 from vibeharness.runners.test_executor import TestSuiteExecutor
-from vibeharness.reports.report_generator import ReportGenerator
+from vibeharness.reports.report_generator import JSON_SCHEMA_VERSION, ReportGenerator
 
 logger = logging.getLogger("VibeHarness.Commander")
 
@@ -69,7 +69,7 @@ class VibeHarnessCommander:
     """
 
     def __init__(self, config_path: str = DEFAULT_CONFIG_PATH, execution_mode: Optional[str] = None):
-        # Protect console output even when the harness is used as a library (main.py does this too)
+        # Protect console output even when the harness is used as a library (vibeharness/cli.py does this too)
         force_utf8_stdio()
         self.console = Console(force_terminal=False)
         self.gateway = LLMGateway(config_path, execution_mode=execution_mode)
@@ -646,7 +646,7 @@ class VibeHarnessCommander:
         payload = {
             "tool": "vibeharness-mas",
             "partial": True,
-            "schema_version": "1",
+            "schema_version": JSON_SCHEMA_VERSION,
             "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
             "harness_version": __version__,
             "execution_mode": self.gateway.execution_mode,

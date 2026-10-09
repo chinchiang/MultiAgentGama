@@ -57,7 +57,7 @@ class ConfigError(ValueError):
     """Raised when the agent configuration file is missing or unparseable.
 
     Subclasses ValueError so code (and tests) that guard against bad config values keeps working.
-    main.py maps this to a dedicated 'harness misconfigured' exit code so it can never be
+    vibeharness/cli.py maps this to a dedicated 'harness misconfigured' exit code so it can never be
     mistaken for a NEEDS_FIXES verdict about the audited target.
     """
 
