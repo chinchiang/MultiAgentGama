@@ -14,15 +14,19 @@ from vibeharness.core.baseline import load_baseline
 from vibeharness.core.estimate import estimate_lines, estimate_run
 from vibeharness.core.i18n import bi
 
+# 保留給 harness／用法問題的結束碼。判定結果碼（0/1/2/3/4）記載於
+# README；這些碼絕不能與之衝突，否則 CI 會把當掉的執行誤讀成判定結果。
 # Exit codes reserved for harness/usage problems. Verdict codes (0/1/2/3/4) are documented in
 # the README; these must never collide with them, or CI would misread a crashed run as a verdict.
 USAGE_ERROR_EXIT_CODE = 5
+# Ctrl-C：慣例上的 128 + SIGINT，與所有判定結果碼及用法錯誤碼都不同
 # Ctrl-C: the conventional 128 + SIGINT, distinct from every verdict and usage code
 INTERRUPTED_EXIT_CODE = 130
 
 
 class _UsageErrorParser(argparse.ArgumentParser):
-    """argparse exits 2 on usage errors by default, which collides with BLOCKED_CRITICAL_RISK."""
+    """argparse 預設在用法錯誤時以 2 結束，這與 BLOCKED_CRITICAL_RISK 衝突。
+    argparse exits 2 on usage errors by default, which collides with BLOCKED_CRITICAL_RISK."""
 
     def error(self, message):
         self.print_usage(sys.stderr)
@@ -46,7 +50,11 @@ _VERDICT_STATUSES = ("BLOCKED_CRITICAL_RISK", "NEEDS_FIXES", "INCONCLUSIVE", "RE
 
 
 def verdict_exit_code(overall_status: str) -> int:
-    """Maps a quality-gate verdict to its CLI exit code.
+    """把品質閘門的判定結果對應到其 CLI 結束碼。
+
+    無法辨識的判定結果字串以 INCONCLUSIVE 碼（3）保守失敗，絕不會以
+    READY_TO_SHIP（0）結束 —— 無法辨識的判定結果不得被讀成健康無虞。
+    Maps a quality-gate verdict to its CLI exit code.
 
     Unknown verdict strings fail closed with the INCONCLUSIVE code (3), never with
     READY_TO_SHIP (0) — an unrecognized verdict must not read as a clean bill of health.
@@ -57,12 +65,14 @@ def verdict_exit_code(overall_status: str) -> int:
         return 1
     if overall_status == "READY_TO_SHIP":
         return 0
+    # INCONCLUSIVE 以及任何無法辨識的狀態
     # INCONCLUSIVE and any unrecognized status
     return 3
 
 
 def _writable_location(path: str) -> bool:
-    """True when `path` can be created or overwritten: its directory exists and is writable."""
+    """當 `path` 可被建立或覆寫時為 True：其目錄存在且可寫入。
+    True when `path` can be created or overwritten: its directory exists and is writable."""
     target = os.path.abspath(path)
     if os.path.isdir(target):
         return False
@@ -216,6 +226,7 @@ def main():
             args.base_url = validate_base_url(args.base_url)
         except ValueError as e:
             parser.error(f"--base-url: {e}")
+    # 在為任何模型呼叫付費之前就失敗，而不是等整個流程跑完之後
     # Fail before any model call is paid for, not after the whole pipeline ran
     for flag, path in (("--output", args.output), ("--sarif", args.sarif)):
         if path is not None and not _writable_location(path):
@@ -268,6 +279,7 @@ def main():
               + f": {e}", file=sys.stderr)
         sys.exit(4)
     except ValueError as e:
+        # 例如無法解析的 --changed-since ref：執行開始後才發現的用法問題
         # e.g. an unresolvable --changed-since ref: a usage problem found once the run started
         print(f"{bi('錯誤', 'Error')}: {e}", file=sys.stderr)
         sys.exit(USAGE_ERROR_EXIT_CODE)
@@ -277,11 +289,13 @@ def main():
                  "in-flight model calls may take a moment to stop)."), file=sys.stderr)
         sys.exit(INTERRUPTED_EXIT_CODE)
     except Exception as e:
+        # 當掉的執行絕不能落到結束碼 1，CI 會把它讀成 NEEDS_FIXES
         # A crashed run must never fall through to exit code 1, which CI reads as NEEDS_FIXES
         traceback.print_exc(file=sys.stderr)
         print(f"{bi('錯誤', 'Error')}: {bi('harness 意外崩潰', 'harness crashed unexpectedly')}: {type(e).__name__}: {e}", file=sys.stderr)
         sys.exit(USAGE_ERROR_EXIT_CODE)
 
+    # 依品質閘門回傳結束碼
     # Return exit code based on Quality Gate
     if summary.overall_status not in _VERDICT_STATUSES:
         print(f"{bi('錯誤', 'Error')}: "

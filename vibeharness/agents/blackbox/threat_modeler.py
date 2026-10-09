@@ -15,6 +15,9 @@ DEFAULT_RULES_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirnam
 
 logger = logging.getLogger("VibeHarness.ThreatModeler")
 
+# 威脅模型驅動所有黑箱測試，所以每個符號都必須讓它看到：如同白箱審查者，
+# 符號會切成程式碼清單放得進 token 預算的批次，
+# 而不是把所有東西塞進一個提示詞再默默丟掉溢出的部分。
 # The threat model drives all black-box testing, so every symbol must be visible to it: like the
 # white-box reviewers, symbols are split into batches whose code listing fits the token budget,
 # instead of rendering everything into one prompt and silently dropping the overflow.
@@ -31,12 +34,14 @@ DEFAULT_ASSETS = ["User Credentials", "Business Records"]
 
 
 def _text(value: Any, default: str) -> str:
-    """A string field from the model; anything else (None, number, object) falls back to the default."""
+    """來自模型的字串欄位；其他任何東西（None、數字、物件）都退回預設值。
+    A string field from the model; anything else (None, number, object) falls back to the default."""
     return value if isinstance(value, str) else default
 
 
 def _string_list(value: Any, fallback: List[str]) -> List[str]:
-    """A list-of-strings field from the model; anything else falls back to the harness's own value."""
+    """來自模型的字串清單欄位；其他任何東西都退回本框架自己的值。
+    A list-of-strings field from the model; anything else falls back to the harness's own value."""
     if isinstance(value, list):
         cleaned = [v for v in value if isinstance(v, str) and v.strip()]
         if cleaned:
@@ -46,6 +51,9 @@ def _string_list(value: Any, fallback: List[str]) -> List[str]:
 
 class AutomatedThreatModeler:
     """
+    使用 STRIDE 與 OWASP Top 10 框架的自動化威脅建模代理。
+    分析架構邊界、端點與資產，然後在設計任何黑箱測試案例之前
+    綜合出一份嚴謹的威脅矩陣。
     Automated Threat Modeling Agent using STRIDE and OWASP Top 10 frameworks.
     Analyzes architectural boundaries, endpoints, and assets, then synthesizes
     a rigorous Threat Matrix before any black-box test cases are designed.
@@ -56,6 +64,8 @@ class AutomatedThreatModeler:
         self.rules = self._load_rules(rules_path)
 
     def _load_rules(self, path: str) -> Dict[str, Any]:
+        # 規則只是用來充實提示詞，所以檔案缺失或損壞時只發出警告並降級執行，
+        # 而不是讓整個執行失敗（但絕不默默進行：它曾經從 wheel 中消失過）
         # The rules only enrich the prompt, so a missing or broken file degrades with a warning
         # instead of failing the run (but never silently: it once went missing from the wheel)
         if not os.path.exists(path):
@@ -72,7 +82,12 @@ class AutomatedThreatModeler:
         return rules if isinstance(rules, dict) else {}
 
     def _rules_guidance(self) -> str:
-        """STRIDE vibe-bug checklist and OWASP API Top 10 from config/threat_rules.yaml.
+        """來自 config/threat_rules.yaml 的 STRIDE vibe 錯誤檢查清單與 OWASP API Top 10。
+
+        該檔案可由使用者編輯，所以每一層都做型別檢查：結構錯誤的檔案
+        （例如預期是對應卻給了清單）會跳過檢查清單，而不是讓每個建模批次
+        都因 AttributeError 當掉。
+        STRIDE vibe-bug checklist and OWASP API Top 10 from config/threat_rules.yaml.
 
         The file is user-editable, so every level is type-checked: a structurally wrong file
         (e.g. a list where a mapping is expected) skips the checklist instead of crashing
@@ -101,7 +116,9 @@ class AutomatedThreatModeler:
         return text
 
     def _llm_rules_guidance(self, ai_components: Optional[List[str]]) -> str:
-        """OWASP Top 10 for LLM Applications 2026 checklist, only for targets that import an AI SDK
+        """OWASP Top 10 for LLM Applications 2026 檢查清單，只用於有匯入 AI SDK 的目標
+        （否則單純的 CRUD 服務會被憑空捏造出 LLM 威脅）。
+        OWASP Top 10 for LLM Applications 2026 checklist, only for targets that import an AI SDK
         (a plain CRUD service would otherwise get LLM threats invented for it)."""
         entries = self.rules.get("owasp_llm_top10_2026")
         if not ai_components or not isinstance(entries, list):
@@ -164,6 +181,10 @@ class AutomatedThreatModeler:
         ai_components: Optional[List[str]] = None
     ) -> ThreatModelReport:
         """
+        對目標系統執行 STRIDE 威脅建模。
+        符號分批驗證，讓模型看到全部；每個批次的威脅合併成一份報告
+        （重複的 threat_id 會重新編號）。
+        `ai_components`（目標匯入的 AI SDK）會加入 OWASP LLM Top 10 2026 檢查清單。
         Executes STRIDE threat modeling against the target system.
         Symbols are verified in batches so the model sees all of them; the threats of every
         batch are merged into one report (duplicate threat_ids are renumbered).
@@ -203,6 +224,7 @@ class AutomatedThreatModeler:
         )
 
         ordered = sorted(symbols or [], key=lambda s: s.symbol_type != "route")
+        # 空的符號清單仍保留一個（沒有程式碼的）批次，讓報告層級的回應仍會產生
         # An empty symbol list keeps one (code-less) batch so a report-level response is still produced
         batches = batch_symbols(ordered, root_dir or os.getcwd(), BATCH_MAX_TOKENS, BATCH_MAX_SYMBOLS) or [[]]
 
@@ -240,13 +262,14 @@ class AutomatedThreatModeler:
         for resp in responses:
             any_simulated = any_simulated or self.gateway.is_simulated(resp)
             if report_fields is None and self.gateway.is_usable(resp):
+                # 報告層級欄位來自第一個產生可用答案的批次
                 # Report-level fields come from the first batch that produced a usable answer
                 report_fields = resp
             threats.extend(self._parse_threats(resp, used_ids))
 
         threats = self._merge_duplicate_threats(threats)
 
-        if report_fields is None:  # every batch returned unusable output
+        if report_fields is None:  # 每個批次都回傳了無法使用的輸出 ／ every batch returned unusable output
             report_fields = {}
 
         return ThreatModelReport(
@@ -260,7 +283,10 @@ class AutomatedThreatModeler:
 
     @staticmethod
     def _merge_duplicate_threats(threats: List[ThreatItem]) -> List[ThreatItem]:
-        """Merges the same threat reported by several batches (same STRIDE category, title and
+        """合併多個批次回報的同一威脅（正規化後 STRIDE 類別、標題與攻擊向量相同）。
+        保留第一份回報，並採用任一批次給它的最高嚴重度；否則每個批次
+        都會再次合成並執行同樣的攻擊。
+        Merges the same threat reported by several batches (same STRIDE category, title and
         attack vector after normalization). The first report is kept, with the highest severity
         any batch gave it; otherwise every batch would synthesize and run the same attack again."""
         def norm(text: str) -> str:
@@ -280,7 +306,8 @@ class AutomatedThreatModeler:
         return list(merged.values())
 
     def _parse_threats(self, resp: Dict[str, Any], used_ids: set) -> List[ThreatItem]:
-        """Validated ThreatItems from one model response; ids that collide with earlier batches are renumbered."""
+        """來自一個模型回應、經驗證的 ThreatItem；與先前批次衝突的 id 會重新編號。
+        Validated ThreatItems from one model response; ids that collide with earlier batches are renumbered."""
         raw_threats = resp.get("threats")
         if not isinstance(raw_threats, list):
             logger.warning(bi(f"略過模型無法使用的威脅清單（收到 {type(raw_threats).__name__}）",
@@ -311,6 +338,8 @@ class AutomatedThreatModeler:
 
             threat_id = item.get("threat_id")
             if not isinstance(threat_id, str) or not threat_id.strip() or threat_id in used_ids:
+                # 只在實際用掉一個後備 id 時才推進後備計數器，
+                # 否則模型提供的 id 會在 THREAT-XX 序列中留下空缺。
                 # Only advance the fallback counter when a fallback id is actually consumed,
                 # otherwise model-supplied ids leave gaps in the THREAT-XX sequence.
                 while f"THREAT-{next_fallback:02d}" in used_ids:

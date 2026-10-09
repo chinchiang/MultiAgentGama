@@ -1,4 +1,13 @@
-"""Cross-run identity of findings, breaches and static hits, and the `--baseline` comparison.
+"""跨執行的發現、突破與靜態命中身分識別，以及 `--baseline` 比較。
+
+逐次執行的 id（``WB-CLA-01``、``THREAT-03``、``BB-TEST-THREAT-03``）會在模型以不同方式為
+回答編號時改變，因此只對*新*問題反應的 CI 閘門需要能在重新編號、
+表面措辭改寫與無關的行數位移之後仍存活的鍵。這裡的鍵由
+相對於受稽核目標的檔案路徑（純字串運算，因此在另一台機器產生的報告
+仍可比較）、規則／符號／威脅身分識別，以及模型標題的不分大小寫與標點的
+形式組成。它們儲存在 JSON 報告中（``fingerprint`` 欄位），並從缺少這些欄位的
+較舊報告重新計算。
+Cross-run identity of findings, breaches and static hits, and the `--baseline` comparison.
 
 Per-run ids (``WB-CLA-01``, ``THREAT-03``, ``BB-TEST-THREAT-03``) change whenever a model numbers its
 answers differently, so a CI gate that must react only to *new* problems needs keys that survive
@@ -25,7 +34,8 @@ TOOL_NAME = "vibeharness-mas"
 
 
 def normalize(text: Optional[str]) -> str:
-    """Case/punctuation-insensitive form of model text, so keys survive cosmetic rewording."""
+    """模型文字的不分大小寫與標點形式，讓鍵在表面措辭改寫後仍存活。
+    Case/punctuation-insensitive form of model text, so keys survive cosmetic rewording."""
     return " ".join(re.findall(r"[a-z0-9]+", (text or "").lower()))
 
 
@@ -34,7 +44,10 @@ def fingerprint(*parts: str) -> str:
 
 
 def target_relative(file_path: Optional[str], target_path: str) -> str:
-    """`file_path` relative to the audited target as a forward-slash string, or the bare name when it
+    """`file_path` 相對於受稽核目標的正斜線字串形式；無法關聯時（「unknown」佔位字、
+    不同磁碟機）則為純檔名。純字串運算：來自另一個簽出或機器的基準線
+    對同一檔案必須產生相同的鍵。
+    `file_path` relative to the audited target as a forward-slash string, or the bare name when it
     cannot be related (an "unknown" placeholder, a different drive). Pure string work: a baseline from
     another checkout or machine must yield the same key for the same file."""
     if not file_path or file_path.strip() == "unknown":
@@ -52,7 +65,9 @@ def target_relative(file_path: Optional[str], target_path: str) -> str:
 
 
 def static_key(sf: StaticFinding, target_path: str) -> str:
-    """Rule + file + evidence, without the line number (an unrelated edit above the hit must not
+    """規則 + 檔案 + 證據，不含行號（命中處上方無關的編輯不得
+    把已知命中變成新命中；SARIF 指紋則保留行號供 Code Scanning 使用）。
+    Rule + file + evidence, without the line number (an unrelated edit above the hit must not
     turn a known hit into a new one; the SARIF fingerprint keeps the line for Code Scanning)."""
     return fingerprint("static", target_relative(sf.file_path, target_path), sf.rule_id, normalize(sf.evidence))
 
@@ -62,12 +77,15 @@ def finding_key(f: ReviewFinding, target_path: str) -> str:
 
 
 def probe_key(result: TestExecutionResult) -> str:
-    """A deterministic probe is identified by the symbol it exercised (its source_ref)."""
+    """確定性探測以它所演練的符號（其 source_ref）識別。
+    A deterministic probe is identified by the symbol it exercised (its source_ref)."""
     return fingerprint("probe", result.source_ref or result.test_id)
 
 
 def whitebox_failure_key(result: TestExecutionResult, finding: Optional[ReviewFinding], target_path: str) -> Optional[str]:
-    """Key of a FAILED white-box result: the finding it was generated for, or the probe's symbol;
+    """FAILED 白箱結果的鍵：它所對應產生的發現，或探測的符號；
+    當結果的發現無法解析時為 None（此時它一律是新的）。
+    Key of a FAILED white-box result: the finding it was generated for, or the probe's symbol;
     None when the result's finding cannot be resolved (then it is always new)."""
     if result.test_type == "whitebox_probe":
         return probe_key(result)
@@ -75,7 +93,9 @@ def whitebox_failure_key(result: TestExecutionResult, finding: Optional[ReviewFi
 
 
 def breach_key(result: TestExecutionResult, threat: Optional[ThreatItem]) -> str:
-    """A confirmed breach is identified by its threat (category, title, attack vector), not by the
+    """已確認的突破以其威脅（類別、標題、攻擊向量）識別，而非
+    逐次執行的測試 id；沒有可解析的威脅時，測試 id 就是僅有的依據。
+    A confirmed breach is identified by its threat (category, title, attack vector), not by the
     per-run test id; without a resolvable threat the test id is all there is."""
     if threat is not None:
         return fingerprint("breach", threat.stride_category.value, normalize(threat.title), normalize(threat.attack_vector))
@@ -83,7 +103,8 @@ def breach_key(result: TestExecutionResult, threat: Optional[ThreatItem]) -> str
 
 
 class Baseline(BaseModel):
-    """The keys loaded from a previous JSON report."""
+    """從先前 JSON 報告載入的鍵。
+    The keys loaded from a previous JSON report."""
     path: str
     generated_at: Optional[str] = None
     static: Set[str] = Field(default_factory=set)
@@ -100,7 +121,9 @@ def _dicts(value: Any) -> List[Dict[str, Any]]:
 
 
 def _keys_from_report(payload: Dict[str, Any]) -> Baseline:
-    """Keys of a report: the stored ``fingerprint`` fields, or the same keys recomputed from the
+    """報告的鍵：儲存的 ``fingerprint`` 欄位，或對於這些欄位出現之前（0.3.0）寫出的報告，
+    由各欄位重新計算出的相同鍵。
+    Keys of a report: the stored ``fingerprint`` fields, or the same keys recomputed from the
     fields for reports written before they existed (0.3.0)."""
     target = str(payload.get("target_path") or "")
     raw_summary = payload.get("summary")
@@ -166,7 +189,9 @@ def _keys_from_report(payload: Dict[str, Any]) -> Baseline:
 
 
 def load_baseline(path: str) -> Baseline:
-    """Reads a previous JSON report. A partial report (written by a crashed run) or a file from
+    """讀取先前的 JSON 報告。部分報告（由當掉的執行寫出）或來自
+    其他工具的檔案會被拒絕：與不完整的發現集合比較會隱藏新的發現。
+    Reads a previous JSON report. A partial report (written by a crashed run) or a file from
     another tool is refused: comparing against an incomplete set of findings would hide new ones."""
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -195,7 +220,9 @@ def annotate_report_payload(
     blackbox_results: Iterable[TestExecutionResult],
     threats: Iterable[ThreatItem],
 ) -> None:
-    """Adds the ``fingerprint`` field to the JSON report's static findings, confirmed findings and
+    """為 JSON 報告的靜態發現、已確認發現與已確認突破加入 ``fingerprint`` 欄位
+    （就地修改）。純粹新增：結構描述版本不變。
+    Adds the ``fingerprint`` field to the JSON report's static findings, confirmed findings and
     confirmed breaches (in place). An addition only: the schema version is unchanged."""
     for item, sf in zip(_dicts(payload["summary"].get("static_findings")), list(static_findings), strict=True):
         item["fingerprint"] = static_key(sf, target_path)
@@ -215,7 +242,8 @@ def annotate_report_payload(
 
 
 class BaselineComparison(BaseModel):
-    """What the gate may count (new) and what it must only report (known)."""
+    """閘門可計入的（新的）與只能列出的（已知的）。
+    What the gate may count (new) and what it must only report (known)."""
     new_breaches: List[TestExecutionResult] = Field(default_factory=list)
     new_whitebox_failures: List[TestExecutionResult] = Field(default_factory=list)
     new_static_blocking: List[StaticFinding] = Field(default_factory=list)
@@ -231,7 +259,10 @@ def compare_with_baseline(
     blackbox_results: List[TestExecutionResult],
     threats: List[ThreatItem],
 ) -> BaselineComparison:
-    """Splits this run's blocking evidence into new and already-known. A white-box failure is known
+    """把本次執行的阻擋證據分成新的與已知的。白箱失敗是透過其測試所對應產生的
+    發現而為已知（其自身的 id 是逐次執行的）；探測或發現無法解析的結果
+    一律是新的。
+    Splits this run's blocking evidence into new and already-known. A white-box failure is known
     through the finding its test was generated for (its own id is per run); a probe or a result whose
     finding cannot be resolved is always new."""
     out = BaselineComparison()

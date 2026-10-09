@@ -1,4 +1,5 @@
-"""--baseline: only problems the previous report did not contain decide the verdict."""
+"""--baseline：只有前一份報告未包含的問題才決定判定結果。
+--baseline: only problems the previous report did not contain decide the verdict."""
 import json
 import os
 import sys
@@ -33,6 +34,7 @@ def _threat(tid="THREAT-01", title="BOLA on update", vector="PUT /api/users/{id}
     )
 
 
+# --- 鍵值在重新編號、改寫措辭與行號漂移後仍不變 -----------------------------------------------
 # --- Keys survive re-numbering, rewording and line drift --------------------------------------
 
 def test_finding_key_ignores_run_numbering_and_cosmetic_rewording():
@@ -40,6 +42,7 @@ def test_finding_key_ignores_run_numbering_and_cosmetic_rewording():
     b = bl.finding_key(_finding("WB-DEE-07", "unchecked NULL in get_user!"), EXAMPLES)
     c = bl.finding_key(_finding("WB-CLA-01", "SQL injection in get_user"), EXAMPLES)
     assert a == b != c
+    # 同一個檔案透過另一個簽出路徑來看：鍵值相對於目標
     # Same file seen through another checkout path: the key is relative to the target
     d = bl.finding_key(_finding(path="/elsewhere/examples/vibe_sample_app.py"), "/elsewhere/examples")
     assert d == a
@@ -68,9 +71,10 @@ def test_probe_failures_are_keyed_by_symbol():
     probe = TestExecutionResult(test_id="WB-PROBE-03", test_type="whitebox_probe", status=TestStatus.FAILED, source_ref="transfer")
     assert bl.whitebox_failure_key(probe, None, EXAMPLES) == bl.probe_key(probe)
     unresolved = TestExecutionResult(test_id="WB-TEST-01", test_type="whitebox_unit", status=TestStatus.FAILED, source_ref="WB-GONE-01")
-    assert bl.whitebox_failure_key(unresolved, None, EXAMPLES) is None  # cannot be matched: always new
+    assert bl.whitebox_failure_key(unresolved, None, EXAMPLES) is None  # 無法比對：一律視為新的 ／ cannot be matched: always new
 
 
+# --- 載入 ------------------------------------------------------------------------------------
 # --- Loading ---------------------------------------------------------------------------------
 
 def test_load_baseline_rejects_partial_reports_and_foreign_files(tmp_path):
@@ -91,7 +95,8 @@ def test_load_baseline_rejects_partial_reports_and_foreign_files(tmp_path):
 
 
 def test_a_report_without_fingerprint_fields_is_recomputed(tmp_path):
-    """0.3.0 reports predate the fingerprint field: the same keys are derived from their fields."""
+    """0.3.0 的報告早於指紋欄位出現：相同的鍵值由它們的欄位推導出來。
+    0.3.0 reports predate the fingerprint field: the same keys are derived from their fields."""
     finding = _finding()
     threat = _threat()
     breach = TestExecutionResult(test_id="BB-TEST-THREAT-01", test_type="blackbox_security", status=TestStatus.FAILED,
@@ -115,6 +120,7 @@ def test_a_report_without_fingerprint_fields_is_recomputed(tmp_path):
     assert bl.breach_key(breach, threat) in loaded.breaches
 
 
+# --- 經過關卡的端對端 -------------------------------------------------------------------------
 # --- End to end through the gate ---------------------------------------------------------------
 
 def _forced_outcomes(breach_ids, wb_fail=True):
@@ -138,6 +144,7 @@ def test_known_problems_are_reported_but_no_longer_decide_the_verdict(tmp_path, 
     assert payload["blackbox_test_results"][0]["fingerprint"] and payload["whitebox"]["test_results"][0]["fingerprint"]
     assert all("fingerprint" in f for f in payload["whitebox"]["debate"]["confirmed_findings"])
 
+    # 同樣的問題再次出現：全部已知，判定結果落到證據缺口（mock 模式）
     # Same problems again: all known, verdict falls through to the evidence gaps (mock mode)
     second = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
     second.baseline = bl.load_baseline(str(tmp_path / "base.json"))
@@ -151,6 +158,7 @@ def test_known_problems_are_reported_but_no_longer_decide_the_verdict(tmp_path, 
     assert "Known from baseline (not counted)" in md and "BB-TEST-THREAT-01" in md
     assert any("already in the baseline" in rec for rec in summary.key_recommendations)
 
+    # 基準線不認得的突破仍會阻擋
     # A breach the baseline does not know still blocks
     third = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
     third.baseline = bl.load_baseline(str(tmp_path / "base.json"))
@@ -186,6 +194,7 @@ def test_cli_baseline_flag_is_validated_before_the_run(monkeypatch, tmp_path):
     assert seen["baseline"].path == str(good) and seen["baseline"].size == 0
 
 
+# --- action.yml（複合動作定義）-----------------------------------------------------------------
 # --- action.yml --------------------------------------------------------------------------------
 
 def test_composite_action_is_well_formed():

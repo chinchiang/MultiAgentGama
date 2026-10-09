@@ -1,4 +1,5 @@
-"""--estimate: expected model calls and tokens without calling a model."""
+"""--estimate：不呼叫模型即可得知預期的模型呼叫次數與 token 數。
+--estimate: expected model calls and tokens without calling a model."""
 import json
 import os
 import sys
@@ -27,7 +28,8 @@ def _config(tmp_path, global_overrides=None, model_overrides=None):
 
 
 def test_exact_figures_match_what_a_real_run_spends(tmp_path):
-    """Reviewer and threat-modeler calls are known before the run: the mock run must make exactly that many."""
+    """審查者與威脅建模器的呼叫次數在執行前就已知：mock 執行必須恰好呼叫這麼多次。
+    Reviewer and threat-modeler calls are known before the run: the mock run must make exactly that many."""
     commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
     est = estimate_run(commander, EXAMPLES)
     assert est.symbols == 3 and est.files_analyzed == 1 and est.whitebox_batches == 1 and est.threat_batches == 1
@@ -35,7 +37,7 @@ def test_exact_figures_match_what_a_real_run_spends(tmp_path):
     assert len(reviewers) == 4 and all(c.calls_exact == 1 for c in reviewers)
     modeler = next(c for c in est.by_agent if c.agent == "blackbox_threat_modeler")
     assert modeler.calls_exact == 1 and est.calls_exact == 5
-    assert not commander.gateway.call_log  # nothing was called
+    assert not commander.gateway.call_log  # 沒有任何呼叫 ／ nothing was called
 
     run = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
     run.run_full_pipeline(target_dir=EXAMPLES, output_report_path=str(tmp_path / "r.md"))
@@ -52,7 +54,7 @@ def test_scenario_figures_scale_with_assumptions_and_retries(tmp_path):
     more = estimate_run(commander, EXAMPLES, findings_per_batch=30)
     assert more.calls_typical > base.calls_typical and more.calls_exact == base.calls_exact
     gen = next(c for c in base.by_agent if c.agent == "whitebox_test_generator")
-    assert gen.calls_exact is None and gen.calls_typical > 0  # scenario-only agent
+    assert gen.calls_exact is None and gen.calls_typical > 0  # 只有情境估算的代理 ／ scenario-only agent
     retried = VibeHarnessCommander(config_path=_config(tmp_path, {"retry_invalid_output": 2}), execution_mode="mock")
     assert estimate_run(retried, EXAMPLES).calls_max > base.calls_max
     capped = VibeHarnessCommander(config_path=_config(tmp_path, {"max_model_calls": 3}), execution_mode="mock")
@@ -87,7 +89,7 @@ def test_estimate_honours_file_selection(tmp_path):
     empty = tmp_path / "empty"
     empty.mkdir()
     est = estimate_run(VibeHarnessCommander(config_path=CONFIG, execution_mode="mock"), str(empty))
-    assert est.calls_exact == 1  # one code-less threat-model batch
+    assert est.calls_exact == 1  # 一個沒有程式碼的威脅建模批次 ／ one code-less threat-model batch
     assert any("No analyzable symbols" in w for w in est.warnings)
 
 

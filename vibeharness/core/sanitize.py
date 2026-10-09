@@ -1,4 +1,11 @@
-"""Trust-boundary hygiene for text crossing between the target, the models and the reports.
+"""跨越目標、模型與報告之間的文字的信任邊界衛生措施。
+
+harness 本身就是一個 LLM 應用：目標的原始碼對每個審查者、驗證者與產生器的提示詞而言
+都是不受信任的輸入（OWASP LLM01:2026 間接提示注入、MITRE ATLAS
+AML.T0051.001），而模型輸出對主控台、Markdown 與 SARIF 報告而言也是不受信任的輸入
+（LLM10:2026 不當輸出處理、AML.T0077 LLM 回應渲染）。這些輔助函式是這些邊界上的
+確定性控制措施；沒有任何一個依賴模型來管束模型。
+Trust-boundary hygiene for text crossing between the target, the models and the reports.
 
 The harness is itself an LLM application: the target's source code is untrusted input to every
 reviewer, verifier and generator prompt (OWASP LLM01:2026 indirect prompt injection, MITRE ATLAS
@@ -9,6 +16,9 @@ deterministic controls at those boundaries; none of them relies on a model to po
 import re
 from typing import List, Tuple
 
+# 一般渲染下看不見、卻能夾帶指令或走私位元組的字元
+# （OWASP LLM01:2026 緩解措施 #5）：Unicode 標籤區塊、變體選擇器（含用於
+# 位元組走私的補充區）、零寬字元，以及雙向控制字元（Trojan Source）。
 # Characters that are invisible in normal rendering but carry instructions or smuggled bytes
 # (OWASP LLM01:2026 mitigation #5): Unicode tag block, variation selectors (incl. the supplement
 # used for byte smuggling), zero-width characters, and bidirectional controls (Trojan Source).
@@ -18,6 +28,8 @@ _VARIATION_SELECTORS_SUPPLEMENT = (0xE0100, 0xE01EF)
 _ZERO_WIDTH = {0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF, 0x180E}
 _BIDI_CONTROLS = set(range(0x202A, 0x202F)) | set(range(0x2066, 0x206A)) | {0x200E, 0x200F, 0x061C}
 
+# 在原始碼中沒有正當用途的子集合：只要出現就會回報為一個發現。
+# （ZWJ／ZWNJ、U+FE0E／FE0F 與 LRM／RLM 會出現在一般的 emoji 與 RTL 文字中，所以只剔除、不列入發現。）
 # Subset with no legitimate use in source code: their presence is reported as a finding.
 # (ZWJ/ZWNJ, U+FE0E/FE0F and LRM/RLM appear in ordinary emoji and RTL text, so they are only stripped.)
 _SUSPICIOUS_HIGH = "tag-block / variation-selector-supplement / bidirectional-override characters"
@@ -25,7 +37,8 @@ _SUSPICIOUS_MEDIUM = "zero-width characters"
 
 
 def _invisible_kind(cp: int) -> str:
-    """'' for a visible character, else 'high', 'medium' or 'benign' (stripped but not reported)."""
+    """可見字元回傳 ''，否則回傳 'high'、'medium' 或 'benign'（會被剔除但不列入發現）。
+    '' for a visible character, else 'high', 'medium' or 'benign' (stripped but not reported)."""
     if _TAG_BLOCK[0] <= cp <= _TAG_BLOCK[1] or _VARIATION_SELECTORS_SUPPLEMENT[0] <= cp <= _VARIATION_SELECTORS_SUPPLEMENT[1]:
         return "high"
     if cp in _BIDI_CONTROLS:
@@ -38,14 +51,18 @@ def _invisible_kind(cp: int) -> str:
 
 
 def strip_invisible(text: str) -> str:
-    """Removes every invisible/bidi control character listed above."""
+    """移除上面列出的每一個不可見／雙向控制字元。
+    Removes every invisible/bidi control character listed above."""
     if text.isascii():
         return text
     return "".join(ch for ch in text if not _invisible_kind(ord(ch)))
 
 
 def find_invisible(text: str) -> List[Tuple[int, str, str]]:
-    """(1-based line, severity 'HIGH'/'MEDIUM', description) per line holding reportable invisible characters.
+    """(1 起算的行號, 嚴重度 'HIGH'／'MEDIUM', 說明)，每一含有應回報的不可見字元的行各一筆。
+
+    檔案最開頭的位元組順序標記（BOM）是編碼產物而非攻擊，會被忽略。
+    (1-based line, severity 'HIGH'/'MEDIUM', description) per line holding reportable invisible characters.
 
     A byte-order mark at the very start of a file is an encoding artifact, not an attack, and is ignored.
     """
@@ -61,6 +78,8 @@ def find_invisible(text: str) -> List[Tuple[int, str, str]]:
     return hits
 
 
+# 具有獨特、低誤判形狀的憑證格式。目標程式碼會送到外部的
+# 模型供應商，所以寫死的機密會先被遮蔽（LLM02:2026／AML.T0055 Unsecured Credentials）。
 # Credential formats with a distinctive, low-false-positive shape. Target code is sent to external
 # model providers, so hard-coded secrets are redacted first (LLM02:2026 / AML.T0055 Unsecured Credentials).
 _SECRET_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
@@ -77,7 +96,8 @@ _SECRET_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
 
 
 def find_secrets(text: str) -> List[Tuple[int, str]]:
-    """(1-based line, kind) for every hard-coded credential found."""
+    """(1 起算的行號, 類型)，每一個找到的寫死憑證各一筆。
+    (1-based line, kind) for every hard-coded credential found."""
     hits: List[Tuple[int, str]] = []
     for kind, pattern in _SECRET_PATTERNS:
         for m in pattern.finditer(text):
@@ -91,6 +111,10 @@ def redact_secrets(text: str) -> str:
     return text
 
 
+# 對象是 AI 審查者或稽核者、而非人類讀者的指令：目標程式碼
+# 試圖說服 harness 的模型對缺陷保持沉默（LLM01:2026、AML.T0051.001）。
+# 刻意收窄範圍：一般助理的系統提示詞（"You are a helpful assistant"）在
+# LLM 應用中很常見，不會被比對到。
 # Instructions addressed to an AI reviewer/auditor rather than to a human reader: a target that
 # tries to talk the harness's models out of reporting defects (LLM01:2026, AML.T0051.001).
 # Deliberately narrow: generic assistant system prompts ("You are a helpful assistant") are normal
@@ -107,28 +131,38 @@ _INJECTION_PATTERNS = [
     re.compile(r"\b(?:ai|llm)\s+(?:auditors?|reviewers?|code\s+reviewers?|security\s+scanners?)\s*[:,]", re.I),
     re.compile(r"\b(?:mark|classify|treat|consider)\s+(?:this|the)\s+(?:code|file|module|function)\s+as\s+"
                r"(?:safe|secure|verified|clean|ready_to_ship)\b", re.I),
+    # 單獨出現的判定名稱不算指令：harness 程式碼、CI 腳本與讀取
+    # JSON 報告的工具本來就會比對判定名稱。只有要求審查者
+    # 產出該判定的句子才會被標記。
     # The verdict name alone is not an instruction: harness code, CI scripts and tools that consume
     # the JSON report legitimately compare against the verdict name. Only sentences that tell the
     # reviewer to produce that verdict are flagged.
     re.compile(r"\b(?:mark|report|return|output|rate|grade|classify|declare|verdict\s+(?:is|should\s+be|must\s+be)|"
                r"status\s+(?:is|should\s+be|must\s+be))\b[^\n]{0,40}\bREADY_TO_SHIP\b", re.I),
+    # 中文（正體與簡體）：與上述相同的指令句型。來自臺灣與中國大陸的
+    # vibe-coding 專案常帶中文註解，只看英文的規則會完全看不到。
     # Chinese (Traditional and Simplified): the same instructions as above. Vibe-coded projects from
     # Taiwan and China carry Chinese comments, where an English-only rule would see nothing.
+    # 英文的 ignore / disregard（the previous / above / system）instructions、rules、prompts 句型的中文對應
     # ignore / disregard (the previous / above / system) instructions, rules or prompts
     re.compile(r"(?:忽略|無視|无视|不理會|不理会|略過|略过|撤銷|撤销|覆蓋|覆盖)(?:所有|全部|任何)?(?:先前|之前|上述|以上|上面|前面|系統|系统)?的?"
                r"(?:指令|指示|提示詞|提示词|提示|規則|规则|說明|说明|限制)"),
+    # 英文的 do not report / flag / mention … this defect / issue / function / code 句型的中文對應
     # do not report / flag / mention … this defect, issue, function or code
     re.compile(r"(?:不要|不得|請勿|请勿|別|勿|禁止)(?:回報|回报|報告|报告|標記|标记|標示|标示|提及|列出|指出|揭露|舉報|举报)"
                r"[^\n]{0,12}?(?:缺陷|漏洞|問題|问题|發現|发现|錯誤|错误|函式|函数|程式碼|代码|這|这|此|該|该|任何)"),
+    # 英文的 report / output zero / no findings、issues、vulnerabilities 句型的中文對應
     # report / output zero or no findings, issues or vulnerabilities
     re.compile(r"(?:回報|回报|報告|报告|輸出|输出|回傳|回传|回覆|回复|回答)(?:為|为|：|:)?\s*(?:零|沒有|没有|無|无|空的?)(?:任何)?"
                r"(?:發現|发现|問題|问题|漏洞|缺陷|錯誤|错误|威脅|威胁|風險|风险)"),
+    # 針對 AI 或審查者所寫的英文 note / message 句型（受詞為 the AI / the reviewer）的中文對應，以及行首的 "<AI reviewer>:"
     # a note addressed to the AI / the reviewer (給…的注意事項), and "<AI reviewer>:" as a line prefix
     re.compile(r"(?:給|给|致|告訴|告诉|寫給|写给|提醒)\s*"
                r"(?:(?:AI|LLM|人工智慧|人工智能|語言模型|语言模型|大模型|模型)\s*(?:審查者|审查者|審核者|审核者|稽核者|審查員|审查员|助理|助手)?"
                r"|(?:審查者|审查者|審核者|审核者|稽核者|審查員|审查员))"
                r"(?:的)?\s*(?:注意事項|注意事项|注意|備註|备注|說明|说明|指示|指令|提示|訊息|信息)"),
     re.compile(r"(?:AI|LLM|人工智慧|人工智能|語言模型|语言模型)\s*(?:審查者|审查者|審核者|审核者|稽核者|審查員|审查员|評審|评审|助理|助手)\s*[:：，,]"),
+    # 宣稱受稽核的程式碼安全、沒問題、可通過，或直接給它通過判定的句型（英文 treat … as safe 句型的中文對應）
     # calling the audited code safe, fine, passing or giving it the pass verdict (視為…安全 and friends)
     re.compile(r"(?:將|将|把)?(?:此|這|这|本|該|该)?(?:程式碼|代码|程式|檔案|文件|模組|模块|函式|函数|專案|项目)?"
                r"(?:視為|视为|標記為|标记为|標示為|标示为|判定為|判定为|當作|当作|認定為|认定为|評為|评为)"
@@ -137,7 +171,8 @@ _INJECTION_PATTERNS = [
 
 
 def find_injection_markers(text: str) -> List[Tuple[int, str]]:
-    """(1-based line, matched phrase) for reviewer-directed instructions embedded in the target."""
+    """(1 起算的行號, 比對到的片語)，每一個嵌在目標中、針對審查者的指令各一筆。
+    (1-based line, matched phrase) for reviewer-directed instructions embedded in the target."""
     hits: List[Tuple[int, str]] = []
     for lineno, line in enumerate(strip_invisible(text).splitlines(), start=1):
         for pattern in _INJECTION_PATTERNS:
@@ -149,13 +184,17 @@ def find_injection_markers(text: str) -> List[Tuple[int, str]]:
 
 
 def prepare_untrusted_code(text: str) -> str:
-    """Target source as it may be shown to a model: invisible characters stripped, secrets redacted."""
+    """可呈現給模型的目標原始碼：不可見字元已剔除、機密已遮蔽。
+    Target source as it may be shown to a model: invisible characters stripped, secrets redacted."""
     return redact_secrets(strip_invisible(text))
 
 
 UNTRUSTED_CODE_OPEN = "<untrusted_target_code>"
 UNTRUSTED_CODE_CLOSE = "</untrusted_target_code>"
 
+# 附加到每個會讀取目標程式碼的代理的系統提示詞之後（LLM01:2026 緩解措施 #1／#6：
+# 宣告式的角色限制，加上標示來源的外部內容通道）。這能降低、
+# 但無法消除注入成功的機率；閘門從不單憑模型的「沒有發現」就放行。
 # Appended to the system prompt of every agent that reads target code (LLM01:2026 mitigations #1/#6:
 # declarative role limits plus a provenance-labeled channel for external content). This reduces,
 # but cannot eliminate, injection success; the gate never trusts a model's "nothing found" alone.
@@ -169,18 +208,21 @@ UNTRUSTED_CODE_POLICY = (
 
 
 def untrusted_block(content: str) -> str:
-    """Wraps target code in the provenance-labeled channel; a forged closing tag inside it is neutralized."""
+    """把目標程式碼包進標示來源的通道；其中偽造的結尾標籤會被中和。
+    Wraps target code in the provenance-labeled channel; a forged closing tag inside it is neutralized."""
     neutralized = re.sub(r"</?\s*untrusted_target_code\s*>", "<!-- tag removed -->", content, flags=re.I)
     return f"{UNTRUSTED_CODE_OPEN}\n{neutralized}\n{UNTRUSTED_CODE_CLOSE}"
 
 
+# 終端機跳脫序列（CSI／OSC，含 OSC 52 剪貼簿寫入）與其他 C0／C1 控制字元
 # Terminal escape sequences (CSI/OSC incl. OSC 52 clipboard writes) and other C0/C1 controls
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[@-Z\\-_])")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
 
 def clean_model_text(text: str) -> str:
-    """Model-authored free text with terminal escapes, control and invisible characters removed."""
+    """模型撰寫的自由文字，已移除終端機跳脫序列、控制字元與不可見字元。
+    Model-authored free text with terminal escapes, control and invisible characters removed."""
     if not text:
         return text
     return strip_invisible(_CONTROL_RE.sub("", _ANSI_RE.sub("", text.replace("\r\n", "\n"))))
@@ -191,7 +233,9 @@ _HTML_TAG_RE = re.compile(r"<(?=[A-Za-z/!?])")
 
 
 def markdown_safe(text: str) -> str:
-    """Model text for a Markdown report: images and raw HTML are defanged so a rendered report cannot
+    """用於 Markdown 報告的模型文字：圖片與原始 HTML 會被去除攻擊性，讓渲染後的報告無法
+    載入攻擊者的 URL（圖片 URL 外洩，LLM10:2026 #7）；其餘內容維持可讀。
+    Model text for a Markdown report: images and raw HTML are defanged so a rendered report cannot
     load attacker URLs (image-URL exfiltration, LLM10:2026 #7); everything else stays readable."""
     return _HTML_TAG_RE.sub("&lt;", _MD_IMAGE_RE.sub(r"!\\[", clean_model_text(text or "")))
 

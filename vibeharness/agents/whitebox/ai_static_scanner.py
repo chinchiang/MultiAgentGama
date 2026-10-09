@@ -1,4 +1,14 @@
-"""Deterministic AI-security rules over the target's source (no model is involved).
+"""對目標原始碼執行確定性的 AI 安全規則（不涉及任何模型）。
+
+模型審查者產生的是假設，而被植入文字的目標可以說服它們放棄（OWASP LLM01:2026）；
+這些規則則無法被說服。它們涵蓋 OWASP Top 10 for LLM Applications 2026 與 MITRE ATLAS
+針對整合 AI 的應用程式特別點出的程式碼層級模式：不安全的模型成品載入與未固定版本的模型下載
+（LLM04 Supply Chain / AML.T0010、AML.T0011.000）、模型輸出流入程式碼執行點
+（LLM10 Improper Output Handling / AML.T0050）、沒有上限的模型呼叫
+（LLM06 Unbounded Consumption / AML.T0034）、寫死的憑證（LLM02 / AML.T0055），
+以及針對審查者的提示詞注入或植入程式碼中的不可見字元（LLM01 / AML.T0051.001、AML.T0068）
+—— 後兩者也會破壞本框架自身由模型驅動的階段。
+Deterministic AI-security rules over the target's source (no model is involved).
 
 Model reviewers produce hypotheses that an injected target can talk them out of (OWASP LLM01:2026);
 these rules cannot be argued with. They cover the code-level patterns the OWASP Top 10 for LLM
@@ -21,6 +31,7 @@ from vibeharness.core.sanitize import clean_model_text, find_injection_markers, 
 
 logger = logging.getLogger("VibeHarness.AIStaticScanner")
 
+# 匯入後即代表目標是整合 AI/LLM 之應用程式的 Python 模組
 # Python modules whose import marks the target as an AI/LLM-integrated application
 AI_PYTHON_MODULES = {
     "openai", "anthropic", "litellm", "langchain", "langchain_core", "langchain_community", "langchain_openai",
@@ -35,6 +46,7 @@ _AI_JS_PACKAGE_RE = re.compile(
     r"""ollama|@huggingface/[\w-]+|@mistralai/mistralai|groq-sdk|@modelcontextprotocol/sdk)['"]"""
 )
 
+# 規則目錄：id -> 該規則每次命中共用的中繼資料
 # Rule catalogue: id -> metadata shared by every hit of the rule
 RULES: Dict[str, Dict[str, str]] = {
     "VH-AI-001": {
@@ -113,6 +125,7 @@ RULES: Dict[str, Dict[str, str]] = {
     },
 }
 
+# 命中後會讓本框架自身由模型驅動的判定結果存疑的規則（證據缺口）
 # Rules whose hits put the harness's own model-driven verdicts in doubt (evidence gaps)
 REVIEW_INTEGRITY_RULES = {"VH-AI-008", "VH-AI-009"}
 _MAX_HITS_PER_RULE_PER_FILE = 20
@@ -123,6 +136,7 @@ _UNSAFE_DESERIALIZERS = {
 }
 _HUB_DOWNLOADERS = {"huggingface_hub.hf_hub_download", "huggingface_hub.snapshot_download", "transformers.pipeline"}
 _HUB_ID_RE = re.compile(r"^[A-Za-z0-9][\w.\-]*/[\w.\-]+$")
+# LLM SDK 補全呼叫的字尾（只在匯入 AI SDK 的檔案中比對）
 # Call suffixes of LLM SDK completions (only matched in files that import an AI SDK)
 _LLM_CALL_SUFFIXES = (
     "chat.completions.create", "completions.create", "responses.create", "messages.create", "messages.stream",
@@ -138,7 +152,8 @@ _SQL_SINK_ATTRS = {"execute": "CWE-89", "executemany": "CWE-89", "executescript"
 
 
 class AISecurityStaticScanner:
-    """Runs the VH-AI-* rules over source files; `ai_components` lists the AI SDKs the target imports."""
+    """對原始碼檔案執行 VH-AI-* 規則；`ai_components` 列出目標匯入的 AI SDK。
+    Runs the VH-AI-* rules over source files; `ai_components` lists the AI SDKs the target imports."""
 
     def __init__(self) -> None:
         self.ai_components: List[str] = []
@@ -151,7 +166,7 @@ class AISecurityStaticScanner:
                 with open(path, "r", encoding="utf-8") as f:
                     text = f.read()
             except (OSError, UnicodeDecodeError):
-                continue  # the extractor already reports unreadable files as parse failures
+                continue  # 擷取器已把無法讀取的檔案回報為解析失敗 ／ the extractor already reports unreadable files as parse failures
             findings.extend(self._scan_text_rules(path, text))
             if path.endswith(".py"):
                 found, file_components = self._scan_python(path, text)
@@ -181,7 +196,8 @@ class AISecurityStaticScanner:
         )
 
     def _scan_text_rules(self, path: str, text: str) -> List[StaticFinding]:
-        """Language-agnostic rules: credentials, invisible characters, reviewer-directed instructions."""
+        """與語言無關的規則：憑證、不可見字元、針對審查者的指示文字。
+        Language-agnostic rules: credentials, invisible characters, reviewer-directed instructions."""
         out = [self._finding("VH-AI-007", path, line, f"{kind} literal (value redacted)") for line, kind in find_secrets(text)]
         out += [self._finding("VH-AI-008", path, line, desc, severity=sev) for line, sev, desc in find_invisible(text)]
         out += [self._finding("VH-AI-009", path, line, phrase) for line, phrase in find_injection_markers(text)]
@@ -204,19 +220,21 @@ class AISecurityStaticScanner:
                 findings.extend(self._call_rules(path, node, aliases, imports_ai))
             elif imports_ai and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
                 findings.extend(self._taint_rule(path, node, aliases))
+        # 頂層套件在報告中較易讀（"google.genai" 保持完整限定名稱）
         # Top-level packages read better in the report ("google.genai" stays qualified)
         return findings, {c if c.startswith("google.") else c.split(".")[0] for c in components}
 
     @staticmethod
     def _import_aliases(tree: ast.Module) -> Dict[str, str]:
-        """Local name -> fully dotted import target (`import numpy as np` -> np: numpy)."""
+        """本地名稱 -> 完整點號分隔的匯入目標（`import numpy as np` -> np: numpy）。
+        Local name -> fully dotted import target (`import numpy as np` -> np: numpy)."""
         aliases: Dict[str, str] = {}
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for a in node.names:
                     aliases[a.asname or a.name.split(".")[0]] = a.name if a.asname else a.name.split(".")[0]
                     if not a.asname:
-                        aliases[a.name] = a.name  # `import google.genai` keeps the dotted form resolvable
+                        aliases[a.name] = a.name  # `import google.genai` 讓點號形式仍可解析 ／ `import google.genai` keeps the dotted form resolvable
             elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
                 for a in node.names:
                     aliases[a.asname or a.name] = f"{node.module}.{a.name}"
@@ -282,7 +300,11 @@ class AISecurityStaticScanner:
         return None
 
     def _taint_rule(self, path: str, scope: ast.AST, aliases: Dict[str, str]) -> List[StaticFinding]:
-        """VH-AI-006: names assigned from an LLM call (and names derived from them) reaching an exec/SQL sink.
+        """VH-AI-006：由 LLM 呼叫指派的名稱（以及由它們衍生的名稱）流到 exec/SQL 執行點。
+
+        刻意只在範疇內且不考慮流程：便宜、確定，並偏向 vibe coding 會產生的
+        直接 `answer = llm(...); eval(answer)` 形態。
+        VH-AI-006: names assigned from an LLM call (and names derived from them) reaching an exec/SQL sink.
 
         Intra-scope and flow-insensitive on purpose: cheap, deterministic, and biased toward the
         direct `answer = llm(...); eval(answer)` shape vibe coding produces.
@@ -290,7 +312,7 @@ class AISecurityStaticScanner:
         body = self._own_nodes(scope)
         tainted: Set[str] = set()
         assigns = [n for n in body if isinstance(n, (ast.Assign, ast.AnnAssign, ast.AugAssign))]
-        for _ in range(4):  # fixpoint over derived assignments
+        for _ in range(4):  # 對衍生指派取定點 ／ fixpoint over derived assignments
             before = len(tainted)
             for a in assigns:
                 if a.value is not None and self._expr_tainted(a.value, tainted, aliases):
@@ -317,7 +339,8 @@ class AISecurityStaticScanner:
 
     @staticmethod
     def _own_nodes(scope: ast.AST) -> List[ast.AST]:
-        """Nodes of this scope, not descending into nested functions/classes (they are scanned on their own)."""
+        """此範疇的節點，不深入巢狀的函式／類別（它們會各自被掃描）。
+        Nodes of this scope, not descending into nested functions/classes (they are scanned on their own)."""
         nodes: List[ast.AST] = []
         stack = list(ast.iter_child_nodes(scope))
         while stack:

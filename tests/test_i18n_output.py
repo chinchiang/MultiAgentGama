@@ -1,4 +1,4 @@
-"""雙語輸出（中文 ／ English）：原因字串與報告欄位是雙語，送給模型的提示詞維持純英文。
+"""雙語輸出（中文 ／ English）：原因字串與報告欄位是雙語，模型提示詞維持純英文。
 Bilingual output (Chinese / English): reason strings and report-bound fields are bilingual while
 every prompt sent to a model stays English-only."""
 import json
@@ -29,6 +29,7 @@ def _bilingual(text: str) -> bool:
     return bool(sep) and has_cjk(zh) and not has_cjk(en)
 
 
+# --- 重試提示詞 --------------------------------------------------------------------------------
 # --- Retry prompt -------------------------------------------------------------------------------
 
 def test_retry_prompt_built_from_a_bilingual_reason_has_no_cjk(fake_live):
@@ -47,12 +48,15 @@ def test_retry_prompt_built_from_a_bilingual_reason_has_no_cjk(fake_live):
     assert len(prompts) == 2 and prompts[1].startswith("audit this")
     assert "could not be used (response is not valid JSON)" in prompts[1]
     assert not has_cjk(prompts[1])
+    # 即使提示詞只帶了英文那一半，登記的原因仍維持雙語
     # The booked reason stays bilingual even though the prompt only carried its English half
     assert gw.call_log[0].mode == "retried" and _bilingual(gw.call_log[0].reason)
+    # 無論格式化進去的原因為何，範本本身永遠不含 CJK
     # The template itself never contains CJK, whatever reason is formatted into it
     assert not has_cjk(_RETRY_SUFFIX.format(reason=en_only(REASON_NOT_VALID_JSON)))
 
 
+# --- 代理的提示詞維持英文 -----------------------------------------------------------------------
 # --- Agent prompts stay English ---------------------------------------------------------------------
 
 def _finding(fid="WB-CLA-01", model="claude"):
@@ -72,6 +76,7 @@ def _threat():
 
 
 def test_agent_system_prompts_contain_no_cjk(fake_live, tmp_path):
+    # 審查者的預設值（名稱／焦點）是雙語：提示詞仍必須只含英文
     # Reviewer defaults (name / focus) are bilingual: the prompt must still carry English only
     prompts = []
 
@@ -92,7 +97,7 @@ def test_agent_system_prompts_contain_no_cjk(fake_live, tmp_path):
 
     gw = LLMGateway(CONFIG, execution_mode="live")
     reviewer = HeterogeneousReviewerEnsemble(gw)
-    for r in reviewer.reviewer_agents:  # force the bilingual defaults into the prompt path
+    for r in reviewer.reviewer_agents:  # 強制讓雙語預設值走進提示詞路徑 ／ force the bilingual defaults into the prompt path
         r["name"] = "審查者（x） ／ Reviewer (x)"
         r["focus"] = "一般正確性與安全缺陷 ／ General correctness and security defects"
     reviewer.review_symbols(symbols, root_dir=str(tmp_path))
@@ -113,6 +118,7 @@ def test_agent_system_prompts_contain_no_cjk(fake_live, tmp_path):
     assert all("Your primary focus: General correctness and security defects." in s for s in reviewer_prompts)
 
 
+# --- AI 靜態掃描器規則目錄 ----------------------------------------------------------------------
 # --- AI static scanner rule catalogue ----------------------------------------------------------------
 
 def test_rules_titles_are_bilingual_and_evidence_stays_ascii(tmp_path):
@@ -134,14 +140,17 @@ def test_rules_titles_are_bilingual_and_evidence_stays_ascii(tmp_path):
     assert findings
     for f in findings:
         assert _bilingual(f.title) and _bilingual(f.remediation)
-        assert f.evidence.isascii(), f.evidence  # fingerprint input: never translated
+        assert f.evidence.isascii(), f.evidence  # 指紋的輸入：永不翻譯 ／ fingerprint input: never translated
         assert f.rule_id.isascii()
 
 
+# --- 執行器結果 --------------------------------------------------------------------------------
 # --- Executor results --------------------------------------------------------------------------------
 
 class _FailingSandbox:
-    """A Python batch whose only module failed on an assertion, with a second module that errored
+    """一個 Python 批次：唯一的模組在斷言上失敗，第二個模組則在匯入目標時出錯
+    （因此 FAILED 與 ERROR 兩種原因都會產生）。
+    A Python batch whose only module failed on an assertion, with a second module that errored
     while importing the target (so both FAILED and ERROR reasons are produced)."""
     timeout_seconds = 30
 
@@ -174,6 +183,7 @@ def test_failed_executor_result_reason_and_poc_are_bilingual(tmp_path):
     exploit, broken = results
 
     assert exploit.status == TestStatus.FAILED and exploit.is_security_exploit_confirmed
+    # 原始的斷言摘要是資料，原樣回報
     # A raw assertion summary is data and is reported as-is
     assert exploit.failure_reason == "AssertionError: boundary breached"
     poc = exploit.reproduction_poc
@@ -189,11 +199,11 @@ def test_failed_executor_result_reason_and_poc_are_bilingual(tmp_path):
     assert _bilingual(REASON_TARGET_BROKEN) and _bilingual(REASON_NOT_RUN_CORRECTLY)
     assert en_only(REASON_TARGET_BROKEN) == "Target code is broken and was never exercised by this test"
     assert en_only(REASON_NOT_RUN_CORRECTLY) == "Test could not run correctly"
-    assert "nonexistent_pkg_xyz" in broken.failure_reason  # the raw exception text is kept after the label
+    assert "nonexistent_pkg_xyz" in broken.failure_reason  # 原始例外文字保留在標籤之後 ／ the raw exception text is kept after the label
 
 
 def test_assertion_fallback_and_js_runner_reasons_are_bilingual(tmp_path):
-    executor = TestSuiteExecutor(sandbox=_FailingSandbox())  # no JS runner configured
+    executor = TestSuiteExecutor(sandbox=_FailingSandbox())  # 未設定 JS 執行器 ／ no JS runner configured
     js = GeneratedTest(test_id="J", test_type="whitebox_unit", target_component="m", title="js",
                        code="import { test } from 'node:test';\ntest('x', () => {});\n", rationale="r",
                        expected_outcome="e", source_ref="x", language="javascript")
@@ -203,6 +213,7 @@ def test_assertion_fallback_and_js_runner_reasons_are_bilingual(tmp_path):
     assert has_cjk(reason) and "JavaScript/TypeScript test was not run" in reason
     assert "no JavaScript/TypeScript runner is configured" in reason
 
+    # 沒有任何訊息的斷言失敗，會退回成一句指出測試名稱的雙語句子
     # An assertion failure without any message falls back to a bilingual sentence naming the test
     fallback = executor._aggregate(
         GeneratedTest(test_id="X", test_type="whitebox_unit", target_component="c", title="my case",

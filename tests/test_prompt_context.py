@@ -1,4 +1,5 @@
-"""Live-mode plumbing: prompts carry the target's real code and import paths, and gateway calls are robust."""
+"""live 模式的管線：提示詞帶有目標的真實程式碼與匯入路徑，而且閘道呼叫是穩健的。
+Live-mode plumbing: prompts carry the target's real code and import paths, and gateway calls are robust."""
 import json
 import os
 import re
@@ -20,6 +21,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
 
 
+# --- codecontext（程式碼脈絡）-------------------------------------------------
 # --- codecontext --------------------------------------------------------------
 
 def test_module_import_name(tmp_path):
@@ -27,12 +29,15 @@ def test_module_import_name(tmp_path):
     assert module_import_name(str(root / "pkg" / "orders.py"), str(root)) == "pkg.orders"
     assert module_import_name(str(root / "pkg" / "__init__.py"), str(root)) == "pkg"
     assert module_import_name(str(tmp_path / "elsewhere.py"), str(root)) is None
-    assert module_import_name(str(root / "my-app.py"), str(root)) is None  # not importable by name
+    assert module_import_name(str(root / "my-app.py"), str(root)) is None  # 無法依名稱匯入 ／ not importable by name
     assert module_import_name(str(root / "app.ts"), str(root)) is None
 
 
 def test_package_target_is_imported_through_its_package(tmp_path):
-    """A target directory that is itself a package must be imported via the parent directory
+    """目標目錄本身就是套件時，必須經由上層目錄匯入（沙盒也會把它放到 sys.path 上），
+    否則它自己的相對匯入會壞掉，執行器就會歸咎於目標
+    （「attempted relative import with no known parent package」）。
+    A target directory that is itself a package must be imported via the parent directory
     (which the sandbox also puts on sys.path), or its own relative imports break and the executor
     blames the target ("attempted relative import with no known parent package")."""
     pkg = tmp_path / "src" / "shop"
@@ -44,6 +49,7 @@ def test_package_target_is_imported_through_its_package(tmp_path):
     assert module_import_name(str(pkg / "__init__.py"), str(pkg)) == "shop"
     text = import_instructions(str(pkg / "app.py"), str(pkg), "checkout")
     assert "from shop.app import checkout" in text and str(tmp_path / "src") in text
+    # 普通目錄（沒有 __init__.py）維持直接形式
     # A plain directory (no __init__.py) keeps the direct form
     (pkg / "__init__.py").unlink()
     assert module_import_name(str(pkg / "app.py"), str(pkg)) == "app"
@@ -70,6 +76,8 @@ def test_offline_probe_imports_a_package_module_by_name(tmp_path):
     results, _ = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60)).execute_test_suite(
         probes, working_dir=str(pkg)
     )
+    # 探針到達了 checkout()（None 的購物車 -> TypeError）：對目標的 FAILED 判定結果，
+    # 而不是歸咎於目標相對匯入的 ERROR
     # The probe reached checkout() (None cart -> TypeError): a FAILED verdict about the target,
     # not an ERROR blaming the target's relative import
     assert results[0].status == TestStatus.FAILED, results[0].failure_reason
@@ -91,6 +99,7 @@ def test_render_symbols_respects_budget_and_reports_omissions(tmp_path):
     assert "more symbol(s) omitted" in text
 
 
+# --- AST 擷取器 -----------------------------------------------------------------
 # --- AST extractor ------------------------------------------------------------
 
 def test_flask_routes_decorators_and_parse_failures_are_reported(tmp_path):
@@ -103,7 +112,7 @@ def test_flask_routes_decorators_and_parse_failures_are_reported(tmp_path):
     symbols = extractor.parse_directory(str(tmp_path))
     route = next(s for s in symbols if s.name == "get_order")
     assert route.symbol_type == "route"
-    assert "@login_required" in route.source_code  # decorators (auth guards) are visible to reviewers
+    assert "@login_required" in route.source_code  # 裝飾器（授權防護）對審查者可見 ／ decorators (auth guards) are visible to reviewers
     assert route.parameters == ["oid", "verbose"]
     assert extractor.parse_failures == [str(tmp_path / "broken.py")]
 
@@ -117,6 +126,7 @@ def test_max_files_truncation_is_recorded(tmp_path):
     assert len(extractor.skipped_files) == 1
 
 
+# --- 審查者集成 -----------------------------------------------------------------
 # --- Reviewer ensemble ----------------------------------------------------------
 
 def test_reviewers_see_every_symbol_and_findings_are_attributed(fake_live, tmp_path):
@@ -145,6 +155,7 @@ def test_reviewers_see_every_symbol_and_findings_are_attributed(fake_live, tmp_p
     assert len({f.finding_id for f in findings}) == 4
 
 
+# --- 測試產生器：產生的測試必須能匯入目標 ------------------------------------
 # --- Test generator: the generated test must be able to import the target ----------
 
 def test_generated_test_imports_target_as_instructed_and_runs(fake_live, tmp_path):
@@ -174,7 +185,7 @@ def test_generated_test_imports_target_as_instructed_and_runs(fake_live, tmp_pat
     )
     assert "from shop.cart import total" in prompts[0]
     assert "return sum(i['price'] for i in items)" in prompts[0]
-    assert [t.test_type for t in tests] == ["whitebox_unit"]  # no fallback probes needed
+    assert [t.test_type for t in tests] == ["whitebox_unit"]  # 不需要退回探針 ／ no fallback probes needed
 
     results, _ = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60)).execute_test_suite(
         tests, working_dir=str(target)
@@ -194,6 +205,7 @@ def test_threat_model_prompt_contains_code_and_rules(fake_live, tmp_path):
     assert "API1:2023" in prompts[0]
 
 
+# --- 閘道呼叫選項與退回模型 ---------------------------------------------------
 # --- Gateway call options and fallback ---------------------------------------------
 
 def test_gateway_passes_call_options_and_uses_fallback_model(fake_live, monkeypatch):

@@ -1,4 +1,12 @@
-"""`--estimate`: how many model calls and roughly how many tokens a run would need, without making any.
+"""`--estimate`：一次執行大約需要多少模型呼叫與 token，而不實際發出任何呼叫。
+
+執行前只有兩個數字是精確的：審查者呼叫數（審查者 × 白箱批次）與
+威脅建模呼叫數（批次）。下游的一切都取決於審查者回報多少發現以及
+建模者產出多少威脅，因此那些部分是依所述假設（每批次發現數、每批次威脅數）
+計算出的情境數字，並如實標示。無法使用的回答重新詢問（`retry_invalid_output`）
+在最壞情況下會使每次 JSON 呼叫成倍；回應快取命中會讓重新執行更便宜，
+但不在預測之內。
+`--estimate`: how many model calls and roughly how many tokens a run would need, without making any.
 
 Only two numbers are exact before the run: reviewer calls (reviewers × white-box batches) and
 threat-modeling calls (batches). Everything downstream depends on how many findings the reviewers
@@ -20,6 +28,9 @@ from vibeharness.core.codecontext import batch_symbols, estimate_tokens, render_
 from vibeharness.core.i18n import bi
 from vibeharness.core.models import CodeSymbol
 
+# 程式碼清單以外的提示額外負擔（系統提示、結構描述、指引）與典型回答大小，
+# 以估計的 token 計。回答大小是線上執行的平均產出；真正的上限是
+# max_output_tokens，它是天花板而非花費。
 # Prompt overhead beyond the code listing (system prompt, schema, guidance) and typical answer sizes,
 # in estimated tokens. Answer sizes are what live runs produced on average; the real cap is
 # max_output_tokens, which is a ceiling, not a spend.
@@ -27,20 +38,21 @@ _OVERHEAD = {"reviewer": 450, "verifier": 350, "test_generator": 700, "heal": 30
 _TYPICAL_OUTPUT = {"reviewer": 1500, "verifier": 600, "test_generator": 1500, "heal": 1200, "threat_modeler": 2500, "synthesizer": 1500}
 _VERIFIER_LISTING_TOKENS = MultiModelDebater.LISTING_MAX_TOKENS
 _VERIFIER_CODE_TOKENS = MultiModelDebater.CODE_CONTEXT_TOKENS
-_PER_FINDING_CODE_TOKENS = 4000  # test_generator / scenario_builder CODE_CONTEXT_TOKENS
+_PER_FINDING_CODE_TOKENS = 4000  # test_generator / scenario_builder 的 CODE_CONTEXT_TOKENS ／ test_generator / scenario_builder CODE_CONTEXT_TOKENS
 _HEAL_ATTEMPTS_MAX = 2
 
 
 class CallEstimate(BaseModel):
-    """One agent kind's share of the run."""
+    """一種代理在本次執行中所佔的份額。
+    One agent kind's share of the run."""
     agent: str
     model_alias: str
-    calls_exact: Optional[int] = None  # known before the run (reviewers, threat modeling)
-    calls_typical: int = 0  # under the stated assumptions
-    calls_max: int = 0  # worst case under the assumptions (heals, re-asks)
+    calls_exact: Optional[int] = None  # 執行前已知（審查者、威脅建模） ／ known before the run (reviewers, threat modeling)
+    calls_typical: int = 0  # 在所述假設之下 ／ under the stated assumptions
+    calls_max: int = 0  # 假設之下的最壞情況（修復、重新詢問） ／ worst case under the assumptions (heals, re-asks)
     prompt_tokens_typical: int = 0
     output_tokens_typical: int = 0
-    basis: str = ""  # how the number was derived
+    basis: str = ""  # 數字是如何推導出來的 ／ how the number was derived
 
 
 class RunEstimate(BaseModel):
@@ -58,6 +70,7 @@ class RunEstimate(BaseModel):
     calls_max: int = 0
     prompt_tokens_typical: int = 0
     output_tokens_typical: int = 0
+    # 逐模型別名：呼叫數／token／成本（只有別名具備價格欄位時才有成本）
     # Per model alias: calls / tokens / cost (cost only when the alias has price fields)
     by_model: Dict[str, Dict[str, float]] = Field(default_factory=dict)
     estimated_cost_usd: Optional[float] = None
@@ -72,7 +85,8 @@ def _alias(gateway, agent_id: str) -> str:
 def estimate_run(
     commander, target_dir: str, findings_per_batch: float = 3.0, threats_per_batch: float = 4.0
 ) -> RunEstimate:
-    """Phase 1 (symbol extraction, no model) plus arithmetic on the agent configuration."""
+    """第 1 階段（符號擷取，不涉及模型）加上對代理設定的算術運算。
+    Phase 1 (symbol extraction, no model) plus arithmetic on the agent configuration."""
     symbols, filters = commander.select_symbols(target_dir)
     gateway = commander.gateway
     work_dir = commander.work_dir_for(target_dir)
@@ -100,6 +114,7 @@ def estimate_run(
         est.warnings.append(bi("沒有可分析的符號：審查者與測試產生器不會發出任何呼叫",
                                "No analyzable symbols: the reviewers and the test generator would make no calls"))
 
+    # 1. 審查者：精確值
     # 1. Reviewers: exact
     wb_listing_tokens = [estimate_tokens(render_symbols(b, work_dir, max_tokens=HeterogeneousReviewerEnsemble.BATCH_MAX_TOKENS)) for b in wb_batches]
     for reviewer in reviewers:
@@ -111,10 +126,12 @@ def estimate_run(
             basis=bi(f"{len(wb_batches)} 個白箱批次 × 1 次呼叫", f"{len(wb_batches)} white-box batch(es) × 1 call"),
         ))
 
+    # 2. 發現情境 -> 驗證者
     # 2. Findings scenario -> verifiers
     raw_findings = findings_per_batch * len(wb_batches) * len(reviewers)
-    distinct = raw_findings * 0.8  # some duplicates merge
+    distinct = raw_findings * 0.8  # 部分重複項會合併 ／ some duplicates merge
     for agent_id, alias in verifiers.items():
+        # 驗證者絕不裁決自家模型的發現：它只看到其他模型回報的那一份
         # A verifier never rules on its own model's findings: it sees the share reported by other models
         own_share = sum(1 for r in reviewers if r["model_alias"] == alias) / max(len(reviewers), 1)
         assigned = distinct * (1 - own_share)
@@ -127,6 +144,7 @@ def estimate_run(
                      f"~{assigned:.0f} finding(s) from other models / {MultiModelDebater.FINDINGS_PER_CALL} per call"),
         ))
 
+    # 3. 每筆已確認發現的測試產生（+ 修復）
     # 3. Test generation per confirmed finding (+ heals)
     confirmed = distinct * est.assumptions["confirmed_share"]
     gen_calls = math.ceil(confirmed * est.assumptions["tests_per_finding"])
@@ -141,6 +159,7 @@ def estimate_run(
                  f"~{confirmed:.0f} confirmed finding(s) × 1 call, + heals (typical {heal_typical}, max {_HEAL_ATTEMPTS_MAX} per test)"),
     ))
 
+    # 4. 威脅建模：精確值
     # 4. Threat modeling: exact
     tm_alias = _alias(gateway, "blackbox_threat_modeler")
     tm_listing = [estimate_tokens(render_symbols(b, work_dir, max_tokens=TM_BATCH_TOKENS)) if b else 0 for b in tm_batches]
@@ -151,6 +170,7 @@ def estimate_run(
         basis=bi(f"{len(tm_batches)} 個威脅模型批次 × 1 次呼叫", f"{len(tm_batches)} threat-model batch(es) × 1 call"),
     ))
 
+    # 5. 每個威脅的攻擊合成
     # 5. Attack synthesis per threat
     threats = math.ceil(threats_per_batch * len(tm_batches))
     sy_alias = _alias(gateway, "blackbox_test_synthesizer")
@@ -167,6 +187,7 @@ def estimate_run(
     est.prompt_tokens_typical = sum(c.prompt_tokens_typical for c in est.by_agent)
     est.output_tokens_typical = sum(c.output_tokens_typical for c in est.by_agent)
 
+    # 逐模型，設定了價格時附成本
     # Per model, with cost when prices are configured
     total_cost = 0.0
     priced = False
@@ -209,7 +230,8 @@ _COLUMN_WIDTHS = tuple(max(w, len(h)) for w, h in zip((28, 12, 6, 8, 6, 11, 11),
 
 
 def estimate_lines(est: RunEstimate) -> List[str]:
-    """Plain-text rendering (the CLI prints it; JSON output uses the model directly)."""
+    """純文字呈現（CLI 會印出它；JSON 輸出直接使用模型）。
+    Plain-text rendering (the CLI prints it; JSON output uses the model directly)."""
     w_agent, w_model, w_exact, w_typ, w_max, w_prompt, w_output = _COLUMN_WIDTHS
     h_agent, h_model, h_exact, h_typ, h_max, h_prompt, h_output, h_basis = ESTIMATE_COLUMNS
     assumptions = ', '.join(f'{k}={v:g}' for k, v in est.assumptions.items())

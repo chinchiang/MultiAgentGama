@@ -1,4 +1,5 @@
-"""Docker sandbox: host-path mapping, container hardening flags, and (when Docker is available) real runs."""
+"""Docker 沙盒：主機路徑對應、容器強化旗標，以及（Docker 可用時）真正的執行。
+Docker sandbox: host-path mapping, container hardening flags, and (when Docker is available) real runs."""
 import os
 import shutil
 import subprocess
@@ -24,14 +25,18 @@ def test_container_target_dir_uses_a_safe_name():
 
 
 @pytest.mark.parametrize("code, expected", [
+    # repr() 形式，如執行器標頭所寫
     # repr() form, as written by the executor header
     ("sys.path.insert(0, 'D:\\\\work\\\\proj')", "sys.path.insert(0, '/work/proj')"),
     ("p = 'D:\\\\work\\\\proj\\\\pkg\\\\app.py'", "p = '/work/proj/pkg/app.py'"),
+    # 原始字串與正斜線形式，磁碟機代號大小寫不拘
     # raw string and forward-slash forms, any drive-letter case
     ("p = r'd:\\work\\PROJ\\app.py'", "p = r'/work/proj/app.py'"),
     ("p = 'D:/work/proj/app.py'", "p = '/work/proj/app.py'"),
+    # 上層目錄（本機也在 sys.path 上）對應到 /work
     # the parent directory (also on sys.path locally) maps to /work
     ("sys.path.insert(0, 'D:\\\\work')", "sys.path.insert(0, '/work')"),
+    # 同前綴的同層目錄不是目標
     # a sibling directory with the same prefix is not the target
     ("p = 'D:\\\\work\\\\proj2\\\\x.py'", "p = '/work/proj2/x.py'"),
     ("p = 'E:\\\\other\\\\x.py'", "p = 'E:\\\\other\\\\x.py'"),
@@ -50,6 +55,8 @@ def test_rewrite_posix_host_paths():
 def test_only_the_target_is_mapped_and_sibling_paths_are_left_alone():
     mapping = DockerSandbox._path_mapping("/home/u/proj")
     assert mapping == [("/home/u/proj", "/work/proj")]
+    # 同層目錄沒有掛載；把它改寫成 /work/<sibling> 會指向不存在的
+    # 容器路徑。保留主機路徑能讓失敗一目了然。
     # A sibling is not mounted; rewriting it to /work/<sibling> would point at a nonexistent
     # container path. Keeping the host path makes the failure obvious.
     code = "p = '/home/u/other/x.py'"
@@ -65,7 +72,7 @@ def test_run_command_is_isolated(tmp_path, monkeypatch):
     target = tmp_path / "app"
     target.mkdir()
     run_dir = tmp_path / "run"
-    run_dir.mkdir()  # execute_pytest_files always creates it first; a root harness chmods it
+    run_dir.mkdir()  # execute_pytest_files 總是先建立它；root 身分的測試框架會對它 chmod ／ execute_pytest_files always creates it first; a root harness chmods it
     cmd, cwd, cli_env = _sandbox(network="none", memory="512m")._build_command(
         str(run_dir), ["test_vh_000.py"], str(target), True, None, {"TARGET_URL": "http://svc"}
     )
@@ -73,6 +80,9 @@ def test_run_command_is_isolated(tmp_path, monkeypatch):
     for flag in ("--rm", "--read-only", "--network none", "--cap-drop ALL", "--security-opt no-new-privileges",
                  "--memory 512m", "--pids-limit 256", "--user"):
         assert flag in joined
+    # 縱深防禦：/tmp 的 tmpfs 不得允許執行二進位檔；可寫的執行
+    # 目錄 bind 無法加上 nosuid/noexec（docker 拒絕 type=bind 的掛載旗標），因此
+    # 此斷言精確記載了所支援的強化措施。
     # defense in depth: the /tmp tmpfs must not allow executing binaries; the writable run
     # dir bind cannot take nosuid/noexec (docker rejects mount flags for type=bind), so the
     # assertion documents the supported hardening exactly.
@@ -80,8 +90,9 @@ def test_run_command_is_isolated(tmp_path, monkeypatch):
     assert f"type=bind,source={target},target=/work/app,readonly" in joined
     assert f"type=bind,source={run_dir},target=/sandbox" in joined
     assert "PYTHONPATH=/work/app:/work" in cmd and "TARGET_URL=http://svc" in cmd
-    assert "sk-secret" not in joined  # host secrets never reach the container
+    assert "sk-secret" not in joined  # 主機的祕密永遠不會進入容器 ／ host secrets never reach the container
     image_at = cmd.index(DEFAULT_DOCKER_IMAGE)
+    # 容器內的逾時後盾：即使主機端清理失敗，pytest 也會被終止
     # in-container timeout backstop: pytest dies even if host-side cleanup fails
     assert cmd[image_at + 1:image_at + 8] == [
         "timeout", "--kill-after=5", "30", "python", "-m", "pytest", "/sandbox/test_vh_000.py"
@@ -94,13 +105,13 @@ def test_custom_env_cannot_carry_credentials_or_injection_vectors(tmp_path):
     target = tmp_path / "app"
     target.mkdir()
     env = {
-        "TARGET_URL": "http://svc",           # benign, kept
-        "OPENAI_API_KEY": "sk-secret",        # credential, dropped
-        "MY_SERVICE_SECRET": "x",             # credential, dropped
-        "AWS_SESSION_TOKEN": "x",             # credential, dropped
-        "DB_PASSWORD": "x",                   # credential, dropped
-        "BASH_ENV": "/tmp/evil.sh",           # injection vector, dropped
-        "LD_PRELOAD": "/tmp/evil.so",         # injection vector, dropped
+        "TARGET_URL": "http://svc",           # 無害，保留 ／ benign, kept
+        "OPENAI_API_KEY": "sk-secret",        # 憑證，捨棄 ／ credential, dropped
+        "MY_SERVICE_SECRET": "x",             # 憑證，捨棄 ／ credential, dropped
+        "AWS_SESSION_TOKEN": "x",             # 憑證，捨棄 ／ credential, dropped
+        "DB_PASSWORD": "x",                   # 憑證，捨棄 ／ credential, dropped
+        "BASH_ENV": "/tmp/evil.sh",           # 注入途徑，捨棄 ／ injection vector, dropped
+        "LD_PRELOAD": "/tmp/evil.so",         # 注入途徑，捨棄 ／ injection vector, dropped
     }
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -120,11 +131,13 @@ def test_root_harness_runs_the_container_as_nobody(tmp_path, monkeypatch):
     assert DockerSandbox._user() == "65534:65534"
     monkeypatch.setattr(sandbox_mod.os, "getuid", lambda: 1000, raising=False)
     monkeypatch.setattr(sandbox_mod.os, "getgid", lambda: 1001, raising=False)
-    assert DockerSandbox._user() == "1000:1001"  # uid and gid need not match (e.g. GH runners)
+    assert DockerSandbox._user() == "1000:1001"  # uid 與 gid 不必相同（例如 GH runner） ／ uid and gid need not match (e.g. GH runners)
 
 
 def test_root_harness_opens_the_run_dir_for_nobody(tmp_path, monkeypatch):
-    """As root the container runs as nobody, so the run dir (junit.xml, coverage) must be writable
+    """以 root 執行時容器會以 nobody 身分執行，因此執行目錄（junit.xml、coverage）必須
+    讓它可寫；CI runner 不是 root，所以這條分支靠偽造 uid 來演練。
+    As root the container runs as nobody, so the run dir (junit.xml, coverage) must be writable
     for it; CI runners are not root, so this branch is exercised by faking the uid."""
     if not hasattr(os, "getuid"):
         pytest.skip("POSIX only")
@@ -163,6 +176,7 @@ def test_missing_docker_is_reported(tmp_path, monkeypatch):
         VibeHarnessCommander(config_path=str(cfg), execution_mode="mock")
 
 
+# --- 真正的容器執行 ---------------------------------------------------------------------
 # --- Real container runs --------------------------------------------------------------
 
 def _docker_ready() -> bool:

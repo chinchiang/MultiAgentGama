@@ -1,4 +1,5 @@
-"""Helpers that give model prompts the target's real code and an import path that works in the sandbox."""
+"""提供模型提示詞目標的真實程式碼，以及在沙盒中可用的匯入路徑的輔助函式。
+Helpers that give model prompts the target's real code and an import path that works in the sandbox."""
 import ast
 import json
 import math
@@ -15,10 +16,13 @@ _FENCE_LANG = {".py": "python", ".js": "javascript", ".jsx": "jsx", ".ts": "type
                ".mjs": "javascript", ".cjs": "javascript", ".mts": "typescript", ".cts": "typescript"}
 _JS_EXTS = {".js", ".jsx", ".mjs", ".cjs"}
 _TS_EXTS = {".ts", ".tsx", ".mts", ".cts"}
+# 不用分詞器的粗略估計：程式碼平均每個 token 約 3.5 個字元；非 ASCII（例如 CJK）約每字 1 個 token。
+# 刻意保守，以免在真實分詞器上超出預算。
 # Rough tokenizer-free estimate: code averages ~3.5 characters per token; non-ASCII (e.g. CJK) is ~1 token each.
 # Deliberately conservative so budgets are not overshot on real tokenizers.
 _ASCII_CHARS_PER_TOKEN = 3.5
 
+# 低於這個 token 數的部分區塊不值得保留；改為省略該符號
 # Below this many tokens a partial block is not worth keeping; the symbol is omitted instead
 _MIN_TRUNCATED_BLOCK_TOKENS = 80
 
@@ -31,6 +35,7 @@ def estimate_tokens(text: str) -> int:
 def truncate_to_tokens(text: str, max_tokens: int, marker: str = "\n# ... (truncated)") -> str:
     if estimate_tokens(text) <= max_tokens:
         return text
+    # 二分搜尋能塞進去的最長前綴；estimate_tokens 隨前綴長度單調遞增
     # Binary search for the longest prefix that fits; estimate_tokens is monotonic in prefix length
     lo, hi = 0, len(text)
     budget = max(max_tokens - estimate_tokens(marker), 0)
@@ -48,7 +53,14 @@ def fence_language(file_path: str) -> str:
 
 
 def import_root(root_dir: str) -> str:
-    """The directory a generated test must have on sys.path to import the target by name.
+    """產生的測試要能以名稱匯入目標，sys.path 上必須有的那個目錄。
+
+    沙盒會把目標目錄及其父目錄都放上 sys.path。當目標目錄本身就是一個套件
+    （它有 ``__init__.py``）時，裡面的模組必須透過套件匯入
+    （``from shop.app import checkout``）：直接匯入 ``app`` 會讓套件自己的相對匯入
+    （``from .models import ...``）失敗並出現 "attempted relative
+    import with no known parent package"，而執行器接著會把這歸咎於目標。
+    The directory a generated test must have on sys.path to import the target by name.
 
     The sandbox puts both the target directory and its parent on sys.path. When the target
     directory is itself a package (it has an ``__init__.py``), modules in it must be imported
@@ -64,6 +76,9 @@ def import_root(root_dir: str) -> str:
 
 def module_import_name(file_path: str, root_dir: str) -> Optional[str]:
     """
+    root_dir 底下某個 Python 檔案的點分模組名稱，可從沙盒的 sys.path
+    （root_dir，或當 root_dir 是套件時其父目錄；見 import_root）匯入；若該檔案
+    在 root_dir 之外或不是 Python，則為 None。
     Dotted module name for a Python file under root_dir, importable from the sandbox's sys.path
     (root_dir, or its parent when root_dir is a package; see import_root), or None when the file
     is outside root_dir or is not Python.
@@ -72,7 +87,7 @@ def module_import_name(file_path: str, root_dir: str) -> Optional[str]:
         return None
     try:
         rel = os.path.relpath(os.path.abspath(file_path), import_root(root_dir))
-    except ValueError:  # Windows: file and root on different drives
+    except ValueError:  # Windows：檔案與根目錄在不同磁碟機 ／ Windows: file and root on different drives
         return None
     if rel.startswith(".."):
         return None
@@ -83,7 +98,8 @@ def module_import_name(file_path: str, root_dir: str) -> Optional[str]:
 
 
 def language_for_file(file_path: str) -> str:
-    """"typescript", "javascript" or "python" (the default: the Python sandbox is the fallback)."""
+    """"typescript"、"javascript" 或 "python"（預設值：Python 沙盒是後備方案）。
+    "typescript", "javascript" or "python" (the default: the Python sandbox is the fallback)."""
     ext = os.path.splitext(file_path)[1].lower()
     if ext in _TS_EXTS:
         return "typescript"
@@ -93,12 +109,13 @@ def language_for_file(file_path: str) -> str:
 
 
 def target_file_url(file_path: str, path_cls: type = pathlib.Path) -> str:
-    """The file:// URL a Node test imports the target through (`file:///C:/proj/app.js` on Windows)."""
+    """Node 測試用來匯入目標的 file:// URL（Windows 上為 `file:///C:/proj/app.js`）。
+    The file:// URL a Node test imports the target through (`file:///C:/proj/app.js` on Windows)."""
     return path_cls(os.path.abspath(file_path)).as_uri()
 
 
 def _masked_js(source: str) -> str:
-    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor  # no cycle: it imports only models
+    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor  # 不會循環匯入：它只匯入 models ／ no cycle: it imports only models
     return ASTExtractor._mask_source(source)
 
 
@@ -124,7 +141,9 @@ def _nearest_package_type(file_path: str) -> Optional[str]:
 
 
 def js_module_kind(file_path: str, source: Optional[str] = None) -> str:
-    """"esm", "cjs" or "unknown": extension first, then the file's own top-level syntax (on masked
+    """"esm"、"cjs" 或 "unknown"：先看副檔名，再看檔案自己的最上層語法（在遮罩後的
+    原始碼上，所以註解與字串無法偽造），最後看最近的 package.json 的 "type"。
+    "esm", "cjs" or "unknown": extension first, then the file's own top-level syntax (on masked
     source, so comments and strings cannot fake it), then the nearest package.json "type"."""
     ext = os.path.splitext(file_path)[1].lower()
     if ext in (".mjs", ".mts"):
@@ -154,7 +173,8 @@ _JS_EXPORT_RES = [
 
 
 def js_exported_names(file_path: str, source: Optional[str] = None, limit: int = 30) -> List[str]:
-    """Names the file exports (ESM `export`, CommonJS `exports.x` / `module.exports = {...}`), in order."""
+    """該檔案匯出的名稱（ESM `export`、CommonJS `exports.x`／`module.exports = {...}`），依出現順序。
+    Names the file exports (ESM `export`, CommonJS `exports.x` / `module.exports = {...}`), in order."""
     if source is None:
         try:
             with open(file_path, "r", encoding="utf-8") as f:
@@ -180,12 +200,14 @@ def js_exported_names(file_path: str, source: Optional[str] = None, limit: int =
 
 
 def import_instructions(file_path: str, root_dir: str, symbol_name: Optional[str] = None) -> str:
-    """Tells the model exactly how the generated test must import the code under test."""
+    """精確地告訴模型產生的測試必須如何匯入受測程式碼。
+    Tells the model exactly how the generated test must import the code under test."""
     abs_path = os.path.abspath(file_path)
     language = language_for_file(file_path)
     if language != "python":
         return js_import_instructions(file_path, symbol_name)
     if not file_path.endswith(".py"):
+        # 既不是 Python 也不是 JS/TS：沒有東西能執行它，所以不產生匯入，也不產生可執行的測試程式碼
         # Neither Python nor JS/TS: nothing can execute it, so no import or executable test code
         return (
             f"Target file (absolute path): {abs_path}\n"
@@ -206,7 +228,9 @@ def import_instructions(file_path: str, root_dir: str, symbol_name: Optional[str
 
 
 def js_import_instructions(file_path: str, symbol_name: Optional[str] = None) -> str:
-    """How a `node:test` module (always ESM, run from a temp directory) imports the target: through its
+    """`node:test` 模組（一律是 ESM，從暫存目錄執行）如何匯入目標：透過它的
+    file:// URL，並使用符合目標模組系統的匯入形式。
+    How a `node:test` module (always ESM, run from a temp directory) imports the target: through its
     file:// URL, with the import form that matches the target's module system."""
     abs_path = os.path.abspath(file_path)
     url = target_file_url(file_path)
@@ -236,6 +260,9 @@ def js_import_instructions(file_path: str, symbol_name: Optional[str] = None) ->
 
 def class_skeleton(source: str) -> str:
     """
+    方法本體被換成 `...` 的 Python 類別。方法會被擷取成各自的符號，
+    所以若把完整類別連同它們一起呈現，每個方法本體都會被送兩次。
+    若無法解析，則原樣回傳原始碼。
     A Python class with method bodies replaced by `...`. Methods are extracted as their own symbols,
     so rendering the full class next to them would send every method body twice.
     Returns the source unchanged if it cannot be parsed.
@@ -249,6 +276,7 @@ def class_skeleton(source: str) -> str:
     if cls is None:
         return source
     lines = dedented.splitlines()
+    # 由下往上替換，讓前面的行號維持有效
     # Replace bottom-up so earlier line numbers stay valid
     methods = [n for n in cls.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
     for node in sorted(methods, key=lambda n: n.lineno, reverse=True):
@@ -256,19 +284,22 @@ def class_skeleton(source: str) -> str:
         indent = " " * node.body[0].col_offset
         if body_start > node.lineno:
             lines[body_start - 1:node.end_lineno] = [f"{indent}...  # body listed separately"]
+        # 單行方法（`def f(self): return 1`）已經和骨架一樣短
         # One-line methods (`def f(self): return 1`) are already as short as a skeleton
     return "\n".join(lines)
 
 
 def symbol_source(sym: CodeSymbol) -> str:
-    """The symbol's code as shown to models: invisible characters stripped and secrets redacted."""
+    """呈現給模型的符號程式碼：不可見字元已剔除、機密已遮蔽。
+    The symbol's code as shown to models: invisible characters stripped and secrets redacted."""
     if sym.symbol_type == "class" and sym.file_path.endswith(".py"):
         return prepare_untrusted_code(class_skeleton(sym.source_code))
     return prepare_untrusted_code(sym.source_code)
 
 
 def render_symbol(sym: CodeSymbol, root_dir: str, max_tokens: Optional[int] = None) -> str:
-    """One symbol's listing block; its source is truncated if the block alone would exceed max_tokens."""
+    """單一符號的清單區塊；若光是這個區塊就會超過 max_tokens，其原始碼會被截斷。
+    One symbol's listing block; its source is truncated if the block alone would exceed max_tokens."""
     module = module_import_name(sym.file_path, root_dir)
     header = (
         f"File: {sym.file_path} (Lines {sym.line_start}-{sym.line_end})"
@@ -284,7 +315,11 @@ def render_symbol(sym: CodeSymbol, root_dir: str, max_tokens: Optional[int] = No
 
 
 def render_symbols(symbols: Iterable[CodeSymbol], root_dir: str, max_tokens: int = 3000) -> str:
-    """Source listing of symbols (with import paths), within an estimated token budget.
+    """各符號的原始碼清單（附匯入路徑），控制在估算的 token 預算內。
+
+    超出剩餘預算的區塊會被截斷以塞進去，而不是整個省略
+    （部分程式碼仍是上下文）；只有小到無法有意義截斷的區塊才會被捨棄。
+    Source listing of symbols (with import paths), within an estimated token budget.
 
     A block that exceeds the remaining budget is truncated to fit rather than omitted
     (partial code is still context); only blocks too small to truncate meaningfully are dropped.
@@ -293,11 +328,12 @@ def render_symbols(symbols: Iterable[CodeSymbol], root_dir: str, max_tokens: int
     used = 0
     omitted = 0
     for sym in symbols:
+        # 第一個區塊一律納入（必要時截斷），讓提示詞永遠不會是空的
         # The first block is always included (truncated if needed) so the prompt is never empty
         block = render_symbol(sym, root_dir, max_tokens if not blocks else None)
         cost = estimate_tokens(block)
         if blocks and used + cost > max_tokens:
-            remaining = max_tokens - used - 2  # blank-line separator
+            remaining = max_tokens - used - 2  # 空行分隔符 ／ blank-line separator
             if remaining >= _MIN_TRUNCATED_BLOCK_TOKENS:
                 block = render_symbol(sym, root_dir, remaining)
                 cost = estimate_tokens(block)
@@ -318,6 +354,8 @@ def batch_symbols(
     symbols: List[CodeSymbol], root_dir: str, max_tokens: int, max_symbols: int
 ) -> List[List[CodeSymbol]]:
     """
+    把符號切成多個批次，每批渲染後的清單都能塞進 max_tokens，讓 render_symbols 永遠不必
+    省略任何符號。單一符號若本身就塞不進一個批次，則自成一批（並被截斷）。
     Splits symbols into batches whose rendered listing fits max_tokens, so render_symbols never has to
     omit any of them. A symbol too large for a batch on its own gets a batch to itself (and is truncated).
     """
@@ -325,7 +363,7 @@ def batch_symbols(
     current: List[CodeSymbol] = []
     used = 0
     for sym in symbols:
-        cost = estimate_tokens(render_symbol(sym, root_dir)) + 1  # +1 for the blank-line separator
+        cost = estimate_tokens(render_symbol(sym, root_dir)) + 1  # +1 是空行分隔符 ／ +1 for the blank-line separator
         if current and (used + cost > max_tokens or len(current) >= max_symbols):
             batches.append(current)
             current, used = [], 0
@@ -341,6 +379,8 @@ def file_source(file_path: str, max_tokens: int = 3000) -> str:
         with open(file_path, "r", encoding="utf-8") as f:
             text = f.read()
     except (OSError, UnicodeDecodeError):
+        # 無法解碼（非 UTF-8 或二進位）的目標必須降級成空的清單，
+        # 而不是讓整條管線崩潰。
         # Undecodable (non-UTF-8 or binary) targets must degrade to an empty listing,
         # not crash the pipeline.
         return ""

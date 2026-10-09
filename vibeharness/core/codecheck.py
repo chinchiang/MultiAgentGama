@@ -4,16 +4,20 @@ from typing import List, Optional, Tuple, Union
 
 _TestNode = Union[ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef]
 
+# 任何 ```<lang> 標籤（python、python3、Python、js、...）接著換行即開啟區塊；
+# 語言標籤本身絕不能滲入擷取出的程式碼
 # Any ```<lang> tag (python, python3, Python, js, ...) followed by a newline opens the block;
 # the language tag itself must never leak into the extracted code
 _FENCE_RE = re.compile(r"```[\w-]*[ \t]*\r?\n([\s\S]*?)```")
 
+# 使用到即算是明確檢查目標行為的 pytest 輔助函式
 # pytest helpers whose use counts as an explicit check of target behaviour
 _ASSERTING_CALLS = {"raises", "fail", "warns", "deprecated_call", "approx"}
 
 
 def strip_code_fences(text: str) -> str:
-    """Returns the first fenced code block's body if present, otherwise the stripped text."""
+    """若有圍欄程式碼區塊則回傳第一個的內容，否則回傳去除前後空白的文字。
+    Returns the first fenced code block's body if present, otherwise the stripped text."""
     if not text:
         return ""
     match = _FENCE_RE.search(text)
@@ -21,7 +25,8 @@ def strip_code_fences(text: str) -> str:
 
 
 def _top_level_test_nodes(tree: ast.Module) -> List[_TestNode]:
-    """Module-level pytest tests: `test_*` functions and `Test*` classes that contain test methods."""
+    """模組層級的 pytest 測試：`test_*` 函式，以及含有測試方法的 `Test*` 類別。
+    Module-level pytest tests: `test_*` functions and `Test*` classes that contain test methods."""
     nodes: List[_TestNode] = []
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
@@ -35,6 +40,9 @@ def _top_level_test_nodes(tree: ast.Module) -> List[_TestNode]:
 
 def _has_assertion(fn: ast.AST) -> bool:
     """
+    函式本體含有 assert、raise AssertionError，或使用 pytest.raises／fail／... 時為 True。
+    巢狀函式裡的 assert 只有在該輔助函式確實從測試本體被呼叫時才算數，
+    否則一個從未被呼叫的輔助函式就能在什麼都沒檢查的情況下通過閘門。
     True if the function body contains an assert, raises AssertionError, or uses pytest.raises/fail/...
     An assert inside a nested function counts only when that helper is actually called from the
     test body, otherwise an uncalled helper would satisfy the gate without checking anything.
@@ -48,7 +56,7 @@ def _has_assertion(fn: ast.AST) -> bool:
         node = stack.pop()
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             if isinstance(node, ast.Lambda) or node.name not in called_helpers:
-                continue  # never-called nested function: its assert proves nothing
+                continue  # 從未被呼叫的巢狀函式：它的 assert 什麼都證明不了 ／ never-called nested function: its assert proves nothing
         if isinstance(node, ast.Assert):
             return True
         if isinstance(node, ast.Raise) and node.exc is not None:
@@ -58,6 +66,9 @@ def _has_assertion(fn: ast.AST) -> bool:
         if isinstance(node, ast.Call):
             func = node.func
             name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            # 只有已知的斷言輔助函式才算數。不採用單純的 startswith("assert") 規則：
+            # 否則 mock.assert_called_once() 之類的記帳方法也會在沒有檢查任何
+            # 目標行為的情況下通過閘門。
             # Only known asserting helpers count. A bare startswith("assert") rule is not used:
             # mock.assert_called_once() and similar bookkeeping methods would otherwise satisfy
             # the gate without checking any target behaviour.
@@ -69,6 +80,9 @@ def _has_assertion(fn: ast.AST) -> bool:
 
 def check_test_code(code: str) -> Tuple[bool, Optional[str]]:
     """
+    驗證產生的 pytest 片段。
+    回傳 (is_valid, problem_description)。有效代表：能解析、至少定義一個 test_ 函式，
+    且每個 test_ 函式都含有斷言（否則空洞的測試會被算成已防禦的邊界）。
     Validates a generated pytest snippet.
     Returns (is_valid, problem_description). Valid means: parses, defines at least one test_ function,
     and every test_ function contains an assertion (a vacuous test would otherwise count as a defended boundary).
@@ -78,6 +92,7 @@ def check_test_code(code: str) -> Tuple[bool, Optional[str]]:
     try:
         tree = ast.parse(code)
     except (SyntaxError, ValueError, RecursionError) as e:
+        # ValueError：原始碼含有 null 位元組；RecursionError：巢狀深得離譜
         # ValueError: source with null bytes; RecursionError: absurdly deep nesting
         return False, f"syntax error: {e}"
     installer = _package_install_call(tree)
@@ -97,7 +112,10 @@ _INSTALL_VERB_RE = re.compile(r"\b(?:install|add)\b")
 
 
 def _package_install_call(tree: ast.Module) -> Optional[str]:
-    """A call that installs packages (`pip install`, `subprocess.run([sys.executable, '-m', 'pip', 'install', ...])`,
+    """會安裝套件的呼叫（`pip install`、`subprocess.run([sys.executable, '-m', 'pip', 'install', ...])`、
+    `pip.main(['install', ...])`），否則為 None。產生的程式碼不得拉取模型可能幻想出來的套件
+    （而攻擊者可能已用該名稱註冊：MITRE ATLAS AML.T0060）。
+    A call that installs packages (`pip install`, `subprocess.run([sys.executable, '-m', 'pip', 'install', ...])`,
     `pip.main(['install', ...])`), or None. Generated code must not pull packages a model may have hallucinated
     (and an attacker may have registered under that name: MITRE ATLAS AML.T0060)."""
     for node in ast.walk(tree):
@@ -116,7 +134,8 @@ def _package_install_call(tree: ast.Module) -> Optional[str]:
 
 
 def _test_has_assertion(test_node: _TestNode) -> bool:
-    """Assertion gate for one top-level test node; for a class, any test method with an assertion counts."""
+    """單一最上層測試節點的斷言閘門；若是類別，任一含斷言的測試方法即算數。
+    Assertion gate for one top-level test node; for a class, any test method with an assertion counts."""
     if isinstance(test_node, ast.ClassDef):
         return any(
             _has_assertion(m) for m in test_node.body
@@ -125,6 +144,7 @@ def _test_has_assertion(test_node: _TestNode) -> bool:
     return _has_assertion(test_node)
 
 
+# --- JavaScript／TypeScript（node:test 模組）-----------------------------------------------
 # --- JavaScript / TypeScript (node:test modules) -----------------------------------------------
 
 _JS_TEST_CALL_RE = re.compile(r"(?<![\w.$])(?:test|it)\s*\(")
@@ -135,7 +155,7 @@ _JS_OPEN, _JS_CLOSE = "([{", ")]}"
 
 
 def _js_masked(code: str) -> str:
-    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor  # no cycle: it imports only models
+    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor  # 不會循環匯入：它只匯入 models ／ no cycle: it imports only models
     return ASTExtractor._mask_source(code)
 
 
@@ -157,7 +177,11 @@ def _js_call_span(masked: str, open_paren: int) -> int:
 
 
 def check_js_test_code(code: str) -> Tuple[bool, Optional[str]]:
-    """The JS/TS counterpart of check_test_code for `node:test` modules: parses well enough (balanced
+    """check_test_code 的 JS/TS 對應版，用於 `node:test` 模組：解析得夠好（遮罩後的原始碼
+    分隔符平衡）、不安裝任何東西、至少定義一個 test()／it() 呼叫，且每個
+    測試都有斷言。這裡沒有 JS 解析器，所以閘門只是詞法層級的近似；
+    無法解析的部分由 Node 在執行期回報（歸類為 harness 錯誤，而非缺陷）。
+    The JS/TS counterpart of check_test_code for `node:test` modules: parses well enough (balanced
     delimiters on masked source), installs nothing, defines at least one test()/it() call, and every
     test asserts on something. There is no JS parser here, so the gate is a lexer-level approximation;
     Node itself reports what it cannot parse at run time (classified as a harness error, not a defect)."""
@@ -188,7 +212,8 @@ def check_js_test_code(code: str) -> Tuple[bool, Optional[str]]:
 
 
 def check_test_code_for(code: str, language: str) -> Tuple[bool, Optional[str]]:
-    """Dispatches to the gate for the test's language."""
+    """依測試的語言分派到對應的閘門。
+    Dispatches to the gate for the test's language."""
     if language in ("javascript", "typescript"):
         return check_js_test_code(code)
     return check_test_code(code)

@@ -19,16 +19,18 @@ CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
 _ASCII_LETTER_RE = re.compile(r"[A-Za-z]")
 
 
+# --- i18n 工具 ---------------------------------------------------------------------------------
 # --- i18n helpers ---------------------------------------------------------------------------------
 
 def test_bi_joins_chinese_first_with_the_fullwidth_slash_separator():
-    assert SEP == " ／ "  # full-width slash with one ASCII space on each side
+    assert SEP == " ／ "  # 全形斜線，前後各一個半形空格 ／ full-width slash with one ASCII space on each side
     assert bi("測試", "Test") == "測試 ／ Test"
     assert bi("測試", "Test").startswith("測試") and bi("測試", "Test").endswith("Test")
 
 
 def test_en_only_returns_the_english_half_after_the_last_separator():
     assert en_only(bi("測試", "Test")) == "Test"
+    # 巢狀：雙語標籤後接雙語句子時，只保留最後一個英文半段
     # nested: a bilingual label followed by a bilingual sentence keeps only the last English half
     assert en_only(bi("甲", "A") + ": " + bi("乙", "B")) == "B"
     assert en_only("plain English") == "plain English"
@@ -44,10 +46,12 @@ def test_has_cjk_detects_ideographs_only():
     assert not has_cjk(None)  # type: ignore[arg-type]  # tolerated like an empty string
 
 
+# --- Markdown 報告 -------------------------------------------------------------------------------
 # --- Markdown report ------------------------------------------------------------------------------
 
 def _markdown_report(tmp_path):
-    """A report with every section populated (findings, test results, PoC, untested threats, baseline)."""
+    """每個章節都有內容的報告（發現、測試結果、PoC、未測試的威脅、基準線）。
+    A report with every section populated (findings, test results, PoC, untested threats, baseline)."""
     from vibeharness.core.models import (
         BaselineSuppressedItem, FindingSeverity, GeneratedTest, MultiModelDebateResult, ReviewFinding,
         STRIDECategory, TestExecutionResult, TestStatus, ThreatItem, ThreatModelReport, VibeHarnessSummary,
@@ -90,7 +94,7 @@ def _markdown_report(tmp_path):
 def test_every_markdown_heading_is_bilingual(tmp_path):
     md = _markdown_report(tmp_path)
     headings = [line for line in md.splitlines() if line.startswith("## ") or line.startswith("### ")]
-    assert len(headings) >= 10  # the six numbered sections plus their sub-sections
+    assert len(headings) >= 10  # 六個編號章節加上它們的子章節 ／ the six numbered sections plus their sub-sections
     for line in headings:
         assert has_cjk(line), line
         assert _ASCII_LETTER_RE.search(line), line
@@ -110,6 +114,7 @@ def test_markdown_report_uses_the_exported_constants_and_bilingual_table_headers
         assert has_cjk(constant) and SEP in constant
     assert rg.METRIC_TABLE_HEADER == "| 指標 ／ Metric | 數值 ／ Value | 目標 ／ Target |"
     assert rg.METRIC_TABLE_HEADER in md and rg.HEADING_GENERATED_TESTS in md
+    # 每一行固定的表頭都是雙語；英文欄名保留給 CI 消費端
     # Every fixed table header line is bilingual; the English column names are kept for CI consumers
     for line in md.splitlines():
         if line.startswith("| ") and "**" not in line and ":---" not in line and "`" not in line:
@@ -158,6 +163,7 @@ def test_sarif_fixed_texts_are_bilingual_but_ids_unchanged(tmp_path):
     assert sarif["runs"][0]["results"][0]["properties"]["findingId"] == "WB-CLA-01"
 
 
+# --- 管線（mock 模式）------------------------------------------------------------------------------
 # --- Pipeline (mock mode) ---------------------------------------------------------------------------
 
 def test_mock_pipeline_report_headings_and_evidence_gaps_are_bilingual(tmp_path):
@@ -177,6 +183,7 @@ def test_mock_pipeline_report_headings_and_evidence_gaps_are_bilingual(tmp_path)
     assert "／ Target revision**:" in md and "SIMULATED RESULTS" in md
 
 
+# --- --estimate（估算）----------------------------------------------------------------------------
 # --- --estimate -----------------------------------------------------------------------------------
 
 def test_estimate_lines_have_bilingual_column_headers():
@@ -207,6 +214,7 @@ def test_estimate_run_basis_and_warnings_are_bilingual(tmp_path):
     assert all(has_cjk(w) for w in est.warnings)
 
 
+# --- CLI（命令列介面）-----------------------------------------------------------------------------
 # --- CLI ------------------------------------------------------------------------------------------
 
 def test_cli_usage_errors_keep_the_prog_error_prefix_and_are_bilingual(monkeypatch, capsys):
@@ -240,3 +248,74 @@ def test_load_baseline_errors_are_bilingual(tmp_path):
     with pytest.raises(ValueError, match="cannot be read") as info:
         load_baseline(str(tmp_path / "missing.json"))
     assert has_cjk(str(info.value))
+
+
+# --- 整個儲存庫的雙語註解與文件字串 ---------------------------------------------------------------
+# --- Whole-repository bilingual comments and docstrings ----------------------------------------------
+
+_SEPARATOR_COMMENT_RE = re.compile(r"^#\s*[-=#*~_]{3,}\s*$")
+
+
+def _repo_python_files():
+    import glob
+    patterns = ("vibeharness/**/*.py", "tests/*.py", "examples/*.py", "main.py")
+    files = sorted({p for pattern in patterns for p in glob.glob(os.path.join(REPO_ROOT, pattern), recursive=True)})
+    assert files
+    return files
+
+
+def _skippable_comment(text: str) -> bool:
+    stripped = text.strip()
+    return (stripped.startswith("#!") or stripped.startswith("# type:") or stripped.startswith("# noqa")
+            or bool(_SEPARATOR_COMMENT_RE.match(stripped)))
+
+
+def test_every_python_docstring_is_bilingual():
+    """每個模組、類別與函式的文件字串都必須同時含有中日韓表意文字與至少一個 ASCII 字母。
+    Every module, class and function docstring must contain both CJK ideographs and at least one ASCII letter."""
+    import ast
+    offenders = []
+    for path in _repo_python_files():
+        tree = ast.parse(open(path, encoding="utf-8").read())
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            doc = ast.get_docstring(node, clean=False)
+            if doc is None:
+                continue
+            if not has_cjk(doc) or not _ASCII_LETTER_RE.search(doc):
+                offenders.append(f"{os.path.relpath(path, REPO_ROOT)}:{node.body[0].lineno}")
+    assert offenders == [], "\n".join(offenders)
+
+
+def test_every_comment_line_is_bilingual():
+    """每一行 `#` 註解都必須含有中日韓表意文字，或緊接在同一註解區塊中含有中日韓表意文字的註解行之後
+    （shebang、`# type:`、`# noqa` 與純分隔線除外）。
+    Every `#` comment line must contain CJK or follow, within the same comment block, a comment line that does
+    (shebangs, `# type:`, `# noqa` and pure separator lines are exempt)."""
+    import io
+    import tokenize
+    offenders = []
+    for path in _repo_python_files():
+        source = open(path, encoding="utf-8").read()
+        lines = source.splitlines()
+        comment_lines = {
+            tok.start[0]: tok.string
+            for tok in tokenize.generate_tokens(io.StringIO(source).readline)
+            if tok.type == tokenize.COMMENT
+        }
+        for lineno, text in sorted(comment_lines.items()):
+            if _skippable_comment(text) or has_cjk(text):
+                continue
+            # 往上走過同一個連續註解區塊，直到找到含中日韓表意文字的一行
+            # Walk up through the same contiguous comment block looking for a line with CJK
+            previous = lineno - 1
+            covered = False
+            while previous >= 1 and lines[previous - 1].strip().startswith("#"):
+                if has_cjk(lines[previous - 1]):
+                    covered = True
+                    break
+                previous -= 1
+            if not covered:
+                offenders.append(f"{os.path.relpath(path, REPO_ROOT)}:{lineno}: {text.strip()[:80]}")
+    assert offenders == [], "\n".join(offenders)

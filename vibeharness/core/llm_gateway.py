@@ -16,7 +16,7 @@ from vibeharness.core.sanitize import clean_model_text, redact_secrets
 
 try:
     import litellm
-except ImportError:  # pragma: no cover - litellm is an optional runtime dependency
+except ImportError:  # pragma: no cover - litellm 是選用的執行期相依套件 ／ litellm is an optional runtime dependency
     litellm = None  # type: ignore[assignment]
 
 logger = logging.getLogger("VibeHarness.LLMGateway")
@@ -25,10 +25,12 @@ DEFAULT_CONFIG_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "agents_config.yaml"
 )
 
+# 加到每個回應的鍵，讓呼叫端能分辨模擬輸出與真實模型輸出
 # Key added to every response so callers can tell simulated output from real model output
 PROVENANCE_KEY = "_provenance"
 
 DEFAULT_MAX_CONCURRENT_CALLS = 6
+# 這是上限而非花費：威脅模型 JSON 與推理模型的思考 token 在線上執行時都曾超過 4096
 # A cap, not a spend: threat-model JSON and reasoning models' thinking tokens both overflowed 4096 in live runs
 DEFAULT_MAX_OUTPUT_TOKENS = 16384
 
@@ -36,9 +38,13 @@ DEFAULT_MAX_OUTPUT_TOKENS = 16384
 BUDGET_EXHAUSTED_REASON = bi("max_model_calls 預算已用盡", "max_model_calls budget exhausted")
 REASON_NOT_VALID_JSON = bi("回應不是有效的 JSON", "response is not valid JSON")
 REASON_CALL_CRASHED = bi("代理呼叫在產生輸出前就當掉", "agent call crashed before producing output")
+# 無法使用的線上回答（非 JSON、缺少鍵、空白）在登記為 `invalid` 之前
+# 會被重新詢問的次數；每次重新詢問都是真實呼叫，會計入 max_model_calls
 # How many times an unusable live answer (not JSON, missing keys, empty) is re-asked before it is
 # booked as `invalid`; each re-ask is a real call that counts against max_model_calls
 DEFAULT_RETRY_INVALID_OUTPUT = 1
+# 附加到重新詢問的使用者提示之後，讓模型知道第一次回答哪裡有問題
+# （模型提示：維持英文；雙語原因會先經過 en_only）
 # Appended to the user prompt of a re-ask so the model knows what was wrong with its first answer
 # (model prompt: stays English; the bilingual reason goes through en_only first)
 _RETRY_SUFFIX = (
@@ -46,6 +52,8 @@ _RETRY_SUFFIX = (
     "in the instructions: no prose, no code fence, and include every required key."
 )
 
+# 設定檔中缺少的代理會解析為此別名，它沒有模型也沒有金鑰：hybrid 模式
+# 會模擬它們，而 live 模式會明確失敗，而不是悄悄地把它們導向某個真實供應商
 # Agents missing from the config resolve to this alias, which has no model and no key: hybrid mode
 # simulates them and live mode fails loudly, instead of silently routing them to some real provider
 UNCONFIGURED_ALIAS = "unconfigured"
@@ -61,11 +69,17 @@ def _zh_only(text: str) -> str:
 
 
 class LLMGatewayError(RuntimeError):
-    """Raised in strict 'live' mode when a real model invocation is impossible or fails."""
+    """在嚴格的 'live' 模式下，當真實模型呼叫不可能或失敗時拋出。
+    Raised in strict 'live' mode when a real model invocation is impossible or fails."""
 
 
 class ConfigError(ValueError):
-    """Raised when the agent configuration file is missing or unparseable.
+    """代理設定檔缺少或無法解析時拋出。
+
+    繼承自 ValueError，使防範錯誤設定值的程式碼（與測試）得以繼續運作。
+    vibeharness/cli.py 會把它對應到專用的「harness 設定錯誤」結束碼，因此絕不會
+    被誤認為針對受稽核目標的 NEEDS_FIXES 判定結果。
+    Raised when the agent configuration file is missing or unparseable.
 
     Subclasses ValueError so code (and tests) that guard against bad config values keeps working.
     vibeharness/cli.py maps this to a dedicated 'harness misconfigured' exit code so it can never be
@@ -75,6 +89,12 @@ class ConfigError(ValueError):
 
 class LLMGateway:
     """
+    統一閘道，負責協調對異質 LLM 的呼叫（預設為 Claude、GLM、DeepSeek 與 Gemini）。
+    執行模式：
+    - live：  只做真實 API 呼叫；任何缺少的金鑰或失敗都會拋出 LLMGatewayError。
+    - hybrid：可能時做真實 API 呼叫，否則使用離線模擬引擎（記錄為 simulated）。
+    - mock：  只使用模擬引擎。
+    每次呼叫都記錄在 `call_log` 中，讓報告能揭露哪些結果是模擬的。
     Unified gateway for orchestrating calls to heterogeneous LLMs (by default Claude, GLM, DeepSeek and Gemini).
     Execution modes:
     - live:   real API calls only; any missing key or failure raises LLMGatewayError.
@@ -93,9 +113,12 @@ class LLMGateway:
         self.agents_config = self.config.get("agents") or {}
         self.call_log: List[AgentCallRecord] = []
         global_cfg = self.config.get("global") or {}
+        # 成本防護：每次執行允許的線上模型呼叫次數（單次呼叫的 litellm 重試／fallback_model
+        # 不另外計算）。None 或 0 表示不限制。
         # Cost guard: live model invocations allowed per run (litellm retries / fallback_model of one
         # invocation are not counted separately). None or 0 means unlimited.
         self.max_model_calls = self._positive_int(global_cfg.get("max_model_calls"), "max_model_calls")
+        # 代理把呼叫分散到最多這麼多個工作者的執行緒池上
         # Agents fan their calls out on a thread pool of at most this many workers
         self.max_concurrent_calls = self._positive_int(
             global_cfg.get("max_concurrent_calls", DEFAULT_MAX_CONCURRENT_CALLS), "max_concurrent_calls"
@@ -104,6 +127,8 @@ class LLMGateway:
         self._budget_lock = threading.Lock()
         retries = global_cfg.get("retry_invalid_output", DEFAULT_RETRY_INVALID_OUTPUT)
         self.retry_invalid_output = 0 if retries is None else retries
+        # 以模型 + 提示為鍵、存放可用線上回答的磁碟快取：以相同設定重新執行相同目標
+        # 不需任何花費，且得到相同的回答。None 表示停用。
         # On-disk cache of usable live answers keyed by model + prompt: a re-run of the same target with
         # the same config costs nothing and gives the same answers. None disables it.
         self.cache_dir: Optional[str] = None
@@ -113,7 +138,10 @@ class LLMGateway:
         self._validate_settings()
 
     def _validate_endpoints(self) -> None:
-        """Every custom api_base must be https (plain http only to loopback): target source code and
+        """每個自訂的 api_base 都必須是 https（純 http 只允許連到 loopback）：目標原始碼與
+        提示會傳送到這些端點，因此打錯字或惡意設定不得把它們以明文送到任意主機
+        （OWASP LLM04:2026；允許清單內的模型端點）。
+        Every custom api_base must be https (plain http only to loopback): target source code and
         prompts travel to these endpoints, so a typo or a hostile config must not send them in clear
         text to an arbitrary host (OWASP LLM04:2026; allow-listed model endpoints)."""
         for alias, info in self.models_config.items():
@@ -136,7 +164,9 @@ class LLMGateway:
             ))
 
     def set_cache_dir(self, path: str) -> None:
-        """Enables the response cache in `path` (created if missing). The directory holds raw model
+        """在 `path` 啟用回應快取（不存在時會建立）。該目錄存放原始的模型回答，
+        其中可能引用受稽核的程式碼：請把它當成報告一樣看待。
+        Enables the response cache in `path` (created if missing). The directory holds raw model
         answers, which can quote the audited code: treat it like the reports."""
         target = os.path.abspath(path)
         try:
@@ -174,6 +204,7 @@ class LLMGateway:
             "prompt_sha256": prompt_sha256, "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
         }
         try:
+            # 原子性發佈：並行的代理可能寫入相同的鍵，讀取端絕不能看到寫到一半的檔案
             # Atomic publish: concurrent agents may write the same key, readers must never see a torn file
             fd, tmp = tempfile.mkstemp(prefix=".tmp-", suffix=".json", dir=self.cache_dir)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -183,7 +214,10 @@ class LLMGateway:
             logger.warning(bi(f"無法寫入回應快取項目：{e}", f"Could not write the response cache entry: {e}"))
 
     def _validate_settings(self) -> None:
-        """Numeric settings are checked once at start-up. They used to be read only when a call was
+        """數值設定在啟動時檢查一次。過去它們只在發出呼叫時才被讀取，
+        因此像 `timeout_seconds: "abc"` 這樣的錯字會傳到 litellm、在那裡失敗，而在 hybrid
+        模式下被登記為「線上呼叫失敗」並悄悄地由模擬引擎取代。
+        Numeric settings are checked once at start-up. They used to be read only when a call was
         made, so a typo such as `timeout_seconds: "abc"` reached litellm, failed there, and in hybrid
         mode was booked as "live invocation failed" and silently replaced by the simulation engine."""
         global_cfg = self.config.get("global") or {}
@@ -220,13 +254,16 @@ class LLMGateway:
 
     @staticmethod
     def _safe_reason(text: str) -> str:
-        """Provider error text as it may be logged or reported: credentials redacted (an HTTP client
+        """可供記錄或列入報告的供應商錯誤文字：憑證已遮蔽（HTTP 用戶端
+        可能回聲出帶有 API 金鑰的請求 URL 或標頭），控制字元已移除。
+        Provider error text as it may be logged or reported: credentials redacted (an HTTP client
         can echo a request URL or header carrying the API key), control characters removed."""
         return clean_model_text(redact_secrets(str(text)))
 
     @staticmethod
     def _positive_int(value: Any, key: str) -> Optional[int]:
-        """An optional positive integer setting; None/0 mean "not set"."""
+        """選用的正整數設定；None/0 表示「未設定」。
+        An optional positive integer setting; None/0 mean "not set"."""
         if value is None or value == 0:
             return None
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -235,7 +272,8 @@ class LLMGateway:
         return value
 
     def _reserve_live_call(self) -> bool:
-        """Claims one live invocation from the budget (thread-safe); False when it is exhausted."""
+        """從預算中認領一次線上呼叫（執行緒安全）；預算用盡時為 False。
+        Claims one live invocation from the budget (thread-safe); False when it is exhausted."""
         with self._budget_lock:
             if self.max_model_calls is not None and self.live_calls_attempted >= self.max_model_calls:
                 return False
@@ -256,7 +294,8 @@ class LLMGateway:
 
     @property
     def retried_calls(self) -> List[AgentCallRecord]:
-        """First attempts whose answer was unusable and that were re-asked (disclosed, not an evidence gap)."""
+        """回答無法使用而被重新詢問的首次嘗試（會揭露，但不是證據缺口）。
+        First attempts whose answer was unusable and that were re-asked (disclosed, not an evidence gap)."""
         return [rec for rec in self.call_log if rec.mode == "retried"]
 
     @staticmethod
@@ -265,10 +304,13 @@ class LLMGateway:
 
     @staticmethod
     def is_usable(resp: Dict[str, Any]) -> bool:
-        """False when the model answered but its output could not be used."""
+        """模型有回答但其輸出無法使用時為 False。
+        False when the model answered but its output could not be used."""
         return resp.get(PROVENANCE_KEY, {}).get("mode") != "invalid"
 
     def _load_config(self, path: str) -> Dict[str, Any]:
+        # 缺少或無法解析的設定檔會悄悄地丟掉所有模型／代理對應，因此
+        # 以 ConfigError 明確失敗，而不是外洩原始的 FileNotFoundError/YAMLError
         # A missing or unparseable config would silently drop every model/agent mapping, so
         # fail loudly with ConfigError instead of leaking raw FileNotFoundError/YAMLError
         if not os.path.exists(path):
@@ -281,7 +323,9 @@ class LLMGateway:
                                  f"Agent config is not valid YAML ({path}): {e}")) from e
 
     def is_live_configured(self, model_alias: str) -> bool:
-        """Checks whether the requested model has credentials: its API key, or an AWS profile
+        """檢查所要求的模型是否具備憑證：其 API 金鑰，或 AWS 設定檔
+        （Bedrock 透過 AWS 憑證鏈驗證，而非 API 金鑰）。
+        Checks whether the requested model has credentials: its API key, or an AWS profile
         (Bedrock authenticates through the AWS credential chain, not an API key)."""
         model_info = self.models_config.get(model_alias, {})
         if model_info.get("aws_profile_name"):
@@ -299,6 +343,11 @@ class LLMGateway:
         required_keys_any: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
+        針對指定代理所設定的 LLM 執行提示。
+        線上回應若不是有效的 JSON，或缺少 `required_keys` 中的任一鍵（全部都必須
+        存在）或 `required_keys_any`（至少要有一個存在），會以 mode "invalid" 記錄
+        （並回傳 {}），讓呼叫端與品質閘門絕不會把無法使用的回答
+        誤認為真正的空結果。
         Executes a prompt targeting the designated agent's configured LLM.
         A live response that is not valid JSON or lacks any of `required_keys` (all must be
         present) or `required_keys_any` (at least one must be present) is recorded with
@@ -312,6 +361,7 @@ class LLMGateway:
         model_name = model_info.get("model") or f"(no model configured for alias '{model_alias}')"
         prompt_hash = hashlib.sha256(f"{system_prompt}\x00{user_prompt}".encode("utf-8")).hexdigest()
 
+        # 決定要呼叫線上 API 還是模擬引擎
         # Decide whether to invoke live API or mock engine
         fallback_reason: Optional[str] = None
         if self.execution_mode == "mock":
@@ -332,6 +382,10 @@ class LLMGateway:
         if fallback_reason is None:
             logger.info(bi(f"將 [{agent_id}] 派送至線上 LLM：{model_name}（別名：{model_alias}）",
                            f"Dispatching [{agent_id}] to Live LLM: {model_name} (Alias: {model_alias})"))
+            # 無法使用的回答（以散文取代 JSON、缺少鍵、安全過濾器造成的空白回應）
+            # 會在登記為 `invalid` 之前，附上問題說明重新詢問最多 retry_invalid_output 次：
+            # 在線上執行中，多數這類回答只是一次性的格式失誤，而過去每一筆都會讓
+            # 整次執行變成 INCONCLUSIVE。重新詢問是計入預算的真實呼叫。
             # An unusable answer (prose instead of JSON, a missing key, an empty response from a safety
             # filter) is re-asked up to retry_invalid_output times, naming the problem, before it is
             # booked as `invalid`: in live runs most such answers are one-off format slips, and each
@@ -359,6 +413,8 @@ class LLMGateway:
                                       f"Live invocation failed for {agent_id} ({model_name}): {fallback_reason}. "
                                       "Falling back to simulation logic."))
                     break
+                # 上方只防護網路呼叫：解析／驗證／登記中的錯誤
+                # 必須明確失敗，而不是被掩蓋成退回模擬。
                 # Only the network call is guarded above: a bug in parsing/validation/booking
                 # must fail loudly instead of being masked as a fallback to simulation.
                 result = self._clean_and_parse_json(raw_text) if json_output else {"raw": raw_text}
@@ -374,10 +430,12 @@ class LLMGateway:
                     return result
                 reason = problem or REASON_NOT_VALID_JSON
                 if not raw_text.strip():
+                    # 例如供應商的安全過濾器阻擋了攻擊測試程式碼；finish reason 會說明是哪一種
                     # e.g. a provider safety filter blocking attack-test code; the finish reason says which
                     reason = bi(f"模型回傳空白回應（finish_reason: {finish_reason or 'unknown'}）",
                                 f"model returned an empty response (finish_reason: {finish_reason or 'unknown'})")
                 if finish_reason == "length":
+                    # 推理模型會把部分預算花在思考上；要說明這點，而不是歸咎於格式
                     # Reasoning models spend part of the budget thinking; say so instead of blaming the format
                     limit = self._max_output_tokens(model_info)
                     reason = bi(
@@ -391,6 +449,7 @@ class LLMGateway:
                     logger.warning(bi(f"[{agent_id}] {model_name} 回傳無法使用的輸出（{reason}）；重新詢問（{attempt}/{self.retry_invalid_output}）",
                                       f"[{agent_id}] {model_name} returned unusable output ({reason}); re-asking ({attempt}/{self.retry_invalid_output})"))
                     self._record(agent_id, model_alias, model_name, "retried", reason, prompt_sha256=prompt_hash)
+                    # 提示維持英文：只有原因的英文部分會送達模型
                     # The prompt stays English: only the English half of the reason reaches the model
                     prompt_text = user_prompt + _RETRY_SUFFIX.format(reason=en_only(reason))
                     continue
@@ -401,6 +460,7 @@ class LLMGateway:
         elif self.execution_mode == "live":
             raise LLMGatewayError(f"[{agent_id}] {bi(f'無法以 {model_name} 執行線上模式', f'cannot run live with {model_name}')}: {fallback_reason}")
 
+        # 離線／模擬退回路徑
         # Offline / Mock Fallback
         logger.info(bi(f"將 [{agent_id}] 派送至模擬引擎（模型別名：{model_alias}；原因：{fallback_reason}）",
                        f"Dispatching [{agent_id}] to Simulation Engine (Model Alias: {model_alias}; reason: {fallback_reason})"))
@@ -411,6 +471,10 @@ class LLMGateway:
 
     def _complete(self, model_info: Dict[str, Any], model_name: str, messages: List[Dict[str, str]], temperature: float):
         """
+        呼叫主要模型（含 litellm 自身的重試），主要模型失敗時再呼叫一次 `fallback_model`。
+        API 金鑰會明確傳入，因此 litellm 預設環境變數與 `api_key_env` 不同的供應商
+        （例如 GLM 的 Z.AI）仍能通過驗證。
+        回傳 (text, model_actually_used, finish_reason)；finish_reason 為 "length" 表示 token 上限截斷了輸出。
         Calls the primary model (with litellm's own retries), then `fallback_model` once if the primary fails.
         The API key is passed explicitly, so providers whose litellm default env var differs from
         `api_key_env` (e.g. Z.AI for GLM) still authenticate.
@@ -420,6 +484,7 @@ class LLMGateway:
         env_var = model_info.get("api_key_env")
         aws_profile = model_info.get("aws_profile_name")
         if not env_var and not aws_profile:
+            # 以可採取行動的訊息失敗，而不是讓下方的設定查詢拋出 KeyError
             # Fail with an actionable message instead of a KeyError from the config lookup below
             raise LLMGatewayError(bi(
                 f"模型 '{model_name}' 未設定 'api_key_env'（Bedrock 則為 'aws_profile_name'）；"
@@ -430,6 +495,8 @@ class LLMGateway:
         kwargs: Dict[str, Any] = {
             "messages": messages,
             "temperature": temperature,
+            # 較新的模型會拒絕取樣參數（Bedrock 上的 Claude Opus 5.5 只接受 temperature=1；
+            # Gemini 3 正在棄用它們）：捨棄模型不支援的參數，而不是讓呼叫失敗
             # Newer models reject sampling knobs (Claude Opus 5.5 on Bedrock accepts only temperature=1;
             # Gemini 3 is deprecating them): drop what a model does not support rather than failing the call
             "drop_params": True,
@@ -445,6 +512,8 @@ class LLMGateway:
                 kwargs["aws_region_name"] = model_info["aws_region_name"]
         if model_info.get("api_base"):
             kwargs["api_base"] = model_info["api_base"]
+        # 逐模型的 litellm 直通參數，例如 {thinking: {type: disabled}} 或 {reasoning_effort: low}，
+        # 讓推理模型不會把整個輸出預算花在思考上（啟動時驗證為對應表）
         # Per-model litellm passthrough, e.g. {thinking: {type: disabled}} or {reasoning_effort: low} so a
         # reasoning model does not spend the whole output budget thinking (validated as a mapping at start-up)
         kwargs.update(model_info.get("extra_params") or {})
@@ -462,13 +531,16 @@ class LLMGateway:
                 logger.warning(bi(f"模型 {candidate} 失敗：{self._safe_reason(str(e))}",
                                   f"Model {candidate} failed: {self._safe_reason(str(e))}"))
         if last_error is None:
+            # 實務上不會執行到：candidates 絕不會是空的，但絕不拋出 Optional
             # Unreachable in practice: candidates is never empty, but never raise an Optional
             raise LLMGatewayError(bi(f"模型 {model_name}：沒有任何候選模型可以嘗試",
                                      f"Model {model_name}: no candidate model could be attempted"))
         raise last_error
 
     def _max_output_tokens(self, model_info: Dict[str, Any]) -> int:
-        """Per-model `max_output_tokens` overrides the global one: reasoning models (GLM, DeepSeek,
+        """逐模型的 `max_output_tokens` 會覆寫全域設定：推理模型（GLM、DeepSeek、
+        Gemini 3）會把思考 token 計入此上限，因此需要較大的預算。
+        Per-model `max_output_tokens` overrides the global one: reasoning models (GLM, DeepSeek,
         Gemini 3) count thinking tokens against this limit and need a larger budget."""
         value = model_info.get("max_output_tokens") or (self.config.get("global") or {}).get(
             "max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS
@@ -495,7 +567,10 @@ class LLMGateway:
         return None
 
     def record_failure(self, agent_id: str, reason: str) -> None:
-        """Books an agent call that crashed before the gateway could answer (e.g. an exception in
+        """登記一次在閘道能回答之前就當掉的代理呼叫（例如呼叫端執行緒池批次中的
+        例外）。記錄為 `invalid` 呼叫，讓品質閘門把缺少的結果視為證據缺口，
+        而不是把沉默誤認為「沒有發現」。
+        Books an agent call that crashed before the gateway could answer (e.g. an exception in
         the caller's thread-pool batch). Recorded as an `invalid` call so the quality gate sees the
         missing result as an evidence gap instead of mistaking silence for "nothing found"."""
         agent_meta = self.agents_config.get(agent_id) or {}
@@ -519,8 +594,10 @@ class LLMGateway:
         return [rec for rec in self.call_log if rec.cached]
 
     def _clean_and_parse_json(self, text: str) -> Optional[Dict[str, Any]]:
-        """Strips markdown code fences and parses JSON safely, with conversational fallback."""
+        """剝除 markdown 程式碼圍欄並安全地解析 JSON，並提供對話式退回路徑。
+        Strips markdown code fences and parses JSON safely, with conversational fallback."""
         text = text.strip()
+        # 1. 已閉合的 markdown 程式碼圍欄（```json ... ``` 或 ```JSON / ```）
         # 1. Closed markdown code fence (```json ... ``` or ```JSON / ```)
         match = re.search(r"```[\w-]*\s*([\s\S]*?)\s*```", text)
         if match:
@@ -532,6 +609,7 @@ class LLMGateway:
             except json.JSONDecodeError:
                 pass
 
+        # 2. 直接的 JSON 字串
         # 2. Direct JSON string
         try:
             parsed = json.loads(text)
@@ -540,6 +618,7 @@ class LLMGateway:
         except json.JSONDecodeError:
             pass
 
+        # 3. 未閉合的程式碼圍欄（以 ```tag 開頭但缺少結尾的 ```）
         # 3. Unclosed code fence (starts with ```tag but missing closing ```)
         unclosed_match = re.match(r"^\s*```[\w-]*\s*([\s\S]*)$", text)
         if unclosed_match:
@@ -551,6 +630,7 @@ class LLMGateway:
             except json.JSONDecodeError:
                 pass
 
+        # 4. 對話式包裹的退回路徑：擷取第一個 '{' 到最後一個 '}' 之間的子字串
         # 4. Conversational wrapping fallback: extract substring between first '{' and last '}'
         first_brace = text.find("{")
         last_brace = text.rfind("}")
@@ -561,6 +641,7 @@ class LLMGateway:
                 if isinstance(parsed, dict):
                     return parsed
             except json.JSONDecodeError:
+                # 若從第一個到最後一個失敗（例如前面有未閉合的非 JSON 大括號），則逐一嘗試每個 '{' 到最後一個 '}'
                 # If first-to-last failed (e.g. earlier unclosed non-JSON brace), search each '{' to last '}'
                 for m in re.finditer(r"\{", text):
                     start = m.start()
@@ -575,12 +656,22 @@ class LLMGateway:
 
         logger.error(bi(f"JSON 解析錯誤：無法擷取有效的 JSON。原始內容：{text[:200]}",
                         f"JSON parsing error: could not extract valid JSON. Raw content: {text[:200]}"))
+        # 回傳 None（而非哨兵 dict）：模型可能正當地回聲出這樣的 dict，
+        # 那會與解析失敗無法區分。
         # None (not a sentinel dict): a model could legitimately echo such a dict, which would
         # have been indistinguishable from a parse failure.
         return None
 
     def _generate_simulated_response(self, agent_id: str, model_alias: str, prompt: str) -> Dict[str, Any]:
         """
+        反映各審查者關注重點的高擬真領域專屬退回邏輯：
+        - Claude：狀態轉換、缺少的 null 檢查、邊界情況邏輯。
+        - DeepSeek：邊界限制、輸入消毒、防禦性守衛。
+        - GLM：合約規格、API 合規性、參數驗證。
+        - Gemini：AI/LLM 整合（OWASP Top 10 for LLM Applications 2026）。
+        審查者樣板依模型別名選取，退而以代理 id 的字尾選取。
+        注意：回應是與目標程式碼無關的固定樣板；它們的存在是為了讓
+        流程能離線演練，且在報告中一律標示為 simulated。
         High-fidelity domain-specific fallback logic reflecting each reviewer's focus:
         - Claude: state transitions, missing null checks, edge-case logic.
         - DeepSeek: boundary limits, input sanitization, defensive guards.
@@ -595,6 +686,7 @@ class LLMGateway:
             return {"findings": [dict(template)] if template else []}
 
         if "verifier" in agent_id:
+            # 樣板無法評判針對目標的發現；辯論者會略過模擬的裁決
             # A template cannot judge target-specific findings; the debater ignores simulated verdicts
             return {"verdicts": []}
 
@@ -660,6 +752,8 @@ class LLMGateway:
             }
 
         elif "test_synthesizer" in agent_id or "test_generator" in agent_id:
+            # 模擬引擎無法撰寫針對目標的測試；呼叫端會退回
+            # 確定性、由目標推導的探測（白箱），或把威脅記為未測試（黑箱）。
             # The simulation engine cannot write target-specific tests; callers fall back to
             # deterministic, target-derived probes (whitebox) or mark the threat as untested (blackbox).
             return {"tests": []}
@@ -667,6 +761,7 @@ class LLMGateway:
         return {"status": "ok", "message": bi(f"{agent_id} 的模擬輸出", f"Simulated output for {agent_id}")}
 
 
+# 逐模型別名的固定離線審查樣板（見 LLMGateway._generate_simulated_response）
 # Fixed offline review templates per model alias (see LLMGateway._generate_simulated_response)
 _SIMULATED_REVIEWS: Dict[str, Dict[str, str]] = {
     "claude": {

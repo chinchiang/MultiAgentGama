@@ -20,17 +20,24 @@ from vibeharness.core.models import (
 from vibeharness.core.i18n import bi
 from vibeharness.core.sanitize import clean_model_text, markdown_safe
 
+# Windows 磁碟機路徑（"C:\..."）即使在 POSIX 主機上也算絕對路徑，讓
+# 在 Windows 產生的 SARIF 交給 Linux CI runner 重新處理時，相對化結果一致。
 # Windows drive paths ("C:\...") count as absolute even on POSIX hosts, so a SARIF produced
 # on Windows relativizes identically when re-processed by a Linux CI runner.
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
+# 穩定的 SARIF 規則 id：GitHub Code Scanning 以 ruleId + 指紋追蹤警示，所以每次執行
+# 不同的發現 id（WB-CLA-01 只是「這次執行 Claude 的第一個發現」）會在編號變動時
+# 不斷關閉又重開警示。執行專屬的 id 保留在每個結果的 properties 裡。
 # Stable SARIF rule ids: GitHub Code Scanning tracks alerts by ruleId + fingerprint, so a per-run
 # finding id (WB-CLA-01 is just "Claude's first finding this run") would close and reopen alerts
 # whenever the numbering shifted. The run-specific ids are kept in each result's properties.
 SARIF_RULE_WHITEBOX = "vibeharness/whitebox-finding"
 SARIF_RULE_BLACKBOX = "vibeharness/blackbox-breach"
+# 確定性 AI 資安規則保有自己的穩定 id：vibeharness/VH-AI-001、...
 # Deterministic AI-security rules keep their own stable ids: vibeharness/VH-AI-001, ...
 SARIF_RULE_STATIC_PREFIX = "vibeharness/"
+# JSON 報告版面的版本（summary／whitebox／threat_model／blackbox_* 鍵）
 # Version of the JSON report layout (summary / whitebox / threat_model / blackbox_* keys)
 JSON_SCHEMA_VERSION = "1"
 
@@ -79,6 +86,8 @@ LABEL_FROM = bi("來自", "from")
 
 class ReportGenerator:
     """
+    產生結構化、稽核等級的 Markdown 報告，詳述完整的
+    多代理白箱與黑箱驗證生命週期。
     Generates a structured, audit-grade Markdown report detailing the complete
     multi-agent white-box and black-box verification lifecycle.
     """
@@ -96,6 +105,7 @@ class ReportGenerator:
     ) -> str:
         md = []
 
+        # 標頭
         # Header
         md.append(REPORT_TITLE)
         md.append(f"**{bi('目標系統路徑', 'Target System Path')}**: `{os.path.abspath(target_path)}`  ")
@@ -129,6 +139,7 @@ class ReportGenerator:
                      "Only executed test outcomes reflect the actual target behaviour.") + "\n"
             )
 
+        # 1. 執行摘要
         # 1. Executive Summary
         md.append(HEADING_EXECUTIVE_SUMMARY)
         status_badge = {
@@ -150,7 +161,7 @@ class ReportGenerator:
         if summary.inconclusive_reasons:
             md.append(f"**{bi('證據缺口', 'Evidence gaps')}:**")
             for reason in summary.inconclusive_reasons:
-                md.append(f"- {markdown_safe(reason)}")  # reasons quote model-chosen ids and failure text
+                md.append(f"- {markdown_safe(reason)}")  # 原因會引用模型選的 id 與失敗文字 ／ reasons quote model-chosen ids and failure text
             md.append("")
 
         sim_tag = " `[SIMULATED]`" if debate_result.is_simulated else ""
@@ -188,6 +199,7 @@ class ReportGenerator:
         md.append("")
         md.extend(self._static_section(summary.static_findings))
 
+        # 執行來源
         # Provenance
         md.append(HEADING_PROVENANCE)
         if summary.agent_calls:
@@ -206,6 +218,7 @@ class ReportGenerator:
             md.append(bi("沒有記錄到任何代理呼叫。", "No agent invocations were recorded."))
         md.append("\n")
 
+        # 2. 白箱多模型審查發現
         # 2. White-Box Multi-Model Review Findings
         md.append(HEADING_WHITEBOX)
         models = " / ".join(summary.reviewer_models) or "the configured reviewer models"
@@ -253,6 +266,7 @@ class ReportGenerator:
 
         md.append("\n")
 
+        # 3. 黑箱威脅建模矩陣
         # 3. Black-Box Threat Modeling Matrix
         md.append(HEADING_THREAT_MODEL + (" `[SIMULATED]`" if threat_model.is_simulated else ""))
         md.append(f"**{bi('系統描述', 'System Description')}**: {markdown_safe(threat_model.system_description)}  ")
@@ -268,6 +282,7 @@ class ReportGenerator:
 
         md.append("\n")
 
+        # 4. 黑箱動態資安執行結果
         # 4. Black-Box Dynamic Security Execution Results
         md.append(HEADING_BLACKBOX)
         if blackbox_results:
@@ -277,6 +292,7 @@ class ReportGenerator:
                 status_icon = OUTCOME_VULNERABLE if r.is_security_exploit_confirmed else self._status_label(r.status)
                 md.append(f"| `{self._cell(r.test_id)}` | {r.test_type} | {status_icon} | `{r.duration_seconds}s` | {self._cell(r.failure_reason) or bi('邊界已防禦', 'Boundary defended')} |")
 
+            # 檢查是否有重現 PoC
             # Check for reproduction PoCs
             pocs = [r for r in blackbox_results if r.reproduction_poc and r.is_security_exploit_confirmed]
             if pocs:
@@ -294,10 +310,11 @@ class ReportGenerator:
             md.append(bi("這些威脅沒有合成出可執行的測試；既未確認也未排除：",
                          "No executable test was synthesized for these threats; they are neither confirmed nor ruled out:"))
             for threat_id in summary.untested_threat_ids:
-                md.append(f"- {self._code_span(threat_id)}")  # a model-chosen id cannot break out of the span
+                md.append(f"- {self._code_span(threat_id)}")  # 模型選的 id 無法跳出程式碼區段 ／ a model-chosen id cannot break out of the span
 
         md.append("\n")
 
+        # 5. 給 Vibe Coder 的關鍵建議
         # 5. Key Recommendations for Vibe Coder
         md.append(HEADING_NEXT_STEPS)
         for rec in summary.key_recommendations:
@@ -321,10 +338,13 @@ class ReportGenerator:
         whitebox_tests: Optional[List[GeneratedTest]] = None,
         blackbox_tests: Optional[List[GeneratedTest]] = None
     ) -> str:
-        """Machine-readable report with the same content as the Markdown one (provenance included).
+        """與 Markdown 報告內容相同（含來源紀錄）的機器可讀報告。
+        產生的測試程式碼原樣儲存，讓一次執行可被稽核、其測試可被重新執行。
+        Machine-readable report with the same content as the Markdown one (provenance included).
         Generated test code is stored verbatim, so a run can be audited and its tests re-executed."""
         payload = {
             "tool": "vibeharness-mas",
+            # 欄位更名／移除或語意改變時遞增；新增欄位則保持版本不變
             # Bump when a field is renamed/removed or its meaning changes; additions keep the version
             "schema_version": JSON_SCHEMA_VERSION,
             "target_path": os.path.abspath(target_path),
@@ -351,6 +371,10 @@ class ReportGenerator:
         symbols: Optional[List[CodeSymbol]] = None
     ) -> str:
         """
+        供 GitHub Code Scanning 使用的 SARIF 2.1.0 輸出：已確認的白箱發現，附上
+        盡力而為的檔案／行號位置，加上已確認的黑箱突破（位於其威脅的
+        攻擊向量所指名的符號，若能解析出來的話）。
+        URI 相對於外層的 git 版本庫（%SRCROOT%），否則相對於目標。
         SARIF 2.1.0 output for GitHub Code Scanning: confirmed white-box findings with
         best-effort file/line locations, plus confirmed black-box breaches (located at the
         symbol their threat's attack vector names, when one can be resolved).
@@ -372,11 +396,13 @@ class ReportGenerator:
                     "shortDescription": {"text": short},
                     "fullDescription": {"text": full},
                     "defaultConfiguration": {"level": level},
+                    # Code Scanning 會在警示頁面顯示 `help`；沒有它警示就沒有任何指引
                     # Code Scanning shows `help` on the alert page; without it the alert has no guidance
                     "help": {"text": re.sub(r"[*`]", "", help_md or full), "markdown": help_md or full},
                 })
             return rule_index[rule_id]
 
+        # 0. 確定性 AI 資安規則命中（不涉及模型）
         # 0. Deterministic AI-security rule hits (no model involved)
         for sf in summary.static_findings:
             rule_id = SARIF_RULE_STATIC_PREFIX + sf.rule_id
@@ -416,6 +442,7 @@ class ReportGenerator:
                        "Markdown / JSON report (`properties.findingId` names the finding), then fix the root cause the "
                        "message describes."),
         )
+        # 1. 已確認的白箱發現（檔案位置由 line_number 或符號表解析）
         # 1. Confirmed white-box findings (file locations resolved from line_number or the symbol table)
         for f in debate_result.confirmed_findings:
             level = self._sarif_level(f.severity)
@@ -446,10 +473,12 @@ class ReportGenerator:
                 },
             }
             if uri:
+                # 未知時省略（絕不是 null）：SARIF 要求若存在就必須是陣列
                 # Omitted (never null) when unknown: SARIF requires an array if present
                 result["locations"] = [self._location(uri, self._resolve_line(f, symbols))]
             results.append(result)
 
+        # 2. 已確認的黑箱資安突破，若已知則定位在威脅所針對的符號
         # 2. Confirmed black-box security breaches, located at the symbol the threat targets if known
         threats_by_id = {t.threat_id: t for t in threat_model.threats}
         for r in blackbox_results:
@@ -526,12 +555,14 @@ class ReportGenerator:
 
     @staticmethod
     def _normalize(text: str) -> str:
-        """Case/punctuation-insensitive form of model text, so fingerprints survive cosmetic rewording."""
+        """模型文字的不分大小寫與標點的形式，讓指紋能撐過表面上的改寫。
+        Case/punctuation-insensitive form of model text, so fingerprints survive cosmetic rewording."""
         return " ".join(re.findall(r"[a-z0-9]+", (text or "").lower()))
 
     @staticmethod
     def _threat_symbol(threat: ThreatItem, symbols: Optional[List[CodeSymbol]]) -> Optional[CodeSymbol]:
-        """The extracted symbol the threat's attack vector names (whole-word match, routes first)."""
+        """威脅的攻擊向量所指名的擷取符號（整字比對，路由優先）。
+        The extracted symbol the threat's attack vector names (whole-word match, routes first)."""
         text = f"{threat.attack_vector} {threat.attack_scenario}"
         for sym in sorted(symbols or [], key=lambda s: s.symbol_type != "route"):
             short = sym.name.split(".")[-1]
@@ -541,7 +572,9 @@ class ReportGenerator:
 
     @staticmethod
     def _sarif_root(target_path: str) -> str:
-        """%SRCROOT% for URIs: the git repository containing the target (Code Scanning resolves
+        """URI 用的 %SRCROOT%：包含目標的 git 版本庫（Code Scanning 會相對於
+        版本庫根目錄解析 URI），否則是目標目錄本身。
+        %SRCROOT% for URIs: the git repository containing the target (Code Scanning resolves
         URIs against the repo root), else the target directory itself."""
         start = os.path.abspath(target_path)
         if not os.path.isdir(start):
@@ -549,6 +582,9 @@ class ReportGenerator:
         home = os.path.expanduser("~")
         current = start
         while True:
+            # 位於家目錄的 git 版本庫幾乎都是 dotfiles／設定檔版本庫，
+            # 絕不是 SARIF 要上傳到的程式碼版本庫；這種家目錄底下的用完即丟執行目錄
+            # 不能把它繼承為 %SRCROOT%。
             # A git repository at the home directory is almost always a dotfiles/config repo,
             # never the code repo the SARIF will be uploaded against; a throwaway run directory
             # under such a home must not inherit it as %SRCROOT%.
@@ -556,13 +592,15 @@ class ReportGenerator:
                 return current
             parent = os.path.dirname(current)
             if parent == current or ReportGenerator._same_path(current, home):
+                # 沒有版本庫：使用目標目錄（檔案目標則用它自己所在的目錄）
                 # No repository: the target directory (a file target's own directory)
                 return start if os.path.isdir(start) else target_path
             current = parent
 
     @staticmethod
     def _same_path(a: str, b: str) -> bool:
-        """Path identity that survives Windows 8.3 short names, case differences and symlinks."""
+        """能撐過 Windows 8.3 短檔名、大小寫差異與符號連結的路徑同一性判斷。
+        Path identity that survives Windows 8.3 short names, case differences and symlinks."""
         try:
             return os.path.samefile(a, b)
         except OSError:
@@ -580,7 +618,9 @@ class ReportGenerator:
 
     @staticmethod
     def _sarif_uri(file_path: str, target_path: str) -> Optional[str]:
-        """Best-effort repo-root-relative URI with forward slashes; None when unknown."""
+        """盡力而為、相對於版本庫根目錄且使用正斜線的 URI；未知時為 None。
+        Best-effort repo-root-relative URI with forward slashes; None when unknown."""
+        # "unknown" 是審查者無法歸屬發現時的佔位符，不是檔案
         # "unknown" is the reviewer's placeholder for a finding it could not attribute, not a file
         if not file_path or not file_path.strip() or file_path.strip() == "unknown":
             return None
@@ -596,7 +636,7 @@ class ReportGenerator:
                 return os.path.basename(p)
             try:
                 rel = os.path.relpath(file_path, base).replace("\\", "/")
-            except ValueError:  # different drive on Windows
+            except ValueError:  # Windows 上在不同磁碟機 ／ different drive on Windows
                 return os.path.basename(p)
             if rel.startswith(".."):
                 return os.path.basename(p)
@@ -632,7 +672,8 @@ class ReportGenerator:
 
     @staticmethod
     def _votes(finding: ReviewFinding) -> str:
-        """e.g. `deepseek: reject (checked before use); glm: corroborated`"""
+        """例如 `deepseek: reject (checked before use); glm: corroborated`
+        e.g. `deepseek: reject (checked before use); glm: corroborated`"""
         if not finding.verification_votes:
             return bi("沒有可用的驗證者投票", "no usable verifier votes")
         return "; ".join(
@@ -642,19 +683,24 @@ class ReportGenerator:
 
     @staticmethod
     def _join_list(value: object) -> str:
-        """Joins a list field for display; a stray string from a model response renders as one item
+        """把清單欄位串接起來顯示；模型回應中混進來的字串會呈現為單一項目，
+        而不是被 ', '.join 逐字拆開。
+        Joins a list field for display; a stray string from a model response renders as one item
         instead of being exploded character by character by ', '.join."""
         items = value if isinstance(value, list) else [value]
         return ", ".join(str(v) for v in items if str(v).strip())
 
     @staticmethod
     def _cell(text: Optional[str]) -> str:
-        """Makes free text safe for a single Markdown table cell (and defangs images / raw HTML)."""
+        """讓自由文字能安全放進單一 Markdown 表格儲存格（並去除圖片／原始 HTML 的攻擊性）。
+        Makes free text safe for a single Markdown table cell (and defangs images / raw HTML)."""
         return markdown_safe(text or "").replace("|", "\\|").replace("\n", " ")
 
     @staticmethod
     def _code_span(text: Optional[str]) -> str:
-        """Inline code for model text: control characters removed and the fence widened past any
+        """模型文字的行內程式碼：移除控制字元，並把圍欄加寬到超過內部任何
+        連續反引號，讓文字無法跳出該區段。
+        Inline code for model text: control characters removed and the fence widened past any
         backtick run inside, so the text cannot break out of the span."""
         body = clean_model_text(text or "").replace("\n", " ")
         if not body.strip():
@@ -670,7 +716,8 @@ class ReportGenerator:
 
     @staticmethod
     def _fence(text: str) -> str:
-        """A code fence longer than any backtick run in the text, so model-written code cannot close it early."""
+        """比文字中任何連續反引號都長的程式碼圍欄，讓模型寫的程式碼無法提早關閉它。
+        A code fence longer than any backtick run in the text, so model-written code cannot close it early."""
         longest = max((len(run) for run in re.findall(r"`+", text or "")), default=0)
         return "`" * max(3, longest + 1)
 
@@ -681,7 +728,10 @@ class ReportGenerator:
         blackbox_tests: Optional[List[GeneratedTest]],
         blackbox_results: List[TestExecutionResult],
     ) -> List[str]:
-        """Appendix with every executed test's code next to its outcome. A model-written test that "passes"
+        """附錄：每個已執行測試的程式碼與其結果並列。模型寫的、「通過」的測試
+        可能斷言的是缺陷本身（例如 `pytest.raises(KeyError)`），所以程式碼必須可供審閱；
+        JSON 報告原樣保留它，這裡則移除控制字元以便安全渲染。
+        Appendix with every executed test's code next to its outcome. A model-written test that "passes"
         may be asserting the defect itself (e.g. `pytest.raises(KeyError)`), so the code must be reviewable;
         the JSON report keeps it verbatim, here control characters are removed for safe rendering."""
         from vibeharness.runners.test_executor import TestSuiteExecutor
@@ -707,6 +757,7 @@ class ReportGenerator:
                     outcome = OUTCOME_VULNERABLE
                 else:
                     outcome = self._status_label(result.status)
+                # <summary> 是 HTML 區塊（那裡不渲染 Markdown）：id 以 HTML 跳脫
                 # <summary> is an HTML block (Markdown is not rendered there): escape ids as HTML
                 source = f" — {LABEL_FROM} <code>{html.escape(clean_model_text(t.source_ref))}</code>" if t.source_ref else ""
                 code = clean_model_text(t.code)
@@ -721,7 +772,8 @@ class ReportGenerator:
         return md
 
     def _static_section(self, findings: List[StaticFinding]) -> List[str]:
-        """Deterministic AI-security rule hits (OWASP LLM Top 10 2026 / MITRE ATLAS mapped)."""
+        """確定性 AI 資安規則的命中（已對應 OWASP LLM Top 10 2026／MITRE ATLAS）。
+        Deterministic AI-security rule hits (OWASP LLM Top 10 2026 / MITRE ATLAS mapped)."""
         md = [HEADING_STATIC_RULES]
         if not findings:
             md.append(bi("沒有規則命中。規則涵蓋不安全的模型載入與未釘選版本的模型下載（LLM04）、模型輸出流入 exec/shell/SQL "

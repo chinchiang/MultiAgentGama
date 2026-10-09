@@ -41,12 +41,16 @@ from vibeharness.reports.report_generator import JSON_SCHEMA_VERSION, ReportGene
 
 logger = logging.getLogger("VibeHarness.Commander")
 
+# local_subprocess 沙盒的位址空間上限（MB）；0 表示停用
 # Address-space cap for the local_subprocess sandbox (MB); 0 disables
 DEFAULT_SANDBOX_MEMORY_MB = 2048
 
 
 def force_utf8_stdio() -> None:
     """
+    將 stdout/stderr 設為 UTF-8（取代無法呈現的字元），讓 emoji、框線字元與 CJK 輸出
+    在 Windows 上被重導向時（例如 cp950 字碼頁）永不當機或變成亂碼。
+    具冪等性；在串流已能處理 Unicode 或無法重新設定時則不做任何事。
     Makes stdout/stderr UTF-8 (replacing unrenderable characters) so emoji, box-drawing and
     CJK output never crashes or garbles when redirected on Windows (e.g. a cp950 codepage).
     Idempotent, and a no-op where streams already handle Unicode or cannot be reconfigured.
@@ -65,11 +69,14 @@ def force_utf8_stdio() -> None:
 
 class VibeHarnessCommander:
     """
+    Commander Harness：主要的 AI 協調器，負責指揮、排程並同步
+    白箱與黑箱測試階段中的各子代理。
     Commander Harness: Primary AI Orchestrator that directs, schedules,
     and synchronizes sub-agents across White-Box and Black-Box testing phases.
     """
 
     def __init__(self, config_path: str = DEFAULT_CONFIG_PATH, execution_mode: Optional[str] = None):
+        # 即使 harness 作為函式庫使用，也要保護主控台輸出（vibeharness/cli.py 也會這麼做）
         # Protect console output even when the harness is used as a library (vibeharness/cli.py does this too)
         force_utf8_stdio()
         self.console = Console(force_terminal=False)
@@ -87,6 +94,7 @@ class VibeHarnessCommander:
             self.sandbox, per_test_timeout_seconds=int(global_cfg.get("per_test_timeout_seconds", 30)),
             js_sandbox_factory=self._build_node_sandbox,
         )
+        # JS/TS 測試以 Node 內建的執行器執行；沙盒採延遲建立，在第一次需要時才建立
         # JS/TS tests run with Node's built-in runner; the sandbox is built lazily, the first time one is needed
         self._global_cfg = global_cfg
         self.node_bin = str(global_cfg.get("node_bin") or "node")
@@ -95,25 +103,31 @@ class VibeHarnessCommander:
         self.node_runtime_problem: Optional[str] = None
         self.node_typescript_problem: Optional[str] = None
         self.reporter = ReportGenerator()
+        # 與其他限制一樣經過驗證（負數或非整數值會是 ConfigError）；0/null 保留預設值
         # Validated like the other limits (a negative or non-integer value is a ConfigError); 0/null keep the default
         self.max_files = LLMGateway._positive_int(global_cfg.get("max_files"), "max_files") or DEFAULT_MAX_FILES
         self.max_file_bytes = LLMGateway._positive_int(global_cfg.get("max_file_bytes"), "max_file_bytes") or DEFAULT_MAX_FILE_BYTES
         self.config_path = os.path.abspath(config_path)
         self.sandbox_provider = str(global_cfg.get("sandbox_provider", "local_subprocess"))
+        # 檔案選取（CLI 的 --include/--exclude 會覆寫設定檔中的清單；--changed-since 會加入 only_files）
         # File selection (CLI --include/--exclude override the config lists; --changed-since adds only_files)
         self.include_patterns: List[str] = self._pattern_list(global_cfg.get("include"), "include")
         self.exclude_patterns: List[str] = self._pattern_list(global_cfg.get("exclude"), "exclude")
         self.changed_since: Optional[str] = None
+        # --baseline：先前的 JSON 報告；其中已包含的問題仍會列出，但不計入
         # --baseline: a previous JSON report; problems it already contains are reported but not counted
         self.baseline: Optional[Baseline] = None
 
     @staticmethod
     def work_dir_for(target_dir: str) -> str:
-        """The directory tests run from and imports resolve against: the target, or a single file's parent."""
+        """測試執行所在、也是匯入解析所依據的目錄：目標本身，或單一檔案的父目錄。
+        The directory tests run from and imports resolve against: the target, or a single file's parent."""
         return target_dir if os.path.isdir(target_dir) else os.path.dirname(os.path.abspath(target_dir))
 
     def select_symbols(self, target_dir: str) -> Tuple[List[CodeSymbol], List[str]]:
-        """Phase 1 file selection and symbol extraction (no model involved): the symbols to review and a
+        """第 1 階段的檔案選取與符號擷取（不涉及模型）：要審查的符號，以及
+        所套用篩選條件的描述。由執行流程與 --estimate 共用。
+        Phase 1 file selection and symbol extraction (no model involved): the symbols to review and a
         description of the filters that applied. Shared by the run and by --estimate."""
         only_files: Optional[List[str]] = None
         filters: List[str] = []
@@ -143,7 +157,8 @@ class VibeHarnessCommander:
 
     @staticmethod
     def _git(args: List[str], cwd: str) -> Optional[str]:
-        """stdout of a git command run in cwd, or None when git/the repository is unavailable."""
+        """在 cwd 執行 git 指令的 stdout；當 git 或版本庫不可用時為 None。
+        stdout of a git command run in cwd, or None when git/the repository is unavailable."""
         try:
             result = subprocess.run(
                 ["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30
@@ -153,7 +168,8 @@ class VibeHarnessCommander:
         return result.stdout if result.returncode == 0 else None
 
     def _target_revision(self, target_dir: str) -> tuple:
-        """(commit, dirty) of the repository containing the target; (None, None) outside a repository."""
+        """包含目標的版本庫的 (commit, dirty)；不在版本庫內時為 (None, None)。
+        (commit, dirty) of the repository containing the target; (None, None) outside a repository."""
         cwd = target_dir if os.path.isdir(target_dir) else os.path.dirname(os.path.abspath(target_dir))
         head = self._git(["rev-parse", "HEAD"], cwd)
         if head is None:
@@ -162,7 +178,9 @@ class VibeHarnessCommander:
         return head.strip(), (bool(status.strip()) if status is not None else None)
 
     def changed_files(self, target_dir: str, since_ref: str) -> List[str]:
-        """Absolute paths of files under the target that differ from `since_ref` (committed, staged,
+        """目標之下與 `since_ref` 有差異的檔案絕對路徑（已提交、已暫存、
+        未暫存與未追蹤），供 --changed-since 使用。ref 無法解析時拋出 ValueError。
+        Absolute paths of files under the target that differ from `since_ref` (committed, staged,
         unstaged and untracked), for --changed-since. Raises ValueError when the ref cannot be resolved."""
         cwd = target_dir if os.path.isdir(target_dir) else os.path.dirname(os.path.abspath(target_dir))
         top = self._git(["rev-parse", "--show-toplevel"], cwd)
@@ -174,6 +192,7 @@ class VibeHarnessCommander:
             raise ValueError(bi(f"--changed-since：git ref {since_ref!r} 無法在 {root} 解析",
                                 f"--changed-since: git ref {since_ref!r} cannot be resolved in {root}"))
         spec = os.path.abspath(target_dir)
+        # 兩個指令都在版本庫根目錄執行，因此其輸出路徑相對於根目錄
         # Both commands run from the repository root so their output paths are root-relative
         diff = self._git(["diff", "--name-only", "--diff-filter=ACMR", since_ref, "--", spec], root) or ""
         untracked = self._git(["ls-files", "--others", "--exclude-standard", "--", spec], root) or ""
@@ -181,7 +200,9 @@ class VibeHarnessCommander:
         return sorted(p for p in paths if os.path.isfile(p))
 
     def _build_node_sandbox(self) -> Optional[LocalSubprocessSandbox]:
-        """The sandbox for `node:test` modules, or None (with `node_runtime_problem` set) when no usable
+        """供 `node:test` 模組使用的沙盒；沒有可用的 Node 執行環境時為 None（並設定 `node_runtime_problem`）：
+        缺少執行環境是 JS/TS 測試的證據缺口，絕不是啟動失敗。
+        The sandbox for `node:test` modules, or None (with `node_runtime_problem` set) when no usable
         Node runtime exists: a missing runtime is an evidence gap for the JS/TS tests, never a start-up failure."""
         path, version, problem = detect_node(self.node_bin)
         if path is None or version is None:
@@ -251,6 +272,13 @@ class VibeHarnessCommander:
         output_sarif_path: Optional[str] = None
     ) -> VibeHarnessSummary:
         """
+        執行完整的雙引擎測試工作流程：
+        第 1 階段：程式碼匯入、AST 擷取與確定性 AI 資安規則
+        第 2 階段：異質多模型白箱審查與辯論
+        第 3 階段：白箱單元測試產生與沙盒執行
+        第 4 階段：強制 STRIDE/OWASP 威脅建模
+        第 5 階段：威脅衍生的黑箱動態測試執行
+        第 6 階段：品質閘門綜合判定與報告產生
         Executes the complete dual-engine testing workflow:
         Phase 1: Code Ingestion, AST Extraction & deterministic AI-security rules
         Phase 2: Heterogeneous Multi-Model White-Box Review & Debate
@@ -273,14 +301,18 @@ class VibeHarnessCommander:
             border_style="cyan"
         ))
 
+        # 凡是當機時原本會被丟掉的內容（已付費的模型回答、已執行的測試），都會在錯誤往外傳遞之前
+        # 寫成部分 JSON 報告，放在要求的輸出檔旁邊
         # Everything a crash would otherwise throw away (paid-for model answers, executed tests) is
         # written as a partial JSON report next to the requested output before the error propagates
         progress: Dict[str, Any] = {"phase": 0}
         try:
             # -------------------------------------------------------------
+            # 第 1 階段：AST 擷取
             # Phase 1: AST Extraction
             # -------------------------------------------------------------
             self.console.print(f"\n[bold blue]=== {bi('第 1 階段：AST 擷取與語意抽取', 'Phase 1: AST Ingestion & Semantic Extraction')} ===[/bold blue]")
+            # 單一檔案的目標會從其所在目錄執行測試
             # A single-file target runs its tests from the containing directory
             work_dir = self.work_dir_for(target_dir)
             symbols, filters = self.select_symbols(target_dir)
@@ -289,6 +321,7 @@ class VibeHarnessCommander:
                 self.console.print(f"[+] {bi('檔案篩選', 'File selection')}: {escape('; '.join(filters))} "
                                    f"({bi(f'{n_out} 個原始碼檔案依要求排除', f'{n_out} source file(s) left out by request')})")
             routes = [s.name for s in symbols if s.symbol_type == "route"]
+            # 已排序，使列出的技術堆疊不受集合迭代順序影響而保持確定性
             # Sorted so the reported stack is deterministic regardless of set iteration order
             detected_langs = sorted(self.ast_extractor.detected_languages) or ["Python"]
             lang_str = ", ".join(detected_langs)
@@ -297,6 +330,7 @@ class VibeHarnessCommander:
             if routes:
                 self.console.print(f"[+] {bi(f'偵測到 [bold]{len(routes)}[/bold] 個 API 路由處理器', f'Detected [bold]{len(routes)}[/bold] API route handlers')}: {escape(', '.join(routes[:5]))}")
 
+            # 確定性規則在任何模型看到程式碼之前先執行：它們不會受到提示注入
             # Deterministic rules run before any model sees the code: they cannot be prompt-injected
             static_findings = self.static_scanner.scan_files(self.ast_extractor.analyzed_files)
             progress.update(phase=1, static_findings=static_findings, symbols=len(symbols))
@@ -314,12 +348,14 @@ class VibeHarnessCommander:
                 )
 
             # -------------------------------------------------------------
+            # 第 2 階段：異質白箱審查與多模型辯論
             # Phase 2: Heterogeneous White-Box Review & Multi-Model Debate
             # -------------------------------------------------------------
             self.console.print(f"\n[bold blue]=== {bi('第 2 階段：異質多模型白箱審查', 'Phase 2: Heterogeneous Multi-Model White-Box Review')} ===[/bold blue]")
             raw_findings = self.multi_reviewer.review_symbols(symbols, root_dir=work_dir)
             self.console.print(f"[+] {bi(f'已從 {escape(ensemble_label)} 收到 [bold]{len(raw_findings)}[/bold] 筆原始審查發現。', f'Received [bold]{len(raw_findings)}[/bold] raw review findings from {escape(ensemble_label)}.')}")
             if len(reviewer_models) < 2:
+                # 同一模型的多個副本意見一致只是一致性，而非交叉佐證（OWASP LLM07:2026）
                 # Agreement among copies of one model is consistency, not corroboration (OWASP LLM07:2026)
                 self.console.print(f"[yellow][!] {bi('不同的審查模型少於兩個：跨模型驗證無法執行。', 'Fewer than two distinct reviewer models: cross-model verification cannot run.')}[/yellow]")
             findings = deduplicate_findings(raw_findings)
@@ -344,6 +380,7 @@ class VibeHarnessCommander:
             self.console.print(f"[+] {bi('已確認的缺陷假設', 'Confirmed Defect Hypotheses')}: [bold red]{confirmed_majority}[/bold red]{tie_note}")
 
             # -------------------------------------------------------------
+            # 第 3 階段：白箱測試產生與沙盒執行
             # Phase 3: White-Box Test Generation & Sandbox Execution
             # -------------------------------------------------------------
             self.console.print(f"\n[bold blue]=== {bi('第 3 階段：白箱測試產生與沙盒執行', 'Phase 3: White-Box Test Generation & Sandbox Execution')} ===[/bold blue]")
@@ -369,6 +406,7 @@ class VibeHarnessCommander:
             )
 
             # -------------------------------------------------------------
+            # 第 4 階段：強制黑箱威脅建模（STRIDE 與 OWASP）
             # Phase 4: Mandatory Black-Box Threat Modeling (STRIDE & OWASP)
             # -------------------------------------------------------------
             self.console.print(f"\n[bold blue]=== {bi('第 4 階段：強制黑箱威脅建模', 'Phase 4: Mandatory Black-Box Threat Modeling')} ===[/bold blue]")
@@ -388,6 +426,7 @@ class VibeHarnessCommander:
                 self.console.print(f"   - [[bold magenta]{t.stride_category.value}[/bold magenta]] ({t.severity.value}) {escape(t.title)}")
 
             # -------------------------------------------------------------
+            # 第 5 階段：威脅衍生的黑箱動態測試執行
             # Phase 5: Threat-Derived Black-Box Dynamic Test Execution
             # -------------------------------------------------------------
             self.console.print(f"\n[bold blue]=== {bi('第 5 階段：威脅衍生的黑箱測試執行', 'Phase 5: Threat-Derived Black-Box Test Execution')} ===[/bold blue]")
@@ -404,6 +443,9 @@ class VibeHarnessCommander:
             bb_passed = sum(1 for r in bb_results if r.status == TestStatus.PASSED)
             progress.update(phase=5, blackbox_tests=bb_tests, blackbox_results=bb_results)
             bb_breaches = sum(1 for r in bb_results if r.is_security_exploit_confirmed)
+            # 不符合嚴格利用判定條件的 FAILED 攻擊測試屬於模糊證據：
+            # 它不可悄悄地從閘門中消失（過去曾如此，導致攻擊腳本實際上
+            # 正對目標失敗時，整次執行的判定結果仍為 READY_TO_SHIP）
             # A FAILED attack test that does not match the strict exploit predicate is ambiguous
             # evidence: it must not silently disappear from the gate (it used to, letting the run
             # pass as READY_TO_SHIP while an attack script was actually failing against the target)
@@ -421,11 +463,13 @@ class VibeHarnessCommander:
             )
 
             # -------------------------------------------------------------
+            # 第 6 階段：品質閘門綜合判定與報告
             # Phase 6: Quality Gate Synthesis & Reporting
             # -------------------------------------------------------------
             self.console.print(f"\n[bold blue]=== {bi('第 6 階段：Commander 品質閘門綜合判定', 'Phase 6: Commander Quality Gate Synthesis')} ===[/bold blue]")
             critical_threats = sum(1 for t in threat_report.threats if t.severity == FindingSeverity.CRITICAL)
 
+            # 使 READY_TO_SHIP 判定結果不成立的證據缺口
             # Evidence gaps that forbid a READY_TO_SHIP verdict
             inconclusive_reasons: List[str] = []
             budget_hits = self.gateway.budget_exhausted_calls
@@ -443,6 +487,7 @@ class VibeHarnessCommander:
                 )
             invalid_calls = self.gateway.invalid_calls
             if invalid_calls:
+                # 每個代理與原因各一筆：當機的批次與格式錯誤的回答讀起來不同
                 # One entry per agent and reason: a crashed batch reads differently from a malformed answer
                 invalid_details = sorted({f"{rec.agent_id} ({rec.reason})" if rec.reason else rec.agent_id for rec in invalid_calls})
                 inconclusive_reasons.append(bi(
@@ -471,6 +516,7 @@ class VibeHarnessCommander:
                 inconclusive_reasons.append(bi("沒有設定任何 whitebox_reviewer_* 代理，因此沒有執行白箱模型審查",
                                                "No whitebox_reviewer_* agents are configured, so no white-box model review ran"))
             elif len(reviewer_models) < 2:
+                # 同一模型的副本意見一致只是一致性，而非交叉佐證（OWASP LLM07:2026）
                 # Copies of one model agreeing is consistency, not corroboration (OWASP LLM07:2026)
                 inconclusive_reasons.append(bi(
                     f"只設定了一個不同的審查模型（{reviewer_models[0]}），因此跨模型驗證無法執行；這些發現是未經過濾的單一模型假設",
@@ -546,11 +592,15 @@ class VibeHarnessCommander:
                     f"{len(untested_threats)} modeled threat(s) have no executable test"
                 ) + f": {', '.join(untested_threats)}")
 
+            # 只有已執行的證據或確定性規則命中才能阻擋或使閘門失敗；模型發現與
+            # 建模出的威脅在測試確認之前都只是假設
             # Only executed evidence or deterministic rule hits can block or fail the gate; model findings and
             # modeled threats are hypotheses until a test confirms them
             static_blocking = [
                 f for f in static_findings if f.severity in (FindingSeverity.CRITICAL, FindingSeverity.HIGH)
             ]
+            # --baseline：只有先前報告未包含的問題才決定判定結果；已知的
+            # 問題仍留在表格中，並列於「Known from baseline」之下
             # --baseline: only problems the previous report did not contain decide the verdict; the known
             # ones stay in the tables and are listed under "Known from baseline"
             gate_wb_results, gate_bb_results = wb_results, bb_results
@@ -636,6 +686,7 @@ class VibeHarnessCommander:
                 baseline_suppressed=suppressed,
             )
 
+            # 輸出報告
             # Output report
             report_args: Dict[str, Any] = dict(
                 summary=summary,
@@ -645,6 +696,7 @@ class VibeHarnessCommander:
                 blackbox_results=bb_results,
                 target_path=target_dir
             )
+            # 測試程式碼是稽核軌跡的一部分（md / json）；SARIF 只承載發現
             # The tests' code is part of the audit trail (md / json); SARIF carries findings only
             test_args: Dict[str, Any] = dict(whitebox_tests=wb_tests, blackbox_tests=bb_tests)
             if output_format == "json":
@@ -682,7 +734,8 @@ class VibeHarnessCommander:
             raise
 
     def _write_partial_report(self, output_report_path: str, target_dir: str, progress: Dict[str, Any], exc: BaseException) -> None:
-        """Writes `<output>.partial.json` with whatever the run produced before `exc` stopped it."""
+        """將 `exc` 中止執行前已產出的所有內容寫入 `<output>.partial.json`。
+        Writes `<output>.partial.json` with whatever the run produced before `exc` stopped it."""
         path = f"{output_report_path}.partial.json"
 
         def dump(value: Any) -> Any:
@@ -725,7 +778,8 @@ class VibeHarnessCommander:
         inconclusive_reasons: List[str],
         static_blocking: Optional[List[StaticFinding]] = None
     ) -> List[str]:
-        """Recommendations derived from this run's evidence, most urgent first."""
+        """由本次執行的證據推導出的建議，最緊急者優先。
+        Recommendations derived from this run's evidence, most urgent first."""
         recs: List[str] = []
         threats_by_id = {t.threat_id: t for t in threat_report.threats}
         for r in bb_results:

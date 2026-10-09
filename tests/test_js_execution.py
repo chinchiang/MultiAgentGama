@@ -1,4 +1,7 @@
-"""JavaScript / TypeScript dynamic execution: the JS code gate, module-kind detection and import
+"""JavaScript ／ TypeScript 動態執行：JS 程式碼關卡、模組種類偵測與匯入
+說明、Node JUnit 解析與分類、Node 沙盒（可用時用真正的 `node`，
+以 VIBEHARNESS_REQUIRE_NODE=1 強制）、執行器的語言分流與測試框架的證據缺口。
+JavaScript / TypeScript dynamic execution: the JS code gate, module-kind detection and import
 instructions, Node JUnit parsing and classification, the Node sandboxes (real `node` when available,
 forced with VIBEHARNESS_REQUIRE_NODE=1), the executor's language split and the harness evidence gaps."""
 import json
@@ -50,6 +53,7 @@ def _esm_test(url, body):
     return f'import {{ test }} from "node:test";\nimport assert from "node:assert/strict";\n{url}\n{body}\n'
 
 
+# --- JS 程式碼關卡 -----------------------------------------------------------------------------
 # --- The JS code gate -------------------------------------------------------------------------------
 
 GOOD = textwrap.dedent('''
@@ -114,6 +118,7 @@ def test_python_gate_is_still_used_for_python():
     assert check_test_code_for(GOOD, "python")[0] is False
 
 
+# --- 模組種類、匯出名稱、匯入說明 ----------------------------------------------------------------
 # --- Module kind, exports, import instructions -----------------------------------------------------
 
 def test_language_for_file():
@@ -133,7 +138,7 @@ def test_language_for_file():
     ("a.js", "const fs = require('node:fs');\nmodule.exports = { f };", "cjs"),
     ("a.js", "exports.f = () => 1;", "cjs"),
     ("a.js", "// export const fake = 1\nconst s = 'require(\"x\")';\nfunction f() {}", "unknown"),
-    ("a.js", "const p = import('./lazy.js');", "unknown"),  # a dynamic import() is valid in both systems
+    ("a.js", "const p = import('./lazy.js');", "unknown"),  # 動態 import() 在兩種模組系統中都合法 ／ a dynamic import() is valid in both systems
 ])
 def test_js_module_kind_from_extension_and_syntax(tmp_path, name, source, expected):
     path = tmp_path / name
@@ -149,11 +154,11 @@ def test_js_module_kind_falls_back_to_the_nearest_package_json(tmp_path):
     plain = nested / "a.js"
     plain.write_text("function f() {}", encoding="utf-8")
     assert js_module_kind(str(plain)) == "esm"
-    (tmp_path / "src" / "package.json").write_text('{"name": "x"}', encoding="utf-8")  # no type: CommonJS
+    (tmp_path / "src" / "package.json").write_text('{"name": "x"}', encoding="utf-8")  # 沒有 type：CommonJS ／ no type: CommonJS
     assert js_module_kind(str(plain)) == "cjs"
     (tmp_path / "src" / "package.json").write_text("{not json", encoding="utf-8")
     assert js_module_kind(str(plain)) == "unknown"
-    assert js_module_kind(str(tmp_path / "missing.js")) in ("esm", "unknown")  # unreadable: package.json decides
+    assert js_module_kind(str(tmp_path / "missing.js")) in ("esm", "unknown")  # 無法讀取：由 package.json 決定 ／ unreadable: package.json decides
 
 
 def test_js_exported_names_in_order_and_deduplicated(tmp_path):
@@ -209,6 +214,7 @@ def test_target_file_url_shapes():
     assert target_file_url("app.mjs").startswith("file:///")
 
 
+# --- Node JUnit 解析與分類 ----------------------------------------------------------------------
 # --- Node JUnit parsing and classification ---------------------------------------------------------
 
 NODE_JUNIT = textwrap.dedent('''\
@@ -263,13 +269,16 @@ def test_parse_node_junit_assigns_every_case_to_the_module():
 def test_parse_node_junit_file_level_cases():
     failed = TestSuiteExecutor._parse_junit(FILE_FAIL_JUNIT, "javascript", module="test_vh_001")
     assert len(failed["test_vh_001"]) == 1 and failed["test_vh_001"][0]["outcome"] == "failure"
+    # 通過的檔案層級偽測試案例代表「什麼都沒執行」：模組存在但沒有任何案例
     # A passing file-level pseudo-case means "nothing ran": the module exists but has no case
     empty = TestSuiteExecutor._parse_junit(EMPTY_FILE_JUNIT, "javascript", module="test_vh_002")
     assert empty == {"test_vh_002": []}
+    # 沒有模組時，檔名本身仍會把案例歸組（較舊／其他的回報器）
     # Without a module the file name itself still groups the case (older/other reporters)
     assert TestSuiteExecutor._parse_junit(FILE_FAIL_JUNIT, "javascript") == {
         "test_vh_001": [failed["test_vh_001"][0]]
     }
+    # pytest 會保留以模組命名的通過案例：只有 JS 會捨棄它
     # pytest keeps a passing module-named case: only JS drops it
     assert len(TestSuiteExecutor._parse_junit(EMPTY_FILE_JUNIT, "python", module="test_vh_002")["test_vh_002"]) == 1
 
@@ -340,10 +349,12 @@ def test_js_aggregation_classifies_outcomes():
     assert passed.status == TestStatus.PASSED and passed.language == "javascript"
 
 
+# --- 執行器分派（不需要 Node）-------------------------------------------------------------------
 # --- Executor dispatch (no Node needed) ------------------------------------------------------------
 
 class _RecordingSandbox:
-    """Stands in for a Node sandbox: records each module run and answers with a canned report."""
+    """Node 沙盒的替身：記錄每次執行的模組，並以預先準備的報告回應。
+    Stands in for a Node sandbox: records each module run and answers with a canned report."""
     timeout_seconds = 30
     supports_typescript = True
 
@@ -379,9 +390,9 @@ def test_executor_keeps_order_across_languages_and_runs_js_modules_one_per_proce
     assert [r.test_id for r in results] == ["P1", "J1", "J2"]
     assert [r.language for r in results] == ["python", "javascript", "javascript"]
     assert results[0].status == TestStatus.PASSED and coverage == 88.0
-    assert results[1].status == TestStatus.FAILED  # the assertion failure in NODE_JUNIT
+    assert results[1].status == TestStatus.FAILED  # NODE_JUNIT 中的斷言失敗 ／ the assertion failure in NODE_JUNIT
     assert results[2].status == TestStatus.ERROR and "No test was collected" in results[2].failure_reason
-    assert js.calls == [(["test_vh_001.mjs"], 7), (["test_vh_002.mjs"], 7)]  # global index, one process each
+    assert js.calls == [(["test_vh_001.mjs"], 7), (["test_vh_002.mjs"], 7)]  # 全域索引，每個模組一個行程 ／ global index, one process each
 
 
 def test_executor_js_timeout_and_unparseable_report(tmp_path):
@@ -434,6 +445,7 @@ def test_executor_js_gate_failure_is_an_error_without_a_run(tmp_path):
     assert js.calls == []
 
 
+# --- Node 命令、版本解析、Docker argv 形狀（不需要 Node ／ Docker）------------------------------
 # --- Node command, version parsing, Docker argv shape (no Node / Docker needed) --------------------
 
 def test_parse_node_version_and_detect():
@@ -494,8 +506,8 @@ def test_node_subprocess_sandbox_command_env_and_limits(tmp_path, monkeypatch):
     assert cwd == str(target) and env["NODE_ENV"] == "test" and env["TARGET_URL"] == "http://svc"
     assert "OPENAI_API_KEY" not in env and "NODE_OPTIONS" not in env
     linked = run_dir / "node_modules"
-    assert linked.is_symlink() or "NODE_PATH" in env  # bare specifiers resolve either way
-    assert sandbox._limits(20) == {"cpu_seconds": 30}  # no RLIMIT_AS for V8
+    assert linked.is_symlink() or "NODE_PATH" in env  # 裸模組名稱兩種方式都能解析 ／ bare specifiers resolve either way
+    assert sandbox._limits(20) == {"cpu_seconds": 30}  # V8 不用 RLIMIT_AS ／ no RLIMIT_AS for V8
     assert sandbox._extract_coverage_percent("anything") is None
 
 
@@ -528,6 +540,7 @@ def test_node_docker_sandbox_names_its_own_dockerfile(tmp_path, monkeypatch):
     assert "sandbox-node.Dockerfile" in str(info.value) or "docker" in str(info.value).lower()
 
 
+# --- 真正的 Node 執行 ---------------------------------------------------------------------------
 # --- Real Node runs ----------------------------------------------------------------------------------
 
 @node_only
@@ -559,7 +572,7 @@ def test_node_runs_esm_cjs_and_bare_specifier_modules(tmp_path):
         _js_test("secret", _esm_test("",
                                      'test("env", () => { assert.equal(process.env.OPENAI_API_KEY, undefined); '
                                      'assert.equal(process.env.NODE_OPTIONS, undefined); });')),
-        _js_test("empty", "test('x', () => { assert.ok(1); });"),  # no imports: ReferenceError on assert -> test-side
+        _js_test("empty", "test('x', () => { assert.ok(1); });"),  # 沒有匯入：assert 發生 ReferenceError -> 測試端 ／ no imports: ReferenceError on assert -> test-side
     ]
     os.environ["OPENAI_API_KEY"] = "sk-secret"
     os.environ["NODE_OPTIONS"] = "--require /nonexistent/evil.js"
@@ -595,6 +608,7 @@ def test_node_hang_is_killed_on_the_per_test_budget(tmp_path):
 def test_node_file_without_tests_is_not_a_pass(tmp_path):
     sandbox = NodeSubprocessSandbox(timeout_seconds=30)
     executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: sandbox)
+    # 關卡要求有 test() 呼叫；一個永遠不會註冊的 test()（在死分支內）會到達 Node
     # The gate requires a test() call; a test() that never registers (inside a dead branch) reaches Node
     code = _esm_test("", 'if (false) { test("ghost", () => { assert.ok(1); }); }')
     results, _ = executor.execute_test_suite([_js_test("ghost", code)], working_dir=str(tmp_path))
@@ -649,6 +663,7 @@ def test_node_container_runs_tests_against_the_mounted_target(tmp_path):
     assert by_id["no_net"].status == TestStatus.PASSED
 
 
+# --- 測試框架端對端 -----------------------------------------------------------------------------
 # --- Harness end to end --------------------------------------------------------------------------------
 
 _JS_TARGET = ("export function login(user, password) {\n  if (!user) return { status: 'error' };\n"
@@ -656,7 +671,9 @@ _JS_TARGET = ("export function login(user, password) {\n  if (!user) return { st
 
 
 def _js_responder(expected_status):
-    """A fake model: one finding on login, confirmed by every verifier, a node:test for it, one threat
+    """假模型：對 login 的一個發現、每位驗證者都確認、對應的一個 node:test、一個威脅
+    及其行程內攻擊測試。產生的測試會匯入提示詞給它們的 URL。
+    A fake model: one finding on login, confirmed by every verifier, a node:test for it, one threat
     with an in-process attack test. The generated tests import the URL the prompt gives them."""
     def responder(system, user):
         if "QA Engineer" in system:
@@ -694,14 +711,14 @@ def test_js_target_is_dynamically_verified_end_to_end(tmp_path, fake_live):
     summary = commander.run_full_pipeline(target_dir=str(target), base_url="http://localhost:59999",
                                           output_report_path=str(report))
     assert not any("statically only" in r for r in summary.inconclusive_reasons)
-    assert summary.whitebox_tests_passed >= 1  # the generated node:test ran and passed
+    assert summary.whitebox_tests_passed >= 1  # 產生的 node:test 已執行並通過 ／ the generated node:test ran and passed
     assert summary.blackbox_security_breaches == 1 and summary.overall_status == "BLOCKED_CRITICAL_RISK"
     assert summary.run is not None and summary.run.node_runtime.startswith("node v")
     text = report.read_text(encoding="utf-8")
     assert "```javascript" in text or "````javascript" in text
     assert POC_HEADER_JS in text and "Reproduction PoC" in text
-    assert "Line Coverage (Python)" not in text  # console-only label; the report keeps its metric table
-    assert summary.line_coverage_pct is None  # JS coverage is not collected
+    assert "Line Coverage (Python)" not in text  # 只在終端機顯示的標籤；報告保留其指標表 ／ console-only label; the report keeps its metric table
+    assert summary.line_coverage_pct is None  # 不收集 JS 覆蓋率 ／ JS coverage is not collected
 
 
 def test_js_target_without_a_node_runtime_is_an_evidence_gap(tmp_path, fake_live):

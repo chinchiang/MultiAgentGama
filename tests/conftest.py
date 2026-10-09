@@ -1,4 +1,5 @@
-"""Shared fixtures: a stand-in for litellm so 'live' code paths run without network or real keys."""
+"""共用夾具：litellm 的替身，讓「live」程式路徑不需網路或真實金鑰也能執行。
+Shared fixtures: a stand-in for litellm so 'live' code paths run without network or real keys."""
 import os
 import sys
 from types import SimpleNamespace
@@ -11,7 +12,8 @@ if REPO_ROOT not in sys.path:
 
 
 class _FakeLiteLLM:
-    """Stands in for litellm; `responder(system_prompt, user_prompt)` returns the raw model text."""
+    """litellm 的替身；`responder(system_prompt, user_prompt)` 回傳模型的原始文字。
+    Stands in for litellm; `responder(system_prompt, user_prompt)` returns the raw model text."""
 
     def __init__(self, responder):
         self.responder = responder
@@ -26,7 +28,8 @@ class _FakeLiteLLM:
 
 @pytest.fixture
 def fake_live(monkeypatch):
-    """Sets fake API keys; call the returned function with a responder to install the fake litellm."""
+    """設定假的 API 金鑰；呼叫回傳的函式並傳入 responder 以安裝假的 litellm。
+    Sets fake API keys; call the returned function with a responder to install the fake litellm."""
     for var in ("ANTHROPIC_API_KEY", "ZAI_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY"):
         monkeypatch.setenv(var, "test-key")
 
