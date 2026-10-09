@@ -810,7 +810,9 @@ def test_bad_node_settings_fail_at_start_up(tmp_path):
     base = yaml.safe_load(open(CONFIG, encoding="utf-8"))
     for key, value, match in (("sandbox_node_provider", "e2b", "not implemented"), ("sandbox_memory_mb", "abc", "sandbox_memory_mb"),
                               ("docker_pids_limit", "many", "docker_pids_limit"), ("sandbox_timeout_seconds", -1, "sandbox_timeout_seconds"),
-                              ("docker_node_image", "", "docker_node_image")):
+                              ("docker_node_image", "", "docker_node_image"), ("docker_network", None, "docker_network"),
+                              ("docker_memory", 1, "docker_memory"), ("docker_cpus", "two", "docker_cpus"),
+                              ("sandbox_timeout_seconds", "60", "sandbox_timeout_seconds")):
         cfg = {**base, "global": {**base["global"], key: value}}
         path = tmp_path / f"{key}.yaml"
         path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
@@ -878,3 +880,74 @@ def test_file_level_load_failure_is_never_a_breach_even_with_noisy_stdout():
     assert ex._js_exception_summary(case).startswith("Error [ERR_MODULE_NOT_FOUND]")
     result = TestSuiteExecutor(sandbox=None)._aggregate(_js_test("BB", "x", test_type="blackbox_security"), "BB", [case])
     assert result.status == TestStatus.ERROR and not result.is_security_exploit_confirmed
+
+
+def test_sandbox_settings_are_validated_once_for_both_sandboxes():
+    """Python 與 Node 沙盒共用同一組驗證過的設定，不會各自解讀（例如逾時 0 一邊是 0、一邊是 120）。
+    The Python and Node sandboxes share one validated set of settings, so a value is never interpreted differently
+    (e.g. a timeout of 0 becoming 0 on one side and 120 on the other)."""
+    settings = VibeHarnessCommander._sandbox_settings({"sandbox_timeout_seconds": 0, "docker_memory": " 512m ", "docker_cpus": 1.5})
+    assert settings["timeout"] == 120 and settings["memory"] == "512m" and settings["cpus"] == "1.5"
+    sandbox = VibeHarnessCommander._build_sandbox({"sandbox_provider": "local_subprocess", "sandbox_timeout_seconds": 0})
+    assert sandbox.timeout_seconds == 120
+    node = VibeHarnessCommander._validate_node_settings({"sandbox_timeout_seconds": 0}, "docker")
+    assert node["timeout"] == 120 and node["image"] == DEFAULT_DOCKER_NODE_IMAGE
+
+
+def test_docker_node_version_is_probed_only_for_typescript_targets(monkeypatch):
+    """純 JS 目標不多開一個容器讀版本；版本只在有 TypeScript（決定型別剝除）時才需要。
+    A JS-only target does not start an extra container to read the version; it matters only when TypeScript exists."""
+    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
+    commander.sandbox_node_provider = "docker"
+    commander._node_cfg = VibeHarnessCommander._validate_node_settings(commander._global_cfg, "docker")
+    monkeypatch.setattr(NodeDockerSandbox, "_verify_available", lambda self: None)
+    calls = []
+    monkeypatch.setattr(VibeHarnessCommander, "_docker_node_version", staticmethod(lambda sandbox: calls.append(1) or (22, 9, 0)))
+    commander.ast_extractor.analyzed_files = ["/app/x.mjs"]
+    sandbox = commander._build_node_sandbox()
+    assert calls == [] and not sandbox.strip_types and commander.node_runtime == f"docker {DEFAULT_DOCKER_NODE_IMAGE}"
+    commander.ast_extractor.analyzed_files = ["/app/x.ts"]
+    sandbox = commander._build_node_sandbox()
+    assert calls == [1] and sandbox.strip_types and "(node v22.9.0)" in commander.node_runtime
+
+
+def test_docker_node_version_probe_uses_the_sandbox_run_prefix(tmp_path, monkeypatch):
+    """版本探測用與測試相同的 docker run 前綴（同使用者、掛載、限制），不是另一組手寫旗標。
+    The version probe uses the same docker run prefix as the tests (same user, mounts, limits), not hand-rolled flags."""
+    import vibeharness.core.harness as harness_mod
+    sandbox = NodeDockerSandbox(timeout_seconds=30, verify=False, memory="256m", pids_limit=64, network="none")
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="v22.9.0\n", stderr="")
+    monkeypatch.setattr(harness_mod.subprocess, "run", fake_run)
+    assert VibeHarnessCommander._docker_node_version(sandbox) == (22, 9, 0)
+    joined = " ".join(seen["cmd"])
+    assert seen["cmd"][-3:] == [DEFAULT_DOCKER_NODE_IMAGE, "node", "--version"]
+    for flag in ("--rm", "--read-only", "--network none", "--cap-drop ALL", "--memory 256m", "--pids-limit 64", "--user"):
+        assert flag in joined
+    assert "--pull" not in joined
+
+
+def test_file_level_case_match_is_exact():
+    """名稱只是「結尾像 test_vh_000.mjs」的 test() 不是檔案層級 case：它的斷言失敗仍是突破。
+    A test() whose name merely ends like test_vh_000.mjs is not a file-level case: its assertion failure stays a breach."""
+    case = dict(ASSERTION_CASE, name="rejects path traversal to test_vh_000.mjs")
+    assert not TestSuiteExecutor._js_is_harness_failure(case)
+    result = TestSuiteExecutor(sandbox=None)._aggregate(_js_test("BB", "x", test_type="blackbox_security"), "BB", [case])
+    assert result.status == TestStatus.FAILED and result.is_security_exploit_confirmed
+    assert TestSuiteExecutor._js_is_harness_failure(dict(ASSERTION_CASE, name="/run/test_vh_000.mjs"))
+    assert TestSuiteExecutor._parse_junit(EMPTY_FILE_JUNIT, "javascript", module="test_vh_002") == {"test_vh_002": []}
+
+
+def test_load_time_reference_error_wins_over_target_noise():
+    """載入時的 ReferenceError（沒有 harness 標記）要贏過目標印出的「cause:」與「Error:」雜訊行。
+    A load-time ReferenceError (no harness marker) must win over "cause:" and "Error:" noise lines the target printed."""
+    case = _case("test failed",
+                 "cause: cache miss\nError: cache miss, falling back\n"
+                 "file:///app/svc.mjs:3\nfoo();\n^\n\nReferenceError: foo is not defined\n"
+                 "    at file:///app/svc.mjs:3:1\n    at ModuleJob.run (node:internal/modules/esm/module_job:1:1)\n"
+                 "[Error: test failed] { code: 'ERR_TEST_FAILURE', cause: 'test failed' }", name="/run/test_vh_000.mjs")
+    assert TestSuiteExecutor._js_exception_summary(case) == "ReferenceError: foo is not defined"
+    assert TestSuiteExecutor._js_is_harness_failure(case)

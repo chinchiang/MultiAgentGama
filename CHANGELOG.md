@@ -19,9 +19,9 @@
 
 ### 修正
 - **JS 突破被降級**：`_js_is_harness_failure` 原本對整段 junit 內文找 `SyntaxError` 等標記，`assert.doesNotThrow` 失敗時內文提到目標拋出的 `SyntaxError` 就會把確認的突破改成 harness ERROR 並丟掉 exploit 旗標；改為只看 Node 回報的例外摘要；檔案層級的載入失敗一律是 harness 錯誤（目標在匯入時印出的 Error 字樣不會讓它變成缺陷或突破），`_js_exception_summary` 跳過「Error: test failed」佔位行並優先取帶標記的錯誤行
-- **Docker Node 沙盒不再要求主機有 node**：`sandbox_node_provider: docker` 改用映像檔自帶的 Node（先確認映像檔存在，再以強化旗標與 `--pull=never` 在容器內讀 `node --version` 決定 TypeScript 支援；讀不到就把 TypeScript 列為未執行而不猜），`RunMetadata.node_runtime` 只在沙盒建立成功後才記錄；`sandbox_node_provider`、`sandbox_memory_mb`、`sandbox_timeout_seconds`、`docker_pids_limit`、`docker_node_image` 改在啟動時驗證（exit 5），沙盒工廠只把 `SandboxUnavailableError`／`OSError` 揭露為證據缺口
+- **Docker Node 沙盒不再要求主機有 node**：`sandbox_node_provider: docker` 改用映像檔自帶的 Node（先確認映像檔存在，只在目標含 TypeScript 時才用與測試相同的 `docker run` 前綴在容器內讀 `node --version` 決定型別剝除；讀不到就把 TypeScript 列為未執行而不猜），`RunMetadata.node_runtime` 只在沙盒建立成功後才記錄；Python 與 Node 沙盒共用同一組啟動時驗證的設定（`sandbox_timeout_seconds`、`sandbox_memory_mb`、`docker_pids_limit`、`docker_network`、`docker_memory`、`docker_cpus`、`docker_bin`），加上 `sandbox_node_provider` 與 `docker_node_image`，錯誤值一律 exit 5，沙盒工廠只把 `SandboxUnavailableError`／`OSError` 揭露為證據缺口
 - **基準線鍵**：`normalize` 改為保留任何文字的字母與數字（中文標題不再塌成空字串而共用一個鍵，否則新的突破可能被當成已知），純 ASCII 的鍵與 0.3.0 相同；只有模擬引擎的項目（新欄位 `ThreatItem.is_simulated`、既有的 `ReviewFinding.is_simulated`）以 `bi()` 雙語標題的英文半進鍵，真實模型文字原樣進鍵；SARIF 的 partialFingerprints 與基準線共用同一組 `normalize`／`fingerprint`／`key_text`。進基準線的白箱 key 只來自 FAILED 的結果：上次測試通過的確認發現這次失敗是新問題，不再被壓下
-- **Action 的 `extra-args`**：改以 Python `shlex` 切字（引號有效、不執行任何 shell、不展開 glob），文件範例 `--exclude 'tests/*'` 可正常運作；切不開的輸入以 exit 5 失敗而不是靜默略過
+- **Action 的 `extra-args`**：改以 Python `shlex` 切字（引號有效、不執行任何 shell、不展開 glob），文件範例 `--exclude 'tests/*'` 可正常運作；切不開的輸入以 exit 5 失敗而不是靜默略過；讀取方式相容 bash 3.2（macOS runner）
 - 模擬引擎的雙語發現／威脅在 hybrid 模式進入 live 提示詞時只送英文半；`zh_only` 搬到 `i18n.py`；`_target_revision`／`changed_files` 改用 `work_dir_for`
 
 ## [0.3.0] - 2026-10-09

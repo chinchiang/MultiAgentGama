@@ -244,3 +244,21 @@ def test_sarif_fingerprints_use_the_same_helpers_as_the_baseline():
     from vibeharness.reports import report_generator as rg
     assert rg.normalize is bl.normalize and rg.fingerprint is bl.fingerprint
     assert not hasattr(rg.ReportGenerator, "_normalize") and not hasattr(rg.ReportGenerator, "_fingerprint")
+
+
+def test_old_simulated_reports_without_per_item_flags_still_match():
+    """只在 threat_model／debate 層級標 is_simulated 的舊報告，重算 key 時會把旗標補到每個項目，與這一輪的模擬項目相符。
+    An old report flagged is_simulated only at the threat_model / debate level gets the flag propagated to every item
+    when keys are recomputed, so it matches this run's simulated items."""
+    from vibeharness.core.i18n import bi
+    title = bi("大量指派管理員欄位", "Mass assignment of admin fields")
+    old_threat = _threat().model_copy(update={"title": title})  # is_simulated 預設 False ／ defaults to False
+    breach = TestExecutionResult(test_id="BB-TEST-THREAT-01", test_type="blackbox_security", status=TestStatus.FAILED,
+                                 is_security_exploit_confirmed=True, source_ref="THREAT-01")
+    payload = {"tool": "vibeharness-mas", "schema_version": "1", "target_path": EXAMPLES, "summary": {},
+               "whitebox": {"debate": {"confirmed_findings": []}, "test_results": []},
+               "threat_model": {"threats": [old_threat.model_dump(exclude={"is_simulated"})], "is_simulated": True},
+               "blackbox_test_results": [breach.model_dump()]}
+    loaded = bl._keys_from_report(payload)
+    new_threat = _threat().model_copy(update={"title": title, "is_simulated": True})
+    assert bl.breach_key(breach, new_threat) in loaded.breaches

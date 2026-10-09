@@ -64,9 +64,13 @@ _JS_TEST_SIDE_ERRORS = ("ReferenceError", "TypeError")
 # V8 堆疊框架最內層在前："    at fn (file:///x/y.mjs:3:9)" 或 "    at file:///x/y.mjs:3:9"
 # V8 stack frames are innermost-first: "    at fn (file:///x/y.mjs:3:9)" or "    at file:///x/y.mjs:3:9"
 _V8_FRAME_RE = re.compile(r"^\s+at (?:.*?\()?((?:file:///|/|[A-Za-z]:[\\/])[^\s)]+?):\d+:\d+\)?\s*$", re.MULTILINE)
-_JS_CAUSE_RE = re.compile(r"^\s*cause:\s*([^'\"\s].*?)\s*\{?\s*$", re.MULTILINE)  # 加了引號的 cause（'test failed'）什麼都沒說 ／ a quoted cause ('test failed') says nothing
+_JS_CAUSE_RE = re.compile(r"^\s*cause:\s*([A-Za-z]*Error\b.*?)\s*\{?\s*$", re.MULTILINE)  # 加了引號的 cause（'test failed'）什麼都沒說 ／ a quoted cause ('test failed') says nothing
 _JS_ERROR_LINE_RE = re.compile(r"^\s*\[?(\w*Error(?: \[\w+\])?: .+)$", re.MULTILINE)
-_JS_FILE_CASE_RE = re.compile(r"test_vh_\d+\.(?:mjs|cjs|js)$")
+# 檔案層級 case 的名字就是測試檔路徑：對 basename 做完整比對，名稱只是「結尾像檔名」的 test() 不算
+# A file-level case is named after the test file path: full match on the basename, a test() whose name merely ends
+# like a file name does not count
+_JS_FILE_CASE_RE = re.compile(r"test_vh_\d+\.(?:mjs|cjs|js)")
+_V8_STACK_LINE_RE = re.compile(r"^\s+at ", re.MULTILINE)
 
 
 class TestSuiteExecutor:
@@ -257,7 +261,7 @@ class TestSuiteExecutor:
                         # A module that failed to load is one file-level case whose junit body only says
                         # "test failed"; the actual error (ERR_MODULE_NOT_FOUND, a ReferenceError at load)
                         # is on the runner's stdout, which the classification needs to see first.
-                        if case["outcome"] == "failure" and _JS_FILE_CASE_RE.search(os.path.basename(case["name"] or "")):
+                        if case["outcome"] == "failure" and _JS_FILE_CASE_RE.fullmatch(os.path.basename(case["name"] or "")):
                             case["details"] = f"{stdout[:6000]}\n{case['details'] or ''}"
                     cases.update(parsed)
         else:
@@ -477,7 +481,7 @@ class TestSuiteExecutor:
             group = match.group(0) if match else module
             if not group:
                 continue
-            is_file_case = language != "python" and bool(_JS_FILE_CASE_RE.search(os.path.basename(tc.get("name") or "")))
+            is_file_case = language != "python" and bool(_JS_FILE_CASE_RE.fullmatch(os.path.basename(tc.get("name") or "")))
             outcome, message, details = "passed", None, None
             out, err = "", ""
             for child in tc:
@@ -647,7 +651,7 @@ class TestSuiteExecutor:
         # Only the exception Node reports (the cause line or the first XError line): an assertion failure's body may
         # mention a SyntaxError the target threw (e.g. assert.doesNotThrow's actual), and matching the whole body
         # would downgrade a genuine breach to a harness error
-        if _JS_FILE_CASE_RE.search(os.path.basename(case.get("name") or "")):
+        if _JS_FILE_CASE_RE.fullmatch(os.path.basename(case.get("name") or "")):
             return True  # 檔案層級的失敗 = 模組沒載入，從未執行任何 test() ／ a file-level failure = the module never loaded, no test() ran
         summary = TestSuiteExecutor._js_exception_summary(case)
         if any(marker in summary for marker in _JS_HARNESS_MARKERS):
@@ -678,16 +682,20 @@ class TestSuiteExecutor:
         # 在 runner 輸出裡；跳過佔位行，取第一個有內容的 XError 行
         # A file-level failure's junit body only has the "Error: test failed" placeholder; the real error (e.g.
         # ERR_MODULE_NOT_FOUND) is in the runner output, so skip the placeholder and take the first real XError line
-        candidates = [line.group(1).strip() for line in _JS_ERROR_LINE_RE.finditer(details)
-                      if not line.group(1).strip().startswith("Error: test failed")]
-        # 補進來的 runner 輸出可能含目標自己印的「Error: …」行：優先取帶有 harness 標記（載入錯誤）的那一行
-        # The folded runner output may contain "Error: ..." lines the target printed itself: prefer the line that
-        # carries a harness marker (a load error)
-        for text in candidates:
+        candidates = [(m.group(1).strip(), m.end()) for m in _JS_ERROR_LINE_RE.finditer(details)
+                      if not m.group(1).strip().startswith("Error: test failed")]
+        # 補進來的 runner 輸出可能含目標自己印的「Error: …」行：優先取帶 harness 標記的那行，再來是後面緊接著
+        # 堆疊框架（真的被拋出）的那行，最後才是第一行
+        # The folded runner output may contain "Error: ..." lines the target printed itself: prefer the line carrying
+        # a harness marker, then one followed by a stack frame (actually thrown), and only then the first one
+        for text, _ in candidates:
             if any(marker in text for marker in _JS_HARNESS_MARKERS):
                 return text[:300]
+        for text, end in candidates:
+            if _V8_STACK_LINE_RE.match(details[end:].lstrip("\n")[:200]):
+                return text[:300]
         if candidates:
-            return candidates[0][:300]
+            return candidates[0][0][:300]
         return (case.get("message") or "").strip()[:300]
 
     @staticmethod

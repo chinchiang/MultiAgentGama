@@ -2,7 +2,9 @@ import datetime as _dt
 import json
 import logging
 import os
+import re
 import subprocess
+import tempfile
 import sys
 from typing import Any, Dict, Optional, List, Tuple
 from rich.console import Console
@@ -204,6 +206,35 @@ class VibeHarnessCommander:
         return sorted(p for p in paths if os.path.isfile(p))
 
     @staticmethod
+    def _sandbox_settings(global_cfg: dict) -> Dict[str, Any]:
+        """Python 與 Node 沙盒共用的設定，啟動時驗證一次（同一組規則，兩個沙盒不會各自解讀）。
+        The settings shared by the Python and Node sandboxes, validated once at start-up (one set of rules, so the
+        two sandboxes never interpret a value differently)."""
+        timeout = LLMGateway._positive_int(global_cfg.get("sandbox_timeout_seconds", 120), "sandbox_timeout_seconds") or 120
+        memory_mb = LLMGateway._positive_int(global_cfg.get("sandbox_memory_mb", DEFAULT_SANDBOX_MEMORY_MB), "sandbox_memory_mb") or 0
+        pids_limit = LLMGateway._positive_int(global_cfg.get("docker_pids_limit", 256), "docker_pids_limit") or 256
+        network = global_cfg.get("docker_network", "none")
+        if not isinstance(network, str) or not network.strip():
+            raise ValueError(bi("global.docker_network 必須是非空字串（例如 \"none\"、\"host\"）",
+                                "global.docker_network must be a non-empty string (e.g. \"none\", \"host\")"))
+        memory = global_cfg.get("docker_memory", "1g")
+        if not isinstance(memory, str) or not re.fullmatch(r"\d+(?:\.\d+)?[bkmgBKMG]?", memory.strip()):
+            raise ValueError(bi(f"global.docker_memory 必須是 Docker 記憶體字串（例如 \"1g\"、\"512m\"），目前為 {memory!r}",
+                                f"global.docker_memory must be a Docker memory string (e.g. \"1g\", \"512m\"), got {memory!r}"))
+        cpus = global_cfg.get("docker_cpus", "2")
+        try:
+            cpus_ok = not isinstance(cpus, bool) and float(cpus) > 0
+        except (TypeError, ValueError):
+            cpus_ok = False
+        if not cpus_ok:
+            raise ValueError(bi(f"global.docker_cpus 必須是正數，目前為 {cpus!r}", f"global.docker_cpus must be a positive number, got {cpus!r}"))
+        docker_bin = global_cfg.get("docker_bin", "docker")
+        if not isinstance(docker_bin, str) or not docker_bin.strip():
+            raise ValueError(bi("global.docker_bin 必須是非空字串", "global.docker_bin must be a non-empty string"))
+        return {"timeout": timeout, "memory_mb": memory_mb, "pids_limit": pids_limit, "network": network.strip(),
+                "memory": memory.strip(), "cpus": str(cpus), "docker_bin": docker_bin.strip()}
+
+    @staticmethod
     def _validate_node_settings(global_cfg: dict, provider: str) -> Dict[str, Any]:
         """Node 沙盒用到的設定，啟動時驗證過的值 ／ The Node sandbox's settings, validated at start-up."""
         if provider not in ("local_subprocess", "docker"):
@@ -211,17 +242,12 @@ class VibeHarnessCommander:
                 f"sandbox_node_provider '{provider}' 尚未實作；支援：'local_subprocess'、'docker'",
                 f"sandbox_node_provider '{provider}' is not implemented; supported: 'local_subprocess', 'docker'"
             ))
-        timeout = LLMGateway._positive_int(global_cfg.get("sandbox_timeout_seconds", 120), "sandbox_timeout_seconds") or 120
-        memory_mb = LLMGateway._positive_int(global_cfg.get("sandbox_memory_mb", DEFAULT_SANDBOX_MEMORY_MB), "sandbox_memory_mb") or 0
-        pids_limit = LLMGateway._positive_int(global_cfg.get("docker_pids_limit", 256), "docker_pids_limit") or 256
+        settings = VibeHarnessCommander._sandbox_settings(global_cfg)
         image = global_cfg.get("docker_node_image", DEFAULT_DOCKER_NODE_IMAGE)
         if not isinstance(image, str) or not image.strip():
             raise ValueError(bi("docker_node_image 必須是非空字串", "docker_node_image must be a non-empty string"))
-        return {
-            "provider": provider, "timeout": timeout, "memory_mb": memory_mb, "pids_limit": pids_limit, "image": image.strip(),
-            "network": str(global_cfg.get("docker_network", "none")), "memory": str(global_cfg.get("docker_memory", "1g")),
-            "cpus": str(global_cfg.get("docker_cpus", "2")), "docker_bin": str(global_cfg.get("docker_bin", "docker")),
-        }
+        settings["image"] = image.strip()
+        return settings
 
     def _build_node_sandbox(self) -> Optional[LocalSubprocessSandbox]:
         """供 `node:test` 模組使用的沙盒；沒有可用的 Node 執行環境時為 None（並設定 `node_runtime_problem`）：
@@ -233,19 +259,19 @@ class VibeHarnessCommander:
         cfg = self._node_cfg
         has_ts = any(f.lower().endswith((".ts", ".tsx", ".mts", ".cts")) for f in self.ast_extractor.analyzed_files)
         sandbox: LocalSubprocessSandbox
-        if cfg["provider"] == "docker":
-            # 先建沙盒（確認映像檔存在），再用同一組強化旗標在容器內讀 Node 版本；絕不觸發 pull
-            # Build the sandbox first (the image must exist), then read the Node version inside the container with
-            # the same hardening flags; never trigger a pull
+        version: Optional[Tuple[int, int, int]]
+        if self.sandbox_node_provider == "docker":
+            # 先建沙盒（確認映像檔存在）；只有目標含 TypeScript 時才在容器內讀 Node 版本（決定型別剝除），
+            # 用與測試相同的 docker run 前綴；讀不到就不猜
+            # Build the sandbox first (the image must exist); only when the target has TypeScript is the Node version
+            # read inside the container (it decides type stripping), with the same docker run prefix as the tests;
+            # no guessing when it cannot be read
             docker_sandbox = NodeDockerSandbox(
                 timeout_seconds=cfg["timeout"], image=cfg["image"], network=cfg["network"], memory=cfg["memory"],
                 cpus=cfg["cpus"], pids_limit=cfg["pids_limit"], docker_bin=cfg["docker_bin"],
             )
-            version = self._docker_node_version(docker_sandbox)
+            version = self._docker_node_version(docker_sandbox) if has_ts else None
             runtime = f"docker {cfg['image']}" + (f" (node v{'.'.join(map(str, version))})" if version else "")
-            # 版本讀不到就不假設：TypeScript 列為未執行，JS 測試照常跑（不帶 --experimental-strip-types）
-            # No guessing when the version cannot be read: TypeScript is reported as not run, JS tests still run
-            # (without --experimental-strip-types)
             supports_ts = version is not None and version >= MIN_NODE_VERSION_TS
             docker_sandbox.supports_typescript = supports_ts
             docker_sandbox.strip_types = has_ts and supports_ts
@@ -276,15 +302,17 @@ class VibeHarnessCommander:
 
     @staticmethod
     def _docker_node_version(sandbox: NodeDockerSandbox) -> Optional[Tuple[int, int, int]]:
-        """映像檔內的 Node 版本（`docker run --pull=never <image> node --version`，與測試相同的強化旗標），
-        查不到時為 None。
-        The Node version inside the image (`docker run --pull=never <image> node --version` with the same
-        hardening flags as the tests), or None when it cannot be read."""
-        cmd = [sandbox.docker, "run", "--rm", "--pull=never", "--network", "none", "--read-only", "--cap-drop", "ALL",
-               "--security-opt", "no-new-privileges", "--memory", "256m", "--pids-limit", "64", sandbox.image, "node", "--version"]
+        """映像檔內的 Node 版本：用與測試相同的 `docker run` 前綴（同樣的使用者、掛載與限制）執行 `node --version`，
+        查不到時為 None。映像檔已由沙盒建構時的 `image inspect` 確認存在，不會觸發 pull。
+        The Node version inside the image: `node --version` run with the same `docker run` prefix as the tests
+        (same user, mounts and limits), or None when it cannot be read. The image's presence was confirmed by the
+        sandbox's `image inspect`, so no pull is triggered."""
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
-                                    env=sandbox._cli_env())
+            with tempfile.TemporaryDirectory(prefix="vibe_node_probe_") as run_dir, \
+                    tempfile.TemporaryDirectory(prefix="vibe_node_target_") as base_dir:
+                cmd = sandbox._docker_run_prefix(run_dir, base_dir, {"HOME": "/tmp"}) + [sandbox.image, "node", "--version"]
+                result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+                                        env=sandbox._cli_env())
         except (OSError, subprocess.TimeoutExpired):
             return None
         return parse_node_version(result.stdout) if result.returncode == 0 else None
@@ -292,18 +320,18 @@ class VibeHarnessCommander:
     @staticmethod
     def _build_sandbox(global_cfg: dict) -> LocalSubprocessSandbox:
         provider = global_cfg.get("sandbox_provider", "local_subprocess")
-        timeout = int(global_cfg.get("sandbox_timeout_seconds", 120))
+        settings = VibeHarnessCommander._sandbox_settings(global_cfg)
         if provider == "local_subprocess":
-            memory_mb = LLMGateway._positive_int(global_cfg.get("sandbox_memory_mb", DEFAULT_SANDBOX_MEMORY_MB), "sandbox_memory_mb") or 0
-            return LocalSubprocessSandbox(timeout_seconds=timeout, memory_mb=memory_mb)
+            return LocalSubprocessSandbox(timeout_seconds=settings["timeout"], memory_mb=settings["memory_mb"])
         if provider == "docker":
             return DockerSandbox(
-                timeout_seconds=timeout,
+                timeout_seconds=settings["timeout"],
                 image=global_cfg.get("docker_image", DEFAULT_DOCKER_IMAGE),
-                network=global_cfg.get("docker_network", "none"),
-                memory=str(global_cfg.get("docker_memory", "1g")),
-                cpus=str(global_cfg.get("docker_cpus", "2")),
-                pids_limit=int(global_cfg.get("docker_pids_limit", 256)),
+                network=settings["network"],
+                memory=settings["memory"],
+                cpus=settings["cpus"],
+                pids_limit=settings["pids_limit"],
+                docker_bin=settings["docker_bin"],
             )
         raise ValueError(bi(
             f"sandbox_provider '{provider}' 尚未實作；支援：'local_subprocess'、'docker'",

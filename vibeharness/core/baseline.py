@@ -157,12 +157,18 @@ def _keys_from_report(payload: Dict[str, Any]) -> Baseline:
     # white-box results (keyed by their finding) seed the baseline; a finding whose test passed last time and
     # fails now is a new problem and must not be suppressed
     debate = (payload.get("whitebox") or {}).get("debate") if isinstance(payload.get("whitebox"), dict) else {}
+    # 較舊的報告只在 debate／threat_model 層級標 is_simulated：補到每個項目，重算的 key 才與這一輪一致
+    # Older reports flag is_simulated only at the debate / threat_model level: propagate it to every item so the
+    # recomputed keys match this run's
+    debate_simulated = bool(isinstance(debate, dict) and debate.get("is_simulated"))
     findings_by_id: Dict[str, ReviewFinding] = {}
     for item in _dicts((debate or {}).get("confirmed_findings")):
         try:
             finding = ReviewFinding(**item)
         except Exception:
             continue
+        if debate_simulated:
+            finding.is_simulated = True
         findings_by_id[finding.finding_id] = finding
     whitebox = payload.get("whitebox") if isinstance(payload.get("whitebox"), dict) else {}
     for item in _dicts((whitebox or {}).get("test_results")):
@@ -178,11 +184,15 @@ def _keys_from_report(payload: Dict[str, Any]) -> Baseline:
         if key:
             baseline.findings.add(key)
     threats: Dict[str, ThreatItem] = {}
-    for item in _dicts((payload.get("threat_model") or {}).get("threats") if isinstance(payload.get("threat_model"), dict) else []):
+    threat_model = payload.get("threat_model") if isinstance(payload.get("threat_model"), dict) else {}
+    model_simulated = bool((threat_model or {}).get("is_simulated"))
+    for item in _dicts((threat_model or {}).get("threats")):
         try:
             threat = ThreatItem(**item)
         except Exception:
             continue
+        if model_simulated:
+            threat.is_simulated = True
         threats[threat.threat_id] = threat
     for item in _dicts(payload.get("blackbox_test_results")):
         if not item.get("is_security_exploit_confirmed"):
