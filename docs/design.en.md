@@ -676,7 +676,7 @@ Mutation testing, DAST / fuzzing, hypothesis, the e2b sandbox, JS/TS test execut
 
 - The test generator's repair call uses `json_output=False` (`vibeharness/agents/whitebox/test_generator.py:165`), so it is never judged invalid and never re-asked; code that stays broken is still reported as ERROR at run time, so it never becomes a pass.
 - An unusable answer is re-asked `retry_invalid_output` times (default 1, `generate` in `vibeharness/core/llm_gateway.py`): the first attempt is booked `retried` (disclosed in the report, not an evidence gap) and only a still-unusable answer is booked `invalid`; every re-ask counts against `max_model_calls`.
-- `--changed-since` uses git's change list only; a touched file is reviewed whole, not just its changed symbols. A crash still writes no partial report (only an unwritable `--output` / `--sarif` is caught before the run starts).
+- `--changed-since` uses git's change list only; a touched file is reviewed whole, not just its changed symbols. A crash or Ctrl-C writes the completed phases to `<output>.partial.json` (`_write_partial_report`); the full report is still produced only after all six phases.
 - `call_log` is written in thread-completion order, so the Execution Provenance table's row order can differ between runs; which calls fall back to simulation once the budget is exhausted also depends on timing.
 - Crashed threat-modeling and attack-synthesis batches do not go through `record_failure`: the former shows up as "no threats from that batch", the latter as an untested threat; both are still evidence gaps, but the reason is not in `call_log`.
 - A Next.js route in JS/TS is reviewed twice, as a function symbol and as a route symbol (`vibeharness/agents/whitebox/ast_extractor.py:430-462`).
@@ -686,7 +686,9 @@ Six items were fixed on 2026-10-08 (see `[Unreleased]` in `CHANGELOG.md`): crash
 
 ### 16.3 Operational limits
 
-- `local_subprocess` is not a security boundary.
+- `local_subprocess` is not a security boundary; the `RLIMIT_AS` / CPU caps from `sandbox_memory_mb` only stop runaway consumption and do nothing on Windows.
+- The response cache (`cache_dir`) is keyed by model, settings and prompt, so a changed target changes the prompt and never reuses a stale answer; the directory does hold raw model answers.
+- `VH-AI-009` covers English and Chinese (Traditional / Simplified) instruction phrasings; other languages are still invisible to it.
 - The Docker sandbox has no network, so the target's dependencies must be baked into the image; attacking a running service needs `docker_network: host`, which weakens isolation.
 - Source code is sent to every configured provider.
 - A single model family cannot cross-verify.
@@ -727,6 +729,7 @@ Six items were fixed on 2026-10-08 (see `[Unreleased]` in `CHANGELOG.md`): crash
 | crashed batches booked as `invalid` calls; a single model family is an evidence gap | a missing review must not pass as "nothing found"; copies of one model agreeing is not corroboration | more INCONCLUSIVE | 2026-10-08 |
 | re-ask an unusable answer once before booking `invalid`; `extra_params` passthrough | in live runs most unusable answers were one-off format slips or thinking eating the budget, and each one made the whole run INCONCLUSIVE | one more call; the re-ask is booked `retried` | 0.3.0 |
 | everything moved under the single top-level package `vibeharness/` (the CLI is `vibeharness.cli`; the root `main.py` is a launcher) | generic names such as `core` / `config` / `main` installed into site-packages collided with other packages and shadowed a user project's own `config` | every import path changes (breaking) | 0.3.0 |
+| response cache, partial report on crash, `local_subprocess` resource caps, SARIF `help`, Chinese injection markers, manual live smoke workflow | a re-run paid for every call again; a crash discarded paid-for results; a generated test could exhaust host memory; Code Scanning alerts had no guidance; Chinese projects' injection phrasings were invisible; the live path was verified by hand only | the cache holds model answers; RLIMIT is POSIX-only | 0.3.0 |
 | `--include` / `--exclude` / `--changed-since`, `max_file_bytes`; run metadata and `schema_version` in reports | medium-sized projects beyond `max_files` were INCONCLUSIVE forever; a report did not say which version, commit or mode produced it | filtered-out files are not evidence gaps (the user asked) | 0.3.0 |
 
 ---

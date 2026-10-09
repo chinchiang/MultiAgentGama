@@ -112,6 +112,27 @@ _INJECTION_PATTERNS = [
     # reviewer to produce that verdict are flagged.
     re.compile(r"\b(?:mark|report|return|output|rate|grade|classify|declare|verdict\s+(?:is|should\s+be|must\s+be)|"
                r"status\s+(?:is|should\s+be|must\s+be))\b[^\n]{0,40}\bREADY_TO_SHIP\b", re.I),
+    # Chinese (Traditional and Simplified): the same instructions as above. Vibe-coded projects from
+    # Taiwan and China carry Chinese comments, where an English-only rule would see nothing.
+    # ignore / disregard (the previous / above / system) instructions, rules or prompts
+    re.compile(r"(?:忽略|無視|无视|不理會|不理会|略過|略过|撤銷|撤销|覆蓋|覆盖)(?:所有|全部|任何)?(?:先前|之前|上述|以上|上面|前面|系統|系统)?的?"
+               r"(?:指令|指示|提示詞|提示词|提示|規則|规则|說明|说明|限制)"),
+    # do not report / flag / mention … this defect, issue, function or code
+    re.compile(r"(?:不要|不得|請勿|请勿|別|勿|禁止)(?:回報|回报|報告|报告|標記|标记|標示|标示|提及|列出|指出|揭露|舉報|举报)"
+               r"[^\n]{0,12}?(?:缺陷|漏洞|問題|问题|發現|发现|錯誤|错误|函式|函数|程式碼|代码|這|这|此|該|该|任何)"),
+    # report / output zero or no findings, issues or vulnerabilities
+    re.compile(r"(?:回報|回报|報告|报告|輸出|输出|回傳|回传|回覆|回复|回答)(?:為|为|：|:)?\s*(?:零|沒有|没有|無|无|空的?)(?:任何)?"
+               r"(?:發現|发现|問題|问题|漏洞|缺陷|錯誤|错误|威脅|威胁|風險|风险)"),
+    # a note addressed to the AI / the reviewer (給…的注意事項), and "<AI reviewer>:" as a line prefix
+    re.compile(r"(?:給|给|致|告訴|告诉|寫給|写给|提醒)\s*"
+               r"(?:(?:AI|LLM|人工智慧|人工智能|語言模型|语言模型|大模型|模型)\s*(?:審查者|审查者|審核者|审核者|稽核者|審查員|审查员|助理|助手)?"
+               r"|(?:審查者|审查者|審核者|审核者|稽核者|審查員|审查员))"
+               r"(?:的)?\s*(?:注意事項|注意事项|注意|備註|备注|說明|说明|指示|指令|提示|訊息|信息)"),
+    re.compile(r"(?:AI|LLM|人工智慧|人工智能|語言模型|语言模型)\s*(?:審查者|审查者|審核者|审核者|稽核者|審查員|审查员|評審|评审|助理|助手)\s*[:：，,]"),
+    # calling the audited code safe, fine, passing or giving it the pass verdict (視為…安全 and friends)
+    re.compile(r"(?:將|将|把)?(?:此|這|这|本|該|该)?(?:程式碼|代码|程式|檔案|文件|模組|模块|函式|函数|專案|项目)?"
+               r"(?:視為|视为|標記為|标记为|標示為|标示为|判定為|判定为|當作|当作|認定為|认定为|評為|评为)"
+               r"\s*(?:安全|沒有問題|没有问题|無問題|无问题|無缺陷|无缺陷|可上線|可上线|通過|通过|合格|READY_TO_SHIP)"),
 ]
 
 

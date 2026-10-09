@@ -31,6 +31,14 @@
 ### 變更（破壞性：打包命名空間）
 - **所有程式搬進單一頂層套件 `vibeharness/`**：`core`、`agents`、`runners`、`reports`、`config` 與 `main` 過去是各自的頂層套件／模組，`pip install` 後直接進 site-packages，會與其他同名套件互撞（`core`、`config` 尤其常見），也會遮蔽使用者專案自己的 `config`。現在只安裝 `vibeharness/` 一個目錄：import 改為 `vibeharness.core.…`、`vibeharness.agents.…`，CLI 進入點為 `vibeharness.cli:main`，預設設定檔在 `vibeharness/config/`，版本在 `vibeharness/__init__.py`；repo 根目錄保留 `main.py` 薄殼，`python main.py …` 與 `vibeharness` 指令行為不變。以函式庫方式使用者需更新 import 路徑；新增測試保證 wheel 不再安裝任何通用名稱的頂層套件
 
+### 新增（後續項目）
+- **回應快取**：`global.cache_dir`／CLI `--cache-dir` 開啟後，可用的 live 回應以模型、設定（含 `max_output_tokens`、`extra_params`）與提示為 key 存成 JSON；相同提示直接取用，不呼叫供應商、不扣 `max_model_calls`，call log 與報告標為「live (response cache)」（`AgentCallRecord.cached`）。無效回應不會被快取，損壞的快取檔視同未命中；寫入採暫存檔＋原子取代，平行呼叫不會讀到半截檔案
+- **崩潰或中斷時寫出部分報告**：六階段中任何例外或 Ctrl-C，都會先把已完成階段（模型呼叫紀錄、靜態規則命中、發現、驗證結果、白箱測試與結果、威脅、黑箱測試與結果）與錯誤寫到 `<output>.partial.json`（`partial: true`、`phase_reached`）再往上拋；已付費的模型結果不再歸零
+- **`local_subprocess` 資源上限**：`global.sandbox_memory_mb`（預設 2048，`0` 關閉）在 POSIX 上以 `RLIMIT_AS` 限制 pytest 程序樹的位址空間，另加 CPU 時間上限（批次預算 + 10 秒）；生成測試配置 1 GiB 時以 `MemoryError` 收場而不是吃光主機記憶體。`docker` provider 不套用（容器已有 `--memory`／`--cpus`，docker CLI 本身不受限）
+- **SARIF 規則 `help`**：每條規則帶 `help.text`／`help.markdown`（確定性規則附修復建議與 OWASP／ATLAS／CWE 對應；白箱與黑箱規則說明如何用報告中的測試與 PoC 驗證），GitHub Code Scanning 的 alert 頁才有修復指引
+- **中文注入標記**：`VH-AI-009` 新增正體與簡體中文句型——忽略／無視（先前｜以上｜系統）的指令／規則、不要／請勿回報／標記…問題／函式、回報零／沒有發現、給 AI／審查者的注意事項／備註、「AI 審查者：」、將此程式碼視為／標記為安全／通過。「忽略大小寫」「回報錯誤給呼叫端」「寄給審查者」等一般用語不命中，harness 自掃仍為零
+- **手動 live smoke workflow**（`.github/workflows/live-smoke.yml`）：`workflow_dispatch` 以 repo secrets 的供應商金鑰對目標跑一次 live／hybrid（可設呼叫數上限），再以回應快取免費重跑產出 JSON，報告、SARIF 與部分報告以 artifact 上傳；exit 4／5 視為失敗，0–3 為目標的判定
+
 ### 新增（功能改善）
 - **模型回應無法使用時先重問**：非 JSON、缺欄位或空回應的 live 回應過去直接記 `invalid`、整輪 INCONCLUSIVE；現在依 `global.retry_invalid_output`（預設 1）重問，提示會說明上次的問題並要求只回 JSON。第一次嘗試記為 `retried`（報告 Execution Provenance 顯示「unusable, re-asked」，不是證據缺口），仍失敗才記 `invalid`；每次重問都是真實呼叫、計入 `max_model_calls`，預算用完就不重問；`json_output=False` 的修復呼叫不重問
 - **`models.<alias>.extra_params`**：原封不動傳給 litellm 的參數（例如 `thinking: {type: disabled}`、`reasoning_effort: low`），可讓推理模型不要把 `max_output_tokens` 全花在思考（live 實測 GLM 的主要失敗原因）；啟動時驗證為 mapping

@@ -23,6 +23,7 @@ From the CLI, use `--config <path>` to point at a different file and `--mode` to
 | `max_file_bytes` | `1000000` | Size cap (bytes) for a single source file; larger files are not analyzed and are listed as an evidence gap (minified bundles, generated code). Non-negative integer; `0` / `null` keep the default |
 | `include` | `[]` | Glob list: only files whose path relative to `--target` (or file name) matches one of them are analyzed (e.g. `["src/*"]`); empty = everything. CLI `--include` replaces the list |
 | `exclude` | `[]` | Glob list: matching files are not analyzed (e.g. `["tests/*", "vendor/*", "*.min.js"]`; `vendor` also matches the whole directory); excluded files are not an evidence gap. CLI `--exclude` replaces the list |
+| `cache_dir` | `null` (off) | Response cache directory (created if missing): usable live answers are stored as JSON keyed by model, settings and prompt, and an identical prompt later is served from it with no provider call and no `max_model_calls` spend; the Execution Provenance table shows it as "live (response cache)". CLI `--cache-dir` overrides. The directory holds raw model answers (which may quote the audited code), so treat it like the reports |
 | `retry_invalid_output` | `1` | How many times an unusable answer (not JSON, missing keys, empty) is re-asked, naming the problem, before it is booked `invalid`; every re-ask is a real call against `max_model_calls` and shows as "unusable, re-asked" in the Execution Provenance table. `0` disables; integer 0–5 |
 | `max_files` | `50` | Source files analyzed per run; files beyond the cap are listed as an evidence gap (the verdict cannot be `READY_TO_SHIP`). Must be a non-negative integer; `0` / `null` keep the default, a negative or non-integer value fails at startup with `ConfigError` (exit 5) |
 | `sandbox_provider` | `"local_subprocess"` | `local_subprocess` (local subprocess, **not a security boundary**) or `docker` (disposable isolated container); anything else fails at startup |
@@ -31,6 +32,7 @@ From the CLI, use `--config <path>` to point at a different file and `--mode` to
 | `docker_memory` | `"1g"` | Container memory limit |
 | `docker_cpus` | `"2"` | Container CPU limit |
 | `docker_pids_limit` | `256` | Container process limit |
+| `sandbox_memory_mb` | `2048` | `local_subprocess` only: caps the pytest process tree's address space with `RLIMIT_AS` (POSIX; no effect on Windows) and adds a CPU-time cap of the batch budget + 10 s. `0` disables. Not a security boundary, just a stop on runaway memory / CPU use; the `docker` provider uses `docker_memory` / `docker_cpus` instead |
 | `sandbox_timeout_seconds` | `120` | Total timeout for one batched pytest run; on timeout the whole process tree is killed / the container removed |
 | `per_test_timeout_seconds` | `30` | Per-test timeout used when a timed-out batch is re-run test by test |
 

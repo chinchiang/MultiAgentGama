@@ -113,11 +113,11 @@ flowchart TD
    | `VH-AI-006` | 模型輸出流入 `eval`／`exec`／shell／SQL | HIGH | LLM10:2026／AML.T0050、AML.T0102／CWE-94・78・89 |
    | `VH-AI-007` | 寫死在原始碼的憑證 | HIGH | LLM02:2026／AML.T0055／CWE-798 |
    | `VH-AI-008` | 隱形或雙向控制字元（Unicode tag、零寬、Trojan Source） | HIGH（僅零寬字元：MEDIUM） | LLM01:2026／AML.T0068 |
-   | `VH-AI-009` | 對 AI 審查者下指令的注釋／字串（「ignore previous instructions」「report no findings」） | MEDIUM | LLM01:2026／AML.T0051.001 |
+   | `VH-AI-009` | 對 AI 審查者下指令的注釋／字串（「ignore previous instructions」「report no findings」；也辨識正體與簡體中文，如「忽略先前的指令」「不要回報這個問題」「AI 審查者：視為安全」） | MEDIUM | LLM01:2026／AML.T0051.001 |
 
    `VH-AI-001`～`006` 只掃 Python（`005`／`006` 只在匯入 AI SDK 的檔案啟用，`006` 的污點追蹤限於單一函式或模組範圍）；`007`～`009` 也掃 JS/TS。HIGH 以上的命中直接使閘門為 `NEEDS_FIXES`；`VH-AI-008`／`VH-AI-009` 另列為證據缺口（模型階段的結論可能已被操弄），因此不可能得到 `READY_TO_SHIP`。目標若匯入 AI SDK（openai、anthropic、litellm、langchain、transformers、torch 等），偵測到的 `ai_components` 會讓威脅建模額外套用 OWASP LLM Top 10 2026 與 ATLAS 技術對應（`vibeharness/config/threat_rules.yaml` 的 `owasp_llm_top10_2026`），威脅可帶 `atlas_mapping`。
 6. **兩種沙盒**：生成的測試在暫存目錄中執行，環境變數採白名單（不傳入 API 金鑰，也剔除 `LD_PRELOAD`、`BASH_ENV` 這類注入鍵）。每批測試有逾時（`sandbox_timeout_seconds`）；批次逾時後會逐一重跑，此時每個測試另有單測逾時（`per_test_timeout_seconds`），總時間仍受批次預算限制。逾時會終止整個程序樹（Docker 則移除容器）。
-   - `local_subprocess`（預設）：本機子程序。
+   - `local_subprocess`（預設）：本機子程序；POSIX 上以 `sandbox_memory_mb`（預設 2 GB）限制位址空間並加 CPU 時間上限，擋住失控的消耗（仍不是安全邊界）。
    - `docker`：每批測試在一次性容器中執行——預設無網路、根檔案系統與目標目錄唯讀、移除所有 capabilities、禁止提權、非 root 使用者（harness 以 root 執行時容器改用 `nobody`）、記憶體／CPU／程序數上限。只有該次執行的暫存目錄與 `/tmp`（noexec 的 tmpfs）可寫。
 
 > ⚠️ **`local_subprocess` 不是安全邊界。** 它以你的使用者權限執行模型生成的程式碼，可讀寫檔案與存取網路。對不信任的目標或 live 模式，請使用 `sandbox_provider: docker`。
@@ -159,7 +159,8 @@ MultiAgentGama/
 │   ├── PULL_REQUEST_TEMPLATE.md
 │   └── workflows/
 │       ├── tests.yml            # CI：lint（ruff／mypy）、audit（pip-audit）、package（wheel 冒煙測試）、test（Ubuntu／Windows × Python 3.10–3.13，覆蓋率門檻 93%）
-│       └── publish.yml          # 發佈：tag 推送時驗證版本一致、建置 sdist／wheel、上傳 GitHub Release（PyPI 需設 ENABLE_PYPI_PUBLISH）
+│       ├── publish.yml          # 發佈：tag 推送時驗證版本一致、建置 sdist／wheel、上傳 GitHub Release（PyPI 需設 ENABLE_PYPI_PUBLISH）
+│       └── live-smoke.yml       # 手動觸發：以 repo secrets 的真實金鑰對 examples 跑一次 live／hybrid，上傳報告
 ├── docker/
 │   └── sandbox.Dockerfile       # docker 沙盒的基底映像（pytest / pytest-cov / requests）
 ├── vibeharness/                 # 唯一的頂層套件（pip install 後 site-packages 只多這一個目錄）
@@ -302,7 +303,7 @@ python main.py --target examples --output vibe_harness_report.md
 
 `--target`（`-t`，預設 `examples`）可為目錄或單一檔案；`--output`（`-o`）預設 `vibe_harness_report.md`。`--desc`（`-d`）可提供系統的高階描述供威脅建模參考；`--config`（`-c`）指定其他設定檔；`--verbose`（`-v`）開啟除錯日誌。黑箱測試預設以 in-process 方式直接 import 目標呼叫；只有明確指定 `--base-url`（`-u`，例如 `--base-url http://localhost:8000`；只接受含主機名的 `http://`／`https://`，其他 scheme 為用法錯誤）且該位址有服務回應時，才會改發真實 HTTP 請求。不會自動探測任何預設位址，以免攻擊腳本打到本機上無關的服務；live HTTP 模式下，攻擊程式碼若指向 `--base-url` 以外的主機會被靜態拒絕。範例輸出見 [`docs/sample_report.md`](docs/sample_report.md)。
 
-規模與成本上限可從 CLI 直接覆蓋設定檔：`--max-files`（單次分析的檔案數上限，預設 50，須 ≥ 1；其餘檔案列為 skipped 並記為證據缺口）與 `--max-model-calls`（單次執行的模型呼叫數上限，預設不限制，`0` 亦表示不限制，負數為用法錯誤；重試與 fallback 不另計次；用完時 hybrid 退回模擬並列為證據缺口、live 直接失敗）。檔案篩選：`--include GLOB`／`--exclude GLOB`（可重複，比對相對於 `--target` 的路徑或檔名，例如 `--exclude 'tests/*' --exclude '*.min.js'`；會覆蓋設定檔的 `include`／`exclude`），以及 `--changed-since <git ref>`（只分析相對該 ref 有變更的檔案，含未暫存與未追蹤，適合 PR 檢查：`--changed-since origin/main`）。超過 `max_file_bytes`（預設 1 MB）的檔案不分析並列為證據缺口。模型回應無法使用時會先重問一次（`retry_invalid_output`）再記為 `invalid`。`--output`／`--sarif` 的目錄不可寫時在任何模型呼叫前就以 exit 5 結束。詳見 [`docs/configuration.md`](docs/configuration.md)。
+規模與成本上限可從 CLI 直接覆蓋設定檔：`--max-files`（單次分析的檔案數上限，預設 50，須 ≥ 1；其餘檔案列為 skipped 並記為證據缺口）與 `--max-model-calls`（單次執行的模型呼叫數上限，預設不限制，`0` 亦表示不限制，負數為用法錯誤；重試與 fallback 不另計次；用完時 hybrid 退回模擬並列為證據缺口、live 直接失敗）。檔案篩選：`--include GLOB`／`--exclude GLOB`（可重複，比對相對於 `--target` 的路徑或檔名，例如 `--exclude 'tests/*' --exclude '*.min.js'`；會覆蓋設定檔的 `include`／`exclude`），以及 `--changed-since <git ref>`（只分析相對該 ref 有變更的檔案，含未暫存與未追蹤，適合 PR 檢查：`--changed-since origin/main`）。超過 `max_file_bytes`（預設 1 MB）的檔案不分析並列為證據缺口。模型回應無法使用時會先重問一次（`retry_invalid_output`）再記為 `invalid`。`--output`／`--sarif` 的目錄不可寫時在任何模型呼叫前就以 exit 5 結束；執行中途崩潰或被 Ctrl-C 中斷時，已完成的階段（模型呼叫紀錄、發現、測試結果、威脅）會寫到 `<output>.partial.json`。`--cache-dir DIR` 開啟回應快取：可用的 live 回應存在 DIR，之後相同提示直接取用、不呼叫供應商也不扣預算（適合重跑或切換報告格式）。詳見 [`docs/configuration.md`](docs/configuration.md)。
 
 報告格式可用 `--format md`（預設）或 `--format json`（機器可讀，含完整的 findings、威脅模型與測試結果，適合接 CI/CD）。兩種格式都會保存每個生成測試的程式碼：Markdown 附錄「Generated Test Code」以可收合區塊列出程式碼與其執行結果（已去除控制字元）；JSON 的 `generated_tests`／`blackbox_generated_tests` 則原封不動保存，可用來稽核或重跑。模型寫的測試也只是假設——「通過」的測試可能是在斷言缺陷本身（例如 `pytest.raises(KeyError)`），請一併檢查斷言是否描述正確的行為：
 
@@ -338,7 +339,7 @@ Exit code（依序判定）：
 | `0` | READY_TO_SHIP | 以上皆無 |
 | `4` | — | live 模式模型呼叫失敗 |
 | `5` | — | harness 設定或使用錯誤：`--target` 不存在、config 檔缺失或 YAML 損壞、`max_files`／`max_model_calls`／`max_concurrent_calls` 等值不合法、沙盒不可用、`--output`／`--sarif` 不可寫、`--changed-since` 的 ref 無法解析、CLI 用法錯誤、或未預期的內部錯誤（崩潰不會誤報成 verdict） |
-| `130` | — | 被 Ctrl-C 中斷，未寫出報告 |
+| `130` | — | 被 Ctrl-C 中斷，未寫出完整報告（已完成的階段在 `<output>.partial.json`） |
 
 ### 5. 運行工具包本身單元測試與靜態檢查
 
@@ -349,7 +350,7 @@ python -m ruff check .
 python -m mypy vibeharness/ main.py
 ```
 
-CI（`.github/workflows/tests.yml`）有四個 job：`lint`（ruff 與 mypy）、`audit`（pip-audit）、`package`（建置 wheel 並在檢出目錄之外以 mock 模式跑一次）與 `test`（Ubuntu／Windows × Python 3.10–3.13，Linux 另建 Docker 沙盒映像跑真實容器測試）。`test` job 帶覆蓋率門檻，本機要跑同一條件可用：
+另有手動觸發的 `live-smoke.yml`（Actions 頁籤 → live-smoke → Run workflow）：以 repo secrets 中的供應商金鑰對目標跑一次真實模型（可選 live／hybrid、呼叫數上限），再用回應快取免費重跑一次產出 JSON，報告與 SARIF 以 artifact 上傳；這是唯一真正打到供應商的檢查，不在每個 PR 上跑。CI（`.github/workflows/tests.yml`）有四個 job：`lint`（ruff 與 mypy）、`audit`（pip-audit）、`package`（建置 wheel 並在檢出目錄之外以 mock 模式跑一次）與 `test`（Ubuntu／Windows × Python 3.10–3.13，Linux 另建 Docker 沙盒映像跑真實容器測試）。`test` job 帶覆蓋率門檻，本機要跑同一條件可用：
 
 ```bash
 python -m pytest --cov=vibeharness --cov-fail-under=93

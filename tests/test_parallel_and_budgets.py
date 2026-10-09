@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 import yaml
 
-from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError, ConfigError, BUDGET_EXHAUSTED_REASON
+from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError, ConfigError, BUDGET_EXHAUSTED_REASON, PROVENANCE_KEY
 from vibeharness.core.models import FindingSeverity, ReviewFinding, STRIDECategory, ThreatItem, CodeSymbol
 from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
 from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
@@ -548,3 +548,100 @@ def test_root_main_py_is_a_launcher_for_the_cli():
     import main
     from vibeharness import cli
     assert main.main is cli.main
+
+
+# --- Response cache ---------------------------------------------------------------------------
+
+def test_response_cache_serves_repeat_prompts_without_a_provider_call(fake_live, tmp_path):
+    fake = fake_live(lambda s, u: '{"findings": [{"title": "t", "description": "d"}]}')
+    cache = tmp_path / "cache"
+    gw = LLMGateway(_config(tmp_path, cache_dir=str(cache)), execution_mode="live")
+    gw.max_model_calls = 1
+    first = gw.generate("whitebox_reviewer_claude", "sys", "audit", required_keys=["findings"])
+    assert first["findings"] and first[PROVENANCE_KEY]["cached"] is False
+    assert len(list(cache.glob("*.json"))) == 1 and len(fake.calls) == 1
+    # Second identical prompt: no provider call, no budget consumed, flagged as cached in the call log
+    second = gw.generate("whitebox_reviewer_claude", "sys", "audit", required_keys=["findings"])
+    assert second["findings"] == first["findings"] and second[PROVENANCE_KEY]["cached"] is True
+    assert len(fake.calls) == 1 and gw.live_calls_attempted == 1
+    assert [c.cached for c in gw.call_log] == [False, True] and gw.call_log[-1].mode == "live"
+    assert len(gw.cached_calls) == 1
+    # A different prompt, model setting or agent temperature is a different key
+    gw.max_model_calls = None
+    gw.generate("whitebox_reviewer_claude", "sys", "audit something else", required_keys=["findings"])
+    assert len(fake.calls) == 2
+    # A fresh gateway (new process) reuses the files
+    gw2 = LLMGateway(_config(tmp_path, cache_dir=str(cache)), execution_mode="live")
+    gw2.generate("whitebox_reviewer_claude", "sys", "audit", required_keys=["findings"])
+    assert len(fake.calls) == 2 and gw2.call_log[-1].cached
+
+
+def test_unusable_answers_are_never_cached_and_bad_entries_are_ignored(fake_live, tmp_path):
+    fake = fake_live(lambda s, u: "not json")
+    cache = tmp_path / "cache"
+    gw = LLMGateway(_config(tmp_path, cache_dir=str(cache), retry_invalid_output=0), execution_mode="hybrid")
+    gw.generate("whitebox_reviewer_claude", "sys", "u", required_keys=["findings"])
+    assert gw.invalid_calls and not list(cache.glob("*.json"))
+    # A corrupt file for the key is treated as a miss
+    key = gw._cache_key("claude", gw.models_config["claude"], 0.2, "sys", "u")
+    (cache / f"{key}.json").write_text("{corrupt", encoding="utf-8")
+    gw.generate("whitebox_reviewer_claude", "sys", "u", required_keys=["findings"])
+    assert len(fake.calls) == 2
+    with pytest.raises(ConfigError, match="cache_dir"):
+        bad = tmp_path / "file.txt"
+        bad.write_text("x")
+        LLMGateway(_config(tmp_path, cache_dir=str(bad)), execution_mode="mock")
+
+
+def test_cli_cache_dir_flag_enables_the_cache(monkeypatch, tmp_path):
+    from vibeharness import cli
+    seen = {}
+
+    def run(self, **kwargs):
+        seen["cache_dir"] = self.gateway.cache_dir
+        return _summary("INCONCLUSIVE")
+
+    monkeypatch.setattr(cli.VibeHarnessCommander, "run_full_pipeline", run)
+    monkeypatch.setattr(sys, "argv", ["vibeharness", "-t", str(tmp_path), "-m", "mock", "--cache-dir", str(tmp_path / "c")])
+    with pytest.raises(SystemExit):
+        cli.main()
+    assert seen["cache_dir"] == str(tmp_path / "c") and (tmp_path / "c").is_dir()
+
+
+def test_cached_answers_are_labelled_in_the_provenance_table(fake_live, tmp_path):
+    from vibeharness.core.harness import VibeHarnessCommander
+    fake_live(lambda s, u: '{"findings": [], "verdicts": [], "threats": [], "tests": [], "code": ""}')
+    target = tmp_path / "t"
+    target.mkdir()
+    (target / "m.py").write_text("def f(x):\n    return x\n")
+    cfg = _config(tmp_path, cache_dir=str(tmp_path / "cache"))
+    VibeHarnessCommander(config_path=cfg, execution_mode="live").run_full_pipeline(
+        target_dir=str(target), output_report_path=str(tmp_path / "one.md"))
+    VibeHarnessCommander(config_path=cfg, execution_mode="live").run_full_pipeline(
+        target_dir=str(target), output_report_path=str(tmp_path / "two.md"))
+    assert "response cache" not in (tmp_path / "one.md").read_text(encoding="utf-8")
+    assert "🟢 live (response cache)" in (tmp_path / "two.md").read_text(encoding="utf-8")
+
+
+# --- Partial report on a crash -----------------------------------------------------------------
+
+def test_a_crash_writes_a_partial_report_with_everything_so_far(tmp_path, monkeypatch):
+    import json
+    from vibeharness.core.harness import VibeHarnessCommander
+    target = tmp_path / "t"
+    target.mkdir()
+    (target / "m.py").write_text("def f(x):\n    return x['k']\n")
+    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
+
+    def boom(*a, **k):
+        raise RuntimeError("provider melted")
+
+    monkeypatch.setattr(commander.threat_modeler, "model_system", boom)
+    out = tmp_path / "report.md"
+    with pytest.raises(RuntimeError):
+        commander.run_full_pipeline(target_dir=str(target), output_report_path=str(out))
+    partial = json.loads((tmp_path / "report.md.partial.json").read_text(encoding="utf-8"))
+    assert partial["partial"] is True and partial["phase_reached"] == 3
+    assert partial["error"] == {"type": "RuntimeError", "message": "provider melted"}
+    assert partial["agent_calls"] and partial["findings"] and partial["whitebox_results"]
+    assert "threat_model" not in partial and not out.exists()

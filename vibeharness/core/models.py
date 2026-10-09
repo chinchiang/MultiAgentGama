@@ -158,6 +158,9 @@ class AgentCallRecord(BaseModel):
     # SHA-256 of the exact system+user prompt sent, so an audit can tie a verdict to its inputs
     # without the report having to store (possibly sensitive) target code
     prompt_sha256: Optional[str] = None
+    # True when the answer came from the on-disk response cache (a real model's earlier answer to the
+    # same prompt), so no provider call was made for it
+    cached: bool = False
 
 
 class StaticFinding(BaseModel):

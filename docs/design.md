@@ -676,7 +676,7 @@ mutation testing、DAST／fuzzing、hypothesis、e2b 沙盒、JS/TS 測試執行
 
 - 測試生成的修復呼叫用 `json_output=False`（`vibeharness/agents/whitebox/test_generator.py:165`），永遠不會被判 invalid，也不會被重問；修不好的程式碼仍會在執行時報 ERROR，所以不會變成「通過」。
 - 模型回應無法使用時會重問 `retry_invalid_output` 次（預設 1，`vibeharness/core/llm_gateway.py` 的 `generate`）：第一次嘗試記為 `retried`（報告揭露、不是 evidence gap），仍失敗才記 `invalid`；每次重問都扣 `max_model_calls`。
-- `--changed-since` 只看 git 的變更清單；被改到的檔案會整個送審，不會只送變更的符號。崩潰時仍不會寫出部分報告（只有 `--output`／`--sarif` 不可寫會在開跑前擋下）。
+- `--changed-since` 只看 git 的變更清單；被改到的檔案會整個送審，不會只送變更的符號。崩潰或 Ctrl-C 時會把已完成階段寫到 `<output>.partial.json`（`_write_partial_report`），完整報告仍只在六階段都跑完才產生。
 - `call_log` 依執行緒完成順序寫入，Execution Provenance 表的列序每次可能不同；預算用完時哪幾次呼叫改走模擬也取決於時序。
 - 威脅建模與攻擊合成的批次崩潰不經 `record_failure`：前者的缺席以「該批沒有威脅」呈現，後者以 untested 威脅呈現，都仍是 evidence gap，但原因不會寫進 `call_log`。
 - JS/TS 的 Next.js route 會同時以 function 與 route 兩個符號送審（`vibeharness/agents/whitebox/ast_extractor.py:430-462`）。
@@ -686,7 +686,9 @@ mutation testing、DAST／fuzzing、hypothesis、e2b 沙盒、JS/TS 測試執行
 
 ### 16.3 運維限制
 
-- `local_subprocess` 不是安全邊界。
+- `local_subprocess` 不是安全邊界；`sandbox_memory_mb` 的 `RLIMIT_AS`／CPU 上限只擋失控消耗，Windows 上無效。
+- 回應快取（`cache_dir`）以模型、設定與提示為 key，目標程式碼一改提示就不同，不會錯用舊答案；但快取目錄含模型原始回應。
+- `VH-AI-009` 涵蓋英文與中文（正體／簡體）的指令句型，其他語言仍看不到。
 - Docker 沙盒沒有網路，目標相依套件要 bake 進映像；黑箱要打執行中的服務時需 `docker_network: host`，隔離程度降低。
 - 原始碼會送到每一家設定的供應商。
 - 單一模型家族無法交叉驗證。
@@ -727,6 +729,7 @@ mutation testing、DAST／fuzzing、hypothesis、e2b 沙盒、JS/TS 測試執行
 | 批次崩潰記成 `invalid` 呼叫；單一模型家族是 evidence gap | 缺席的審查不能以「沒有發現」通過；同一模型的副本彼此同意不是佐證 | 更多 INCONCLUSIVE | 2026-10-08 |
 | 無法使用的回應先重問一次再記 `invalid`；`extra_params` 透傳 | live 實測中多數無效回應是一次性的格式失誤或思考吃光額度，每一次都讓整輪 INCONCLUSIVE | 多一次呼叫的成本；重問紀錄為 `retried` | 0.3.0 |
 | 所有程式搬進單一頂層套件 `vibeharness/`（CLI 為 `vibeharness.cli`，根目錄 `main.py` 只是薄殼） | `core`／`config`／`main` 等通用名稱安裝進 site-packages 會與其他套件互撞，也會遮蔽使用者專案自己的 `config` | import 路徑全部改變（breaking） | 0.3.0 |
+| 回應快取、崩潰時的部分報告、`local_subprocess` 資源上限、SARIF `help`、中文注入標記、手動 live smoke workflow | 重跑整輪要再付一次錢；崩潰讓已付費的結果歸零；生成測試可吃光主機記憶體；Code Scanning 的 alert 沒有修復指引；中文專案的注入句型看不到；live 路徑只靠人工驗證 | 快取目錄含模型回應；RLIMIT 只在 POSIX | 0.3.0 |
 | `--include`／`--exclude`／`--changed-since`、`max_file_bytes`；報告帶 run metadata 與 `schema_version` | 中型以上專案超過 `max_files` 就永遠 INCONCLUSIVE；報告讀起來不知道是哪個版本、哪個 commit、哪種模式產生的 | 篩掉的檔案不算 evidence gap（使用者明示） | 0.3.0 |
 
 ---

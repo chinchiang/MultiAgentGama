@@ -141,6 +141,14 @@ def main():
              "unstaged or untracked), e.g. 'origin/main' in a PR check; the target must be inside a git repo"
     )
     parser.add_argument(
+        "--cache-dir",
+        metavar="DIR",
+        default=None,
+        help="Cache usable live model answers in DIR (created if missing) and reuse them on later runs with the "
+             "same model, settings and prompt; a cache hit makes no provider call and costs no budget. "
+             "Overrides global.cache_dir. The directory holds raw model answers: treat it like the reports"
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable debug logging"
@@ -196,6 +204,8 @@ def main():
             commander.exclude_patterns = args.exclude
         if args.changed_since:
             commander.changed_since = args.changed_since
+        if args.cache_dir:
+            commander.gateway.set_cache_dir(args.cache_dir)
     except (ConfigError, ValueError, SandboxUnavailableError) as e:
         print(f"Error: harness configuration problem: {e}", file=sys.stderr)
         sys.exit(USAGE_ERROR_EXIT_CODE)
@@ -216,7 +226,8 @@ def main():
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(USAGE_ERROR_EXIT_CODE)
     except KeyboardInterrupt:
-        print("Interrupted; no report was written (in-flight model calls may take a moment to stop).", file=sys.stderr)
+        print("Interrupted; no full report was written (a .partial.json may exist next to --output; "
+              "in-flight model calls may take a moment to stop).", file=sys.stderr)
         sys.exit(INTERRUPTED_EXIT_CODE)
     except Exception as e:
         # A crashed run must never fall through to exit code 1, which CI reads as NEEDS_FIXES

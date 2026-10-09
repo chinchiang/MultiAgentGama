@@ -608,3 +608,22 @@ def test_coverage_extraction_ignores_malformed_totals():
     assert extract("TOTAL 10 2 87.5%") == 87.5
     assert extract("TOTAL 10 2 not-a-number%") is None
     assert extract("no table at all") is None
+
+
+# --- SARIF help text ----------------------------------------------------------------------------
+
+def test_sarif_rules_carry_help_text(tmp_path):
+    import json
+    from vibeharness.core.harness import VibeHarnessCommander
+    target = tmp_path / "t"
+    target.mkdir()
+    (target / "m.py").write_text('import pickle\n\ndef load(p):\n    return pickle.load(open(p, "rb"))\n')
+    VibeHarnessCommander(config_path=CONFIG, execution_mode="mock").run_full_pipeline(
+        target_dir=str(target), output_report_path=str(tmp_path / "r.md"), output_sarif_path=str(tmp_path / "r.sarif"))
+    rules = json.loads((tmp_path / "r.sarif").read_text(encoding="utf-8"))["runs"][0]["tool"]["driver"]["rules"]
+    assert rules, "no rules emitted"
+    for rule in rules:
+        assert rule["help"]["text"] and rule["help"]["markdown"], rule["id"]
+        assert "`" not in rule["help"]["text"] and "*" not in rule["help"]["text"]
+    static = next(r for r in rules if r["id"] == "vibeharness/VH-AI-003")
+    assert "CWE-502" in static["help"]["markdown"] and "Deterministic rule" in static["help"]["text"]

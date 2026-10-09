@@ -133,10 +133,10 @@ class ReportGenerator:
             md.append("| :--- | :--- | :--- | :--- | :--- |")
             grouped: Dict[Tuple[str, str, str, str], int] = {}
             for c in summary.agent_calls:
-                key = (c.agent_id, c.model_name, c.mode, c.reason or "")
+                key = (c.agent_id, c.model_name, "cached" if c.cached else c.mode, c.reason or "")
                 grouped[key] = grouped.get(key, 0) + 1
             for (agent_id, model_name, mode, reason), count in grouped.items():
-                mode_label = {"live": "🟢 live", "simulated": "🟡 simulated",
+                mode_label = {"live": "🟢 live", "cached": "🟢 live (response cache)", "simulated": "🟡 simulated",
                               "retried": "🟠 unusable, re-asked"}.get(mode, "🔴 invalid output")
                 md.append(f"| `{self._cell(agent_id)}` | `{self._cell(model_name)}` | {mode_label} | {count} | {self._cell(reason) or '-'} |")
         else:
@@ -292,7 +292,7 @@ class ReportGenerator:
         rule_index: Dict[str, int] = {}
         results: List[Dict[str, object]] = []
 
-        def add_rule(rule_id: str, short: str, full: str, level: str) -> int:
+        def add_rule(rule_id: str, short: str, full: str, level: str, help_md: Optional[str] = None) -> int:
             if rule_id not in rule_index:
                 rule_index[rule_id] = len(rules)
                 rules.append({
@@ -301,13 +301,20 @@ class ReportGenerator:
                     "shortDescription": {"text": short},
                     "fullDescription": {"text": full},
                     "defaultConfiguration": {"level": level},
+                    # Code Scanning shows `help` on the alert page; without it the alert has no guidance
+                    "help": {"text": re.sub(r"[*`]", "", help_md or full), "markdown": help_md or full},
                 })
             return rule_index[rule_id]
 
         # 0. Deterministic AI-security rule hits (no model involved)
         for sf in summary.static_findings:
             rule_id = SARIF_RULE_STATIC_PREFIX + sf.rule_id
-            idx = add_rule(rule_id, sf.title, sf.remediation, self._sarif_level(sf.severity))
+            mappings = " · ".join(t for t in (sf.owasp_mapping, sf.atlas_mapping, sf.cwe) if t)
+            idx = add_rule(
+                rule_id, sf.title, sf.remediation, self._sarif_level(sf.severity),
+                help_md=f"**{sf.title}**\n\n{sf.remediation}" + (f"\n\nMappings: {mappings}" if mappings else "")
+                        + "\n\nDeterministic rule (no model involved): the hit is in the code itself, not a model's opinion.",
+            )
             tags = [t for t in (sf.owasp_mapping, sf.atlas_mapping, sf.cwe) if t]
             rules[idx].setdefault("properties", {"tags": ["security", *tags]})
             uri = self._sarif_uri(sf.file_path, root)
@@ -328,6 +335,10 @@ class ReportGenerator:
             SARIF_RULE_WHITEBOX, "Confirmed white-box defect hypothesis",
             "A defect reported by a reviewer model and confirmed (or left undecided) by cross-model verification.",
             "warning",
+            help_md="A reviewer model reported this defect and the other models confirmed it (or the vote tied). "
+                    "It is a hypothesis until a test exposes it: check the generated test and its outcome in the "
+                    "Markdown / JSON report (`properties.findingId` names the finding), then fix the root cause the "
+                    "message describes.",
         )
         # 1. Confirmed white-box findings (file locations resolved from line_number or the symbol table)
         for f in debate_result.confirmed_findings:
@@ -373,6 +384,10 @@ class ReportGenerator:
                     SARIF_RULE_BLACKBOX, "Confirmed black-box security breach",
                     "A threat-model-derived attack test whose defensive assertion failed against the target.",
                     "error",
+                    help_md="An attack script derived from the threat model ran against the target and its defensive "
+                            "assertion failed, i.e. the attack succeeded. Reproduce it with the PoC in the report "
+                            "(`properties.testId`), then add the missing authorization, validation or limit the threat "
+                            "(`properties.threatId`) describes and keep the test as a regression guard.",
                 )
             threat = threats_by_id.get(r.source_ref or "")
             derived = f" (derived from {r.source_ref}{': ' + threat.title if threat else ''})" if r.source_ref else ""

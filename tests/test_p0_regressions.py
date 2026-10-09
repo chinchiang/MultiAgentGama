@@ -959,3 +959,27 @@ def test_cli_missing_target_is_usage_error():
         cwd=REPO_ROOT, capture_output=True, text=True, timeout=60
     )
     assert proc.returncode == 5
+
+
+# --- local_subprocess resource limits ------------------------------------------------------------
+
+@pytest.mark.skipif(sys.platform != "linux", reason="RLIMIT_AS is enforced reliably on Linux only")
+def test_local_sandbox_memory_cap_stops_a_runaway_allocation(tmp_path):
+    from vibeharness.core.sandbox import LocalSubprocessSandbox
+    code = (
+        "def test_eat_memory():\n"
+        "    blob = bytearray(1024 * 1024 * 1024)  # 1 GiB\n"
+        "    assert len(blob) > 0\n"
+    )
+    capped = LocalSubprocessSandbox(timeout_seconds=60, memory_mb=512)
+    assert capped._limits(60) == {"cpu_seconds": 70, "memory_bytes": 512 * 1024 * 1024}
+    rc, out, err, _, _, junit = capped.execute_pytest_files({"test_mem.py": code}, working_dir=str(tmp_path))
+    assert rc != 0 and "MemoryError" in (out + err + (junit or ""))
+    uncapped = LocalSubprocessSandbox(timeout_seconds=60, memory_mb=0)
+    assert "memory_bytes" not in uncapped._limits(60)
+
+
+def test_docker_sandbox_never_limits_the_docker_cli():
+    from vibeharness.core.sandbox import DockerSandbox
+    sandbox = DockerSandbox(verify=False)
+    assert sandbox.memory_mb == 0 and sandbox._limits(60) == {}

@@ -1,6 +1,8 @@
+import datetime as _dt
 import hashlib
 import os
 import json
+import tempfile
 import logging
 import re
 import threading
@@ -90,6 +92,11 @@ class LLMGateway:
         self._budget_lock = threading.Lock()
         retries = global_cfg.get("retry_invalid_output", DEFAULT_RETRY_INVALID_OUTPUT)
         self.retry_invalid_output = 0 if retries is None else retries
+        # On-disk cache of usable live answers keyed by model + prompt: a re-run of the same target with
+        # the same config costs nothing and gives the same answers. None disables it.
+        self.cache_dir: Optional[str] = None
+        if global_cfg.get("cache_dir"):
+            self.set_cache_dir(str(global_cfg["cache_dir"]))
         self._validate_endpoints()
         self._validate_settings()
 
@@ -113,6 +120,53 @@ class LLMGateway:
             raise ConfigError(
                 f"models.{alias}.api_base must be an https:// URL (http:// only for loopback hosts), got {base!r}"
             )
+
+    def set_cache_dir(self, path: str) -> None:
+        """Enables the response cache in `path` (created if missing). The directory holds raw model
+        answers, which can quote the audited code: treat it like the reports."""
+        target = os.path.abspath(path)
+        try:
+            os.makedirs(target, exist_ok=True)
+        except OSError as e:
+            raise ConfigError(f"cache_dir {path!r} cannot be created: {e}") from e
+        if not os.access(target, os.W_OK):
+            raise ConfigError(f"cache_dir {path!r} is not writable")
+        self.cache_dir = target
+
+    def _cache_key(self, model_alias: str, model_info: Dict[str, Any], temperature: float, system_prompt: str, user_prompt: str) -> str:
+        parts = "\x00".join([
+            model_alias, str(model_info.get("model")), str(model_info.get("fallback_model")), str(temperature),
+            str(self._max_output_tokens(model_info)), json.dumps(model_info.get("extra_params") or {}, sort_keys=True),
+            system_prompt, user_prompt,
+        ])
+        return hashlib.sha256(parts.encode("utf-8")).hexdigest()
+
+    def _cache_read(self, key: str) -> Optional[Dict[str, Any]]:
+        if not self.cache_dir:
+            return None
+        path = os.path.join(self.cache_dir, f"{key}.json")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                entry = json.load(f)
+        except (OSError, ValueError):
+            return None
+        return entry if isinstance(entry, dict) and isinstance(entry.get("raw_text"), str) else None
+
+    def _cache_write(self, key: str, agent_id: str, model_name: str, raw_text: str, finish_reason: Optional[str], prompt_sha256: str) -> None:
+        if not self.cache_dir:
+            return
+        entry = {
+            "agent_id": agent_id, "model": model_name, "finish_reason": finish_reason, "raw_text": raw_text,
+            "prompt_sha256": prompt_sha256, "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+        }
+        try:
+            # Atomic publish: concurrent agents may write the same key, readers must never see a torn file
+            fd, tmp = tempfile.mkstemp(prefix=".tmp-", suffix=".json", dir=self.cache_dir)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(entry, f, ensure_ascii=False)
+            os.replace(tmp, os.path.join(self.cache_dir, f"{key}.json"))
+        except OSError as e:
+            logger.warning(f"Could not write the response cache entry: {e}")
 
     def _validate_settings(self) -> None:
         """Numeric settings are checked once at start-up. They used to be read only when a call was
@@ -244,8 +298,13 @@ class LLMGateway:
         elif not self.is_live_configured(model_alias):
             env_var = model_info.get("api_key_env") or "<no api_key_env configured>"
             fallback_reason = f"API key env var {env_var} is not set"
-        elif not self._reserve_live_call():
-            fallback_reason = BUDGET_EXHAUSTED_REASON
+        cached: Optional[Dict[str, Any]] = None
+        cache_key = ""
+        if fallback_reason is None:
+            cache_key = self._cache_key(model_alias, model_info, temperature, system_prompt, user_prompt)
+            cached = self._cache_read(cache_key)
+            if cached is None and not self._reserve_live_call():
+                fallback_reason = BUDGET_EXHAUSTED_REASON
 
         if fallback_reason is None:
             logger.info(f"Dispatching [{agent_id}] to Live LLM: {model_name} (Alias: {model_alias})")
@@ -261,7 +320,12 @@ class LLMGateway:
                     {"role": "user", "content": prompt_text}
                 ]
                 try:
-                    raw_text, model_name, finish_reason = self._complete(model_info, model_name, messages, temperature)
+                    if cached is not None and attempt == 0:
+                        raw_text, model_name = cached["raw_text"], str(cached.get("model") or model_name)
+                        finish_reason = cached.get("finish_reason") if isinstance(cached.get("finish_reason"), str) else None
+                        logger.info(f"[{agent_id}] answer served from the response cache ({model_name})")
+                    else:
+                        raw_text, model_name, finish_reason = self._complete(model_info, model_name, messages, temperature)
                 except Exception as e:
                     fallback_reason = f"live invocation failed: {self._safe_reason(str(e))}"
                     if self.execution_mode == "live":
@@ -273,8 +337,13 @@ class LLMGateway:
                 result = self._clean_and_parse_json(raw_text) if json_output else {"raw": raw_text}
                 problem = self._validate_output(result, json_output, required_keys, required_keys_any)
                 if problem is None and result is not None:
-                    self._record(agent_id, model_alias, model_name, "live", prompt_sha256=prompt_hash)
-                    result[PROVENANCE_KEY] = {"mode": "live", "model": model_name}
+                    from_cache = cached is not None and attempt == 0
+                    if not from_cache:
+                        self._cache_write(cache_key if attempt == 0 else self._cache_key(
+                            model_alias, model_info, temperature, system_prompt, prompt_text
+                        ), agent_id, model_name, raw_text, finish_reason, prompt_hash)
+                    self._record(agent_id, model_alias, model_name, "live", prompt_sha256=prompt_hash, cached=from_cache)
+                    result[PROVENANCE_KEY] = {"mode": "live", "model": model_name, "cached": from_cache}
                     return result
                 reason = problem or "response is not valid JSON"
                 if not raw_text.strip():
@@ -397,13 +466,17 @@ class LLMGateway:
 
     def _record(
         self, agent_id: str, model_alias: str, model_name: str, mode: str,
-        reason: Optional[str] = None, prompt_sha256: Optional[str] = None
+        reason: Optional[str] = None, prompt_sha256: Optional[str] = None, cached: bool = False
     ):
         self.call_log.append(AgentCallRecord(
             agent_id=agent_id, model_alias=model_alias, model_name=model_name, mode=mode,
             reason=self._safe_reason(reason) if reason is not None else None,
-            prompt_sha256=prompt_sha256
+            prompt_sha256=prompt_sha256, cached=cached
         ))
+
+    @property
+    def cached_calls(self) -> List[AgentCallRecord]:
+        return [rec for rec in self.call_log if rec.cached]
 
     def _clean_and_parse_json(self, text: str) -> Optional[Dict[str, Any]]:
         """Strips markdown code fences and parses JSON safely, with conversational fallback."""

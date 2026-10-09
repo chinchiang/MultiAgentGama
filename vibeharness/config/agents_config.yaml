@@ -16,6 +16,9 @@ global:
   # override these lists, --changed-since <git ref> further restricts the run to files that changed
   include: []                     # e.g. ["src/*"]; empty = everything
   exclude: []                     # e.g. ["tests/*", "vendor/*", "*.min.js"]
+  cache_dir: null                 # directory for the response cache (usable live answers keyed by model + prompt; a hit
+                                  # makes no provider call and costs no budget); CLI --cache-dir overrides. Holds raw
+                                  # model answers, so treat it like the reports. null = off
   retry_invalid_output: 1         # re-ask a model this many times when its answer is unusable (not JSON, missing keys,
                                   # empty) before booking it `invalid`; each re-ask is a real call against max_model_calls
   sandbox_provider: "local_subprocess"  # "local_subprocess" (NOT a security boundary) or "docker" (isolated container); e2b is planned
@@ -26,6 +29,8 @@ global:
   docker_cpus: "2"
   docker_pids_limit: 256
   sandbox_timeout_seconds: 120    # budget for one batched pytest run
+  sandbox_memory_mb: 2048         # local_subprocess only: address-space cap (RLIMIT_AS, POSIX) for the pytest process
+                                  # tree, plus a CPU-time cap of the batch budget + 10 s; 0 disables. Not a security boundary
   per_test_timeout_seconds: 30    # budget per test when a timed-out batch is re-run test by test
 
 models:
