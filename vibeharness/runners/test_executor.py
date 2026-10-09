@@ -64,7 +64,7 @@ _JS_TEST_SIDE_ERRORS = ("ReferenceError", "TypeError")
 # V8 堆疊框架最內層在前："    at fn (file:///x/y.mjs:3:9)" 或 "    at file:///x/y.mjs:3:9"
 # V8 stack frames are innermost-first: "    at fn (file:///x/y.mjs:3:9)" or "    at file:///x/y.mjs:3:9"
 _V8_FRAME_RE = re.compile(r"^\s+at (?:.*?\()?((?:file:///|/|[A-Za-z]:[\\/])[^\s)]+?):\d+:\d+\)?\s*$", re.MULTILINE)
-_JS_CAUSE_RE = re.compile(r"^\s*cause:\s*([A-Za-z]*Error\b.*?)\s*\{?\s*$", re.MULTILINE)  # 加了引號的 cause（'test failed'）什麼都沒說 ／ a quoted cause ('test failed') says nothing
+_JS_CAUSE_RE = re.compile(r"^\s*cause:\s*([\w$]*Error\b.*?)\s*\{?\s*$", re.MULTILINE)  # 加了引號的 cause（'test failed'）什麼都沒說 ／ a quoted cause ('test failed') says nothing
 _JS_ERROR_LINE_RE = re.compile(r"^\s*\[?(\w*Error(?: \[\w+\])?: .+)$", re.MULTILINE)
 # 檔案層級 case 的名字就是測試檔路徑：對 basename 做完整比對，名稱只是「結尾像檔名」的 test() 不算
 # A file-level case is named after the test file path: full match on the basename, a test() whose name merely ends

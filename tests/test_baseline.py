@@ -262,3 +262,21 @@ def test_old_simulated_reports_without_per_item_flags_still_match():
     loaded = bl._keys_from_report(payload)
     new_threat = _threat().model_copy(update={"title": title, "is_simulated": True})
     assert bl.breach_key(breach, new_threat) in loaded.breaches
+
+
+def test_container_level_simulated_flag_never_overrides_an_items_own_flag():
+    """混合執行的舊報告：threat_model.is_simulated 為 True（any_simulated），但 live 的威脅自己帶 is_simulated=False，
+    重算 key 時以項目為準。
+    An old mixed-run report: threat_model.is_simulated is True (any_simulated) while a live threat carries its own
+    is_simulated=False; the item's flag wins when keys are recomputed."""
+    from vibeharness.core.i18n import bi
+    title = bi("真實", "Real threat with a slash")
+    live_threat = _threat().model_copy(update={"title": title, "is_simulated": False})
+    breach = TestExecutionResult(test_id="BB-TEST-THREAT-01", test_type="blackbox_security", status=TestStatus.FAILED,
+                                 is_security_exploit_confirmed=True, source_ref="THREAT-01")
+    payload = {"tool": "vibeharness-mas", "schema_version": "1", "target_path": EXAMPLES, "summary": {},
+               "whitebox": {"debate": {"confirmed_findings": []}, "test_results": []},
+               "threat_model": {"threats": [live_threat.model_dump()], "is_simulated": True},
+               "blackbox_test_results": [breach.model_dump()]}
+    loaded = bl._keys_from_report(payload)
+    assert bl.breach_key(breach, live_threat) in loaded.breaches

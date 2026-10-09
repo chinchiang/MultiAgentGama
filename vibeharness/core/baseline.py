@@ -157,9 +157,11 @@ def _keys_from_report(payload: Dict[str, Any]) -> Baseline:
     # white-box results (keyed by their finding) seed the baseline; a finding whose test passed last time and
     # fails now is a new problem and must not be suppressed
     debate = (payload.get("whitebox") or {}).get("debate") if isinstance(payload.get("whitebox"), dict) else {}
-    # 較舊的報告只在 debate／threat_model 層級標 is_simulated：補到每個項目，重算的 key 才與這一輪一致
-    # Older reports flag is_simulated only at the debate / threat_model level: propagate it to every item so the
-    # recomputed keys match this run's
+    # 較舊的報告只在 debate／threat_model 層級標 is_simulated：項目本身沒有該欄位時才補上（有的話以項目為準，
+    # 混合執行裡 live 的項目不會被誤標），重算的 key 才與這一輪一致
+    # Older reports flag is_simulated only at the debate / threat_model level: it is propagated only to items that
+    # lack the field (an item's own flag wins, so live items of a mixed run are never mis-flagged), so the recomputed
+    # keys match this run's
     debate_simulated = bool(isinstance(debate, dict) and debate.get("is_simulated"))
     findings_by_id: Dict[str, ReviewFinding] = {}
     for item in _dicts((debate or {}).get("confirmed_findings")):
@@ -167,7 +169,7 @@ def _keys_from_report(payload: Dict[str, Any]) -> Baseline:
             finding = ReviewFinding(**item)
         except Exception:
             continue
-        if debate_simulated:
+        if debate_simulated and "is_simulated" not in item:
             finding.is_simulated = True
         findings_by_id[finding.finding_id] = finding
     whitebox = payload.get("whitebox") if isinstance(payload.get("whitebox"), dict) else {}
@@ -191,7 +193,7 @@ def _keys_from_report(payload: Dict[str, Any]) -> Baseline:
             threat = ThreatItem(**item)
         except Exception:
             continue
-        if model_simulated:
+        if model_simulated and "is_simulated" not in item:
             threat.is_simulated = True
         threats[threat.threat_id] = threat
     for item in _dicts(payload.get("blackbox_test_results")):

@@ -812,8 +812,10 @@ def test_bad_node_settings_fail_at_start_up(tmp_path):
                               ("docker_pids_limit", "many", "docker_pids_limit"), ("sandbox_timeout_seconds", -1, "sandbox_timeout_seconds"),
                               ("docker_node_image", "", "docker_node_image"), ("docker_network", None, "docker_network"),
                               ("docker_memory", 1, "docker_memory"), ("docker_cpus", "two", "docker_cpus"),
+                              ("docker_cpus", "inf", "docker_cpus"), ("docker_pids_limit", -2, "docker_pids_limit"),
                               ("sandbox_timeout_seconds", "60", "sandbox_timeout_seconds")):
-        cfg = {**base, "global": {**base["global"], key: value}}
+        overrides = {"sandbox_node_provider": "docker"} if key.startswith("docker_") else {}
+        cfg = {**base, "global": {**base["global"], **overrides, key: value}}
         path = tmp_path / f"{key}.yaml"
         path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
         with pytest.raises(Exception, match=match):
@@ -886,29 +888,36 @@ def test_sandbox_settings_are_validated_once_for_both_sandboxes():
     """Python 與 Node 沙盒共用同一組驗證過的設定，不會各自解讀（例如逾時 0 一邊是 0、一邊是 120）。
     The Python and Node sandboxes share one validated set of settings, so a value is never interpreted differently
     (e.g. a timeout of 0 becoming 0 on one side and 120 on the other)."""
-    settings = VibeHarnessCommander._sandbox_settings({"sandbox_timeout_seconds": 0, "docker_memory": " 512m ", "docker_cpus": 1.5})
+    settings = VibeHarnessCommander._sandbox_settings({"sandbox_timeout_seconds": 0, "docker_memory": " 512m ", "docker_cpus": " 1.5 "})
     assert settings["timeout"] == 120 and settings["memory"] == "512m" and settings["cpus"] == "1.5"
+    # Docker 接受的記憶體寫法都過得了；-1 的 pids 表示不限制 ／ every memory form Docker accepts passes; pids -1 means unlimited
+    for memory in ("512mb", "1GiB", "2g", "1073741824"):
+        assert VibeHarnessCommander._sandbox_settings({"docker_memory": memory})["memory"] == memory
+    assert VibeHarnessCommander._sandbox_settings({"docker_pids_limit": -1})["pids_limit"] == -1
+    # 純本機設定檔裡殘留的 docker 鍵不擋啟動 ／ stale docker keys in a local-only config never block start-up
+    assert VibeHarnessCommander._sandbox_settings({"docker_memory": 1, "docker_network": None}, need_docker=False)["memory"] == "1g"
+    with pytest.raises(ValueError, match="docker_image"):
+        VibeHarnessCommander._build_sandbox({"sandbox_provider": "docker", "docker_image": 123})
     sandbox = VibeHarnessCommander._build_sandbox({"sandbox_provider": "local_subprocess", "sandbox_timeout_seconds": 0})
     assert sandbox.timeout_seconds == 120
     node = VibeHarnessCommander._validate_node_settings({"sandbox_timeout_seconds": 0}, "docker")
     assert node["timeout"] == 120 and node["image"] == DEFAULT_DOCKER_NODE_IMAGE
 
 
-def test_docker_node_version_is_probed_only_for_typescript_targets(monkeypatch):
-    """純 JS 目標不多開一個容器讀版本；版本只在有 TypeScript（決定型別剝除）時才需要。
-    A JS-only target does not start an extra container to read the version; it matters only when TypeScript exists."""
+def test_docker_node_version_is_recorded_for_js_only_targets_too(monkeypatch):
+    """純 JS 目標也讀映像檔內的 Node 版本：它是 RunMetadata.node_runtime 的來源；型別剝除只在有 TypeScript 時開。
+    A JS-only target reads the image's Node version too (it is RunMetadata.node_runtime's provenance); type stripping
+    is enabled only when TypeScript exists."""
     commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
     commander.sandbox_node_provider = "docker"
     commander._node_cfg = VibeHarnessCommander._validate_node_settings(commander._global_cfg, "docker")
     monkeypatch.setattr(NodeDockerSandbox, "_verify_available", lambda self: None)
-    calls = []
-    monkeypatch.setattr(VibeHarnessCommander, "_docker_node_version", staticmethod(lambda sandbox: calls.append(1) or (22, 9, 0)))
+    monkeypatch.setattr(VibeHarnessCommander, "_docker_node_version", staticmethod(lambda sandbox: (22, 9, 0)))
     commander.ast_extractor.analyzed_files = ["/app/x.mjs"]
     sandbox = commander._build_node_sandbox()
-    assert calls == [] and not sandbox.strip_types and commander.node_runtime == f"docker {DEFAULT_DOCKER_NODE_IMAGE}"
+    assert not sandbox.strip_types and commander.node_runtime == f"docker {DEFAULT_DOCKER_NODE_IMAGE} (node v22.9.0)"
     commander.ast_extractor.analyzed_files = ["/app/x.ts"]
-    sandbox = commander._build_node_sandbox()
-    assert calls == [1] and sandbox.strip_types and "(node v22.9.0)" in commander.node_runtime
+    assert commander._build_node_sandbox().strip_types
 
 
 def test_docker_node_version_probe_uses_the_sandbox_run_prefix(tmp_path, monkeypatch):
@@ -924,10 +933,15 @@ def test_docker_node_version_probe_uses_the_sandbox_run_prefix(tmp_path, monkeyp
     monkeypatch.setattr(harness_mod.subprocess, "run", fake_run)
     assert VibeHarnessCommander._docker_node_version(sandbox) == (22, 9, 0)
     joined = " ".join(seen["cmd"])
-    assert seen["cmd"][-3:] == [DEFAULT_DOCKER_NODE_IMAGE, "node", "--version"]
-    for flag in ("--rm", "--read-only", "--network none", "--cap-drop ALL", "--memory 256m", "--pids-limit 64", "--user"):
+    assert seen["cmd"][-6:] == [DEFAULT_DOCKER_NODE_IMAGE, "timeout", "--kill-after=5", "20", "node", "--version"]
+    for flag in ("--rm", "--read-only", "--network none", "--cap-drop ALL", "--memory 256m", "--pids-limit 64", "--user", "--name"):
         assert flag in joined
     assert "--pull" not in joined
+    # 主機端逾時：移除容器（與測試批次相同），回傳 None ／ host-side timeout: the container is removed (as for a batch), None
+    removed = []
+    monkeypatch.setattr(harness_mod.subprocess, "run", lambda cmd, **kw: (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd, 30)))
+    monkeypatch.setattr(NodeDockerSandbox, "_after_timeout", lambda self, cmd: removed.append(cmd[cmd.index("--name") + 1]))
+    assert VibeHarnessCommander._docker_node_version(sandbox) is None and len(removed) == 1
 
 
 def test_file_level_case_match_is_exact():
@@ -951,3 +965,23 @@ def test_load_time_reference_error_wins_over_target_noise():
                  "[Error: test failed] { code: 'ERR_TEST_FAILURE', cause: 'test failed' }", name="/run/test_vh_000.mjs")
     assert TestSuiteExecutor._js_exception_summary(case) == "ReferenceError: foo is not defined"
     assert TestSuiteExecutor._js_is_harness_failure(case)
+
+
+def test_stale_docker_keys_do_not_block_a_local_only_run(tmp_path):
+    """兩個沙盒都是 local_subprocess 時，設定檔裡殘留的 docker_* 鍵（空值、整數）不會讓啟動失敗。
+    When both sandboxes are local_subprocess, stale docker_* keys (null, an int) in the config never fail start-up."""
+    import yaml
+    base = yaml.safe_load(open(CONFIG, encoding="utf-8"))
+    cfg = {**base, "global": {**base["global"], "docker_memory": 1024, "docker_network": None, "docker_cpus": "two"}}
+    path = tmp_path / "local.yaml"
+    path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    commander = VibeHarnessCommander(config_path=str(path), execution_mode="mock")
+    assert commander._sandbox_cfg["memory"] == "1g" and commander._node_cfg["network"] == "none"
+
+
+def test_js_cause_class_names_may_contain_digits():
+    """`cause:` 的例外類別名可含數字或底線（HTTP2Error）：摘要仍取它，而不是外層的 ERR_TEST_FAILURE。
+    A `cause:` class name may contain digits or underscores (HTTP2Error): the summary still takes it, not the outer
+    ERR_TEST_FAILURE wrapper."""
+    case = _case("bad frame", "Error [ERR_TEST_FAILURE]: bad frame\n  cause: HTTP2Error: bad frame\n      at handler (file:///app/svc.mjs:1:1)")
+    assert TestSuiteExecutor._js_exception_summary(case) == "HTTP2Error: bad frame"
