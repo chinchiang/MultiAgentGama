@@ -106,7 +106,10 @@ def main():
 
 
 def _main():
+    # 固定程式名稱：Python 3.14 的 argparse 在 `python -m` 下會改用模組路徑當 prog
+    # Fixed program name: Python 3.14's argparse derives prog from the module path under `python -m`
     parser = _UsageErrorParser(
+        prog="vibeharness",
         description="[VibeHarness-MAS] 針對 vibe coding 的多代理白箱與黑箱測試 harness ／ "
                     "Multi-Agent White-Box & Black-Box Testing Harness for Vibe Coding"
     )
