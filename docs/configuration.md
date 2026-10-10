@@ -24,7 +24,7 @@ CLI 啟動時可用 `--config <路徑>` 改用其他設定檔、`--mode` 覆蓋 
 | `include` | `[]` | glob 清單，只分析相對於 `--target` 的路徑或檔名符合其一的檔案（例如 `["src/*"]`）；空清單＝全部。CLI `--include` 會整個覆蓋此清單 |
 | `exclude` | `[]` | glob 清單，符合其一的檔案不分析（例如 `["tests/*", "vendor/*", "*.min.js"]`；`vendor` 也匹配整個目錄）；被排除的檔案不算證據缺口。CLI `--exclude` 會整個覆蓋 |
 | `cache_dir` | `null`（關閉） | 回應快取目錄（不存在會建立）：可用的 live 回應以模型、設定（含端點：`api_base`、`aws_region_name`、`aws_profile_name`、`api_key_env`）與提示為 key 存成 JSON，之後相同的提示直接取用，不呼叫供應商、不扣 `max_model_calls`；報告「執行來源 ／ Execution Provenance」標為「真實（回應快取） ／ live (response cache)」。CLI `--cache-dir` 會覆蓋。CLI `--cache-only` 只從此快取（或 `--cache-dir`）取用、絕不呼叫供應商，也不重問；快取沒有的呼叫列為證據缺口（`hybrid` 改走模擬，`live` 以 exit 4 中止），沒有快取目錄時 `--cache-only` 是 exit 5。目錄內是模型原始回應（可能引用待審程式碼），請比照報告保管 |
-| `retry_invalid_output` | `1` | 模型回應無法使用（非 JSON、缺欄位、空回應）時再問幾次（提示會說明上次的問題）才記為 `invalid`；每次重問都是真實呼叫、計入 `max_model_calls`，報告「執行來源 ／ Execution Provenance」以「無法使用，已重問 ／ unusable, re-asked」列出。`0` 關閉；須為 0–5 的整數 |
+| `retry_invalid_output` | `1` | 模型回應無法使用（非 JSON、缺欄位、空回應）時再問幾次（提示會說明上次的問題）才記為 `invalid`；每次重問都是真實呼叫、計入 `max_model_calls`，報告「執行來源 ／ Execution Provenance」以「無法使用，已重問 ／ unusable, re-asked」列出。`null` 等同未設定（用預設值），`0` 關閉；須為 0–5 的整數 |
 | `max_files` | `50` | 每次分析的原始碼檔案上限，超出的檔案列入證據缺口（判定不會是 `READY_TO_SHIP`）。須為非負整數，`0`／`null` 等同預設；負數或非整數啟動即報 `ConfigError`（exit 5） |
 | `sandbox_provider` | `"local_subprocess"` | `local_subprocess`（本機子程序，**非安全邊界**）或 `docker`（一次性隔離容器）；其他值啟動即報錯 |
 | `docker_image` | `"vibeharness-sandbox:latest"` | docker 沙盒映像，需預裝 `pytest`、`pytest-cov` 與目標的相依套件 |

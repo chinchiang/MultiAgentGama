@@ -154,8 +154,10 @@ class LLMGateway:
         ) or DEFAULT_MAX_CONCURRENT_CALLS
         self.live_calls_attempted = 0
         self._budget_lock = threading.Lock()
-        retries = global_cfg.get("retry_invalid_output", DEFAULT_RETRY_INVALID_OUTPUT)
-        self.retry_invalid_output = 0 if retries is None else retries
+        # null 與未設定相同，都用預設值（與 timeout_seconds、max_retries 一致）；只有明確的 0 才關閉
+        # null means the same as unset, the default (consistent with timeout_seconds, max_retries); only an explicit 0 disables
+        retries = global_cfg.get("retry_invalid_output")
+        self.retry_invalid_output = DEFAULT_RETRY_INVALID_OUTPUT if retries is None else retries
         # 以模型 + 提示為鍵、存放可用線上回答的磁碟快取：以相同設定重新執行相同目標
         # 不需任何花費，且得到相同的回答。None 表示停用。
         # On-disk cache of usable live answers keyed by model + prompt: a re-run of the same target with

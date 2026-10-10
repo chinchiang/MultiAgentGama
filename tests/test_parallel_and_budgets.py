@@ -672,3 +672,11 @@ def test_a_crash_writes_a_partial_report_with_everything_so_far(tmp_path, monkey
     assert partial["error"] == {"type": "RuntimeError", "message": "provider melted"}
     assert partial["agent_calls"] and partial["findings"] and partial["whitebox_results"]
     assert "threat_model" not in partial and not out.exists()
+
+
+def test_null_retry_invalid_output_keeps_the_default(tmp_path):
+    """`retry_invalid_output: null` 與未設定相同，用預設值；只有明確的 0 才關閉重問。
+    `retry_invalid_output: null` behaves like an unset key (the default); only an explicit 0 disables re-asking."""
+    from vibeharness.core.llm_gateway import DEFAULT_RETRY_INVALID_OUTPUT
+    assert LLMGateway(_config(tmp_path, retry_invalid_output=None), execution_mode="hybrid").retry_invalid_output \
+        == DEFAULT_RETRY_INVALID_OUTPUT
