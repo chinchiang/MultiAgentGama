@@ -91,18 +91,38 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
         python-version: ${{ inputs.python-version }}
 
     - name: Install VibeHarness-MAS ／ 安裝 VibeHarness-MAS
       shell: bash
+      env:
+        VH_ACTION_REF: ${{ github.action_ref }}
       run: |
-        # 安裝 action 自己的 ref（tag 或 SHA），稽核版本永遠與 action 版本一致。
-        # 套件上 PyPI 後可改為：pip install "vibeharness-mas==<version>"
-        # The action's own ref (tag or SHA) is installed, so the audit and the action version always match.
-        # Once the package is on PyPI this can become: pip install "vibeharness-mas==<version>"
-        python -m pip install --quiet "git+https://github.com/chinchiang/MultiAgentGama@${{ github.action_ref }}"
+        # 從 runner 已經取出的 action 本身安裝（$GITHUB_ACTION_PATH），稽核版本永遠與 action 版本一致，
+        # `uses: owner/repo@ref` 與 `uses: ./` 都適用，也不需要再從網路抓一次原始碼。
+        # 相依套件先以 requirements.lock 帶雜湊安裝（--require-hashes），再以 --no-deps 安裝套件本身。
+        # 原始碼先複製到 $RUNNER_TEMP 再建置，建置產物（build/、*.egg-info）不會落在 action 目錄或 workspace。
+        # Install from the action's own copy the runner already fetched ($GITHUB_ACTION_PATH), so the audit
+        # always matches the action version; works for both `uses: owner/repo@ref` and `uses: ./`, with no
+        # second source download. Dependencies are installed hash-verified from requirements.lock
+        # (--require-hashes), then the package itself with --no-deps. The sources are copied to
+        # $RUNNER_TEMP before building so build output (build/, *.egg-info) never lands in the action
+        # directory or the workspace.
+        if [ -z "$GITHUB_ACTION_PATH" ] || [ ! -f "$GITHUB_ACTION_PATH/pyproject.toml" ] \
+          || [ ! -f "$GITHUB_ACTION_PATH/requirements.lock" ]; then
+          echo "::error::VibeHarness-MAS action sources not found at GITHUB_ACTION_PATH='$GITHUB_ACTION_PATH' (ref '${VH_ACTION_REF:-<none>}')"
+          exit 5
+        fi
+        echo "Installing VibeHarness-MAS from $GITHUB_ACTION_PATH (ref ${VH_ACTION_REF:-local})"
+        src="$RUNNER_TEMP/vibeharness-src"
+        rm -rf "$src" && mkdir -p "$src"
+        cp -R "$GITHUB_ACTION_PATH/pyproject.toml" "$GITHUB_ACTION_PATH/README.md" "$GITHUB_ACTION_PATH/LICENSE" \
+          "$GITHUB_ACTION_PATH/MANIFEST.in" "$GITHUB_ACTION_PATH/vibeharness" "$src/"
+        python -m pip install --quiet --require-hashes -r "$GITHUB_ACTION_PATH/requirements.lock"
+        python -m pip install --quiet --no-deps "$src"
+        python -m pip check
 
     - name: Run the audit ／ 執行稽核
       id: audit
@@ -166,7 +186,7 @@ runs:
         esac
         exit 0
 
-    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       if: always()
       with:
         name: vibeharness-report
