@@ -113,6 +113,15 @@ _JS_CLASS_TAG_RE = re.compile(r"^([\w$]*Error) \[[\w$]*Error\]:")
 _JS_FILE_CASE_RE = re.compile(r"test_vh_\d+\.(?:mjs|cjs|js)")
 _V8_STACK_LINE_RE = re.compile(r"^\s+at ", re.MULTILINE)
 
+def _remaining_seconds(deadline: float, budget: float) -> int:
+    """到 deadline 為止剩下的整數秒，不超過 budget。先扣一點容差再進位：monotonic() 的值很大時，
+    (t0 + 30.0) - t0 可能因浮點誤差變成 30.000000000004，直接進位會多出一秒（Windows 上曾出現 31 秒）。
+    Whole seconds left until deadline, never more than budget. A small tolerance is taken off before rounding up:
+    with large monotonic() values, (t0 + 30.0) - t0 can come out as 30.000000000004 through float error, and a plain
+    ceil would add a second (31s was seen on Windows)."""
+    return min(int(math.ceil(budget)), math.ceil(deadline - time.monotonic() - 1e-6))
+
+
 
 class TestSuiteExecutor:
     __test__ = False
@@ -419,10 +428,11 @@ class TestSuiteExecutor:
         parse_failed: Set[str] = set()
         sandbox = sandbox or self.sandbox
         per_test = self._per_test_budget(sandbox)
-        deadline = time.monotonic() + float(getattr(sandbox, "timeout_seconds", 0) or 0)
+        budget = float(getattr(sandbox, "timeout_seconds", 0) or 0)
+        deadline = time.monotonic() + budget
         for filename, code in files.items():
             module = os.path.splitext(filename)[0]
-            remaining = math.ceil(deadline - time.monotonic())
+            remaining = _remaining_seconds(deadline, budget)
             if remaining < 1:
                 not_rerun.add(module)
                 continue
@@ -526,7 +536,7 @@ class TestSuiteExecutor:
             pending: List[Tuple[str, str]] = []
             deadline = time.monotonic() + batch_budget
             for filename, code in items[first:first + _JS_MODULES_PER_BATCH]:
-                remaining = math.ceil(deadline - time.monotonic())
+                remaining = _remaining_seconds(deadline, batch_budget)
                 if remaining < 1:
                     pending.append((filename, code))
                 elif not run_one(filename, code, remaining):
@@ -543,7 +553,7 @@ class TestSuiteExecutor:
             deadline = time.monotonic() + batch_budget
             for filename, code in pending:
                 module = os.path.splitext(filename)[0]
-                remaining = math.ceil(deadline - time.monotonic())
+                remaining = _remaining_seconds(deadline, batch_budget)
                 if remaining < 1:
                     not_rerun.add(module)
                     timed_out.discard(module)
