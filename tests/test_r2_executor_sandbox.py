@@ -416,3 +416,16 @@ def test_fallback_lost_status_is_not_exit_zero(tmp_path, monkeypatch):
         [sys.executable, "-c", "pass"], cwd=str(tmp_path), env=dict(os.environ), timeout=30
     )
     assert returncode == EXECUTION_FAILURE_EXIT_CODE
+
+
+def test_remaining_seconds_never_exceeds_the_budget_through_float_error(monkeypatch):
+    """monotonic() 很大時 (t0 + 30.0) - t0 的浮點誤差不會讓剩餘預算變成 31 秒。
+    With a large monotonic(), the float error in (t0 + 30.0) - t0 never turns the remaining budget into 31s."""
+    from vibeharness.runners import test_executor as executor_mod
+    t0 = 4090.833771576286  # (t0 + 30.0) - t0 == 30.000000000000455 ／ 會產生浮點誤差的值 ／ a value with float error
+    deadline = t0 + 30.0
+    monkeypatch.setattr(executor_mod.time, "monotonic", lambda: t0)
+    assert deadline - t0 > 30.0  # 前提：真的有浮點誤差 ／ precondition: the float error is real
+    assert executor_mod._remaining_seconds(deadline, 30.0) == 30
+    monkeypatch.setattr(executor_mod.time, "monotonic", lambda: t0 + 29.5)
+    assert executor_mod._remaining_seconds(deadline, 30.0) == 1
