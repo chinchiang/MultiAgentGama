@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-10
+
 依審查結果的強化：沙盒隔離與執行器歸因、崩潰的結束碼與設定驗證、誠實揭露未經驗證的假設、更精準的確定性規則與路由偵測、模型輸出的第二個不可信通道，以及帶雜湊鎖定、以 digest 釘死的建置與發布流程。
 
 ### 新增
@@ -46,7 +48,7 @@
 - CI：Python 3.10–3.14，另加一格 macOS（3.12）；所有安裝都用 `--require-hashes`，`pip-audit` 也加上 `--require-hashes`；`package` job 建置 sdist 與 wheel，並在解開的 sdist 裡跑完整測試套件；`tests.yml` 可經 `workflow_call` 呼叫。
 - `publish.yml` 預設唯讀，先對 tag 指向的 commit 跑 `tests.yml`，在乾淨的 venv 對 wheel 做 smoke test，只有 release job 拿到 `contents: write`。
 - `action.yml` 從 `$GITHUB_ACTION_PATH` 安裝（`uses: ./` 也適用），相依套件以 `requirements.lock` 帶雜湊驗證，套件本身用 `--no-deps`；run 腳本裡沒有 `${{ }}`。`live-smoke.yml` 的 inputs 經 `env` 傳入並先驗證；JSON 重跑改用 `--cache-only --mode hybrid` 讀同一個 `--cache-dir`，不再呼叫模型（也不再用 `--max-model-calls 0` 的不限制），整個 workflow 最多 `max_model_calls` 次真實呼叫；第一次沒能快取的呼叫改用模擬並列為證據缺口。
-- Actions 升版為 checkout v7.0.1、setup-python v7.0.0、upload-artifact v7.0.1、download-artifact v8.0.1、setup-node v7.0.0（取代 Dependabot PR #38）；`pypa/gh-action-pypi-publish` 改釘 v1.13.0 的 commit，而不是 annotated tag 物件。
+- Actions 升版為 checkout v7.0.1、setup-python v7.0.0、upload-artifact v7.0.1、download-artifact v8.0.1、setup-node v7.0.0（取代 Dependabot PR #38），之後 #46 再升為 upload-artifact v7.0.2、download-artifact v8.0.2、setup-node v7.1.0、pypi-publish v1.14.2；`pypa/gh-action-pypi-publish` 改釘 v1.13.0 的 commit，而不是 annotated tag 物件。
 - 沙盒映像：基底映像以多架構 index digest 釘死、預設 `USER 65534`，Python 映像改從新的帶雜湊鎖定檔 `docker/sandbox-requirements.txt` 安裝（以 `requirements.lock` 為約束從 `docker/sandbox-requirements.in` 編譯）；專案專用映像安裝時要切到 `USER root`，裝完再切回來。`requirements.lock` 以 `--generate-hashes` 重新產生（版本不變）。
 - sdist 收錄 `tests/`（含 `conftest.py`）、`examples/`、`main.py`、`action.yml`、requirements 檔與鎖定檔、`docker/*`、`CONTRIBUTING.md`、`SECURITY.md` 與兩份 CHANGELOG；加上 Python 3.14 classifier；setuptools 建置後端上限 `<85`；Dependabot 新增 docker 生態系，並把 `/docker` 納入分組的 pip 更新；pre-commit 的 ruff hook 改為 v0.16.10，與 `requirements-dev.txt` 一致。
 - 新增回歸測試 `tests/test_review_*.py`（blackbox、build、cache_only、cli_config、dedup_votes、extractor_scanner、known_limits、reports、sandbox_executor、sanitize、sanitize_blackbox_fixes、whitebox_fixes）；`tests/test_review_build.py` 守住上述 CI、打包與映像釘版。

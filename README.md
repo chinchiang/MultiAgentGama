@@ -358,7 +358,7 @@ python main.py --target examples --output report.json --format json
 
 ```yaml
 # 目標專案的 .github/workflows/security.yml 範例：本 repo 提供 composite GitHub Action（action.yml）
-- uses: chinchiang/MultiAgentGama@v0.5.1      # 從 action 本身的 checkout 安裝套件（相依套件帶雜湊驗證）並執行稽核
+- uses: chinchiang/MultiAgentGama@v0.6.0      # 從 action 本身的 checkout 安裝套件（相依套件帶雜湊驗證）並執行稽核
   with:
     target: src
     mode: hybrid
@@ -378,7 +378,7 @@ python main.py --target examples --output report.json --format json
     sarif_file: vibeharness.sarif
 ```
 
-Action 的 outputs 有 `verdict`（`READY_TO_SHIP`／`NEEDS_FIXES`／`BLOCKED_CRITICAL_RISK`／`INCONCLUSIVE`，harness 本身失敗時為 `ERROR`）與 `exit-code`；報告、SARIF 與崩潰時的 `.partial.json` 會以 artifact `vibeharness-report` 上傳。不用 Action 的話，`pip install "git+https://github.com/chinchiang/MultiAgentGama@v0.5.1"` 後直接呼叫 `vibeharness` 即可。
+Action 的 outputs 有 `verdict`（`READY_TO_SHIP`／`NEEDS_FIXES`／`BLOCKED_CRITICAL_RISK`／`INCONCLUSIVE`，harness 本身失敗時為 `ERROR`）與 `exit-code`；報告、SARIF 與崩潰時的 `.partial.json` 會以 artifact `vibeharness-report` 上傳。不用 Action 的話，`pip install "git+https://github.com/chinchiang/MultiAgentGama@v0.6.0"` 後直接呼叫 `vibeharness` 即可。
 
 **突變測試開關**：`--mutation` 開啟、`--no-mutation` 關閉；優先順序為 CLI 旗標 > 設定檔 `global.mutation_testing` > 預設關閉，因此設定檔開啟時可用 `--no-mutation` 單次關掉，設定檔關閉時可用 `--mutation` 單次打開。`--mutation-max-mutants N`（≥ 1）覆蓋變異體上限（預設 20）；每個變異體跑一批沙盒、不呼叫模型，`--estimate` 在開啟時會列出上限。報告的指標表有 Mutation Score 一列並列出存活的變異體；其餘鍵見 [`docs/configuration.md`](docs/configuration.md)。
 

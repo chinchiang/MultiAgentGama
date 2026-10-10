@@ -2,7 +2,7 @@
 
 [English](design.en.md) ｜ 正體中文（臺灣）
 
-本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.5.1`（`CHANGELOG.md` 的 `[0.5.1]`，2026-10-10，修正版；`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出），以及 `[Unreleased]` 列出的修正。文中的 `path:line` 引用以 commit `68814c9` 的檔案為準。
+本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.6.0`（`CHANGELOG.md` 的 `[0.6.0]`，2026-10-10，依審查結果的強化並新增 `--cache-only`；`[0.5.1]` 為修正版，`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。文中的 `path:line` 引用以 commit `68814c9` 的檔案為準。
 
 與其他文件的分工：
 
@@ -807,7 +807,7 @@ DAST／fuzzing、hypothesis、e2b 沙盒（突變測試已實作 Python 版，�
 - `--baseline` 以 finding 的 key 判斷白箱失敗是否已知：模型測試對不回 confirmed finding（`source_ref` 不在其中）時永遠算新；探針只以符號名為 key，同名函式搬到另一個檔案仍視為同一筆。
 - 跨模型一致度的顯示集中在 `agreement_display`（`vibeharness/reports/report_generator.py:53`，報告與 console 共用）。其中「N/A（沒有決定性投票） ／ N/A (no decisive votes)」分支由 `MultiModelDebater` 產生的結果走不到（`arbitration_applied=True` 蘊含 `decisive > 0`），刻意保留作為防護：結果模型也可能由讀回的 JSON 等其他路徑建立。
 
-`[Unreleased]` 修正了先前列在這裡的六點：威脅建模與攻擊合成的批次崩潰現在經 `record_failure` 記入 `call_log`（evidence gap #3）；Next.js 處理函式改為只送審一次（改標為 route）；Flask 工廠裡的巢狀路由處理函式只送審一次（第 6.1 節）；hapi 的陣列形式與 regex 路徑會成為 route；JSX 文字裡的 `/*` 或單獨的反引號不再藏起檔案後半段；`live-smoke.yml` 的 JSON 重跑改用 `--cache-only`，不再可能多出最多 `max_model_calls` 次真實呼叫。以下六點在 2026-10-08 修正（見 `CHANGELOG.md` 的 `[0.3.0]`）：審查／驗證批次崩潰不進 `call_log`；單一 reviewer 模型只印警告；Markdown 的 evidence gap 與未測試威脅清單未消毒；缺 `model_alias` 時顯示的 alias 與實際路由不一致；root 下兩個 Docker 測試對不存在的 run_dir 做 `chmod`；設定檔 `max_files` 負數未驗證。
+`[0.6.0]` 修正了先前列在這裡的六點：威脅建模與攻擊合成的批次崩潰現在經 `record_failure` 記入 `call_log`（evidence gap #3）；Next.js 處理函式改為只送審一次（改標為 route）；Flask 工廠裡的巢狀路由處理函式只送審一次（第 6.1 節）；hapi 的陣列形式與 regex 路徑會成為 route；JSX 文字裡的 `/*` 或單獨的反引號不再藏起檔案後半段；`live-smoke.yml` 的 JSON 重跑改用 `--cache-only`，不再可能多出最多 `max_model_calls` 次真實呼叫。以下六點在 2026-10-08 修正（見 `CHANGELOG.md` 的 `[0.3.0]`）：審查／驗證批次崩潰不進 `call_log`；單一 reviewer 模型只印警告；Markdown 的 evidence gap 與未測試威脅清單未消毒；缺 `model_alias` 時顯示的 alias 與實際路由不一致；root 下兩個 Docker 測試對不存在的 run_dir 做 `chmod`；設定檔 `max_files` 負數未驗證。
 
 ### 16.3 運維限制
 
@@ -823,7 +823,7 @@ DAST／fuzzing、hypothesis、e2b 沙盒（突變測試已實作 Python 版，�
 
 - （已於 0.3.0 處理）`pypi-publish` 改下載 `build-and-upload` 的產物；兩個 job 都有 `timeout-minutes`；pre-commit 加了 mypy hook；Dependabot 追蹤 Actions 與鎖定檔。
 - （已處理）README 與 `action.yml` 給目標專案的 SARIF 範例改用 SHA 釘版（`upload-sarif@9f759ee…` v3.38.3），與本 repo 的做法一致。
-- （已於 `[Unreleased]` 處理）釘版的 actions 改為手動升版（取代 Dependabot PR #38），`pypa/gh-action-pypi-publish` 改釘 commit 而不是 annotated tag 物件，`publish.yml` 先跑測試、只有 release job 拿到 `contents: write`，Dependabot 另外追蹤沙盒基底映像與 `docker/sandbox-requirements.*`。
+- （已於 `[0.6.0]` 處理）釘版的 actions 改為手動升版（取代 Dependabot PR #38），`pypa/gh-action-pypi-publish` 改釘 commit 而不是 annotated tag 物件，`publish.yml` 先跑測試、只有 release job 拿到 `contents: write`，Dependabot 另外追蹤沙盒基底映像與 `docker/sandbox-requirements.*`。
 - v0.1.0 的 CHANGELOG 日期 2026-10-03 正確：tag commit 是 2026-10-02 21:41（UTC−7），換算 UTC 與臺灣時間都是 10-03。
 
 ---
@@ -862,12 +862,12 @@ DAST／fuzzing、hypothesis、e2b 沙盒（突變測試已實作 Python 版，�
 | JS/TS 以 Node 內建 runner 動態執行；一模組一程序；不套 `RLIMIT_AS` | JS/TS 目標過去只有靜態審查，永遠 INCONCLUSIVE；Node 的 junit reporter 不標示檔案；V8 在 `RLIMIT_AS` 下直接 abort | 不收 JS 覆蓋率；TypeScript 只做型別剝除；每個模組多一次 Node 啟動 | 0.4.0 |
 | 所有固定輸出字串改為「中文 ／ English」雙語（`bi`）；模型提示詞與機器可讀欄位維持英文 | 臺灣的使用者要能直接讀報告與 console，又不能讓 CI 的子字串檢查、baseline／SARIF fingerprint 或模型提示詞改變 | 輸出變長；每個字串要維護兩種語言 | 0.4.0 |
 | 突變測試預設關閉、只做 Python、只產生證據缺口；以 token 切換而非 `ast.unparse`；在暫存複本上執行 | 覆蓋率量不到「通過的測試能不能抓到行為改變」；live 實測曾有通過的測試其實在斷言缺陷本身 | 每個變異體一批沙盒執行；等價變異體使分數只是下界 | 0.5.0 |
-| complete-linkage 去重加上簡短發現的子集規則；每個驗證模型 alias 一票；單靠佐證不算驗證；沒有驗證時已確認數為 0／N/A，SARIF 結果標 `verified: false` | union-find 下泛泛的發現會把不同缺陷串成一個（只留下一個）；同一模型設成兩個驗證者會投兩次票；驗證批次全部失敗的執行仍讀成「已驗證」 | 簡短的重複發現現在可能留著不合併，多花一個測試 | Unreleased |
-| Linux 上讓 harness 不可 dump、每次執行一個假 `HOME`、輸出寫進暫存檔、每次執行後砍掉行程群組 | 同一使用者的生成測試能經 `/proc/<ppid>/environ` 讀到 harness 啟動時的 API 金鑰，也能讀真正家目錄裡的憑證；佔住 stdout 的殘留子行程會把通過的執行變成逾時，還活得比執行久 | 仍不是安全邊界（同一使用者的其他行程仍可讀）；harness 不產生 core dump | Unreleased |
-| 第二個來源標記通道 `<untrusted_model_output>`；審查者寫的發現文字放進不可信通道；兩種通道的標籤在兩種通道內都會被中和 | 模型寫的文字可能把目標裡的注入文字轉述給下一個模型（二階提示注入） | — | Unreleased |
-| 任何意外例外都是 exit 5；live 失敗或 Ctrl-C 時取消排隊中的呼叫 | 執行階段之外的崩潰曾以 1 結束，CI 會讀成 NEEDS_FIXES；失敗的嚴格 live 執行還會繼續送出（並付費）排隊中的呼叫 | 進行中的呼叫仍會跑完 | Unreleased |
-| 帶雜湊的安裝（`--require-hashes`）、以 digest 釘死的沙盒基底映像、發布前先跑完整的測試 workflow、Action 從自己的 checkout 安裝 | 供應鏈：重新發布的套件或被移動的映像 tag 不能改變 CI、沙盒或目標稽核實際執行的內容 | Dependabot 無法重新產生的鎖定檔要照檔頭的 `uv pip compile` 指令手動重建 | Unreleased |
-| `--cache-only`：只從回應快取取用，未命中與預算用完同樣處理；重問後的回答也存在原始提示的 key 下 | live smoke 的 JSON 重跑會為第一次沒能快取的呼叫再花一次預算；重問的 key 取決於第一次無法使用的回答，重跑永遠不會命中 | 未命中只是 evidence gap（hybrid）或 exit 4（live），沒有部分重問 | Unreleased |
+| complete-linkage 去重加上簡短發現的子集規則；每個驗證模型 alias 一票；單靠佐證不算驗證；沒有驗證時已確認數為 0／N/A，SARIF 結果標 `verified: false` | union-find 下泛泛的發現會把不同缺陷串成一個（只留下一個）；同一模型設成兩個驗證者會投兩次票；驗證批次全部失敗的執行仍讀成「已驗證」 | 簡短的重複發現現在可能留著不合併，多花一個測試 | 0.6.0 |
+| Linux 上讓 harness 不可 dump、每次執行一個假 `HOME`、輸出寫進暫存檔、每次執行後砍掉行程群組 | 同一使用者的生成測試能經 `/proc/<ppid>/environ` 讀到 harness 啟動時的 API 金鑰，也能讀真正家目錄裡的憑證；佔住 stdout 的殘留子行程會把通過的執行變成逾時，還活得比執行久 | 仍不是安全邊界（同一使用者的其他行程仍可讀）；harness 不產生 core dump | 0.6.0 |
+| 第二個來源標記通道 `<untrusted_model_output>`；審查者寫的發現文字放進不可信通道；兩種通道的標籤在兩種通道內都會被中和 | 模型寫的文字可能把目標裡的注入文字轉述給下一個模型（二階提示注入） | — | 0.6.0 |
+| 任何意外例外都是 exit 5；live 失敗或 Ctrl-C 時取消排隊中的呼叫 | 執行階段之外的崩潰曾以 1 結束，CI 會讀成 NEEDS_FIXES；失敗的嚴格 live 執行還會繼續送出（並付費）排隊中的呼叫 | 進行中的呼叫仍會跑完 | 0.6.0 |
+| 帶雜湊的安裝（`--require-hashes`）、以 digest 釘死的沙盒基底映像、發布前先跑完整的測試 workflow、Action 從自己的 checkout 安裝 | 供應鏈：重新發布的套件或被移動的映像 tag 不能改變 CI、沙盒或目標稽核實際執行的內容 | Dependabot 無法重新產生的鎖定檔要照檔頭的 `uv pip compile` 指令手動重建 | 0.6.0 |
+| `--cache-only`：只從回應快取取用，未命中與預算用完同樣處理；重問後的回答也存在原始提示的 key 下 | live smoke 的 JSON 重跑會為第一次沒能快取的呼叫再花一次預算；重問的 key 取決於第一次無法使用的回答，重跑永遠不會命中 | 未命中只是 evidence gap（hybrid）或 exit 4（live），沒有部分重問 | 0.6.0 |
 
 ---
 
