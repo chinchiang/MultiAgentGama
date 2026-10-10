@@ -8,6 +8,10 @@
 
 依審查結果的強化：沙盒隔離與執行器歸因、崩潰的結束碼與設定驗證、誠實揭露未經驗證的假設、更精準的確定性規則與路由偵測、模型輸出的第二個不可信通道，以及帶雜湊鎖定、以 digest 釘死的建置與發布流程。
 
+### 新增
+
+- `--cache-only`：每次模型呼叫都只從回應快取取用（需要 `--cache-dir` 或 `global.cache_dir`，否則 exit 5），絕不呼叫供應商、不扣 `max_model_calls`、不重問，也不需要 litellm 或 API 金鑰。快取沒有的呼叫與預算用完同樣處理：hybrid 改用模擬並列為證據缺口（「--cache-only：N 次代理呼叫在回應快取中沒有答案」，判定不會是 `READY_TO_SHIP`），live 以 exit 4 中止。`--estimate` 加上 `--cache-only` 時照樣列出呼叫數，並註明不會呼叫供應商、沒有花費（不發預算警告）。
+
 ### 資安
 
 - 本機沙盒：Linux 上 harness 在啟動第一個子程序前讓自己不可 dump（`prctl(PR_SET_DUMPABLE, 0)`，只做一次、盡力而為），生成的測試無法再經 `/proc/<harness>/environ` 讀到 harness 啟動時的 API 金鑰；`HOME`（與 `USERPROFILE`）指向每次執行專用的假家目錄（以 `PYTHONUSERBASE` 保留 `--user` 安裝的套件，移除 `HOMEDRIVE`／`HOMEPATH`）。同一使用者的其他行程仍然可讀，所以 `local_subprocess` 仍然不是安全邊界。
@@ -20,16 +24,16 @@
 ### 修正
 
 - CLI：任何意外例外，不論發生在建構或設定 harness 時、`--estimate` 中（含寫不進 `--output`），或在所有階段之外，都以 5 結束，絕不會落到 Python 預設的 1（CI 會讀成 NEEDS_FIXES）；執行之外的 Ctrl-C 以 130 結束；argparse 的程式名稱固定為 `vibeharness`，Python 3.14 下錯誤訊息仍以 `vibeharness:` 開頭。
-- 設定：`--config` 是目錄、無法讀取或二進位檔，以及最上層、區段或 `models`／`agents` 項目不是 mapping，都是 `ConfigError`（exit 5）；空的 `global:` 不再崩潰。`per_test_timeout_seconds` 與 `sandbox_timeout_seconds` 的 null／0 視為預設值（30／120），負數或非整數會被拒絕；`sandbox_memory_mb: null` 維持 2048（只有明確的 0 才關閉上限）；`docker_pids_limit` 的 null／0 對應到 256（Docker 把 0 當成不限制；-1 仍是不限制）。
-- 閘道：fallback 回答之後的重問改從主模型重新開始，不再把 fallback 呼叫兩次。
+- 設定：`--config` 是目錄、無法讀取或二進位檔，以及最上層、區段或 `models`／`agents` 項目不是 mapping，都是 `ConfigError`（exit 5）；空的 `global:` 不再崩潰。`per_test_timeout_seconds` 與 `sandbox_timeout_seconds` 的 null／0 視為預設值（30／120），負數或非整數會被拒絕；`sandbox_memory_mb: null` 維持 2048（只有明確的 0 才關閉上限）；`docker_pids_limit` 的 null／0 對應到 256（Docker 把 0 當成不限制；-1 仍是不限制）。`timeout_seconds`、`max_retries`、`max_output_tokens` 與 `retry_invalid_output` 的 null 等同省略、採用預設值（180、2、16384、1；模型層級的 `max_output_tokens: null` 沿用全域值），`timeout=None`（對 litellm 是不限時）絕不會傳出；0 或負數的 `timeout_seconds` 仍是 `ConfigError`。`extra_params` 也不能設定輸出 token 上限 `max_tokens`／`max_completion_tokens`／`max_output_tokens`（會蓋掉 `max_output_tokens`，讓 `--estimate` 與快取 key 看錯上限）；錯誤訊息指向 `max_output_tokens`。
+- 閘道：fallback 回答之後的重問改從主模型重新開始，不再把 fallback 呼叫兩次。重問後才可用的回答也存在原始提示的快取 key 下（以前只存在重問提示的 key 下，而重問提示取決於第一次那個無法使用的回答，所以重跑的第一次嘗試永遠不會命中）。
 - 沒有交叉驗證時 `confirmed_whitebox_bugs` 為 0：console 與 Markdown 報告顯示 N/A 與未經驗證的假設數，發現清單的標題是「未經驗證的缺陷假設（未套用跨模型驗證）」，SARIF 的白箱結果帶 `properties.verified` 與「Unverified hypothesis」訊息前綴。
 - 去重改用 complete-linkage 取代 union-find，泛泛的發現不能再把不同缺陷串在一起；關鍵詞少於三個的發現改用 Jaccard 比較，簡短的發現只有在具體詞全部出現在詳細發現的標題時才合併。共用同一個 model alias 的驗證者只投一票，單靠佐證不再算驗證。
 - 沙盒：輸出寫進暫存檔而不是管道，只等主行程結束，之後砍掉剩下的行程群組（POSIX），佔住 stdout 的殘留子行程不會再把已經結束的執行變成逾時，也活不過這次執行；stdin 是 `/dev/null`；非正數的單次逾時退回批次預算，逾時原因寫實際使用的逾時（絕不是「0 秒」）。
 - 執行器：NameError／ImportError 只有在最內層 frame 是生成的測試模組時才算 harness 錯誤；在目標內拋出則是缺陷（FAILED，不是 exploit）。JS/TS 模組以剩下的批次預算（`sandbox_timeout_seconds`）執行，批次逾時後其餘模組在批次預算內改用 `per_test_timeout_seconds` 重跑，與文件一致。Node 22 的 `TypeError [Error]: x` 正規化為 `TypeError: x`（保留 `ERR_*` 錯誤碼）。
 - 程式碼閘門：`Test*` 類別的每個 `test_` 方法都必須有斷言，可以直接寫，或透過含斷言的 `self.<helper>()`；有斷言的方法不再替同類別的其他方法背書。
-- JS/TS 擷取：引號字串與 regex literal 在換行處結束，JSX 的撇號與 `</tag>`／`/>` 不再吞掉後面的宣告，`${...}` 當成程式碼分析，`a++ / 2` 是除法，能處理 TypeScript 的回傳型別、泛型、帶型別的箭頭函式與有型別註記的變數，多載與 `declare` 簽章不算符號。route 需要已知的路由器（常見名稱、`*Router`／`*App` 名稱，或綁定到 `express()`／`Router()`／`fastify()`／`new Koa()` 等的變數），否則要有 `/` 路徑加上處理函式；HTTP 用戶端（axios、`axios.create()` 的結果、`$`、msw 的 `rest` 等）一律不算；認得 `""`、template 與識別字路徑、`app.all`、鏈式的 `app.route('/x').get().post()`、物件形式的 `server.route({method, path})` 與 Next.js 的 `export { h as GET }`；Next.js 處理函式只送審一次。
-- Python 擷取：先判斷路由器接收者再看路徑（`APIRouter(prefix=...)` 上的 `@router.get("")` 是 route），會擷取模組與類別層級 `if`／`try`／`with`／`for`／`while`／`match` 底下的定義，函式內以路由裝飾器註冊的處理函式（Flask `create_app` 工廠）也成為 route。
-- VH-AI-004：`pipeline()` 看 `model=` 或第二個位置引數；`revision="main"`／`"master"`／`"HEAD"` 等不算固定；本機檢查點以被掃描檔案旁邊為準。VH-AI-005：容易混淆的後綴需要 AI 接收者，以名稱中的詞比對（`blockchain_client` 不算 `chain`）；匯入 AI SDK 的檔案中，參數或來源不明的接收者上的 `messages.create`／`messages.stream`／`chat.complete` 會被標出；`config=`／`generation_config=` 只有真的含上限才算。VH-AI-006：追蹤 `for`／`with`／comprehension／海象運算子的綁定與點號屬性；沒有 `shell=True` 的字面值 argv 清單是安全的，除非 `argv[0]` 被污染或是 shell／直譯器；新增來源（`llm(...)`、`llm.predict`、`LLMChain().run`、`ollama.chat`、`chain.invoke` 等）與匯點（`subprocess.getoutput`／`getstatusoutput`、`asyncio.create_subprocess_shell`／`_exec`），所以 `answer = llm(...); eval(answer)` 現在會命中。
+- JS/TS 擷取：引號字串與 regex literal 在換行處結束，JSX 的撇號與 `</tag>`／`/>` 不再吞掉後面的宣告，`${...}` 當成程式碼分析，`a++ / 2` 是除法，能處理 TypeScript 的回傳型別、泛型、帶型別的箭頭函式與有型別註記的變數，多載與 `declare` 簽章不算符號。route 需要已知的路由器（常見名稱、`*Router`／`*App` 名稱，或綁定到 `express()`／`Router()`／`fastify()`／`new Koa()` 等的變數），否則要有 `/` 路徑加上處理函式；HTTP 用戶端（axios、`axios.create()` 的結果、`$`、msw 的 `rest` 等）一律不算；認得 `""`、template 與識別字路徑、`app.all`、鏈式的 `app.route('/x').get().post()`、物件形式的 `server.route({method, path})`、hapi 的陣列形式 `server.route([{...}, {...}])`（每個物件一個 route）、已知路由器上有處理函式的 regex 路徑（`app.get(/^\/users\/(\d+)$/, h)`）與 Next.js 的 `export { h as GET }`；沒有處理函式的 `app.get(PATH)` 刻意不算（Express 用它讀取設定）；Next.js 處理函式只送審一次。`.js`／`.jsx`／`.mjs`／`.cjs`／`.tsx` 裡位於運算式位置的 JSX 元素當成 JSX 解析，子元素文字清空，JSX 文字裡的 `/*`、單獨的反引號或引號不再把檔案後半段藏起來；不是合法 JSX 的 `<`（TS 泛型）退回一般詞法分析，每個檔案最多 32 次失敗嘗試，避免平方時間。
+- Python 擷取：先判斷路由器接收者再看路徑（`APIRouter(prefix=...)` 上的 `@router.get("")` 是 route），會擷取模組與類別層級 `if`／`try`／`with`／`for`／`while`／`match` 底下的定義，函式內以路由裝飾器註冊的處理函式（Flask `create_app` 工廠）也成為 route；外層函式的原始碼裡，這些處理函式的本體縮成一行標出檔案行號的佔位，所以每個本體只送審一次。
+- VH-AI-004：`pipeline()` 看 `model=` 或第二個位置引數；`revision="main"`／`"master"`／`"HEAD"` 等不算固定；本機檢查點以被掃描檔案旁邊為準。VH-AI-005：容易混淆的後綴需要 AI 接收者，以名稱中的詞比對（`blockchain_client` 不算 `chain`）；匯入 AI SDK 的檔案中，參數或來源不明的接收者上的 `messages.create`／`messages.stream`／`chat.complete` 會被標出；`config=`／`generation_config=` 只有真的含上限才算。VH-AI-006：追蹤 `for`／`with`／comprehension／海象運算子的綁定與點號屬性；沒有 `shell=True` 的字面值 argv 清單是安全的，除非 `argv[0]` 被污染或是 shell／直譯器；同一範疇裡只被指派為字面值清單的名稱（`cmd = ["git", "checkout", branch]; subprocess.run(cmd)`）套用相同的豁免，以被污染的資料 `append`／`extend`／`insert`／`+=` 修改它則會命中；新增來源（`llm(...)`、`llm.predict`、`LLMChain().run`、`ollama.chat`、`chain.invoke` 等）與匯點（`subprocess.getoutput`／`getstatusoutput`、`asyncio.create_subprocess_shell`／`_exec`），所以 `answer = llm(...); eval(answer)` 現在會命中。
 - VH-AI-008：韓文填充字元為 HIGH（顯示為 `<U+XXXX>`），不可見的格式字元為 MEDIUM；ZWJ／ZWNJ 與 U+FE00–FE0F 為 MEDIUM，但 emoji、RTL／印度系文字與中日韓異體字的上下文除外（一串連續的選擇器是位元組走私）；LRM／RLM／ALM 與蒙古文自由變體選擇器只剔除。
 - VH-AI-009：先做 NFKC 正規化再比對；偵測「ignore everything above」與跨兩行註解或散文的片語（相鄰的程式碼行絕不合併）；略過描述行為的英文句子（「should report no findings for clean code」）；中文的判定宣稱必須指名程式碼、沒有否定或條件，要求空報告的句型必須是命令句；數字寫法（「回報 0 個漏洞」）與先前拿掉的低誤報中文片語重新納入。
 - 黑箱：不符合 `[A-Za-z0-9_.:-]{1,40}` 的威脅 id 重新編號為 `THREAT-NN`；STRIDE 類別比對不分大小寫與分隔符，威脅嚴重度先去空白轉大寫；崩潰的威脅建模批次與攻擊合成經 `record_failure` 記錄（evidence gap #3）。
@@ -41,15 +45,15 @@
 
 - CI：Python 3.10–3.14，另加一格 macOS（3.12）；所有安裝都用 `--require-hashes`，`pip-audit` 也加上 `--require-hashes`；`package` job 建置 sdist 與 wheel，並在解開的 sdist 裡跑完整測試套件；`tests.yml` 可經 `workflow_call` 呼叫。
 - `publish.yml` 預設唯讀，先對 tag 指向的 commit 跑 `tests.yml`，在乾淨的 venv 對 wheel 做 smoke test，只有 release job 拿到 `contents: write`。
-- `action.yml` 從 `$GITHUB_ACTION_PATH` 安裝（`uses: ./` 也適用），相依套件以 `requirements.lock` 帶雜湊驗證，套件本身用 `--no-deps`；run 腳本裡沒有 `${{ }}`。`live-smoke.yml` 的 inputs 經 `env` 傳入並先驗證；JSON 重跑沿用同一個正數上限（最壞情況 2 × 上限次真實呼叫），不再用 `--max-model-calls 0`（不限制）。
+- `action.yml` 從 `$GITHUB_ACTION_PATH` 安裝（`uses: ./` 也適用），相依套件以 `requirements.lock` 帶雜湊驗證，套件本身用 `--no-deps`；run 腳本裡沒有 `${{ }}`。`live-smoke.yml` 的 inputs 經 `env` 傳入並先驗證；JSON 重跑改用 `--cache-only --mode hybrid` 讀同一個 `--cache-dir`，不再呼叫模型（也不再用 `--max-model-calls 0` 的不限制），整個 workflow 最多 `max_model_calls` 次真實呼叫；第一次沒能快取的呼叫改用模擬並列為證據缺口。
 - Actions 升版為 checkout v7.0.1、setup-python v7.0.0、upload-artifact v7.0.1、download-artifact v8.0.1、setup-node v7.0.0（取代 Dependabot PR #38）；`pypa/gh-action-pypi-publish` 改釘 v1.13.0 的 commit，而不是 annotated tag 物件。
 - 沙盒映像：基底映像以多架構 index digest 釘死、預設 `USER 65534`，Python 映像改從新的帶雜湊鎖定檔 `docker/sandbox-requirements.txt` 安裝（以 `requirements.lock` 為約束從 `docker/sandbox-requirements.in` 編譯）；專案專用映像安裝時要切到 `USER root`，裝完再切回來。`requirements.lock` 以 `--generate-hashes` 重新產生（版本不變）。
 - sdist 收錄 `tests/`（含 `conftest.py`）、`examples/`、`main.py`、`action.yml`、requirements 檔與鎖定檔、`docker/*`、`CONTRIBUTING.md`、`SECURITY.md` 與兩份 CHANGELOG；加上 Python 3.14 classifier；setuptools 建置後端上限 `<85`；Dependabot 新增 docker 生態系，並把 `/docker` 納入分組的 pip 更新；pre-commit 的 ruff hook 改為 v0.16.10，與 `requirements-dev.txt` 一致。
-- 新增回歸測試 `tests/test_review_*.py`（blackbox、build、cli_config、dedup_votes、extractor_scanner、reports、sandbox_executor、sanitize、sanitize_blackbox_fixes、whitebox_fixes）；`tests/test_review_build.py` 守住上述 CI、打包與映像釘版。
+- 新增回歸測試 `tests/test_review_*.py`（blackbox、build、cache_only、cli_config、dedup_votes、extractor_scanner、known_limits、reports、sandbox_executor、sanitize、sanitize_blackbox_fixes、whitebox_fixes）；`tests/test_review_build.py` 守住上述 CI、打包與映像釘版。
 
 ### 文件
 
-- README、設定與設計文件描述上述變更（設計文件以 `ddd419f` 重新核對行號引用，並更新函式索引與常數表）；`docs/sample_report.md` 由 mock 執行重新產生：已確認缺陷的指標顯示 N/A 與未經驗證的假設數，發現清單改用新的「未經驗證的缺陷假設」標題，執行來源各列依序排列。
+- README、設定與設計文件描述上述變更（設計文件以 `68814c9` 重新核對行號引用，並更新函式索引與常數表）；`docs/sample_report.md` 由 mock 執行重新產生：已確認缺陷的指標顯示 N/A 與未經驗證的假設數，發現清單改用新的「未經驗證的缺陷假設」標題，執行來源各列依序排列。
 
 ## [0.5.1] - 2026-10-10
 

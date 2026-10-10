@@ -147,8 +147,7 @@ VibeHarness 本身就是一個 LLM 應用：待審程式碼是每個審查、驗
 | Hypothesis 性質測試 | 未內建；模型可自行生成，但需目標環境已安裝 `hypothesis` |
 | `e2b` 沙盒 | 未實作；`sandbox_provider` 支援 `local_subprocess` 與 `docker`，其他值會直接報錯 |
 | JS/TS 覆蓋率與第三方套件 | JS/TS 測試已可生成並以 Node 執行（見下方「JS/TS 動態測試執行」），但不收集 JS 覆蓋率；TypeScript 只做型別剝除（enum、namespace、參數屬性、裝飾器、tsconfig 路徑別名不支援）；Docker 沙盒內 ESM 的裸 specifier 無法解析（只有 CommonJS 吃 `NODE_PATH`） |
-| 符號擷取的限制 | JS/TS lexer 不是 JSX parser：JSX 文字裡的 `/*` 或單獨一個反引號可能把檔案後半段藏起來；hapi 的陣列形式 `server.route([...])` 與 regex 路徑不會被認成 route；Python 函式裡的路由處理函式（Flask 工廠）會送審兩次：在外層函式裡一次、以自己的 route 一次 |
-| 只讀快取的重跑 | CLI 沒有只讀快取的模式，`live-smoke.yml` 的 JSON 重跑可能再問一次未快取的呼叫（每次 workflow 最多 2 × `max_model_calls` 次真實呼叫） |
+| JSX 詞法分析的範圍 | lexer 只在 `.js`／`.jsx`／`.mjs`／`.cjs`／`.tsx` 的運算式位置把 `<` 當成 JSX（`.ts` 的 `<T>x` 是型別斷言）；不是合法 JSX 的 `<`（例如 TS 泛型）改回一般詞法分析，巢狀超過 120 層的元素也是；每個檔案最多容許 32 次失敗的嘗試，用完後其餘的 `<` 都照一般程式碼處理 |
 
 ---
 
@@ -239,9 +238,11 @@ MultiAgentGama/
 │   ├── test_quality_fixes.py           # 打包、模型輸出健壯性、執行與 SARIF 修正的回歸測試
 │   ├── test_review_blackbox.py         # 威脅 id、STRIDE 拼法、崩潰的黑箱批次記入 call_log
 │   ├── test_review_build.py            # 釘版的 actions、workflow 輸入經 env、映像 digest、帶雜湊的鎖定檔、sdist 內容
+│   ├── test_review_cache_only.py       # --cache-only：命中不呼叫 litellm、未命中為證據缺口（hybrid）或 exit 4（live）、不重問、沒有快取時 exit 5
 │   ├── test_review_cli_config.py       # 崩潰的結束碼、設定驗證、重問／快取 key、未經驗證的計數
 │   ├── test_review_dedup_votes.py      # complete-linkage 去重、每個驗證模型一票
 │   ├── test_review_extractor_scanner.py # JSX／TS 詞法分析、路由偵測、VH-AI-004/005/006 精確度
+│   ├── test_review_known_limits.py     # JSX 文字、hapi 陣列與 regex 路由、巢狀 Flask 路由只送審一次、具名的 argv 清單
 │   ├── test_review_reports.py          # 程式碼區段、換行偽造、SARIF 路徑、威脅符號、未經驗證的假設
 │   ├── test_review_sandbox_executor.py # 假家目錄、不可 dump 的 harness、殘留子行程、NameError 歸因、JS 預算
 │   ├── test_review_sanitize.py         # 憑證格式、隱形字元、注入標記、通道標籤
@@ -299,7 +300,7 @@ export GEMINI_API_KEY="AIza..."          # Gemini
 
 預設模型見 `vibeharness/config/agents_config.yaml`（Claude `claude-sonnet-5-5`、GLM `zai/glm-5.3`、DeepSeek `deepseek/deepseek-v4-pro`、Gemini `gemini/gemini-3.8-flash`），每個模型可設定 `fallback_model`（預設分別為 `claude-haiku-4-5-20251001`、`zai/glm-5.3-flash`、`deepseek/deepseek-v4-flash`、`gemini/gemini-3.5-flash`），主模型重試 `max_retries` 次失敗後會改用它，報告會記錄實際使用的模型。每個模型的金鑰從 `api_key_env` 指定的環境變數讀取；以 AWS 憑證驗證的供應商（例如 Bedrock）可改設 `aws_profile_name`／`aws_region_name`。注意：待審程式碼會傳送給這裡列出的每一家模型供應商（已先遮蔽寫死的憑證），請只設定資料保留條款可接受的供應商。
 
-`global` 區段的其他上限（CLI 未覆蓋時生效）：`execution_mode`（`--mode` 會覆蓋）、`timeout_seconds`（單次模型請求，預設 180 秒）、`max_retries`（2）、`max_output_tokens`（16384，思考 token 也算在內；`models.<alias>.max_output_tokens` 可逐模型覆蓋）、`max_concurrent_calls`（每個階段的並行模型呼叫數，6）、`max_model_calls`、`max_files`、`max_file_bytes`、`include`／`exclude`、`retry_invalid_output`、`sandbox_timeout_seconds`（120）與 `per_test_timeout_seconds`（30）。
+`global` 區段的其他上限（CLI 未覆蓋時生效）：`execution_mode`（`--mode` 會覆蓋）、`timeout_seconds`（單次模型請求，預設 180 秒）、`max_retries`（2）、`max_output_tokens`（16384，思考 token 也算在內；`models.<alias>.max_output_tokens` 可逐模型覆蓋）、`max_concurrent_calls`（每個階段的並行模型呼叫數，6）、`max_model_calls`、`max_files`、`max_file_bytes`、`include`／`exclude`、`retry_invalid_output`、`sandbox_timeout_seconds`（120）與 `per_test_timeout_seconds`（30）。`timeout_seconds`、`max_retries`、`max_output_tokens`、`retry_invalid_output` 設為 `null` 等同省略（採用預設值；模型層級的 `max_output_tokens: null` 沿用全域值）。
 
 任何 agent 都可透過 `model_alias` 指向任一已定義的模型；缺少 `model_alias` 的 agent 會解析為 `unconfigured`（hybrid 模式改用模擬，live 直接失敗）。手上只有一組金鑰也能跑 live 模式——例如只有 Gemini key 時，把 `agents` 區段中所有 `model_alias` 改成 `gemini` 即可（註：`gemini-2.5-flash` 已不再供新申請的 Google API 金鑰使用，請使用 3.x 版本）。但單一模型家族時驗證者不會評審自己模型的發現，沒有任何驗證票、發現不經過濾，且審查者少於兩個模型家族列為證據缺口，判定最好只到 `INCONCLUSIVE`（exit code 3），結果僅供參考。
 
@@ -345,7 +346,7 @@ python main.py --target examples --output vibe_harness_report.md
 
 `--target`（`-t`，預設 `examples`）可為目錄或單一檔案；`--output`（`-o`）預設 `vibe_harness_report.md`。`--desc`（`-d`）可提供系統的高階描述供威脅建模參考；`--config`（`-c`）指定其他設定檔；`--verbose`（`-v`）開啟除錯日誌。黑箱測試預設以 in-process 方式直接 import 目標呼叫；只有明確指定 `--base-url`（`-u`，例如 `--base-url http://localhost:8000`；只接受含主機名的 `http://`／`https://`，其他 scheme 為用法錯誤）且該位址有服務回應時，才會改發真實 HTTP 請求。不會自動探測任何預設位址，以免攻擊腳本打到本機上無關的服務；live HTTP 模式下，攻擊程式碼若指向 `--base-url` 以外的主機，或同一主機的其他連接埠，會被靜態拒絕。範例輸出見 [`docs/sample_report.md`](docs/sample_report.md)。
 
-執行前可先用 `--estimate` 看規模：它只跑第 1 階段（符號擷取與靜態規則，不呼叫模型），印出每個 agent 與每個模型的預期呼叫數（審查者與威脅建模的次數是精確值，驗證、測試生成與攻擊合成依「每批發現數」等假設列為情境值，另給含重問與自癒修復的最大值）、估計的 prompt／輸出 token，以及設定了 `price_per_million_*` 的模型的估計花費；`--format json` 時寫到 `--output`，exit code 為 0（`--changed-since` 的 ref 無法解析或 `--output` 寫不進去時為 5）。規模與成本上限可從 CLI 直接覆蓋設定檔：`--max-files`（單次分析的檔案數上限，預設 50，須 ≥ 1；其餘檔案列為 skipped 並記為證據缺口）與 `--max-model-calls`（單次執行的模型呼叫數上限，預設不限制，`0` 亦表示不限制，負數為用法錯誤；重試與 fallback 不另計次；用完時 hybrid 退回模擬並列為證據缺口、live 直接失敗）。檔案篩選：`--include GLOB`／`--exclude GLOB`（可重複，比對相對於 `--target` 的路徑或檔名，例如 `--exclude 'tests/*' --exclude '*.min.js'`；會覆蓋設定檔的 `include`／`exclude`），以及 `--changed-since <git ref>`（只分析相對該 ref 有變更的檔案，含未暫存與未追蹤，適合 PR 檢查：`--changed-since origin/main`）。超過 `max_file_bytes`（預設 1 MB）的檔案不分析並列為證據缺口。模型回應無法使用時會先重問一次（`retry_invalid_output`）再記為 `invalid`。`--output`／`--sarif` 的目錄不可寫時在任何模型呼叫前就以 exit 5 結束；執行中途崩潰或被 Ctrl-C 中斷時，已完成的階段（模型呼叫紀錄、發現、測試結果、威脅）會寫到 `<output>.partial.json`。`--cache-dir DIR` 開啟回應快取：可用的 live 回應存在 DIR，之後相同提示直接取用、不呼叫供應商也不扣預算（適合重跑或切換報告格式）。詳見 [`docs/configuration.md`](docs/configuration.md)。
+執行前可先用 `--estimate` 看規模：它只跑第 1 階段（符號擷取與靜態規則，不呼叫模型），印出每個 agent 與每個模型的預期呼叫數（審查者與威脅建模的次數是精確值，驗證、測試生成與攻擊合成依「每批發現數」等假設列為情境值，另給含重問與自癒修復的最大值）、估計的 prompt／輸出 token，以及設定了 `price_per_million_*` 的模型的估計花費；`--format json` 時寫到 `--output`，exit code 為 0（`--changed-since` 的 ref 無法解析或 `--output` 寫不進去時為 5）。規模與成本上限可從 CLI 直接覆蓋設定檔：`--max-files`（單次分析的檔案數上限，預設 50，須 ≥ 1；其餘檔案列為 skipped 並記為證據缺口）與 `--max-model-calls`（單次執行的模型呼叫數上限，預設不限制，`0` 亦表示不限制，負數為用法錯誤；重試與 fallback 不另計次；用完時 hybrid 退回模擬並列為證據缺口、live 直接失敗）。檔案篩選：`--include GLOB`／`--exclude GLOB`（可重複，比對相對於 `--target` 的路徑或檔名，例如 `--exclude 'tests/*' --exclude '*.min.js'`；會覆蓋設定檔的 `include`／`exclude`），以及 `--changed-since <git ref>`（只分析相對該 ref 有變更的檔案，含未暫存與未追蹤，適合 PR 檢查：`--changed-since origin/main`）。超過 `max_file_bytes`（預設 1 MB）的檔案不分析並列為證據缺口。模型回應無法使用時會先重問一次（`retry_invalid_output`）再記為 `invalid`。`--output`／`--sarif` 的目錄不可寫時在任何模型呼叫前就以 exit 5 結束；執行中途崩潰或被 Ctrl-C 中斷時，已完成的階段（模型呼叫紀錄、發現、測試結果、威脅）會寫到 `<output>.partial.json`。`--cache-dir DIR` 開啟回應快取：可用的 live 回應存在 DIR，之後相同提示直接取用、不呼叫供應商也不扣預算（適合重跑或切換報告格式）；重問後才可用的回答也會存在原始提示的 key 下，重跑時第一次嘗試就能命中。`--cache-only` 只從回應快取取用（需要 `--cache-dir` 或 `global.cache_dir`，否則 exit 5）：絕不呼叫供應商、不扣預算、不重問；快取沒有的呼叫列為證據缺口，hybrid 改用模擬（判定不會是 `READY_TO_SHIP`），live 以 exit 4 中止。`--estimate` 加上 `--cache-only` 時照樣列出呼叫數，並註明不會呼叫供應商、沒有花費。詳見 [`docs/configuration.md`](docs/configuration.md)。
 
 報告格式可用 `--format md`（預設）或 `--format json`（機器可讀，含完整的 findings、威脅模型與測試結果，適合接 CI/CD）。兩種格式都會保存每個生成測試的程式碼：Markdown 附錄「產生的測試程式碼（稽核軌跡） ／ Generated Test Code (audit trail)」以可收合區塊列出程式碼與其執行結果（已去除控制字元）；JSON 的 `generated_tests`／`blackbox_generated_tests` 則原封不動保存，可用來稽核或重跑。模型寫的測試也只是假設——「通過」的測試可能是在斷言缺陷本身（例如 `pytest.raises(KeyError)`），請一併檢查斷言是否描述正確的行為：
 
@@ -393,8 +394,8 @@ Exit code（依序判定）：
 | `1` | NEEDS_FIXES | 至少一個白箱測試失敗（暴露缺陷），或確定性 AI 安全規則有 HIGH 以上的命中；此碼專屬於此判定，harness 自身的錯誤不會使用它 |
 | `3` | INCONCLUSIVE | 無失敗，但有證據缺口：使用模擬引擎、模型輸出無效或批次崩潰、`max_model_calls` 用盡、沒有審查者或審查者少於兩個模型家族、`max_files` 略過了檔案、檔案超過 `max_file_bytes`、非 Python 程式碼只做靜態審查、測試錯誤／未執行、確認的發現沒有模型生成的測試、威脅未測試、黑箱測試失敗但未分類為 exploit、檔案解析失敗、目標中植入了對 AI 審查者的指令或隱形字元（`VH-AI-008`／`009`）等；未知的判定字串也以此碼 fail closed |
 | `0` | READY_TO_SHIP | 以上皆無 |
-| `4` | — | live 模式模型呼叫失敗 |
-| `5` | — | harness 設定或使用錯誤：`--target` 不存在、config 檔缺失、YAML 損壞、是目錄、無法讀取或是二進位檔，或最上層／區段／項目不是 mapping、`max_files`／`max_model_calls`／`max_concurrent_calls`／逾時等值不合法、`extra_params` 用了保留鍵、沙盒不可用、`--output`／`--sarif` 不可寫、`--changed-since` 的 ref 無法解析、CLI 用法錯誤，或任何未預期的內部錯誤，不論發生在啟動、`--estimate` 或執行期間（崩潰不會誤報成 verdict） |
+| `4` | — | live 模式模型呼叫失敗，或在 live 模式以 `--cache-only` 執行時回應快取沒有答案 |
+| `5` | — | harness 設定或使用錯誤：`--target` 不存在、config 檔缺失、YAML 損壞、是目錄、無法讀取或是二進位檔，或最上層／區段／項目不是 mapping、`max_files`／`max_model_calls`／`max_concurrent_calls`／逾時等值不合法、`extra_params` 用了保留鍵（含輸出 token 上限 `max_tokens`／`max_completion_tokens`／`max_output_tokens`）、`--cache-only` 卻沒有回應快取（沒有 `--cache-dir` 也沒設 `global.cache_dir`）、沙盒不可用、`--output`／`--sarif` 不可寫、`--changed-since` 的 ref 無法解析、CLI 用法錯誤，或任何未預期的內部錯誤，不論發生在啟動、`--estimate` 或執行期間（崩潰不會誤報成 verdict） |
 | `130` | — | 被 Ctrl-C 中斷，未寫出完整報告（已完成的階段在 `<output>.partial.json`） |
 
 ### 5. 運行工具包本身單元測試與靜態檢查
@@ -406,7 +407,7 @@ python -m ruff check .
 python -m mypy vibeharness/ main.py
 ```
 
-另有手動觸發的 `live-smoke.yml`（Actions 頁籤 → live-smoke → Run workflow）：以 repo secrets 中的供應商金鑰對目標跑一次真實模型（可選 live／hybrid、呼叫數上限），再用回應快取重跑一次產出 JSON（快取命中不花錢；第一次沒能快取的呼叫會在同一個上限內重問，所以每次 workflow 最多 2 × 上限次真實呼叫），報告與 SARIF 以 artifact 上傳；這是唯一真正打到供應商的檢查，不在每個 PR 上跑。CI（`.github/workflows/tests.yml`）有四個 job：`lint`（ruff 與 mypy）、`audit`（pip-audit）、`package`（建置 wheel 並在檢出目錄之外以 mock 模式跑一次）與 `test`（Ubuntu／Windows × Python 3.10–3.14，另加一格 macOS × Python 3.12，以 `--require-hashes` 從 `requirements.lock` 安裝；Linux 另建 Docker 沙盒映像跑真實容器測試）。`package` 會建置 sdist 與 wheel，在檢出目錄之外以 mock 模式跑一次 wheel，並在解開的 sdist 裡跑完整測試套件；`publish.yml` 發布前會先對 tag 指向的 commit 跑這整個 workflow。`test` job 帶覆蓋率門檻，本機要跑同一條件可用：
+另有手動觸發的 `live-smoke.yml`（Actions 頁籤 → live-smoke → Run workflow）：以 repo secrets 中的供應商金鑰對目標跑一次真實模型（可選 live／hybrid、呼叫數上限），再以 `--cache-only --mode hybrid` 從同一個回應快取重跑一次產出 JSON（不呼叫供應商，所以整個 workflow 最多只有上限次真實呼叫；第一次沒能快取的呼叫改用模擬並列為證據缺口），報告與 SARIF 以 artifact 上傳；這是唯一真正打到供應商的檢查，不在每個 PR 上跑。CI（`.github/workflows/tests.yml`）有四個 job：`lint`（ruff 與 mypy）、`audit`（pip-audit）、`package`（建置 wheel 並在檢出目錄之外以 mock 模式跑一次）與 `test`（Ubuntu／Windows × Python 3.10–3.14，另加一格 macOS × Python 3.12，以 `--require-hashes` 從 `requirements.lock` 安裝；Linux 另建 Docker 沙盒映像跑真實容器測試）。`package` 會建置 sdist 與 wheel，在檢出目錄之外以 mock 模式跑一次 wheel，並在解開的 sdist 裡跑完整測試套件；`publish.yml` 發布前會先對 tag 指向的 commit 跑這整個 workflow。`test` job 帶覆蓋率門檻，本機要跑同一條件可用：
 
 ```bash
 python -m pytest --cov=vibeharness --cov-fail-under=93
