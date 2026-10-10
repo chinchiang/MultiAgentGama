@@ -13,12 +13,12 @@ updates:
       actions:
         patterns: ["*"]
   - package-ecosystem: pip
-    # 根目錄：requirements.txt、requirements-dev.txt 與 requirements.lock；/docker：沙盒映像的
+    # 根目錄：requirements.txt、requirements-dev.txt、requirements.lock 與 requirements-build.in／.txt；/docker：沙盒映像的
     # docker/sandbox-requirements.in／.txt。兩者在同一個分組 PR 裡升版，讓版本保持一致
     # （tests/test_review_build.py 會檢查沙盒鎖定檔與 requirements.lock 的版本相同）。
     # 兩份鎖定檔都是 uv 編譯、帶雜湊的通用鎖定檔；Dependabot 無法重新產生時，照各自檔頭的
     # uv pip compile 指令手動重建。
-    # Root: requirements.txt, requirements-dev.txt and requirements.lock; /docker: the sandbox image's
+    # Root: requirements.txt, requirements-dev.txt, requirements.lock and requirements-build.in / .txt; /docker: the sandbox image's
     # docker/sandbox-requirements.in / .txt. Both are bumped in the same grouped PR so their versions stay
     # aligned (tests/test_review_build.py checks the sandbox lock matches requirements.lock). Both locks are
     # uv-compiled, hashed universal locks; when Dependabot cannot regenerate one, rebuild it by hand with
@@ -35,6 +35,10 @@ updates:
       - dependency-name: litellm
         update-types: ["version-update:semver-major"]
       - dependency-name: pydantic
+        update-types: ["version-update:semver-major"]
+      # requirements-build.txt 的建置後端：上限與 pyproject.toml 的 [build-system] 相同（<85），主版本要一起改
+      # The build backend in requirements-build.txt: capped like pyproject.toml [build-system] (<85); bump both together
+      - dependency-name: setuptools
         update-types: ["version-update:semver-major"]
   # 沙盒映像的基底映像（以 tag＋index digest 釘死）／ Base images of the sandbox images (pinned by tag + index digest)
   - package-ecosystem: docker

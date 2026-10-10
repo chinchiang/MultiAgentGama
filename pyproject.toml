@@ -9,11 +9,28 @@ name = "vibeharness-mas"
 # 版本的唯一來源：vibeharness/__init__.py ／ Single source of truth for the version: vibeharness/__init__.py
 dynamic = ["version"]
 description = "Multi-agent white-box and threat-modeled black-box testing harness for vibe-coded projects ／ 針對 vibe coding 專案的多代理白箱與威脅建模黑箱測試 harness"
-readme = "README.md"
+# PyPI 的讀者以英文為主：長描述用 README.en.md（開頭連到正體中文版）；兩份 README 的連結都是絕對網址，在 pypi.org 也能點
+# PyPI's audience is mostly English: the long description is README.en.md (which links the Traditional Chinese one at
+# the top); both READMEs use absolute links so they also work on pypi.org
+readme = "README.en.md"
 requires-python = ">=3.10"
+# PEP 639 的 license 表達式（setuptools>=77）：不要再加 "License ::" classifier，兩者並存會被拒絕
+# PEP 639 license expression (setuptools>=77): do not add a "License ::" classifier, the two together are rejected
 license = "MIT"
 license-files = ["LICENSE"]
+authors = [{ name = "chinchiang", email = "chinchiang.ccp@gmail.com" }]
+keywords = [
+    "llm", "multi-agent", "testing", "security", "threat-modeling", "code-review",
+    "sast", "sarif", "mutation-testing", "vibe-coding", "ai-security",
+]
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Security",
+    "Typing :: Typed",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -38,6 +55,13 @@ dependencies = [
     "typing-extensions>=4.9.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/chinchiang/MultiAgentGama"
+Source = "https://github.com/chinchiang/MultiAgentGama"
+Issues = "https://github.com/chinchiang/MultiAgentGama/issues"
+Changelog = "https://github.com/chinchiang/MultiAgentGama/blob/master/CHANGELOG.en.md"
+Documentation = "https://github.com/chinchiang/MultiAgentGama/tree/master/docs"
+
 [project.scripts]
 vibeharness = "vibeharness.cli:main"
 
@@ -55,6 +79,8 @@ version = { attr = "vibeharness.__version__" }
 include = ["vibeharness*"]
 
 [tool.setuptools.package-data]
+# py.typed：PEP 561 標記，讓下游的型別檢查器採用套件內的型別註解 ／ py.typed: PEP 561 marker so downstream type checkers use the inline annotations
+"vibeharness" = ["py.typed"]
 "vibeharness.config" = ["*.yaml"]
 
 [tool.pytest.ini_options]

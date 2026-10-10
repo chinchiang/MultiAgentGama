@@ -380,9 +380,9 @@ def test_agent_calls_are_sorted_deterministically():
 # --- Unverified hypotheses are never counted as confirmed --------------------------------------------
 
 def test_unverified_findings_are_not_counted_as_confirmed(tmp_path, capsys):
-    """mock 模式沒有真實的驗證投票：已確認數為 0，主控台與報告顯示 N/A 與未經驗證的假設數。
-    Mock mode casts no real verifier vote: the confirmed count is 0 and the console and report show N/A
-    with the number of unverified hypotheses."""
+    """mock 模式沒有真實的驗證投票：已確認數為 None（JSON 為 null，不是會被讀成乾淨的 0），主控台與報告顯示 N/A 與未經驗證的假設數。
+    Mock mode casts no real verifier vote: the confirmed count is None (null in JSON, not a 0 that reads as
+    clean) and the console and report show N/A with the number of unverified hypotheses."""
     target = tmp_path / "app"
     target.mkdir()
     shutil.copy(os.path.join(REPO_ROOT, "examples", "vibe_sample_app.py"), target)
@@ -390,7 +390,8 @@ def test_unverified_findings_are_not_counted_as_confirmed(tmp_path, capsys):
     report = tmp_path / "r.md"
     summary = commander.run_full_pipeline(target_dir=str(target), output_report_path=str(report))
     assert summary.total_whitebox_findings > 0
-    assert summary.confirmed_whitebox_bugs == 0
+    assert summary.confirmed_whitebox_bugs is None
+    assert summary.model_dump(mode="json")["confirmed_whitebox_bugs"] is None
     assert summary.agent_calls == sorted_call_log(summary.agent_calls)
     out = capsys.readouterr().out
     assert "N/A" in out and "unverified hypotheses passed to testing" in out

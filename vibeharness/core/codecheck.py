@@ -101,7 +101,7 @@ def check_test_code(code: str) -> Tuple[bool, Optional[str]]:
     tests = _top_level_test_nodes(tree)
     if not tests:
         return False, "no top-level test_ function defined"
-    vacuous = [name for t in tests for name in _vacuous_tests(t)]
+    vacuous = [name for t in tests for name in _vacuous_tests(t, tree)]
     if vacuous:
         return False, f"test function(s) without any assertion: {', '.join(vacuous)}"
     return True, None
@@ -133,33 +133,59 @@ def _package_install_call(tree: ast.Module) -> Optional[str]:
     return None
 
 
-def _vacuous_tests(test_node: _TestNode) -> List[str]:
-    """單一最上層測試節點中沒有任何斷言的測試名稱。類別的每個 `test_` 方法都必須各自含斷言
-    （或透過 `self.<輔助方法>()` 呼叫到含斷言的類別方法）：一個有斷言的方法不能替同類別裡
-    空洞的方法背書，否則空洞的方法會被算成已防禦的邊界。
-    Names of the tests in one top-level test node that contain no assertion. Every `test_` method of a class
-    must assert on its own (or through a `self.<helper>()` call to a class method that asserts): one asserting
-    method must not vouch for a vacuous sibling, which would otherwise count as a defended boundary."""
+def _vacuous_tests(test_node: _TestNode, tree: Optional[ast.Module] = None) -> List[str]:
+    """單一最上層測試節點中沒有任何斷言的測試名稱。每個測試函式與類別的每個 `test_` 方法都必須各自含斷言，
+    或（遞移地）呼叫到同一模組裡含斷言的程式：模組層級的輔助函式（`check(resp)`），以及 `self.<名稱>()`
+    呼叫到的類別方法——包括定義在同一模組中的基底類別的方法。一個有斷言的方法不能替同類別裡空洞的方法背書，
+    否則空洞的方法會被算成已防禦的邊界；呼叫模組外（看不到原始碼）的函式仍不算斷言證據。
+    Names of the tests in one top-level test node that contain no assertion. Every test function and every `test_`
+    method of a class must assert on its own or (transitively) call same-module code that does: a module-level
+    helper (`check(resp)`), or a class method called as `self.<name>()` — including methods of base classes defined
+    in the same module. One asserting method must not vouch for a vacuous sibling, which would otherwise count as a
+    defended boundary; a call to a function outside the module (source not visible) is still no assertion evidence."""
+    functions = {n.name: n for n in (tree.body if tree else []) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
     if not isinstance(test_node, ast.ClassDef):
-        return [] if _has_assertion(test_node) else [test_node.name]
-    methods = {m.name: m for m in test_node.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        return [] if _asserts(test_node, functions, {}, set()) else [test_node.name]
+    classes = {n.name: n for n in (tree.body if tree else []) if isinstance(n, ast.ClassDef)}
+    methods = _class_methods(test_node, classes, {test_node.name})
     return [
         f"{test_node.name}.{name}" for name, method in methods.items()
-        if name.startswith("test_") and not _method_asserts(method, methods, set())
+        if name.startswith("test_") and not _asserts(method, functions, methods, set())
     ]
 
 
-def _method_asserts(method: ast.AST, methods: dict, seen: set) -> bool:
-    """方法本身含斷言，或它呼叫的 `self.<名稱>()` 類別方法（遞移地）含斷言時為 True。
-    True when the method asserts itself, or a class method it calls as `self.<name>()` does (transitively)."""
-    if _has_assertion(method):
+def _class_methods(cls: ast.ClassDef, classes: dict, seen: set) -> dict:
+    """類別的方法，加上同一模組中定義的基底類別（遞移地）繼承來的方法；子類別的定義覆蓋基底類別的同名方法。
+    A class's methods plus those inherited (transitively) from base classes defined in the same module; the
+    subclass's definition overrides a base method of the same name."""
+    methods: dict = {}
+    for base in reversed(cls.bases):  # 第一個基底類別優先，與 MRO 的大方向一致 ／ the first base wins, in line with the MRO
+        if isinstance(base, ast.Name) and base.id in classes and base.id not in seen:
+            seen.add(base.id)
+            methods.update(_class_methods(classes[base.id], classes, seen))
+    methods.update({m.name: m for m in cls.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))})
+    return methods
+
+
+def _asserts(fn: ast.AST, functions: dict, methods: dict, seen: set) -> bool:
+    """函式本身含斷言，或它（遞移地）呼叫的同模組輔助函式（`name(...)`）或類別方法（`self.<名稱>()`）含斷言時為 True。
+    True when the function asserts itself, or a same-module helper (`name(...)`) or class method (`self.<name>()`) it
+    calls does (transitively)."""
+    if _has_assertion(fn):
         return True
-    for node in ast.walk(method):
-        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and isinstance(node.func.value, ast.Name) and node.func.value.id == "self"
-                and node.func.attr in methods and node.func.attr not in seen):
-            seen.add(node.func.attr)
-            if _method_asserts(methods[node.func.attr], methods, seen):
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name) and func.id in functions and ("f", func.id) not in seen:
+            seen.add(("f", func.id))
+            # 模組層級的函式沒有 self：在它裡面不解析 self.<名稱>() ／ a module-level function has no self: no self.<name>() in it
+            if _asserts(functions[func.id], functions, {}, seen):
+                return True
+        elif (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id == "self"
+                and func.attr in methods and ("m", func.attr) not in seen):
+            seen.add(("m", func.attr))
+            if _asserts(methods[func.attr], functions, methods, seen):
                 return True
     return False
 

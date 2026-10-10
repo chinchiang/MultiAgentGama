@@ -47,7 +47,9 @@ SARIF_RULE_BLACKBOX = "vibeharness/blackbox-breach"
 SARIF_RULE_STATIC_PREFIX = "vibeharness/"
 # JSON 報告版面的版本（summary／whitebox／threat_model／blackbox_* 鍵）
 # Version of the JSON report layout (summary / whitebox / threat_model / blackbox_* keys)
-JSON_SCHEMA_VERSION = "1"
+# "2"：沒有套用跨模型驗證時 summary.confirmed_whitebox_bugs 為 null（"1" 為 0）
+# "2": summary.confirmed_whitebox_bugs is null when cross-model verification was not applied ("1" had 0)
+JSON_SCHEMA_VERSION = "2"
 
 
 def agreement_display(result: MultiModelDebateResult) -> str:
@@ -204,7 +206,7 @@ class ReportGenerator:
             md.append(f"| **{bi('突變測試分數', 'Mutation Score')}** | `{mut_str}` | {bi('越高越好；是下界', 'higher is better; a lower bound')} |")
         if summary.distinct_whitebox_findings is not None:
             md.append(f"| **{bi('審查者發現（原始 → 去重後）', 'Reviewer Findings (raw → distinct)')}** | `{summary.total_whitebox_findings} → {summary.distinct_whitebox_findings}` | - |")
-        if debate_result.arbitration_applied:
+        if debate_result.arbitration_applied and summary.confirmed_whitebox_bugs is not None:
             md.append(f"| **{bi('已確認的白箱邏輯缺陷', 'Confirmed White-Box Logic Flaws')}** | `{summary.confirmed_whitebox_bugs}` | {bi('0 個關鍵', '0 Critical')} |")
         else:
             # 沒有套用驗證時沒有任何東西被確認：顯示 N/A 與未經驗證的假設數，而不是把它們稱為已確認的缺陷

@@ -13,6 +13,8 @@ AML.T0051.001), and model output is untrusted input to the console, Markdown and
 (LLM10:2026 Improper Output Handling, AML.T0077 LLM Response Rendering). These helpers are the
 deterministic controls at those boundaries; none of them relies on a model to police a model.
 """
+import bisect
+import ipaddress
 import re
 import unicodedata
 from typing import Callable, Iterator, List, NamedTuple, Optional, Tuple
@@ -144,85 +146,195 @@ def find_invisible(text: str) -> List[Tuple[int, str, str]]:
 
 # 具有獨特、低誤判形狀的憑證格式。目標程式碼會送到外部的
 # 模型供應商，所以寫死的機密會先被遮蔽（LLM02:2026／AML.T0055 Unsecured Credentials）。
+# 每一條樣式在 200 KB 的惡意輸入上都必須是線性時間：權杖前綴改用「不接在同類字元之後」的
+# 反向預查而非 \b，讓一長串 "eyJ-eyJ-…" 只有一個起點；私鑰區塊不會越過下一個 BEGIN 行
 # Credential formats with a distinctive, low-false-positive shape. Target code is sent to external
 # model providers, so hard-coded secrets are redacted first (LLM02:2026 / AML.T0055 Unsecured Credentials).
+# Every pattern must stay linear on a 200 KB adversarial input: token prefixes use a "not after a token
+# character" look-behind instead of \b, so a long "eyJ-eyJ-..." run has a single starting point, and a
+# private-key block never runs past the next BEGIN line
 _SECRET_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
-    ("private-key", re.compile(r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z]+ )?PRIVATE KEY-----")),
-    ("anthropic-key", re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{20,}")),
-    ("openai-key", re.compile(r"\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_\-]{32,}")),
+    ("private-key", re.compile(r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----(?:(?!-----BEGIN )[\s\S])*?"
+                               r"-----END (?:[A-Z]+ )?PRIVATE KEY-----")),
+    ("anthropic-key", re.compile(r"(?<![A-Za-z0-9_\-])sk-ant-[A-Za-z0-9_\-]{20,}")),
+    ("openai-key", re.compile(r"(?<![A-Za-z0-9_\-])sk-(?:proj-|svcacct-)?[A-Za-z0-9_\-]{32,}")),
     ("aws-access-key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
     ("github-token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,})\b")),
-    ("google-api-key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
-    ("slack-token", re.compile(r"\bxox[abprs]-[A-Za-z0-9\-]{10,}")),
+    ("google-api-key", re.compile(r"(?<![A-Za-z0-9_\-])AIza[0-9A-Za-z_\-]{35}\b")),
+    ("slack-token", re.compile(r"(?<![A-Za-z0-9_\-])xox[abprs]-[A-Za-z0-9\-]{10,}")),
     ("huggingface-token", re.compile(r"\bhf_[A-Za-z0-9]{34,}\b")),
-    ("nvidia-key", re.compile(r"\bnvapi-[A-Za-z0-9_\-]{30,}")),
+    ("nvidia-key", re.compile(r"(?<![A-Za-z0-9_\-])nvapi-[A-Za-z0-9_\-]{30,}")),
     ("stripe-key", re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}")),
-    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}")),
+    ("jwt", re.compile(r"(?<![A-Za-z0-9_\-])eyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}")),
     # 帶有具名群組 "v" 的樣式只遮蔽（並定位）該群組，讓變數名稱保持可讀
     # Patterns with a named group "v" redact (and locate) only that group, so the variable name stays readable
     ("aws-secret-key", re.compile(r"(?i)(?:secret_access_key|secretaccesskey)[\"']?\s*[:=]\s*[\"']?"
                                   r"(?P<v>[A-Za-z0-9/+=]{40})(?![A-Za-z0-9/+=])")),
     ("azure-storage-key", re.compile(r"(?i)(?<=AccountKey=)[A-Za-z0-9+/]{86}==")),
-    # URL 中的 [user]:password@（資料庫 DSN、訊息佇列 URL，含 redis://:pass@ 這種空使用者名稱）；
-    # 角括號／大括號裡的佔位符不會被比對到。具名群組 "host" 只用來判斷是否為開發用佔位憑證
-    # [user]:password@ in a URL (database DSNs, broker URLs, incl. an empty user name as in redis://:pass@);
-    # placeholders in angle brackets/braces don't match. The named group "host" only serves the placeholder check
-    ("url-credentials", re.compile(r"[a-z0-9+.\-]://(?P<v>[^\s:/@<>{}$'\"]*:[^\s/@<>{}$'\"]+)@"
-                                   r"(?P<host>\[[^\]\s/]*\]|[^\s/:?#@'\"<>]*)", re.I)),
 ]
 
-# 開發與文件常用的佔位密碼：仍會在送給模型前遮蔽，但不會回報成 VH-AI-007 的寫死憑證
-# Placeholder passwords common in development setups and docs: still redacted before reaching a model,
-# but not reported as a VH-AI-007 hard-coded credential
+# URL 中的 [user]:password@（資料庫 DSN、訊息佇列 URL，含 redis://:pass@ 這種空使用者名稱）不用單一樣式比對，
+# 而是逐一掃描每個 "://"：密碼可以含 $ ' " { } < > 與 @，只停在空白、"/"、與字串開頭相同的引號
+# （開頭沒有引號時兩種引號都算）；userinfo 到該段落中最後一個 "@" 為止，後面接主機
+# [user]:password@ in a URL (database DSNs, broker URLs, incl. an empty user name as in redis://:pass@) is
+# not matched by one pattern but scanned per "://": the password may hold $ ' " { } < > and @ and only stops
+# at whitespace, "/" or the quote that opened the string (both quotes when none did); the userinfo runs to
+# the last "@" of that segment, followed by the host
+_URL_SCHEME_END_RE = re.compile(r"[a-z0-9+.\-]://", re.I)
+_URL_SCHEME_CHAR_RE = re.compile(r"[A-Za-z0-9+.\-]")
+_URL_STOP_RE = {
+    "": re.compile(r"[\s/\"'`]"),
+    '"': re.compile(r"[\s/\"]"),
+    "'": re.compile(r"[\s/']"),
+    "`": re.compile(r"[\s/`]"),
+}
+_URL_HOST_RE = re.compile(r"\[[^\]\s/]*\]|[^\s/:?#@'\"`<>]*")
+# "host:8080?next=a@b" 的 "8080?…" 是連接埠加查詢字串，不是密碼
+# "8080?..." in "host:8080?next=a@b" is a port plus a query string, not a password
+_URL_PORT_QUERY_RE = re.compile(r"\d{1,5}[?#]")
+
+
+class _UrlCredential(NamedTuple):
+    """URL 中的一組 userinfo："://" 之後到最後一個 "@" 之前的範圍，加上拆開的使用者、密碼與主機。
+    One URL userinfo: the span from after "://" to before the last "@", plus the split user, password and host."""
+    start: int
+    end: int
+    user: str
+    password: str
+    host: str
+
+
+def _opening_quote(text: str, scheme_end: int) -> str:
+    """URL 所在字串的開頭引號（緊接在協定名稱之前的 " ' `），沒有則回傳 ''。
+    The quote that opened the string holding the URL (a " ' ` right before the scheme), or '' if none."""
+    i, floor = scheme_end, max(0, scheme_end - 40)
+    while i > floor and _URL_SCHEME_CHAR_RE.match(text, i - 1):
+        i -= 1
+    return text[i - 1] if i > 0 and text[i - 1] in "\"'`" else ""
+
+
+def _url_credentials(text: str) -> Iterator[_UrlCredential]:
+    """每一組 URL 憑證；每個 "://" 段落只掃描一次，所以整體是線性時間。
+    Every URL credential; each "://" segment is scanned once, so the whole scan is linear."""
+    for m in _URL_SCHEME_END_RE.finditer(text):
+        start = m.end()
+        stop = _URL_STOP_RE[_opening_quote(text, m.start())].search(text, start)
+        seg_end = stop.start() if stop else len(text)
+        at = text.rfind("@", start, seg_end)
+        colon = text.find(":", start, at) if at > start else -1
+        if colon < 0 or colon + 1 == at:
+            continue
+        password = text[colon + 1:at]
+        if _URL_PORT_QUERY_RE.match(password):
+            continue
+        host = _URL_HOST_RE.match(text, at + 1)
+        yield _UrlCredential(start, at, text[start:colon], password, host.group(0) if host else "")
+
+
+# 開發與文件常用的預設密碼：只在迴環或明顯是範例／開發用的主機上才不回報；在看起來真實的主機上，
+# 它們正是預設憑證（CWE-1392），仍會回報為 VH-AI-007。任何情況下都會在送給模型前遮蔽
+# Stock passwords common in development setups and docs: only exempt on a loopback or an obvious
+# example/development host; on a real-looking host they are default credentials (CWE-1392) and are still
+# reported as VH-AI-007. They are always redacted before reaching a model
 _PLACEHOLDER_PASSWORDS = {
     "password", "passwd", "pass", "pwd", "pw", "secret", "changeme", "change_me", "changeit", "example",
     "postgres", "mysql", "test", "dummy", "placeholder",
 }
-_PLACEHOLDER_PASSWORD_RE = re.compile(
-    r"(?i)^(?:x+|\*+|\.{3,}|(?:your|my)[_\-]?(?:password|pass|pwd|secret)|.*(?:%s|%\(|\$\{|[{}<>]).*)$"
-)
+# 遮罩（xxxx、****、...、your_password）在任何主機上都不是憑證
+# Masks (xxxx, ****, ..., your_password) are not a credential on any host
+_MASKED_PASSWORD_RE = re.compile(r"(?i)^(?:x+|\*+|\.{3,}|(?:your|my)[_\-]?(?:password|pass|pwd|secret))$")
+# 整個密碼都是範本時才算佔位符：%s、%(name)s、${VAR}、$VAR、{var}、{{var}}、<password>
+# Only a password that is a template as a whole is a placeholder: %s, %(name)s, ${VAR}, $VAR, {var}, {{var}}, <password>
+_TEMPLATE_PASSWORD_RE = re.compile(
+    r"^(?:%s|%\([^()]*\)s|\$\{[^{}]*\}|\$[A-Za-z_]\w*|\{\{[^{}]*\}\}|\{[^{}]*\}|<[^<>]*>)$")
+# 範例與測試用的保留網域（RFC 2606／6761），以及常見的開發用主機名稱
+# Reserved example and test domains (RFC 2606/6761) and common development host names
+_EXAMPLE_HOSTS = {"example.com", "example.org", "example.net", "host", "hostname", "db", "localhost"}
+_EXAMPLE_SUFFIXES = (".example.com", ".example.org", ".example.net", ".example", ".test", ".invalid", ".localhost")
+_HOST_LABEL_RE = re.compile(r"^[a-z0-9_](?:[a-z0-9_\-]*[a-z0-9_])?$")
+
+
+def _bare_host(host: str) -> str:
+    return host.strip().strip("[]").lower().rstrip(".")
 
 
 def _is_loopback_host(host: str) -> bool:
-    h = host.strip("[]").lower()
-    return h in ("localhost", "::1", "0.0.0.0") or h.endswith(".localhost") or h.startswith("127.")
+    """只有 localhost、*.localhost、合法的 127.0.0.0/8 IPv4 字面值、::1 與 0.0.0.0 才算迴環位址
+    （"127.evil.com"、"127.0.0.1.nip.io" 都不算）。
+    Only localhost, *.localhost, a valid 127.0.0.0/8 IPv4 literal, ::1 and 0.0.0.0 are loopback
+    ("127.evil.com" and "127.0.0.1.nip.io" are not)."""
+    h = _bare_host(host)
+    if h == "localhost" or h.endswith(".localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_unspecified
+
+
+def _is_example_host(host: str) -> bool:
+    """迴環位址、保留的範例網域、空主機（Unix socket），或是沒有點的單一標籤主機名稱
+    （docker compose 的服務名稱，例如 db、cache、rabbit）。
+    A loopback address, a reserved example domain, an empty host (Unix socket), or a single-label host name
+    without a dot (a docker compose service name such as db, cache or rabbit)."""
+    h = _bare_host(host)
+    if not h or _is_loopback_host(h) or h in _EXAMPLE_HOSTS or h.endswith(_EXAMPLE_SUFFIXES):
+        return True
+    return bool(_HOST_LABEL_RE.match(h)) and not h.isdigit()
 
 
 def is_placeholder_credential(user: str, password: str, host: str = "") -> bool:
-    """URL 憑證是否為開發用佔位值：主機是迴環位址（localhost、127.x、::1、0.0.0.0），
-    密碼是常見佔位字（postgres、password、pass、secret、changeme、example…）或與使用者名稱相同，
-    或是範本（`${VAR}`、`%s`、`{…}`）。這類值仍會被遮蔽，只是不回報為寫死的憑證。
-    Whether URL credentials are a development placeholder: a loopback host (localhost, 127.x, ::1,
-    0.0.0.0), a stock placeholder password (postgres, password, pass, secret, changeme, example, ...) or one
-    equal to the user name, or a template (`${VAR}`, `%s`, `{...}`). Such values are still redacted; they are
-    just not reported as a hard-coded credential."""
+    """URL 憑證是否為開發用佔位值：整個密碼是範本（`${VAR}`、`%s`、`%(name)s`、`{var}`、`<password>`）或遮罩
+    （xxxx、****）；主機是迴環位址（localhost、127.0.0.0/8、::1、0.0.0.0）；或是在範例／開發用主機
+    （example.com、*.test、db、單一標籤的服務名稱…）上使用常見預設密碼（postgres、password、changeme…）
+    或與使用者名稱相同的密碼。這類值仍會被遮蔽，只是不回報為寫死的憑證。
+    Whether URL credentials are a development placeholder: a password that is a template as a whole
+    (`${VAR}`, `%s`, `%(name)s`, `{var}`, `<password>`) or a mask (xxxx, ****); a loopback host (localhost,
+    127.0.0.0/8, ::1, 0.0.0.0); or a stock password (postgres, password, changeme, ...) or one equal to the user
+    name on an example/development host (example.com, *.test, db, a single-label service name, ...). Such values
+    are still redacted; they are just not reported as a hard-coded credential."""
     pw = password.strip()
-    if _is_loopback_host(host):
+    if _TEMPLATE_PASSWORD_RE.match(pw) or _MASKED_PASSWORD_RE.match(pw) or _is_loopback_host(host):
         return True
-    if pw.lower() in _PLACEHOLDER_PASSWORDS or _PLACEHOLDER_PASSWORD_RE.match(pw):
-        return True
-    return bool(user) and user == pw
+    if not _is_example_host(host):
+        return False
+    return pw.lower() in _PLACEHOLDER_PASSWORDS or (bool(user) and user == pw)
 
 
-def _reportable(kind: str, m: "re.Match[str]") -> bool:
-    if kind != "url-credentials":
-        return True
-    user, _sep, password = m.group("v").partition(":")
-    return not is_placeholder_credential(user, password, m.group("host"))
+def _secret_spans(text: str) -> Iterator[Tuple[str, int, int, bool]]:
+    """(類型, 起點, 終點, 是否回報)，依類型順序列出每一段要遮蔽的文字；同一類型內依位置排序且不重疊。
+    (kind, start, end, reportable) for every span to redact, in kind order; within a kind, sorted and disjoint."""
+    for kind, pattern in _SECRET_PATTERNS:
+        group = "v" if "v" in pattern.groupindex else 0
+        for m in pattern.finditer(text):
+            yield kind, m.start(group), m.end(group), True
+    for cred in _url_credentials(text):
+        yield "url-credentials", cred.start, cred.end, not is_placeholder_credential(cred.user, cred.password, cred.host)
+
+
+_NEWLINE_RE = re.compile(r"\n")
 
 
 def find_secrets(text: str) -> List[Tuple[int, str]]:
     """(1 起算的行號, 類型)，每一個找到的寫死憑證各一筆（開發用佔位的 URL 憑證不算，見 is_placeholder_credential）。
     (1-based line, kind) for every hard-coded credential found (placeholder URL credentials excluded, see
     is_placeholder_credential)."""
-    hits: List[Tuple[int, str]] = []
-    for kind, pattern in _SECRET_PATTERNS:
-        for m in pattern.finditer(text):
-            if not _reportable(kind, m):
-                continue
-            start = m.start("v") if "v" in pattern.groupindex else m.start()
-            hits.append((text.count("\n", 0, start) + 1, kind))
-    return sorted(set(hits))
+    # 行號用換行位置的二分搜尋求得，命中數很多時也不會變成平方時間
+    # Line numbers come from a binary search over the newline offsets, so many hits never turn quadratic
+    newlines = [m.start() for m in _NEWLINE_RE.finditer(text)]
+    hits = {(bisect.bisect_left(newlines, start) + 1, kind) for kind, start, _end, report in _secret_spans(text) if report}
+    return sorted(hits)
+
+
+def _replace_spans(text: str, spans: List[Tuple[int, int]], marker: str) -> str:
+    out, last = [], 0
+    for start, end in spans:
+        out.append(text[last:start])
+        out.append(marker)
+        last = end
+    out.append(text[last:])
+    return "".join(out)
 
 
 def redact_secrets(text: str) -> str:
@@ -231,60 +343,126 @@ def redact_secrets(text: str) -> str:
     if not text:
         return text
     for kind, pattern in _SECRET_PATTERNS:
-        marker = f"<REDACTED:{kind}>"
-        if "v" in pattern.groupindex:
-            def keep_context(m: "re.Match[str]", mk: str = marker) -> str:
-                whole, offset = m.group(0), m.start()
-                return whole[:m.start("v") - offset] + mk + whole[m.end("v") - offset:]
-            text = pattern.sub(keep_context, text)
-        else:
-            text = pattern.sub(marker, text)
-    return text
+        group = "v" if "v" in pattern.groupindex else 0
+        spans = [(m.start(group), m.end(group)) for m in pattern.finditer(text)]
+        if spans:
+            text = _replace_spans(text, spans, f"<REDACTED:{kind}>")
+    spans = [(cred.start, cred.end) for cred in _url_credentials(text)]
+    return _replace_spans(text, spans, "<REDACTED:url-credentials>") if spans else text
 
 
 # 對象是 AI 審查者或稽核者、而非人類讀者的指令：目標程式碼
 # 試圖說服 harness 的模型對缺陷保持沉默（LLM01:2026、AML.T0051.001）。
 # 刻意收窄範圍：一般助理的系統提示詞（"You are a helpful assistant"）在
 # LLM 應用中很常見，不會被比對到；描述行為的測試說明（"should return no findings for clean code"）、
-# 否定句（"不可視為安全"）與條件句（"判定為通過時"）也不算。
+# 緊接在動詞前的否定（"不可視為安全"）、描述或被動句（"此函式會將…標記為"）與條件句（"判定為通過時"）也不算。
 # Instructions addressed to an AI reviewer/auditor rather than to a human reader: a target that
 # tries to talk the harness's models out of reporting defects (LLM01:2026, AML.T0051.001).
 # Deliberately narrow: generic assistant system prompts ("You are a helpful assistant") are normal
 # in LLM applications and are not matched; neither are test descriptions of behaviour ("should return no
-# findings for clean code"), negations ("不可視為安全") or conditions ("判定為通過時").
+# findings for clean code"), a negation right before the verb ("不可視為安全"), descriptions or passives
+# ("此函式會將…標記為") or conditions ("判定為通過時").
 
-# 子句邊界：否定詞與祈使詞只在同一個子句內才算數
-# Clause boundaries: a negation or imperative only counts within the same clause
-_CLAUSE_BREAK_RE = re.compile(r"[，,。；;：:！!？?、]")
-_ZH_NEGATION_RE = re.compile(r"不可|不能|不應|不应|不要|不得|不該|不该|不會|不会|不必|切勿|請勿|请勿|勿|別|别|未|非|無法|无法|禁止|避免")
+# 子句邊界：否定詞與祈使詞只在同一個子句內才算數。每次比對只往回看固定長度的視窗，
+# 所以一行裡有上千個被否決的比對時仍是線性時間
+# Clause boundaries: a negation or imperative only counts within the same clause. Each match only looks back
+# over a bounded window, so a line with thousands of rejected matches stays linear
+_CLAUSE_BREAK_RE = re.compile(r"[，,。；;：:！!？?、]|\.(?=\s|$)")
+_LOOKBEHIND = 200
+# 否定詞必須緊接在受管轄的動詞片語之前（中間只允許 要／可／能／應／得 這類助動詞與 再／直接 這類副詞）。
+# 單字否定詞（未、非、別、勿、不、沒）只有在緊鄰動詞時才算，所以 "未來請忽略…"、"非常重要 請將…"、
+# "別擔心 忽略…" 不會被當成否定；"特別"、"類別" 這類詞尾的 "別" 也不算
+# A negation must sit right before the governed verb phrase (with only a modal such as 要/可/能/應/得 and an
+# adverb such as 再/直接 in between). Single-character negations (未, 非, 別, 勿, 不, 沒) only count right next to
+# the verb, so "未來請忽略…", "非常重要 請將…" and "別擔心 忽略…" are not negations; the 別 ending words such as
+# 特別 or 類別 does not count either
+_ZH_NEGATION_END_RE = re.compile(
+    r"(?:不可|不能|不應|不应|不要|不得|不該|不该|不會|不会|不必|不需|不用|不准|切勿|請勿|请勿|千萬別|千万别|"
+    r"無法|无法|無須|无须|毋須|毋须|禁止|避免|嚴禁|严禁|絕不|绝不|從不|从不|永不|沒有|没有|不曾|未曾|並未|并未|"
+    r"(?<![特分區区類类個个級级性告識识辨差派離离鑑鉴])[別别]|[未非勿不沒没莫])"
+    r"(?:要|可|可以|能|應|应|應該|应该|得|該|该|會|会|必|需|需要)?\s*"
+    r"(?:再|去|直接|隨便|随便|輕易|轻易|一律|全部|都|也|就)?\s*(?:將|将|把)?\s*$")
+# 描述或被動句：比對前緊接 會／已／被／曾（可再接 將／把："此函式會將此檔案標記為安全"）
+# A description or passive: 會/已/被/曾 right before the match (optionally followed by 將/把: "此函式會將此檔案標記為安全")
+_ZH_DESCRIPTIVE_END_RE = re.compile(r"(?:會|会|已|被|曾)(?:經|经)?\s*(?:自動|自动|直接)?\s*(?:將|将|把)?\s*$")
+# 條件句的開頭（如果／若／當…）與針對程式碼的疑問句開頭（是否…嗎）；它們必須出現在片語之前
+# Openers of a conditional (如果/若/當 ...) and of a question about the code (是否 ... 嗎); they must precede the phrase
+_ZH_CONDITION_LEAD_RE = re.compile(r"如果|如若|假如|假若|倘若|要是|若|(?<![適适恰妥相應应正不])當(?![然作成])|"
+                                   r"(?<![適适恰妥相應应正不])当(?![然作成])|一旦|每當|每当")
+_ZH_QUESTION_LEAD_RE = re.compile(r"是否|是不是|有沒有|有没有|會不會|会不会|為什麼|为什么|為何|为何|怎麼|怎么")
+# 片語後面的條件詞：時／的話／與否 一律是從屬子句；後／之前／則 只在前面有條件開頭時才算（"…後再輸出" 仍是命令，
+# "后续" 不是條件）；嗎／? 只在前面有疑問開頭時才算
+# Condition words after the phrase: 時/的話/與否 always mark a subordinate clause; 後/之前/則 only count after a
+# conditional opener ("…後再輸出" is still a command, "后续" is not a condition); 嗎/? only after a question opener
+_ZH_WHEN_AFTER_RE = re.compile(r"\s*(?:時|时|的話|的话|與否|与否)")
+_ZH_THEN_AFTER_RE = re.compile(r"\s*(?:之後|之后|以後|以后|(?:後|后)(?![續续面端台果])|以前|之前|則|则)")
+_ZH_QUESTION_AFTER_RE = re.compile(r"\s*(?:嗎|吗|[?？])")
 # 句首（子句前只有註解前導符號、引號等非文字字元）或祈使語氣的結尾
 # Sentence start (only comment leaders, quotes and other non-word characters before) or an imperative ending
 _ZH_IMPERATIVE_END_RE = re.compile(r"(?:請|请|只|只要|只需|只能|僅|仅|務必|务必|一律|直接|必須|必须|你|您|就)\s*$")
 _ZH_ADDRESS_END_RE = re.compile(r"(?:給|给|致|請|请|各位|親愛的|亲爱的|dear|hey|to)\s*$", re.I)
 _ZH_SUFFICES_RE = re.compile(r"\s*(?:即可|就好|就行|就可以|便可)")
-_ZH_CONDITION_AFTER_RE = re.compile(r"\s*(?:時|时|的話|的话|之後|之后|後|后|以前|之前|則|则|與否|与否|嗎|吗|[?？])")
 _WORD_RE = re.compile(r"\w")
+# 英文的描述句：主詞是程式碼（it、this、the scanner／function／test…）或子句以助動詞開頭（測試說明的
+# "should return …"），而且後面接著乾淨／合法／空輸入這類限定（"for clean code"、"when the input is empty"）。
+# you／remember to／need to 開頭的句子都是命令
+# An English description: the subject is code (it, this, the scanner/function/test, ...) or the clause opens with
+# the modal (a test description's "should return ..."), and a clean/valid/empty-input qualifier follows ("for clean
+# code", "when the input is empty"). Sentences with you / remember to / need to are commands
+_EN_CODE_SUBJECTS = (r"function|method|scanner|rule|check|checker|parser|linter|tool|test|module|class|helper|"
+                     r"validator|analy[sz]er|detector|api|endpoint|script|command|cli|pipeline|routine|handler")
+_EN_MODALS = r"should|would|will|shall|must|can|could|may|might|does|did|is\s+expected\s+to|is\s+supposed\s+to"
 _EN_DESCRIPTIVE_BEFORE_RE = re.compile(
-    r"\b(?:should|would|will|shall|to|can|could|may|might|must|does|did|expected\s+to)\s+"
-    r"(?:not\s+|also\s+|still\s+|only\s+|correctly\s+)*$", re.I)
+    r"(?:(?:^|[（(「『“\"'‘`])[\W_]*|\b(?:it|this|that|which|(?:(?:the|this|that|our|each|every)\s+)?(?:[a-z_\-]+\s+)?(?:"
+    + _EN_CODE_SUBJECTS + r")s?)\s+)(?:" + _EN_MODALS + r")\s+(?:(?:not|also|still|only|correctly|always)\s+){0,3}$",
+    re.I)
+_EN_CLEAN = r"(?:clean|safe|benign|valid|empty|ordinary|plain|well[-\s]formed|correct|good|harmless|unchanged)"
+_EN_INPUT = (r"(?:code|inputs?|files?|data|text|sources?|samples?|repos?|repositor(?:y|ies)|projects?|modules?|"
+             r"cases?|strings?|lines?|payloads?|programs?|snippets?|examples?|functions?|requests?|content|"
+             r"fixtures?|targets?|documents?|trees?)")
 _EN_DESCRIPTIVE_AFTER_RE = re.compile(
-    r"\s+(?:for|on|when|if|given|against|with)\s+(?:a\s+|an\s+|the\s+)?"
-    r"(?:clean|safe|benign|valid|empty|ordinary|plain|well[-\s]formed|correct|good|harmless|unchanged)\b", re.I)
+    r"\s+(?:(?:for|on|given|against|with)\s+(?:a\s+|an\s+|the\s+|any\s+)?" + _EN_CLEAN + r"\s+" + _EN_INPUT + r"\b|"
+    r"(?:when|if)\s+(?:the\s+|its\s+)?" + _EN_INPUT + r"\s+(?:is|are)\s+" + _EN_CLEAN + r"\b)", re.I)
 
 
 def _clause_before(text: str, pos: int) -> str:
-    before = text[:pos]
-    breaks = list(_CLAUSE_BREAK_RE.finditer(before))
-    return before[breaks[-1].end():] if breaks else before
+    """pos 之前、同一子句內的文字，最多往回看 _LOOKBEHIND 個字元。
+    The text before pos within the same clause, looking back at most _LOOKBEHIND characters."""
+    window = text[max(0, pos - _LOOKBEHIND):pos]
+    cut = 0
+    for brk in _CLAUSE_BREAK_RE.finditer(window):
+        cut = brk.end()
+    return window[cut:]
+
+
+def _zh_condition_after(text: str, m: "re.Match[str]", clause: str) -> bool:
+    """片語後面是否接著條件或疑問（見上面 _ZH_WHEN_AFTER_RE 等的規則）。
+    Whether a condition or a question follows the phrase (rules at _ZH_WHEN_AFTER_RE and friends above)."""
+    if _ZH_WHEN_AFTER_RE.match(text, m.end()):
+        return True
+    if _ZH_THEN_AFTER_RE.match(text, m.end()):
+        return bool(_ZH_CONDITION_LEAD_RE.search(clause))
+    if _ZH_QUESTION_AFTER_RE.match(text, m.end()):
+        return bool(_ZH_QUESTION_LEAD_RE.search(clause))
+    return False
 
 
 def _not_negated(text: str, m: "re.Match[str]") -> bool:
-    """同一子句中、判定動詞（或比對開頭）之前沒有否定詞，且後面不是條件子句。
-    No negation precedes the verdict verb (or the match) in the same clause, and no condition follows."""
-    pos = m.start("verb") if "verb" in m.re.groupindex else m.start()
-    if _ZH_NEGATION_RE.search(_clause_before(text, pos)):
+    """比對開頭（以及判定動詞）之前沒有緊鄰的否定詞，且後面不是條件子句或疑問句。
+    No negation right before the match (or its verdict verb), and no condition or question follows."""
+    clause = _clause_before(text, m.start())
+    if _ZH_NEGATION_END_RE.search(clause, max(0, len(clause) - 24)):
         return False
-    return not _ZH_CONDITION_AFTER_RE.match(text, m.end())
+    if "verb" in m.re.groupindex and _ZH_NEGATION_END_RE.search(text, max(m.start(), m.start("verb") - 24), m.start("verb")):
+        return False
+    return not _zh_condition_after(text, m, clause)
+
+
+def _zh_verdict(text: str, m: "re.Match[str]") -> bool:
+    """宣稱程式碼安全的句型：除了 _not_negated 的檢查，緊接在 會／已／被／曾 之後的描述或被動句也不算。
+    Calling the code safe: besides the _not_negated checks, a description or passive right after 會/已/被/曾 does
+    not count either."""
+    return not _ZH_DESCRIPTIVE_END_RE.search(text, max(0, m.start() - 12), m.start()) and _not_negated(text, m)
 
 
 def _zh_directive(text: str, m: "re.Match[str]") -> bool:
@@ -292,7 +470,7 @@ def _zh_directive(text: str, m: "re.Match[str]") -> bool:
     The Chinese ask-for-an-empty-report phrase only counts as a command: at a sentence start, after an
     imperative word, or ending in 即可 and the like."""
     clause = _clause_before(text, m.start())
-    return (not _WORD_RE.search(clause) or bool(_ZH_IMPERATIVE_END_RE.search(clause))
+    return (not _WORD_RE.search(clause) or bool(_ZH_IMPERATIVE_END_RE.search(clause, max(0, len(clause) - 12)))
             or bool(_ZH_SUFFICES_RE.match(text, m.end())))
 
 
@@ -301,14 +479,19 @@ def _zh_addressed(text: str, m: "re.Match[str]") -> bool:
     A salutation of an AI reviewer (followed by a colon) only counts at a sentence start or after an addressing
     word (給, 請, 各位, ...)."""
     clause = _clause_before(text, m.start())
-    return not _WORD_RE.search(clause) or bool(_ZH_ADDRESS_END_RE.search(clause))
+    return not _WORD_RE.search(clause) or bool(_ZH_ADDRESS_END_RE.search(clause, max(0, len(clause) - 12)))
 
 
 def _en_imperative(text: str, m: "re.Match[str]") -> bool:
-    """英文要求空報告的句型只在不是描述行為的說明時才算（前面有 should／will／to …，或後面接 for clean code）。
-    The English ask-for-an-empty-report phrase only counts when it is not a description of behaviour
-    (should/will/to ... before it, or "for clean code" after it)."""
-    return not _EN_DESCRIPTIVE_BEFORE_RE.search(text[:m.start()]) and not _EN_DESCRIPTIVE_AFTER_RE.match(text, m.end())
+    """英文要求空報告的句型只在不是描述行為的說明時才算：描述句要同時有程式碼主詞或句首助動詞
+    （"should return …"、"the scanner must return …"），以及乾淨輸入的限定（"for clean code"）。
+    The English ask-for-an-empty-report phrase only counts when it is not a description of behaviour, which
+    needs both a code subject or a clause-initial modal ("should return ...", "the scanner must return ...")
+    and a clean-input qualifier ("for clean code")."""
+    if not _EN_DESCRIPTIVE_AFTER_RE.match(text, m.end()):
+        return True
+    clause = _clause_before(text, m.start())
+    return not _EN_DESCRIPTIVE_BEFORE_RE.search(clause, max(0, len(clause) - 80))
 
 
 class _Marker(NamedTuple):
@@ -323,6 +506,17 @@ class _Marker(NamedTuple):
 _ZH_IGNORE = r"(?:忽略|忽視|忽视|無視|无视|不理會|不理会|不要理會|不要理会|略過|略过|跳過|跳过|撤銷|撤销|覆蓋|覆盖)"
 _ZH_ALL = r"(?:所有|全部|一切|任何)"
 _ZH_PRIOR = r"(?:先前|之前|以前|上述|以上|上面|前面|前述|系統|系统)"
+# 範圍詞之間可以夾 的、這些、了 這類輕聲詞（"之前的所有指令"）。範圍詞串寫成「範圍詞＋輕聲詞」的重複，
+# 而輕聲詞不會是範圍詞的開頭，所以比對沒有歧義、在長串重複的範圍詞上仍是線性時間
+# Light particles such as 的, 這些 and 了 may sit between scope words ("之前的所有指令"). The scope run is a
+# repetition of "scope word + particles", and no particle starts a scope word, so matching is unambiguous and
+# stays linear on a long run of repeated scope words
+_ZH_FILLER = r"(?:\s|的|這些|这些|那些|了)*"
+
+
+def _zh_scope_run(scope: str) -> str:
+    return r"(?:(?:" + scope + r")" + _ZH_FILLER + r")+"
+
 _ZH_REVIEWER_ALTS = (r"審查者|审查者|審核者|审核者|稽核者|稽核員|稽核员|審查員|审查员|審計員|审计员|"
                      r"掃描器|扫描器|審查工具|审查工具|掃描工具|扫描工具")
 _ZH_REVIEWER = r"(?:" + _ZH_REVIEWER_ALTS + r")"
@@ -365,12 +559,12 @@ _INJECTION_MARKERS: List[_Marker] = [
     # NFKC-normalized before matching (full-width ＡＩ -> AI).
     # 忽略（先前／上述／系統／所有…）指令、指示、提示詞：必須有範圍詞，"忽略指令中的空白" 不算
     # ignore the (previous / above / system / all ...) instructions or prompts: a scope word is required
-    _Marker(re.compile(_ZH_IGNORE + r"\s*(?:" + _ZH_ALL + r"\s*的?\s*)?(?:" + _ZH_PRIOR + r"|原本|原先|你的|您的|"
-                       + _ZH_ALL + r")\s*" + _ZH_ALL + r"?\s*的?\s*(?:指令|指示|提示詞|提示词|提示)"), _not_negated),
+    _Marker(re.compile(_ZH_IGNORE + _ZH_FILLER + _zh_scope_run(_ZH_PRIOR + r"|原本|原先|你的|您的|" + _ZH_ALL)
+                       + r"(?:指令|指示|提示詞|提示词|提示)"), _not_negated),
     # 規則、說明、限制只搭配「先前／上述／所有」這類範圍詞（"忽略原本的設定" 是一般的程式註解）
     # rules, explanations and limits only with a "previous / above / all" scope ("忽略原本的設定" is an ordinary comment)
-    _Marker(re.compile(_ZH_IGNORE + r"\s*(?:" + _ZH_ALL + r"\s*的?\s*)?(?:" + _ZH_PRIOR + r"|" + _ZH_ALL + r")\s*"
-                       + _ZH_ALL + r"?\s*的?\s*(?:規則|规则|說明|说明|限制)"), _not_negated),
+    _Marker(re.compile(_ZH_IGNORE + _ZH_FILLER + _zh_scope_run(_ZH_PRIOR + r"|" + _ZH_ALL)
+                       + r"(?:規則|规则|說明|说明|限制)"), _not_negated),
     # 英文的 do not report / flag / mention … this defect / issue / function / code 句型的中文對應
     # do not report / flag / mention … this defect, issue, function or code
     _Marker(re.compile(r"(?:不要|不准|不得|請勿|请勿|切勿|別|别|勿|禁止)\s*(?:回報|回报|報告|报告|標記|标记|標示|标示|提及|列出|指出|揭露|舉報|举报)"
@@ -393,9 +587,9 @@ _INJECTION_MARKERS: List[_Marker] = [
     # calling the audited code safe, fine or passing (treat ... as safe): the code must be named ("此程式碼",
     # "把本檔案"), with no negation in the same clause and no condition ("…時") after it
     _Marker(re.compile(r"(?:將|将|把)\s*" + _ZH_DEMONSTRATIVE + r"?\s*" + _ZH_MEASURE + r"\s*" + _ZH_CODE_NOUN
-                       + r"\s*(?:一律\s*)?" + _ZH_VERDICT_VERB + r"\s*" + _ZH_VERDICT), _not_negated),
+                       + r"\s*(?:一律\s*)?" + _ZH_VERDICT_VERB + r"\s*" + _ZH_VERDICT), _zh_verdict),
     _Marker(re.compile(_ZH_DEMONSTRATIVE + r"\s*" + _ZH_MEASURE + r"\s*" + _ZH_CODE_NOUN
-                       + r"\s*(?:已|可|請|请|應|应|一律|均|都)?\s*被?\s*" + _ZH_VERDICT_VERB + r"\s*" + _ZH_VERDICT), _not_negated),
+                       + r"\s*(?:(?:可|請|请|應|应|一律|均|都)\s*被?)?\s*" + _ZH_VERDICT_VERB + r"\s*" + _ZH_VERDICT), _zh_verdict),
 ]
 
 
@@ -428,8 +622,15 @@ def _accepted_matches(text: str) -> "Iterator[re.Match[str]]":
                 yield m
 
 
+# 連續的空白壓成一個空格：樣式裡相鄰的 \s* 在一長串空白上會退化成多項式時間的回溯
+# Runs of whitespace collapse to one space: adjacent \s* in the patterns would backtrack polynomially on a long run
+_WHITESPACE_RUN_RE = re.compile(r"\s{2,}")
+
+
 def _normalized(line: str) -> str:
-    return line if line.isascii() else unicodedata.normalize("NFKC", line)
+    if not line.isascii():
+        line = unicodedata.normalize("NFKC", line)
+    return _WHITESPACE_RUN_RE.sub(" ", line)
 
 
 def find_injection_markers(text: str) -> List[Tuple[int, str]]:
@@ -485,10 +686,12 @@ UNTRUSTED_CODE_POLICY = (
 )
 
 
-# 通道標籤的任何開頭／結尾變體：帶屬性、內含空白（"< /tag >"）、任何大小寫；兩種通道的標籤在兩種通道內都會被中和
-# Any opening/closing variant of a channel tag: attributes, inner whitespace ("< /tag >"), any case; the tags of
-# both channels are neutralized inside both channels
-_CHANNEL_TAG_RE = re.compile(r"<\s*/?\s*untrusted_(?:target_code|model_output)\b[^>]*>", re.I)
+# 通道標籤的任何開頭／結尾變體：帶屬性、內含空白（"< /tag >"）、任何大小寫，也包括沒有收尾 ">" 的殘缺標籤；
+# 兩種通道的標籤在兩種通道內都會被中和。屬性只延伸到下一個 "<" 或 ">"，所以一長串重複的殘缺標籤或空白仍是線性時間
+# Any opening/closing variant of a channel tag: attributes, inner whitespace ("< /tag >"), any case, and a truncated
+# tag without its closing ">"; the tags of both channels are neutralized inside both channels. Attributes only run
+# to the next "<" or ">", so a long run of repeated truncated tags or of whitespace stays linear
+_CHANNEL_TAG_RE = re.compile(r"<\s*(?:/\s*)?untrusted_(?:target_code|model_output)\b[^<>]*>?", re.I)
 
 
 def untrusted_block(content: str) -> str:

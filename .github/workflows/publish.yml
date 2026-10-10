@@ -1,10 +1,13 @@
 name: publish
 
 # 推上版本 tag 時：先在 tag 指向的 commit 跑完整的 tests workflow，通過後建置 sdist／wheel、
-# 在乾淨的 venv 對 wheel 做冒煙測試，再把同一批產物附到 GitHub Release；PyPI 發布需另行啟用（見下）。
+# 在乾淨的 venv 對 wheel 做冒煙測試，再把同一批產物附到 GitHub Release 並以 Trusted Publishing 發布到 PyPI（見下）。
 # On a version tag: run the full tests workflow on the tagged commit first; once it passes, build the
-# sdist/wheel, smoke-test the wheel in a clean venv, and attach those same artifacts to the GitHub Release.
-# PyPI publishing is opt-in (see below).
+# sdist/wheel, smoke-test the wheel in a clean venv, attach those same artifacts to the GitHub Release and
+# publish them to PyPI via Trusted Publishing (see below).
+# 已知取捨：tag 指向的 commit 在合併到 master 時已跑過 tests，這裡會再跑一次；這是刻意的（發布前對確切的 commit 把關）
+# Known trade-off: the tagged commit already ran tests when it was merged to master and runs them again here;
+# that is deliberate (the exact commit is gated right before release)
 on:
   push:
     tags:
@@ -45,12 +48,16 @@ jobs:
             exit 1
           fi
 
-      # build 釘在 requirements-dev.txt；建置後端（setuptools）的範圍在 pyproject.toml 的 [build-system]
-      # build is pinned in requirements-dev.txt; the build backend (setuptools) range lives in pyproject.toml [build-system]
+      # build 釘在 requirements-dev.txt；建置後端（setuptools）從帶雜湊的 requirements-build.txt 安裝（範圍與 pyproject.toml 的
+      # [build-system] 相同），以 --no-isolation 建置，發布產物用的就是這個驗證過的 setuptools
+      # build is pinned in requirements-dev.txt; the build backend (setuptools) is installed from the hashed
+      # requirements-build.txt (same range as pyproject.toml [build-system]) and the build runs with --no-isolation,
+      # so the release artifacts come from that verified setuptools
       - name: Build sdist and wheel ／ 建置 sdist 與 wheel
         run: |
+          python -m pip install --require-hashes -r requirements-build.txt
           python -m pip install "$(grep '^build==' requirements-dev.txt)"
-          python -m build
+          python -m build --no-isolation
 
       - name: Smoke-test the wheel in a clean venv ／ 在乾淨的 venv 對 wheel 冒煙測試
         run: |
@@ -67,8 +74,8 @@ jobs:
           if [ "$rc" -gt 3 ]; then echo "::error::installed wheel failed to run (exit $rc)"; exit 1; fi
           test -s report.md
 
-      # 同一批（已冒煙測試的）產物同時上 Release 與（可選的）PyPI：後面的 job 直接下載而不重建，兩邊位元相同
-      # The same smoke-tested artifacts go to the Release and (optionally) PyPI: the later jobs download them
+      # 同一批（已冒煙測試的）產物同時上 Release 與 PyPI：後面的 job 直接下載而不重建，兩邊位元相同
+      # The same smoke-tested artifacts go to the Release and PyPI: the later jobs download them
       # instead of rebuilding, so both are bit-identical
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -99,15 +106,18 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" dist/* --clobber
 
   # 以 Trusted Publishing（OIDC）發布到 PyPI：repo 裡不存任何 API token。
-  # 需另行啟用，因為要做一次只有 repo 擁有者能做的設定：
-  # Publish to PyPI via Trusted Publishing (OIDC): no API token is stored in the repo.
-  # Opt-in, because it needs one-time setup that only the repo owner can do:
-  #   1. 在 pypi.org 把這個 repo 註冊為專案的 Trusted Publisher ／ On pypi.org, register this repo as a Trusted Publisher for the project:
-  #      owner=chinchiang  repository=MultiAgentGama  workflow=publish.yml  environment=pypi
-  #   2. 建立 repository variable ENABLE_PYPI_PUBLISH=true ／ Create the repository variable ENABLE_PYPI_PUBLISH=true
-  #      (Settings > Secrets and variables > Actions > Variables)
-  # 兩者都完成前這個 job 會被略過，產物只會放在 GitHub Release。
-  # Until both are done this job is skipped and artifacts land only on the GitHub Release.
+  # 本 repo 已啟用：每個版本 tag 都會自動發布到 PyPI 的 vibeharness-mas（pypi.org 上的 Trusted Publisher 為
+  # owner=chinchiang repository=MultiAgentGama workflow=publish.yml environment=pypi，且 repository variable
+  # ENABLE_PYPI_PUBLISH=true）。PyPI 的版本不可覆寫：發錯版要發新的 patch 版本，不要重打 tag。
+  # Fork 要停用時，不設或刪除 repository variable ENABLE_PYPI_PUBLISH（Settings > Secrets and variables > Actions > Variables），
+  # 這個 job 就會被略過，產物只放在 GitHub Release；fork 沒有自己的 Trusted Publisher 設定時本來也無法上傳。
+  # Live for this repository: every version tag publishes vibeharness-mas to PyPI automatically (the Trusted
+  # Publisher on pypi.org is owner=chinchiang repository=MultiAgentGama workflow=publish.yml environment=pypi, and
+  # the repository variable ENABLE_PYPI_PUBLISH=true). PyPI versions are immutable: a bad release needs a new patch
+  # version, never a re-tag.
+  # A fork disables it by leaving the repository variable ENABLE_PYPI_PUBLISH unset or deleting it (Settings >
+  # Secrets and variables > Actions > Variables): this job is then skipped and the artifacts land only on the
+  # GitHub Release; without its own Trusted Publisher a fork could not upload anyway.
   pypi-publish:
     if: vars.ENABLE_PYPI_PUBLISH == 'true'
     needs: release

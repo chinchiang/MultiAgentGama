@@ -501,7 +501,7 @@ def test_reports_carry_run_metadata_and_a_schema_version(tmp_path):
     assert run.sandbox_provider == "local_subprocess" and run.config_path == os.path.abspath(CONFIG)
     assert run.generated_at.endswith("+00:00")
     payload = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "1" and payload["summary"]["run"]["harness_version"] == __version__
+    assert payload["schema_version"] == "2" and payload["summary"]["run"]["harness_version"] == __version__
     sarif = json.loads((tmp_path / "r.sarif").read_text(encoding="utf-8"))
     assert sarif["runs"][0]["properties"]["execution_mode"] == "mock" and "generated_at" in sarif["runs"][0]["properties"]
     commander.run_full_pipeline(target_dir=str(target), output_report_path=str(tmp_path / "r.md"))

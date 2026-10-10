@@ -4,7 +4,7 @@
 威脅建模呼叫數（批次）。下游的一切都取決於審查者回報多少發現以及
 建模者產出多少威脅，因此那些部分是依所述假設（每批次發現數、每批次威脅數）
 計算出的情境數字，並如實標示。無法使用的回答重新詢問（`retry_invalid_output`）
-在最壞情況下會使每次 JSON 呼叫成倍；回應快取命中會讓重新執行更便宜，
+在最壞情況下會使每次 JSON 呼叫成倍（--cache-only 絕不重新詢問，因此不乘）；回應快取命中會讓重新執行更便宜，
 但不在預測之內。
 `--estimate`: how many model calls and roughly how many tokens a run would need, without making any.
 
@@ -12,7 +12,8 @@ Only two numbers are exact before the run: reviewer calls (reviewers × white-bo
 threat-modeling calls (batches). Everything downstream depends on how many findings the reviewers
 report and how many threats the modeler produces, so those parts are scenario figures computed from
 stated assumptions (findings per batch, threats per batch) and shown as such. Re-asks of unusable
-answers (`retry_invalid_output`) multiply every JSON call in the worst case; response-cache hits
+answers (`retry_invalid_output`) multiply every JSON call in the worst case (not under --cache-only,
+which never re-asks); response-cache hits
 would make a re-run cheaper and are not predicted.
 """
 import math
@@ -99,7 +100,9 @@ def estimate_run(
     reviewers = commander.multi_reviewer.reviewer_agents
     verifiers = commander.debater.verifiers
     retry = int(gateway.retry_invalid_output)
-    reask = 1 + retry
+    # --cache-only 絕不重新詢問（重新詢問是網路呼叫），所以最壞情況不乘上 retry_invalid_output
+    # --cache-only never re-asks (a re-ask is a network call), so the worst case is not multiplied by retry_invalid_output
+    reask = 1 if gateway.cache_only else 1 + retry
 
     wb_batches = batch_symbols(
         symbols, work_dir, HeterogeneousReviewerEnsemble.BATCH_MAX_TOKENS, HeterogeneousReviewerEnsemble.BATCH_MAX_SYMBOLS

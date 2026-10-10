@@ -578,15 +578,15 @@ def test_bad_mutation_settings_fail_at_start_up(tmp_path, key, value, match):
 
 
 def test_report_json_and_partial_report_carry_the_mutation_result(tmp_path, monkeypatch):
-    """JSON 報告與崩潰時的部分報告都帶 mutation 區塊；schema_version 維持 "1"。
-    The JSON report and a crash's partial report both carry the mutation block; schema_version stays "1"."""
+    """JSON 報告與崩潰時的部分報告都帶 mutation 區塊；schema_version 為 "2"。
+    The JSON report and a crash's partial report both carry the mutation block; schema_version is "2"."""
     report = _report(50.0, survived=1, killed=1)
     summary, _ = _pipeline(tmp_path, monkeypatch, report)
     from vibeharness.reports.report_generator import ReportGenerator
     payload = ReportGenerator().generate_json_report(
         summary, MultiModelDebateResult(consensus_summary="c"), ThreatModelReport(system_description="s"), [], [], str(tmp_path))
     data = json.loads(payload) if isinstance(payload, str) else payload
-    assert data["schema_version"] == "1" and data["summary"]["mutation"]["score"] == 50.0
+    assert data["schema_version"] == "2" and data["summary"]["mutation"]["score"] == 50.0
     assert data["summary"]["mutation"]["mutants"][0]["status"] == "survived"
     commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
     commander._write_partial_report(str(tmp_path / "r.md"), str(tmp_path), {"phase": 3, "mutation": report}, RuntimeError("x"))
