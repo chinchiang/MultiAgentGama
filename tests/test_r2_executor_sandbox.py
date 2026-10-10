@@ -255,15 +255,17 @@ class _TimedJsSandbox:
 
 
 def test_many_slow_but_passing_js_modules_all_run(tmp_path):
-    # 20 個各 0.15 秒的模組、1 秒的批次預算：共用一份預算時有 6 個會被標成未重跑
-    # 20 modules of 0.15s each on a 1s batch budget: with one shared budget 6 of them ended up not re-run
-    js = _TimedJsSandbox(timeout_seconds=1, delay=0.15)
+    # 20 個各 0.3 秒的模組、2 秒的批次預算：每組 10 個時第二輪還有約 0.8 秒餘裕（慢的 CI runner 也夠），
+    # 共用一份預算時則有 8 個會被標成未重跑
+    # 20 modules of 0.3s each on a 2s batch budget: with groups of 10 the second pass keeps about 0.8s of slack
+    # (enough for slow CI runners), while one shared budget left 8 of them not re-run
+    js = _TimedJsSandbox(timeout_seconds=2, delay=0.3)
     executor = TestSuiteExecutor(sandbox=LocalSubprocessSandbox(), js_sandbox_factory=lambda: js,
-                                 per_test_timeout_seconds=1)
+                                 per_test_timeout_seconds=2)
     tests = [_test(f"J{i}", _GOOD_JS, language="javascript") for i in range(20)]
     results, _ = executor.execute_test_suite(tests, working_dir=str(tmp_path))
     assert all(r.status == TestStatus.PASSED for r in results), [r.failure_reason for r in results]
-    assert all(budget <= 1 for _, budget in js.calls)  # 每個模組仍不超過一份批次預算 ／ never more than one batch budget
+    assert all(budget <= 2 for _, budget in js.calls)  # 每個模組仍不超過一份批次預算 ／ never more than one batch budget
 
 
 def test_js_rerun_timeouts_are_capped_by_the_remaining_budget(tmp_path):
@@ -396,6 +398,9 @@ def test_fallback_without_wnowait_keeps_the_exit_code_and_the_timeout(tmp_path, 
 @posix_only
 def test_fallback_lost_status_is_not_exit_zero(tmp_path, monkeypatch):
     monkeypatch.delattr(sandbox_mod.os, "WNOWAIT", raising=False)
+    # macOS 會先走 kqueue；關掉它才能測到 waitpid 輪詢這條後備路徑
+    # macOS takes the kqueue path first; turn it off to reach the waitpid polling fallback
+    monkeypatch.setattr(LocalSubprocessSandbox, "_wait_kqueue", staticmethod(lambda proc, timeout: None))
     real_waitpid = os.waitpid
     state = {"first": True}
 
