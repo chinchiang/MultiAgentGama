@@ -146,18 +146,45 @@ _LLM_CALL_SUFFIXES = (
 # Suffixes other libraries use too (Twilio `messages.create`, boto3 Lambda `invoke`): these count only
 # when the receiver resolves to an AI SDK module or client, or is named like one (`llm`, `chain`, ...)
 _AMBIGUOUS_LLM_SUFFIXES = ("messages.create", "messages.stream", "chat.complete", "invoke", "ainvoke")
-_AI_RECEIVER_NAME_RE = re.compile(
-    r"(?i)(llm|chain|agent|runnable|chat_?model|anthropic|claude|openai|gpt|gemini|mistral|ollama|groq)"
-)
+# 在匯入 AI SDK 的檔案中，這些後綴夠有辨識度：接收者是函式參數或來源不明的名稱（`def ask(c): c.messages.create(...)`）
+# 時仍算數，只有已知綁定到非 AI 物件（`tw = twilio.Client(...)`）時才不算。`invoke` 仍需要 AI 接收者。
+# In a file that imports an AI SDK these suffixes are distinctive enough: they count when the receiver is a
+# parameter or a name of unknown origin (`def ask(c): c.messages.create(...)`), and not only when it is known
+# to be bound to a non-AI object (`tw = twilio.Client(...)`). `invoke` still needs an AI receiver.
+_DISTINCTIVE_WHEN_IMPORTED = ("messages.create", "messages.stream", "chat.complete")
+# 接收者名稱中代表 AI 物件的「詞」（以底線／camelCase 切分後比對，`blockchain_client` 不會因含 "chain" 而命中）
+# Name *words* that mark an AI receiver (matched after splitting on underscores / camelCase, so
+# `blockchain_client` does not match because it contains "chain")
+_AI_RECEIVER_WORDS = {"llm", "llms", "chain", "chains", "agent", "agents", "runnable", "chatmodel", "anthropic",
+                      "claude", "openai", "gpt", "gemini", "mistral", "ollama", "groq", "ai", "genai", "lm"}
+_NAME_WORD_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+")
+# 對 AI 接收者呼叫這些方法時，其回傳值是模型輸出（VH-AI-006 的污染來源：`llm.predict`、`LLMChain().run`、`ollama.chat`）
+# On an AI receiver these methods return model output (VH-AI-006 taint sources: `llm.predict`, `LLMChain().run`, `ollama.chat`)
+_LLM_OUTPUT_METHODS = {"run", "arun", "predict", "apredict", "invoke", "ainvoke", "generate", "agenerate", "chat",
+                       "achat", "complete", "acomplete", "completion", "acompletion", "create", "stream", "batch",
+                       "call", "acall", "generate_content", "send_message", "text_generation", "chat_completion",
+                       "query", "aquery"}
 # VH-AI-004 會往上檢查被掃描檔案的幾層父目錄，尋找同名的本機檢查點
 # How many parent directories of a scanned file VH-AI-004 checks for a local checkpoint of that name
 _LOCAL_MODEL_SEARCH_DEPTH = 3
-_OUTPUT_CAP_KWARGS = {"max_tokens", "max_output_tokens", "max_completion_tokens", "max_new_tokens",
-                      "generation_config", "config"}
+# 會移動的分支名稱不算固定版本 ／ Moving branch names are not a pinned revision
+_UNPINNED_REVISIONS = {"main", "master", "head", "latest", "dev", "develop"}
+_OUTPUT_CAP_KWARGS = {"max_tokens", "max_output_tokens", "max_completion_tokens", "max_new_tokens"}
+# 只有內含輸出上限（或不是字面值，給予善意推定）時才算上限的設定物件引數
+# Config-object kwargs that count as a cap only when they contain an output cap (or are not a literal: benefit of the doubt)
+_CONFIG_CAP_KWARGS = {"generation_config", "config"}
 _EXEC_SINKS = {"eval": "CWE-94", "exec": "CWE-94", "compile": "CWE-94", "os.system": "CWE-78",
                "os.popen": "CWE-78", "subprocess.run": "CWE-78", "subprocess.call": "CWE-78",
                "subprocess.Popen": "CWE-78", "subprocess.check_output": "CWE-78",
-               "subprocess.check_call": "CWE-78"}
+               "subprocess.check_call": "CWE-78", "subprocess.getoutput": "CWE-78",
+               "subprocess.getstatusoutput": "CWE-78", "asyncio.create_subprocess_shell": "CWE-78",
+               "asyncio.create_subprocess_exec": "CWE-78"}
+# 接受引數清單的執行點：不經 shell 的清單只有在程式本身（argv[0]）被污染、或 argv[0] 是直譯器／shell 時才危險
+# Sinks that take an argument list: a list without a shell is only dangerous when the program itself (argv[0])
+# is tainted, or argv[0] is an interpreter / shell
+_ARGV_SINKS = {"subprocess.run", "subprocess.call", "subprocess.Popen", "subprocess.check_output", "subprocess.check_call"}
+_SHELL_PROGRAMS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "cmd", "cmd.exe", "powershell", "pwsh",
+                   "python", "python3", "node", "perl", "ruby"}
 _SQL_SINK_ATTRS = {"execute": "CWE-89", "executemany": "CWE-89", "executescript": "CWE-89"}
 
 
@@ -170,6 +197,9 @@ class AISecurityStaticScanner:
         # 被掃描檔案中綁定到 AI SDK 用戶端的名稱／點號屬性（`client = OpenAI()`）
         # Names / dotted attributes bound to AI SDK clients in the file being scanned (`client = OpenAI()`)
         self._ai_clients: Set[str] = set()
+        # 綁定到匯入的非 AI 建構子／工廠結果的名稱（`tw = twilio.rest.Client(...)`、`lam = boto3.client(...)`）
+        # Names bound to the result of an imported non-AI constructor/factory (`tw = twilio.rest.Client(...)`, `lam = boto3.client(...)`)
+        self._non_ai_bound: Set[str] = set()
 
     def scan_files(self, files: Iterable[str]) -> List[StaticFinding]:
         findings: List[StaticFinding] = []
@@ -228,6 +258,7 @@ class AISecurityStaticScanner:
         }
         imports_ai = bool(components)
         self._ai_clients = self._find_ai_clients(tree, aliases) if imports_ai else set()
+        self._non_ai_bound = self._find_non_ai_bound(tree, aliases) if imports_ai else set()
         findings: List[StaticFinding] = []
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
@@ -309,6 +340,28 @@ class AISecurityStaticScanner:
                 break
         return clients
 
+    def _find_non_ai_bound(self, tree: ast.Module, aliases: Dict[str, str]) -> Set[str]:
+        """由「匯入的」非 AI 建構子／工廠呼叫指派的目標；本地輔助函式（`get_client()`）的結果來源不明，不算。
+        Targets assigned from a call to an *imported* non-AI constructor/factory; the result of a local
+        helper (`get_client()`) is of unknown origin and does not count."""
+        bound: Set[str] = set()
+        for value, target in self._bindings(list(ast.walk(tree))):
+            if not isinstance(value, ast.Call) or isinstance(target, ast.Subscript):
+                continue
+            dotted = self._dotted(value.func, aliases)
+            base = self._raw_dotted(value.func).split(".")[0]
+            if dotted and base in aliases and not self._is_ai_dotted(dotted):
+                bound |= self._target_keys(target)
+        return bound - self._ai_clients
+
+    @staticmethod
+    def _ai_named(name: str) -> bool:
+        """名稱的某個詞（或相鄰兩詞的組合，例如 open+ai、chat+model）代表 AI 物件。
+        Whether a word of the name (or two adjacent words joined, e.g. open+ai, chat+model) marks an AI object."""
+        words = [w.lower() for w in _NAME_WORD_RE.findall(name) if not w.isdigit()]
+        joined = {a + b for a, b in zip(words, words[1:], strict=False)}
+        return any(w in _AI_RECEIVER_WORDS for w in words) or bool(joined & _AI_RECEIVER_WORDS)
+
     def _receiver_is_ai(self, receiver: ast.AST, aliases: Dict[str, str]) -> bool:
         if isinstance(receiver, ast.Call):
             return self._is_ai_dotted(self._dotted(receiver.func, aliases)) or self._receiver_is_ai(receiver.func, aliases)
@@ -317,7 +370,7 @@ class AISecurityStaticScanner:
             if raw and (raw in self._ai_clients or self._is_ai_dotted(self._dotted(receiver, aliases))):
                 return True
             last = receiver.attr if isinstance(receiver, ast.Attribute) else receiver.id
-            if _AI_RECEIVER_NAME_RE.search(last):
+            if self._ai_named(last):
                 return True
             return isinstance(receiver, ast.Attribute) and self._receiver_is_ai(receiver.value, aliases)
         if isinstance(receiver, ast.BinOp):  # LangChain LCEL 管線 ／ LangChain LCEL: (prompt | llm).invoke(...)
@@ -346,7 +399,40 @@ class AISecurityStaticScanner:
             if not isinstance(receiver, ast.Attribute):
                 return False
             receiver = receiver.value
-        return self._receiver_is_ai(receiver, aliases)
+        if self._receiver_is_ai(receiver, aliases):
+            return True
+        return suffix in _DISTINCTIVE_WHEN_IMPORTED and self._receiver_origin_unknown(receiver, aliases)
+
+    def _receiver_origin_unknown(self, receiver: ast.AST, aliases: Dict[str, str]) -> bool:
+        """接收者是參數、未知名稱或本地輔助函式的結果，而不是已知的非 AI 物件（匯入的模組／類別或其建構結果）。
+        Whether the receiver is a parameter, an unknown name or a local helper's result rather than a known
+        non-AI object (an imported module / class or something constructed from one)."""
+        if isinstance(receiver, ast.Call):
+            base = self._raw_dotted(receiver.func).split(".")[0]
+            return bool(base) and base not in aliases
+        raw = self._raw_dotted(receiver)
+        if not raw:
+            return False
+        return raw.split(".")[0] not in aliases and raw not in self._non_ai_bound
+
+    def _is_llm_source(self, node: ast.AST, aliases: Dict[str, str]) -> bool:
+        """VH-AI-006 的污染來源：LLM 補全呼叫，加上 AI 接收者上會回傳模型輸出的方法（`llm.predict`、
+        `LLMChain(...).run`、`ollama.chat`、`chain.invoke`），以及直接呼叫模型／鏈物件（`llm(prompt)`）。
+        VH-AI-006 taint sources: LLM completion calls, plus output-returning methods on an AI receiver
+        (`llm.predict`, `LLMChain(...).run`, `ollama.chat`, `chain.invoke`), and direct calls of a model /
+        chain object (`llm(prompt)`)."""
+        if not isinstance(node, ast.Call):
+            return False
+        if self._is_llm_call(node, aliases):
+            return True
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            return func.attr in _LLM_OUTPUT_METHODS and self._receiver_is_ai(func.value, aliases)
+        if isinstance(func, ast.Name) and func.id not in aliases:
+            # 匯入的類別（`OpenAI()`、`pipeline(...)`）是建構子，不是模型輸出
+            # An imported class (`OpenAI()`, `pipeline(...)`) is a constructor, not model output
+            return func.id in self._ai_clients or self._ai_named(func.id)
+        return False
 
     def _call_rules(self, path: str, node: ast.Call, aliases: Dict[str, str], imports_ai: bool) -> List[StaticFinding]:
         out: List[StaticFinding] = []
@@ -358,15 +444,52 @@ class AISecurityStaticScanner:
             out.append(self._finding("VH-AI-002", path, line, "torch.load(...) without weights_only=True"))
         if dotted in _UNSAFE_DESERIALIZERS or (dotted == "numpy.load" and self._is_true(self._kw(node, "allow_pickle"))):
             out.append(self._finding("VH-AI-003", path, line, f"{dotted}(...)"))
-        if (dotted.endswith(".from_pretrained") or dotted in _HUB_DOWNLOADERS) and self._kw(node, "revision") is None:
-            model_id = self._model_id_arg(node)
+        revision = self._kw(node, "revision")
+        if (dotted.endswith(".from_pretrained") or dotted in _HUB_DOWNLOADERS) and not self._pinned(revision):
+            model_id = self._model_id_arg(node, dotted)
             if model_id and _HUB_ID_RE.match(model_id) and not self._local_model_dir(path, model_id):
-                out.append(self._finding("VH-AI-004", path, line, f"{dotted.split('.')[-1]}({model_id!r}) without revision="))
+                why = "without revision=" if revision is None else f"with unpinned revision={ast.unparse(revision)}"
+                out.append(self._finding("VH-AI-004", path, line, f"{dotted.split('.')[-1]}({model_id!r}) {why}"))
         if imports_ai and self._is_llm_call(node, aliases) and not dotted.endswith(("invoke", "ainvoke")):
-            has_cap = any(k.arg in _OUTPUT_CAP_KWARGS or k.arg is None for k in node.keywords)
-            if not has_cap:
+            if not self._has_output_cap(node):
                 out.append(self._finding("VH-AI-005", path, line, f"{dotted}(...) has no max_tokens"))
         return out
+
+    @staticmethod
+    def _pinned(revision: Optional[ast.expr]) -> bool:
+        """`revision=` 是否固定：缺少、None 或會移動的分支名稱（main／master／HEAD…）都不算；非字面值給予善意推定。
+        Whether `revision=` pins the model: missing, None or a moving branch name (main / master / HEAD ...)
+        does not; a non-literal gets the benefit of the doubt."""
+        if revision is None:
+            return False
+        if isinstance(revision, ast.Constant):
+            return isinstance(revision.value, str) and revision.value.strip().lower() not in _UNPINNED_REVISIONS \
+                and bool(revision.value.strip())
+        return True
+
+    @staticmethod
+    def _has_output_cap(node: ast.Call) -> bool:
+        """呼叫是否帶輸出上限：直接的 max_tokens 類引數、`**kwargs`，或內含上限的 `config=`／`generation_config=`
+        （dict 或呼叫字面值；非字面值的名稱給予善意推定）。
+        Whether the call carries an output cap: a direct max_tokens-style kwarg, `**kwargs`, or a
+        `config=` / `generation_config=` containing one (a dict or call literal; a non-literal name gets
+        the benefit of the doubt)."""
+        for k in node.keywords:
+            if k.arg is None or k.arg in _OUTPUT_CAP_KWARGS:
+                return True
+            if k.arg not in _CONFIG_CAP_KWARGS:
+                continue
+            value = k.value
+            if isinstance(value, ast.Dict):
+                if any(key is None or (isinstance(key, ast.Constant) and key.value in _OUTPUT_CAP_KWARGS)
+                       for key in value.keys):
+                    return True
+            elif isinstance(value, ast.Call):
+                if any(kw.arg is None or kw.arg in _OUTPUT_CAP_KWARGS for kw in value.keywords):
+                    return True
+            elif not isinstance(value, ast.Constant):
+                return True
+        return False
 
     @staticmethod
     def _local_model_dir(path: str, model_id: str) -> bool:
@@ -385,10 +508,15 @@ class AISecurityStaticScanner:
             directory = parent
         return False
 
-    def _model_id_arg(self, node: ast.Call) -> Optional[str]:
-        candidates = list(node.args[:1]) + [
-            v for v in (self._kw(node, k) for k in ("pretrained_model_name_or_path", "repo_id", "model")) if v is not None
-        ]
+    def _model_id_arg(self, node: ast.Call, dotted: str = "") -> Optional[str]:
+        """被下載的模型 id：先看關鍵字引數，再看位置引數。`pipeline(task, model)` 的第一個位置引數是任務名稱，
+        所以 pipeline 改看 `model=` 或第二個位置引數。
+        The model id being downloaded: keyword arguments first, then positionals. The first positional of
+        `pipeline(task, model)` is the task name, so a pipeline reads `model=` or the second positional."""
+        keywords = [v for v in (self._kw(node, k) for k in ("pretrained_model_name_or_path", "repo_id", "model"))
+                    if v is not None]
+        positional = node.args[1:2] if dotted.endswith("pipeline") else node.args[:1]
+        candidates = keywords + list(positional)
         for c in candidates:
             if isinstance(c, ast.Constant) and isinstance(c.value, str):
                 return c.value
@@ -426,11 +554,30 @@ class AISecurityStaticScanner:
             if cwe is None and isinstance(node.func, ast.Attribute):
                 sink = sink or node.func.attr
                 cwe = _SQL_SINK_ATTRS.get(node.func.attr)
-            if cwe is None:
+            if cwe is None or not node.args:
                 continue
-            if node.args and self._expr_tainted(node.args[0], tainted, aliases):
+            if self._sink_arg_tainted(node, dotted, tainted, aliases):
                 out.append(self._finding("VH-AI-006", path, node.lineno, f"model output reaches {sink}()", cwe=cwe))
         return out
+
+    def _sink_arg_tainted(self, node: ast.Call, dotted: str, tainted: Set[str], aliases: Dict[str, str]) -> bool:
+        """執行點的第一個引數是否帶有模型輸出。不經 shell 的字面值引數清單（建議的安全形式
+        `subprocess.run(["git", "checkout", "--", branch])`）只有在 argv[0] 被污染、或 argv[0] 是 shell／直譯器時才算。
+        Whether the sink's first argument carries model output. A literal argument list without a shell (the
+        recommended safe form `subprocess.run(["git", "checkout", "--", branch])`) only counts when argv[0] is
+        tainted or argv[0] is a shell / interpreter."""
+        first = node.args[0]
+        if dotted in _ARGV_SINKS and isinstance(first, (ast.List, ast.Tuple)) \
+                and not self._is_true(self._kw(node, "shell")):
+            if not first.elts:
+                return False
+            program = first.elts[0]
+            if self._expr_tainted(program, tainted, aliases):
+                return True
+            is_shell = isinstance(program, ast.Constant) and isinstance(program.value, str) \
+                and os.path.basename(program.value).lower() in _SHELL_PROGRAMS
+            return is_shell and any(self._expr_tainted(e, tainted, aliases) for e in first.elts[1:])
+        return self._expr_tainted(first, tainted, aliases)
 
     @staticmethod
     def _bindings(body: List[ast.AST]) -> List[tuple]:
@@ -485,7 +632,7 @@ class AISecurityStaticScanner:
         return any(
             (isinstance(n, ast.Name) and n.id in tainted)
             or (isinstance(n, ast.Attribute) and self._raw_dotted(n) in tainted)
-            or self._is_llm_call(n, aliases)
+            or self._is_llm_source(n, aliases)
             for n in ast.walk(expr)
         )
 
