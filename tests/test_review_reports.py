@@ -254,3 +254,13 @@ def test_threat_symbol_prefers_routes_over_functions():
     route = _symbol("GET /users", "route")
     assert ReportGenerator._threat_symbol(_threat(attack_vector="GET /users", attack_scenario=""), [fn, route]) is route
     assert os.path.basename(route.file_path) == "app.py"
+
+
+def test_sarif_uri_escaping_path_is_omitted_whatever_the_working_directory(tmp_path, monkeypatch):
+    """跳出 %SRCROOT% 的相對路徑即使相對於工作目錄真的存在，也不會變成 file:// URI。
+    An escaping relative path is never turned into a file:// URI just because it exists relative to the cwd."""
+    root = tmp_path / "a" / "b" / "repo"
+    root.mkdir(parents=True)
+    (tmp_path / "secret.txt").write_text("x", encoding="utf-8")
+    monkeypatch.chdir(tmp_path / "a" / "b")
+    assert ReportGenerator._sarif_uri("../../secret.txt", str(root)) is None

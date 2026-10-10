@@ -705,10 +705,22 @@ class ReportGenerator:
         drive = _WINDOWS_DRIVE_RE.match(path)
         if not drive and not os.path.isabs(path) and os.path.isfile(path):
             # 擷取器相對於工作目錄記下的路徑（例如在子目錄執行 `--target .`）：先解析成絕對路徑，
-            # 才能相對於 %SRCROOT% 正確相對化，而不是原樣輸出
+            # 才能相對於 %SRCROOT% 正確相對化，而不是原樣輸出。只在解析結果位於 %SRCROOT% 內時採用：
+            # 否則 `../../etc/passwd` 這類路徑會因工作目錄剛好在哪而變成 file:// URI
             # A path the extractor recorded relative to the working directory (e.g. `--target .` run from a
-            # subdirectory): resolve it first, so it is relativized against %SRCROOT% instead of emitted as-is
-            path = os.path.abspath(path)
+            # subdirectory): resolve it first, so it is relativized against %SRCROOT% instead of emitted as-is.
+            # Only used when it lands inside %SRCROOT%: otherwise a path like `../../etc/passwd` would become a
+            # file:// URI depending on where the working directory happens to be
+            resolved = os.path.abspath(path)
+            root = os.path.abspath(target_path or ".")
+            if os.path.isfile(root):
+                root = os.path.dirname(root)
+            try:
+                inside = os.path.commonpath([resolved, root]) == root
+            except ValueError:  # Windows 上不同磁碟機 ／ different drives on Windows
+                inside = False
+            if inside:
+                path = resolved
         if drive or _WINDOWS_DRIVE_RE.match(target_path or ""):
             return ReportGenerator._sarif_uri_windows(path, target_path)
         if os.path.isabs(path):
