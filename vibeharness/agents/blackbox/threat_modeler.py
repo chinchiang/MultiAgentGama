@@ -24,6 +24,28 @@ logger = logging.getLogger("VibeHarness.ThreatModeler")
 BATCH_MAX_TOKENS = 8000
 BATCH_MAX_SYMBOLS = 15
 
+# 模型選的威脅 id 會被重複用在測試 id、檔名與報告的程式碼區段中：不在這個純識別字字母表內的 id
+# 會被替換，而不是在每個匯點各自跳脫
+# The model-chosen threat id is reused in test ids, file names and report code spans: anything outside
+# this plain identifier alphabet is replaced rather than escaped at every sink
+_THREAT_ID_RE = re.compile(r"[A-Za-z0-9_.:-]{1,40}")
+
+
+def _category_key(text: str) -> str:
+    return re.sub(r"[\s_\-]+", " ", text).strip().lower()
+
+
+_STRIDE_BY_KEY = {_category_key(c.value): c for c in STRIDECategory}
+
+
+def _stride_category(value: str) -> Optional[STRIDECategory]:
+    """模型文字中的 STRIDE 類別，容忍大小寫與 `_`／`-` 分隔符（"DENIAL_OF_SERVICE"、
+    "Elevation-of-Privilege"）；沒有指名任何類別時為 None。
+    STRIDE category from model text, tolerant of case and `_`/`-` separators
+    ("DENIAL_OF_SERVICE", "Elevation-of-Privilege"); None when it names no category."""
+    return _STRIDE_BY_KEY.get(_category_key(value))
+
+
 _SEVERITY_RANK = {
     FindingSeverity.CRITICAL: 0, FindingSeverity.HIGH: 1, FindingSeverity.MEDIUM: 2,
     FindingSeverity.LOW: 3, FindingSeverity.INFO: 4,
@@ -252,6 +274,9 @@ class AutomatedThreatModeler:
                 except Exception as e:
                     logger.error(bi(f"威脅建模批次失敗：{type(e).__name__}: {e}",
                                     f"Threat modeler batch failed: {type(e).__name__}: {e}"))
+                    # 記入 call_log，讓品質閘門把缺少的批次視為證據缺口
+                    # Booked in call_log so the quality gate sees the missing batch as an evidence gap
+                    self.gateway.record_failure("blackbox_threat_modeler", f"{type(e).__name__}: {e}")
                     responses.append({})
 
         report_fields: Optional[Dict[str, Any]] = None
@@ -326,12 +351,11 @@ class AutomatedThreatModeler:
                                   f"Skipping malformed threat entry #{position} (not a JSON object)"))
                 continue
 
-            try:
-                category = STRIDECategory(str(item.get("stride_category") or "Tampering"))
-            except ValueError:
+            parsed_category = _stride_category(str(item.get("stride_category") or "Tampering"))
+            if parsed_category is None:
                 logger.warning(bi(f"'{item.get('threat_id')}' 的 STRIDE 類別 '{item.get('stride_category')}' 未知；改用 Tampering",
                                   f"Unknown STRIDE category '{item.get('stride_category')}' on '{item.get('threat_id')}'; using Tampering"))
-                category = STRIDECategory.TAMPERING
+            category = parsed_category or STRIDECategory.TAMPERING
 
             try:
                 severity = FindingSeverity(str(item.get("severity") or "HIGH").upper())
@@ -341,7 +365,9 @@ class AutomatedThreatModeler:
                 severity = FindingSeverity.HIGH
 
             threat_id = item.get("threat_id")
-            if not isinstance(threat_id, str) or not threat_id.strip() or threat_id in used_ids:
+            if isinstance(threat_id, str):
+                threat_id = threat_id.strip()
+            if not isinstance(threat_id, str) or not _THREAT_ID_RE.fullmatch(threat_id) or threat_id in used_ids:
                 # 只在實際用掉一個後備 id 時才推進後備計數器，
                 # 否則模型提供的 id 會在 THREAT-XX 序列中留下空缺。
                 # Only advance the fallback counter when a fallback id is actually consumed,

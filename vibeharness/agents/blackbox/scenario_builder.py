@@ -194,6 +194,9 @@ class ThreatScenarioBuilder:
                     # The threat is reported as untested rather than aborting the other syntheses
                     logger.error(bi(f"[{threat.threat_id}] 的攻擊合成失敗：{type(e).__name__}: {e}",
                                     f"Attack synthesis for [{threat.threat_id}] failed: {type(e).__name__}: {e}"))
+                    # 記入 call_log，讓品質閘門把未測試的威脅視為證據缺口
+                    # Booked in call_log so the quality gate sees the untested threat as an evidence gap
+                    self.gateway.record_failure("blackbox_test_synthesizer", f"{type(e).__name__}: {e}")
                     continue
                 if test is not None:
                     tests.append(test)
