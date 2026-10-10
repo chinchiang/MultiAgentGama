@@ -142,6 +142,16 @@ _LLM_CALL_SUFFIXES = (
     "chat.completions.create", "completions.create", "responses.create", "messages.create", "messages.stream",
     "litellm.completion", "litellm.acompletion", "generate_content", "chat.complete", "invoke", "ainvoke",
 )
+# 其他函式庫也使用的後綴（Twilio `messages.create`、boto3 Lambda `invoke`）：只有當接收者解析為 AI SDK 模組或用戶端，或名稱像是 AI 物件（`llm`、`chain`…）時才算數
+# Suffixes other libraries use too (Twilio `messages.create`, boto3 Lambda `invoke`): these count only
+# when the receiver resolves to an AI SDK module or client, or is named like one (`llm`, `chain`, ...)
+_AMBIGUOUS_LLM_SUFFIXES = ("messages.create", "messages.stream", "chat.complete", "invoke", "ainvoke")
+_AI_RECEIVER_NAME_RE = re.compile(
+    r"(?i)(llm|chain|agent|runnable|chat_?model|anthropic|claude|openai|gpt|gemini|mistral|ollama|groq)"
+)
+# VH-AI-004 會往上檢查被掃描檔案的幾層父目錄，尋找同名的本機檢查點
+# How many parent directories of a scanned file VH-AI-004 checks for a local checkpoint of that name
+_LOCAL_MODEL_SEARCH_DEPTH = 3
 _OUTPUT_CAP_KWARGS = {"max_tokens", "max_output_tokens", "max_completion_tokens", "max_new_tokens",
                       "generation_config", "config"}
 _EXEC_SINKS = {"eval": "CWE-94", "exec": "CWE-94", "compile": "CWE-94", "os.system": "CWE-78",
@@ -157,6 +167,9 @@ class AISecurityStaticScanner:
 
     def __init__(self) -> None:
         self.ai_components: List[str] = []
+        # 被掃描檔案中綁定到 AI SDK 用戶端的名稱／點號屬性（`client = OpenAI()`）
+        # Names / dotted attributes bound to AI SDK clients in the file being scanned (`client = OpenAI()`)
+        self._ai_clients: Set[str] = set()
 
     def scan_files(self, files: Iterable[str]) -> List[StaticFinding]:
         findings: List[StaticFinding] = []
@@ -214,6 +227,7 @@ class AISecurityStaticScanner:
             for target in aliases.values() if target == mod or target.startswith(mod + ".")
         }
         imports_ai = bool(components)
+        self._ai_clients = self._find_ai_clients(tree, aliases) if imports_ai else set()
         findings: List[StaticFinding] = []
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
@@ -257,6 +271,60 @@ class AISecurityStaticScanner:
         return ".".join(reversed(parts))
 
     @staticmethod
+    def _raw_dotted(node: ast.AST) -> str:
+        """Name/Attribute 鏈未解析的點號形式（`self.client`）；其他節點回傳 ""。
+        Unresolved dotted form of a Name/Attribute chain (`self.client`); "" for anything else."""
+        parts: List[str] = []
+        while isinstance(node, ast.Attribute):
+            parts.append(node.attr)
+            node = node.value
+        if not isinstance(node, ast.Name):
+            return ""
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+
+    @staticmethod
+    def _is_ai_dotted(dotted: str) -> bool:
+        return any(dotted == m or dotted.startswith(m + ".") for m in AI_PYTHON_MODULES)
+
+    def _find_ai_clients(self, tree: ast.Module, aliases: Dict[str, str]) -> Set[str]:
+        """由 AI SDK 建構子／工廠指派的目標，或由使用它的運算式（LCEL 管線）指派的目標。
+        Targets assigned from an AI SDK constructor/factory, or from an expression using one (LCEL pipes)."""
+        clients: Set[str] = set()
+        # 指派、`with ... as` 與海象運算子目標；迴圈變數走訪的是結果，不是用戶端
+        # Assignments, `with ... as` and walrus targets; loop variables iterate results, they are no clients
+        nodes = [n for n in ast.walk(tree) if not isinstance(n, (ast.For, ast.AsyncFor, ast.comprehension))]
+        bindings = [(value, target) for value, target in self._bindings(nodes) if not isinstance(target, ast.Subscript)]
+        for _ in range(4):
+            before = len(clients)
+            for value, target in bindings:
+                uses_ai = any(
+                    (isinstance(n, ast.Call) and self._is_ai_dotted(self._dotted(n.func, aliases)))
+                    or (isinstance(n, (ast.Name, ast.Attribute)) and self._raw_dotted(n) in clients)
+                    for n in ast.walk(value)
+                )
+                if uses_ai:
+                    clients |= self._target_keys(target)
+            if len(clients) == before:
+                break
+        return clients
+
+    def _receiver_is_ai(self, receiver: ast.AST, aliases: Dict[str, str]) -> bool:
+        if isinstance(receiver, ast.Call):
+            return self._is_ai_dotted(self._dotted(receiver.func, aliases)) or self._receiver_is_ai(receiver.func, aliases)
+        if isinstance(receiver, (ast.Name, ast.Attribute)):
+            raw = self._raw_dotted(receiver)
+            if raw and (raw in self._ai_clients or self._is_ai_dotted(self._dotted(receiver, aliases))):
+                return True
+            last = receiver.attr if isinstance(receiver, ast.Attribute) else receiver.id
+            if _AI_RECEIVER_NAME_RE.search(last):
+                return True
+            return isinstance(receiver, ast.Attribute) and self._receiver_is_ai(receiver.value, aliases)
+        if isinstance(receiver, ast.BinOp):  # LangChain LCEL 管線 ／ LangChain LCEL: (prompt | llm).invoke(...)
+            return self._receiver_is_ai(receiver.left, aliases) or self._receiver_is_ai(receiver.right, aliases)
+        return False
+
+    @staticmethod
     def _kw(node: ast.Call, name: str) -> Optional[ast.expr]:
         return next((k.value for k in node.keywords if k.arg == name), None)
 
@@ -268,7 +336,17 @@ class AISecurityStaticScanner:
         if not isinstance(node, ast.Call):
             return False
         dotted = self._dotted(node.func, aliases)
-        return any(dotted == s or dotted.endswith("." + s) for s in _LLM_CALL_SUFFIXES)
+        suffix = next((s for s in _LLM_CALL_SUFFIXES if dotted == s or dotted.endswith("." + s)), None)
+        if suffix is None:
+            return False
+        if suffix not in _AMBIGUOUS_LLM_SUFFIXES or self._is_ai_dotted(dotted):
+            return True
+        receiver: ast.AST = node.func
+        for _ in suffix.split("."):
+            if not isinstance(receiver, ast.Attribute):
+                return False
+            receiver = receiver.value
+        return self._receiver_is_ai(receiver, aliases)
 
     def _call_rules(self, path: str, node: ast.Call, aliases: Dict[str, str], imports_ai: bool) -> List[StaticFinding]:
         out: List[StaticFinding] = []
@@ -282,13 +360,30 @@ class AISecurityStaticScanner:
             out.append(self._finding("VH-AI-003", path, line, f"{dotted}(...)"))
         if (dotted.endswith(".from_pretrained") or dotted in _HUB_DOWNLOADERS) and self._kw(node, "revision") is None:
             model_id = self._model_id_arg(node)
-            if model_id and _HUB_ID_RE.match(model_id) and not os.path.exists(model_id):
+            if model_id and _HUB_ID_RE.match(model_id) and not self._local_model_dir(path, model_id):
                 out.append(self._finding("VH-AI-004", path, line, f"{dotted.split('.')[-1]}({model_id!r}) without revision="))
         if imports_ai and self._is_llm_call(node, aliases) and not dotted.endswith(("invoke", "ainvoke")):
             has_cap = any(k.arg in _OUTPUT_CAP_KWARGS or k.arg is None for k in node.keywords)
             if not has_cap:
                 out.append(self._finding("VH-AI-005", path, line, f"{dotted}(...) has no max_tokens"))
         return out
+
+    @staticmethod
+    def _local_model_dir(path: str, model_id: str) -> bool:
+        """`org/name` 是否為被掃描檔案旁（或往上數層）的檢查點目錄。解析基準是目標而不是框架的工作目錄，因此結果不取決於框架在哪裡執行。
+        Whether `org/name` is a checkpoint directory next to the scanned file (or a few levels up).
+
+        Resolved against the target, never the harness's working directory, so the verdict does not
+        depend on where the harness happens to run."""
+        directory = os.path.dirname(os.path.abspath(path))
+        for _ in range(_LOCAL_MODEL_SEARCH_DEPTH + 1):
+            if os.path.isdir(os.path.join(directory, model_id)):
+                return True
+            parent = os.path.dirname(directory)
+            if parent == directory:
+                break
+            directory = parent
+        return False
 
     def _model_id_arg(self, node: ast.Call) -> Optional[str]:
         candidates = list(node.args[:1]) + [
@@ -307,18 +402,18 @@ class AISecurityStaticScanner:
         VH-AI-006: names assigned from an LLM call (and names derived from them) reaching an exec/SQL sink.
 
         Intra-scope and flow-insensitive on purpose: cheap, deterministic, and biased toward the
-        direct `answer = llm(...); eval(answer)` shape vibe coding produces.
+        direct `answer = llm(...); eval(answer)` shape vibe coding produces. Bindings are assignments,
+        `for` targets, `with ... as` targets, comprehension targets and walrus targets; attribute
+        targets are tracked by their dotted name (`self.last`), never by their base object.
         """
         body = self._own_nodes(scope)
         tainted: Set[str] = set()
-        assigns = [n for n in body if isinstance(n, (ast.Assign, ast.AnnAssign, ast.AugAssign))]
+        bindings = self._bindings(body)
         for _ in range(4):  # 對衍生指派取定點 ／ fixpoint over derived assignments
             before = len(tainted)
-            for a in assigns:
-                if a.value is not None and self._expr_tainted(a.value, tainted, aliases):
-                    targets = a.targets if isinstance(a, ast.Assign) else [a.target]
-                    for t in targets:
-                        tainted |= {n.id for n in ast.walk(t) if isinstance(n, ast.Name)}
+            for value, target in bindings:
+                if self._expr_tainted(value, tainted, aliases):
+                    tainted |= self._target_keys(target)
             if len(tainted) == before:
                 break
         out: List[StaticFinding] = []
@@ -338,6 +433,41 @@ class AISecurityStaticScanner:
         return out
 
     @staticmethod
+    def _bindings(body: List[ast.AST]) -> List[tuple]:
+        """一個範疇中（值運算式, 綁定目標）的配對。
+        (value expression, bound target) pairs of a scope."""
+        pairs: List[tuple] = []
+        for n in body:
+            if isinstance(n, ast.Assign):
+                pairs += [(n.value, t) for t in n.targets]
+            elif isinstance(n, (ast.AnnAssign, ast.AugAssign)) and n.value is not None:
+                pairs.append((n.value, n.target))
+            elif isinstance(n, (ast.For, ast.AsyncFor, ast.comprehension)):
+                pairs.append((n.iter, n.target))
+            elif isinstance(n, (ast.With, ast.AsyncWith)):
+                pairs += [(item.context_expr, item.optional_vars) for item in n.items if item.optional_vars]
+            elif isinstance(n, ast.NamedExpr):
+                pairs.append((n.value, n.target))
+        return pairs
+
+    def _target_keys(self, target: ast.AST) -> Set[str]:
+        """指派目標綁定的污染鍵：名稱、拆包元素、點號屬性，以及下標的容器（`cache[key] = ...` 污染 `cache`，而不是 `key`）。
+        Taint keys bound by an assignment target: names, unpacked elements, dotted attributes, and
+        the container of a subscript (`cache[key] = ...` taints `cache`, not `key`)."""
+        if isinstance(target, ast.Name):
+            return {target.id}
+        if isinstance(target, (ast.Tuple, ast.List)):
+            return set().union(*(self._target_keys(e) for e in target.elts)) if target.elts else set()
+        if isinstance(target, ast.Starred):
+            return self._target_keys(target.value)
+        if isinstance(target, ast.Attribute):
+            raw = self._raw_dotted(target)
+            return {raw} if raw else set()
+        if isinstance(target, ast.Subscript):
+            return self._target_keys(target.value)
+        return set()
+
+    @staticmethod
     def _own_nodes(scope: ast.AST) -> List[ast.AST]:
         """此範疇的節點，不深入巢狀的函式／類別（它們會各自被掃描）。
         Nodes of this scope, not descending into nested functions/classes (they are scanned on their own)."""
@@ -353,7 +483,9 @@ class AISecurityStaticScanner:
 
     def _expr_tainted(self, expr: ast.AST, tainted: Set[str], aliases: Dict[str, str]) -> bool:
         return any(
-            (isinstance(n, ast.Name) and n.id in tainted) or self._is_llm_call(n, aliases)
+            (isinstance(n, ast.Name) and n.id in tainted)
+            or (isinstance(n, ast.Attribute) and self._raw_dotted(n) in tainted)
+            or self._is_llm_call(n, aliases)
             for n in ast.walk(expr)
         )
 

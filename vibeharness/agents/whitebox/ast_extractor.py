@@ -36,6 +36,16 @@ _JS_CONTROL_KEYWORDS = {"if", "for", "while", "switch", "catch", "return", "func
 _JS_REGEX_KEYWORDS = {"return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw",
                       "case", "do", "else", "yield", "await"}
 _JS_IDENTIFIER = r"[A-Za-z0-9_$]+"
+# 其 .<verb>('/path', ...) 呼叫屬於路由的接收者（由路由器工廠指派的變數也算）
+# Receivers whose .<verb>('/path', ...) calls are routes (variables assigned from a router factory count too)
+_JS_ROUTE_RECEIVERS = {"app", "router", "server", "fastify", "api", "routes", "route"}
+_JS_ROUTER_FACTORY_RE = re.compile(
+    rf"\b({_JS_IDENTIFIER})\s*(?::[^=;\n]*)?=\s*(?:new\s+)?"
+    r"(?:express\s*\(|(?:express\s*\.\s*)?Router\s*\(|[Ff]astify\s*\(|Hono\s*\(|Elysia\s*\(|KoaRouter\s*\()"
+)
+# 即使路徑不是字串字面值也會註冊路由的 Python 裝飾器接收者
+# Python decorator receivers that register routes even when the path is not a string literal
+_PY_ROUTE_RECEIVERS = {"app", "router", "api", "bp", "blueprint", "application", "server"}
 
 
 class ASTExtractor:
@@ -210,11 +220,12 @@ class ASTExtractor:
         def line_of(pos: int) -> int:
             return bisect_right(line_offsets, pos)
 
-        symbols: List[CodeSymbol] = []
         functions = self._extract_js_functions(content, masked, file_path, line_of)
-        symbols.extend(functions)
-        symbols.extend(self._extract_js_routes(content, masked, file_path, line_of, functions))
-        return symbols
+        routes = self._extract_js_routes(content, masked, file_path, line_of, functions)
+        # Next.js 動詞處理函式被改標為路由；只保留一個符號，讓它只被審查一次
+        # A Next.js verb handler is retagged as a route; keep one symbol so it is reviewed once
+        retagged = {(r.name, r.line_start) for r in routes}
+        return [f for f in functions if (f.name, f.line_start) not in retagged] + routes
 
     # --- JS/TS 詞法分析輔助函式 ---
     # --- JS/TS lexing helpers ---------------------------------------------------
@@ -252,7 +263,10 @@ class ASTExtractor:
                     i += 1
                 i += 2
                 continue
-            if c in "\"'":
+            glued = i > 0 and (source[i - 1].isalnum() or source[i - 1] in "_$") and prev_word not in _JS_REGEX_KEYWORDS
+            if c in "\"'" and not glued:
+                # 緊貼在識別字後的引號（JSX 文字中的 `Don't`）不可能開啟 JS 字串
+                # A quote glued to an identifier (`Don't` in JSX text) cannot open a JS string
                 i = ASTExtractor._mask_quoted(source, out, i, c)
                 prev_char, prev_word = c, ""
                 continue
@@ -260,16 +274,19 @@ class ASTExtractor:
                 i = ASTExtractor._mask_template(source, out, i)
                 prev_char, prev_word = c, ""
                 continue
-            if c == "/" and nxt not in ("", "/", "*"):
+            if c == "/" and nxt not in ("", "/", "*", ">") and prev_char != "<":
                 # 正規表達式字面值還是除法？值結尾 token 之後的 `/` 是除法，
                 # 除非該 token 是會開啟正規表達式位置的關鍵字（return /x/、typeof /y/）。
                 # Regex literal or division? A `/` after a value-ending token is division,
                 # unless the token is a keyword that opens a regex position (return /x/, typeof /y/).
+                # `</tag>` and `/>` are JSX, and a regex literal never spans a line break.
                 after_value = prev_char and (prev_char.isalnum() or prev_char in ")]}$_.\"'`")
                 if not after_value or prev_word in _JS_REGEX_KEYWORDS:
-                    i = ASTExtractor._mask_regex(source, out, i)
-                    prev_char, prev_word = c, ""
-                    continue
+                    end = ASTExtractor._mask_regex(source, out, i)
+                    if end is not None:
+                        i = end
+                        prev_char, prev_word = c, ""
+                        continue
             if not c.isspace():
                 word_continues = prev_char and (prev_char.isalnum() or prev_char in "_$")
                 if c.isalnum() or c in "_$":
@@ -282,9 +299,14 @@ class ASTExtractor:
 
     @staticmethod
     def _mask_quoted(source: str, out: List[str], i: int, quote: str) -> int:
+        """清空 '...' 或 "..." 字面值；它在結尾引號或未跳脫的換行處結束（JS 字串不能跨行，所以落單的引號絕不會吞掉檔案其餘部分）。
+        Masks a '...' or "..." literal; it ends at the closing quote or an unescaped newline
+        (JS strings cannot span lines, so a stray quote never swallows the rest of the file)."""
         n = len(source)
         i += 1
         while i < n and source[i] != quote:
+            if source[i] == "\n":
+                return i  # 未結束：換行結束它 ／ unterminated: the line break ends it
             if source[i] == "\\":
                 out[i] = " "
                 i += 1
@@ -335,8 +357,25 @@ class ASTExtractor:
         return i + 1
 
     @staticmethod
-    def _mask_regex(source: str, out: List[str], i: int) -> int:
+    def _mask_regex(source: str, out: List[str], i: int) -> Optional[int]:
+        """清空正規表達式字面值；若它沒有在同一行結束則回傳 None（什麼都不清空）。
+        Masks a regex literal; None (nothing masked) when it is not closed on its own line."""
         n = len(source)
+        j = i + 1
+        in_class = False
+        while j < n and source[j] != "\n":
+            if source[j] == "\\":
+                j += 2
+                continue
+            if source[j] == "[":
+                in_class = True
+            elif source[j] == "]":
+                in_class = False
+            elif source[j] == "/" and not in_class:
+                break
+            j += 1
+        if j >= n or source[j] != "/":
+            return None
         i += 1
         in_class = False
         while i < n:
@@ -429,17 +468,22 @@ class ASTExtractor:
         def overlaps(start: int, end: int) -> bool:
             return any(start < t_end and end > t_start for t_start, t_end in taken)
 
-        # 函式宣告與函式運算式：[export] [async] function[*] name(params) {...}
-        # function declarations and function expressions: [export] [async] function[*] name(params) {...}
-        fn_re = re.compile(rf"(?:export\s+)?(?:async\s+)?function\s*\*?\s*({_JS_IDENTIFIER})\s*\(")
+        # 函式宣告與函式運算式：
+        # [export] [default] [async] function[*] name[<T>](params)[: ReturnType] {...}
+        # function declarations and function expressions:
+        # [export] [default] [async] function[*] name[<T>](params)[: ReturnType] {...}
+        fn_re = re.compile(
+            rf"(?<![\w$.])(?:export\s+)?(?:default\s+)?(?:async\s+)?\bfunction\b\s*\*?\s*"
+            rf"({_JS_IDENTIFIER})\s*(?:<[^(){{}};]*>\s*)?\("
+        )
         for m in fn_re.finditer(masked):
-            open_paren = masked.index("(", m.end() - 1)
+            open_paren = m.end() - 1
             close_paren = self._match_delim(masked, open_paren, "(", ")")
             if close_paren is None:
                 continue
             name = m.group(1)
             params = self._split_params(content[open_paren + 1:close_paren])
-            body_pos = self._skip_ws(masked, close_paren + 1)
+            body_pos = self._body_after_params(masked, close_paren)
             end_pos = close_paren
             if body_pos is not None and masked[body_pos] == "{":
                 end_pos = self._match_delim(masked, body_pos, "{", "}") or close_paren
@@ -504,7 +548,11 @@ class ASTExtractor:
             if not masked[pos].isspace():
                 pos += 1
                 continue
-            m = re.match(rf"\s+((?:async\s+|static\s+|\*\s*)*({_JS_IDENTIFIER}))\s*\(", masked[pos:body_end])
+            m = re.match(
+                rf"\s+((?:(?:public|private|protected|static|async|override|readonly|abstract)\s+|\*\s*)*"
+                rf"({_JS_IDENTIFIER}))\s*(?:<[^(){{}};]*>\s*)?\(",
+                masked[pos:body_end],
+            )
             if not m:
                 pos += 1
                 continue
@@ -517,7 +565,7 @@ class ASTExtractor:
             if close_paren is None:
                 pos += 1
                 continue
-            body_pos = self._skip_ws(masked, close_paren + 1)
+            body_pos = self._body_after_params(masked, close_paren)
             if body_pos is None or masked[body_pos] != "{":
                 pos += 1
                 continue
@@ -534,21 +582,35 @@ class ASTExtractor:
 
     def _extract_js_routes(self, content: str, masked: str, file_path: str, line_of,
                            functions: List[CodeSymbol]) -> List[CodeSymbol]:
-        """app/router/server/fastify.<verb>('/path', handler) 呼叫，加上 Next.js 以動詞命名的處理函式。
-        app/router/server/fastify.<verb>('/path', handler) calls, plus Next.js verb-named handlers."""
+        """<router>.<verb>('/path', handler) 呼叫，加上 Next.js 以動詞命名的處理函式。
+
+        只有已知的路由接收者才算（app/router/server/fastify/api/routes、`*Router` 名稱，以及
+        由 express()/Router()/fastify()/... 指派的變數），且第一個引數必須是路徑字面值，
+        因此 `headers.get("authorization")` 或 `cache.delete(key)` 都不是路由。
+        <router>.<verb>('/path', handler) calls, plus Next.js verb-named handlers.
+
+        Only known router receivers count (app/router/server/fastify/api/routes, `*Router` names, and
+        variables assigned from express()/Router()/fastify()/...), and the first argument must be a
+        path literal, so `headers.get("authorization")` or `cache.delete(key)` is not a route."""
         symbols: List[CodeSymbol] = []
         verbs = "|".join(_JS_HTTP_VERBS)
-        route_re = re.compile(rf"(?:^|[^.\w])(({_JS_IDENTIFIER})\.({verbs}))\s*\(")
+        route_re = re.compile(rf"(?:^|[^.\w$])(({_JS_IDENTIFIER})\.({verbs}))\s*\(")
+        receivers = _JS_ROUTE_RECEIVERS | {f.group(1) for f in _JS_ROUTER_FACTORY_RE.finditer(masked)}
         for m in route_re.finditer(masked):
             receiver, verb = m.group(2), m.group(3)
-            if receiver in _JS_CONTROL_KEYWORDS:
+            if receiver not in receivers and not receiver.lower().endswith("router"):
                 continue
             open_paren = m.end() - 1
             close_paren = self._match_delim(masked, open_paren, "(", ")")
             if close_paren is None:
                 continue
-            path = self._first_string_literal(content[open_paren + 1:close_paren])
-            name = f"{verb.upper()} {path}" if path else f"{verb.upper()} {receiver}.{verb}"
+            first_arg = self._skip_ws(masked, open_paren + 1)
+            if first_arg is None or content[first_arg] not in "\"'`":
+                continue
+            path = self._first_string_literal(content[first_arg:close_paren])
+            if not path or not (path.startswith("/") or path == "*"):
+                continue
+            name = f"{verb.upper()} {path}"
             symbols.append(self._snippet(
                 content, line_of, m.start(1), close_paren, file_path, name, "route", [],
                 signature=name
@@ -557,9 +619,11 @@ class ASTExtractor:
         # 函式會重新標記為路由。
         # Next.js App Router handlers: export [async] function GET(request) {...} — the verb-named
         # functions are retagged as routes.
+        # Next.js requires the exact upper-case export name; a helper `function get(key)` is no route
         verb_names = {v.upper() for v in _JS_HTTP_VERBS}
         for sym in functions:
-            if sym.symbol_type == "function" and sym.name.upper() in verb_names:
+            if (sym.symbol_type == "function" and sym.name in verb_names
+                    and sym.source_code.lstrip().startswith("export")):
                 symbols.append(sym.model_copy(update={
                     "symbol_type": "route",
                     "signature": f"export async function {sym.name}({', '.join(sym.parameters)})",
@@ -606,9 +670,23 @@ class ASTExtractor:
         # (params) 或單一不加括號的參數（const f = x => ...）
         # (params) or a single bare parameter (const f = x => ...)
         j = self._skip_ws_back(masked, i)
+        if j is not None and masked[j] != ")":
+            # 參數與箭號之間的 TS 回傳型別：(a: number): number => ...
+            # a TS return type between the params and the arrow: (a: number): number => ...
+            colon = self._annotation_colon_back(masked, j)
+            before = self._skip_ws_back(masked, colon - 1) if colon is not None else None
+            if before is not None and masked[before] == ")":
+                j = before
         if j is not None and masked[j] == ")":
             close_paren = j
             i = self._find_open_paren(masked, j) - 1
+            # 參數前的 TS 泛型參數：<T,>(x: T) => x
+            # TS generic parameters before the params: <T,>(x: T) => x
+            g = self._skip_ws_back(masked, i)
+            if g is not None and masked[g] == ">":
+                lt = masked.rfind("<", 0, g)
+                if lt >= 0:
+                    i = lt - 1
         else:
             word, w_start = self._word_back(masked, i)
             if word:
@@ -623,9 +701,16 @@ class ASTExtractor:
         j = self._skip_ws_back(masked, i)
         if j is None or masked[j] != "=" or (j > 0 and masked[j - 1] in "=!<>+-*/%&|^"):
             return None, None, None
-        # 被指派的變數名稱
-        # the assigned variable name
+        # 被指派的變數名稱，可能帶型別註記：const handler: NextApiHandler = ...
+        # the assigned variable name, possibly annotated: const handler: NextApiHandler = ...
         name, name_start = self._word_back(masked, j - 1)
+        type_end = self._skip_ws_back(masked, j - 1)
+        colon = self._annotation_colon_back(masked, type_end) if type_end is not None else None
+        if colon is not None:
+            var, var_start = self._word_back(masked, colon - 1)
+            keyword = self._word_back(masked, var_start - 1)[0] if var else None
+            if var and keyword in ("const", "let", "var"):
+                name, name_start = var, var_start
         if not name:
             return None, None, None
         start = name_start
@@ -638,6 +723,77 @@ class ASTExtractor:
             if word == "export":
                 start = w_start
         return start, name, close_paren
+
+    def _body_after_params(self, masked: str, close_paren: int) -> Optional[int]:
+        """參數列之後第一個有意義的位置，會略過 TS 回傳型別註記。
+        First significant position after a parameter list, skipping a TS return type annotation."""
+        pos = self._skip_ws(masked, close_paren + 1)
+        if pos is not None and masked[pos] == ":":
+            return self._skip_type(masked, pos)
+        return pos
+
+    def _skip_type(self, masked: str, colon: int) -> Optional[int]:
+        """從 TS 回傳型別的 ':' 起算，其後函式本體 '{' 的位置（None：沒有本體）。
+        From the ':' of a TS return type, the position of the body '{' after it (None: no body)."""
+        n = len(masked)
+        i = colon + 1
+        depth = 0
+        expect_type = True  # 緊接在 ':'、'|'、'&'、','、'<'、'(' 或 '=>' 之後的 '{' 是物件型別 ／ right after ':', '|', '&', ',', '<', '(' or '=>' a '{' is an object type
+        while i < n:
+            c = masked[i]
+            if c.isspace():
+                i += 1
+                continue
+            if c == "=" and masked[i + 1:i + 2] == ">":
+                expect_type = True
+                i += 2
+                continue
+            if c == "{":
+                if not expect_type and depth == 0:
+                    return i
+                close = self._match_delim(masked, i, "{", "}")
+                if close is None:
+                    return None
+                i, expect_type = close + 1, False
+                continue
+            if depth == 0 and c in ";=":
+                return None  # 多載／沒有本體的宣告 ／ an overload / declaration without a body
+            if c in "([<":
+                depth += 1
+                expect_type = True
+            elif c in ")]>":
+                if depth == 0:
+                    return None
+                depth -= 1
+                expect_type = False
+            else:
+                expect_type = c in "|&,?:"
+            i += 1
+        return None
+
+    @staticmethod
+    def _annotation_colon_back(masked: str, pos: int) -> Optional[int]:
+        """從 TS 型別的最後一個字元往回走，找出開始型別註記的 ':'。
+        Walking back from the last character of a TS type, the ':' that starts the annotation."""
+        depth = 0
+        k = pos
+        while k >= 0:
+            c = masked[k]
+            if c == ">" and k > 0 and masked[k - 1] == "=":
+                k -= 2  # 函式型別的箭號 ／ the arrow of a function type
+                continue
+            if c in ")]}>":
+                depth += 1
+            elif c in "([{<":
+                if depth == 0:
+                    return None
+                depth -= 1
+            elif depth == 0 and c == ":":
+                return k
+            elif depth == 0 and c in ";=,\n":
+                return None
+            k -= 1
+        return None
 
     @staticmethod
     def _word_back(masked: str, pos: int) -> Tuple[Optional[str], int]:
@@ -725,10 +881,8 @@ class ASTExtractor:
 
         docstring = ast.get_docstring(node)
 
-        for dec in node.decorator_list:
-            if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute):
-                if dec.func.attr in ROUTE_DECORATORS:
-                    symbol_type = "route"
+        if any(self._is_route_decorator(dec) for dec in node.decorator_list):
+            symbol_type = "route"
 
         return CodeSymbol(
             name=full_name,
@@ -741,6 +895,20 @@ class ASTExtractor:
             source_code=source_snippet,
             parameters=args
         )
+
+    @staticmethod
+    def _is_route_decorator(dec: ast.expr) -> bool:
+        """`@app.get("/x")` 形式的註冊；`@mock.patch("x")` 或 `@cache.delete(k)` 不是路由。
+        `@app.get("/x")`-style registrations; `@mock.patch("x")` or `@cache.delete(k)` are not routes."""
+        if not (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
+                and dec.func.attr in ROUTE_DECORATORS):
+            return False
+        first = dec.args[0] if dec.args else next((k.value for k in dec.keywords if k.arg in ("path", "rule")), None)
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            return first.value.startswith("/")
+        receiver = dec.func.value
+        name = (receiver.attr if isinstance(receiver, ast.Attribute) else getattr(receiver, "id", "")).lower()
+        return name in _PY_ROUTE_RECEIVERS or name.endswith(("router", "_bp", "blueprint", "_app"))
 
     def _extract_python_class(
         self,
