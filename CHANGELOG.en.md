@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-10
+
+Fix release: filtering and a size cap for the mutation-testing scratch copy, a stable row order in the report's Execution Provenance table, and a SHA-pinned SARIF example.
+
 ### Fixed
 
 - The Markdown report's Execution Provenance table is sorted by agent, model and mode: rows of the same run no longer come out in a different order depending on when concurrent calls finished (the JSON `call_log` keeps the original order).
