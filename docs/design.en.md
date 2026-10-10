@@ -2,7 +2,7 @@
 
 English ｜ [正體中文（臺灣）](design.md)
 
-This document describes the design of VibeHarness-MAS: why it is built the way it is, how each component works, how data flows between phases, how the quality gate decides, the sandbox security model, and the known limitations. It corresponds to `vibeharness/__init__.py` version `0.5.0` (`[0.5.0]` in `CHANGELOG.md`, 2026-10-09, adding optional mutation testing; the previous `[0.4.0]` brought `--baseline`, `--estimate`, JS/TS dynamic test execution and bilingual zh-TW / en output). Every `path:line` reference is to the files at commit `553ff27`.
+This document describes the design of VibeHarness-MAS: why it is built the way it is, how each component works, how data flows between phases, how the quality gate decides, the sandbox security model, and the known limitations. It corresponds to `vibeharness/__init__.py` version `0.5.1` (`[0.5.1]` in `CHANGELOG.md`, 2026-10-10, a fix release; `[0.5.0]` added optional mutation testing and `[0.4.0]` brought `--baseline`, `--estimate`, JS/TS dynamic test execution and bilingual zh-TW / en output). Every `path:line` reference is to the files at commit `0f318bb`.
 
 How this document relates to the others:
 
@@ -775,7 +775,7 @@ DAST / fuzzing, hypothesis, the e2b sandbox (mutation testing is implemented for
 - The test generator's repair call uses `json_output=False` (`vibeharness/agents/whitebox/test_generator.py:223`), so it is never judged invalid and never re-asked; code that stays broken is still reported as ERROR at run time, so it never becomes a pass.
 - An unusable answer is re-asked `retry_invalid_output` times (default 1, `generate` in `vibeharness/core/llm_gateway.py`): the first attempt is booked `retried` (disclosed in the report, not an evidence gap) and only a still-unusable answer is booked `invalid`; every re-ask counts against `max_model_calls`.
 - `--changed-since` uses git's change list only; a touched file is reviewed whole, not just its changed symbols. A crash or Ctrl-C writes the completed phases to `<output>.partial.json` (`_write_partial_report`); the full report is still produced only after all six phases.
-- `call_log` is written in thread-completion order (JSON keeps that order); after 0.5.0 the Markdown Execution Provenance table is sorted by agent, model and mode, so its row order is stable. Which calls fall back to simulation once the budget is exhausted still depends on timing.
+- `call_log` is written in thread-completion order (JSON keeps that order); since 0.5.1 the Markdown Execution Provenance table is sorted by agent, model and mode, so its row order is stable. Which calls fall back to simulation once the budget is exhausted still depends on timing.
 - Crashed threat-modeling and attack-synthesis batches do not go through `record_failure`: the former shows up as "no threats from that batch", the latter as an untested threat; both are still evidence gaps, but the reason is not in `call_log`.
 - A Next.js route in JS/TS is reviewed twice, as a function symbol and as a route symbol (`vibeharness/agents/whitebox/ast_extractor.py:556-566`).
 - `--baseline` decides whether a white-box failure is known through its finding's key: a model test that cannot be tied to a confirmed finding (`source_ref` not among them) is always new; a probe is keyed by symbol name only, so a same-named function moved to another file still counts as the same item.

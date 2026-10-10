@@ -322,7 +322,7 @@ You can also pass `--sarif <path>` to emit a [SARIF 2.1.0](https://docs.oasis-op
 
 ```yaml
 # Example .github/workflows/security.yml for the target project: this repo ships a composite GitHub Action (action.yml)
-- uses: chinchiang/MultiAgentGama@v0.5.0      # installs the package at the same ref and runs the audit
+- uses: chinchiang/MultiAgentGama@v0.5.1      # installs the package at the same ref and runs the audit
   with:
     target: src
     mode: hybrid
@@ -342,7 +342,7 @@ You can also pass `--sarif <path>` to emit a [SARIF 2.1.0](https://docs.oasis-op
     sarif_file: vibeharness.sarif
 ```
 
-The action's outputs are `verdict` (`READY_TO_SHIP` / `NEEDS_FIXES` / `BLOCKED_CRITICAL_RISK` / `INCONCLUSIVE`, or `ERROR` when the harness itself failed) and `exit-code`; the report, the SARIF and a crash's `.partial.json` are uploaded as the `vibeharness-report` artifact. Without the action, `pip install "git+https://github.com/chinchiang/MultiAgentGama@v0.5.0"` and call `vibeharness` directly.
+The action's outputs are `verdict` (`READY_TO_SHIP` / `NEEDS_FIXES` / `BLOCKED_CRITICAL_RISK` / `INCONCLUSIVE`, or `ERROR` when the harness itself failed) and `exit-code`; the report, the SARIF and a crash's `.partial.json` are uploaded as the `vibeharness-report` artifact. Without the action, `pip install "git+https://github.com/chinchiang/MultiAgentGama@v0.5.1"` and call `vibeharness` directly.
 
 **Mutation testing switch**: `--mutation` turns it on, `--no-mutation` off; precedence is CLI flag > config `global.mutation_testing` > off, so a config that enables it can be switched off for one run with `--no-mutation`, and a config that disables it can be switched on with `--mutation`. `--mutation-max-mutants N` (≥ 1) overrides the mutant cap (default 20); each mutant costs one sandbox batch and no model call, and `--estimate` lists the ceiling when it is on. The report has a Mutation Score row in the metrics table and lists surviving mutants; the other keys are in [`docs/configuration.md`](docs/configuration.md).
 
