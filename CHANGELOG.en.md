@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-10
+
 Review-driven hardening: sandbox isolation and executor attribution, crash exit codes and config validation, honest reporting of unverified hypotheses, more precise deterministic rules and route detection, a second untrusted channel for model output, and a hash-locked, digest-pinned build and release pipeline.
 
 ### Added
@@ -46,7 +48,7 @@ Review-driven hardening: sandbox isolation and executor attribution, crash exit 
 - CI: Python 3.10–3.14 plus one macOS cell (3.12); every install uses `--require-hashes`, and `pip-audit` runs with `--require-hashes`; the `package` job builds the sdist and the wheel and runs the full suite from the extracted sdist; `tests.yml` is callable through `workflow_call`.
 - `publish.yml` is read-only by default, runs `tests.yml` on the tagged commit first, smoke-tests the wheel in a clean venv, and grants `contents: write` to the release job only.
 - `action.yml` installs from `$GITHUB_ACTION_PATH` (works for `uses: ./` too) with hash-verified dependencies from `requirements.lock` and `--no-deps` for the package; no `${{ }}` in its run scripts. `live-smoke.yml` passes its inputs through `env` and validates them; its JSON re-run reads the same `--cache-dir` with `--cache-only --mode hybrid` and makes no model call (and no longer uses the unlimited `--max-model-calls 0`), so the whole workflow makes at most `max_model_calls` real calls; calls the first run could not cache are simulated and listed as an evidence gap.
-- Actions bumped to checkout v7.0.1, setup-python v7.0.0, upload-artifact v7.0.1, download-artifact v8.0.1, setup-node v7.0.0 (superseding Dependabot PR #38); `pypa/gh-action-pypi-publish` pinned to the v1.13.0 commit instead of the annotated tag object.
+- Actions bumped to checkout v7.0.1, setup-python v7.0.0, upload-artifact v7.0.1, download-artifact v8.0.1, setup-node v7.0.0 (superseding Dependabot PR #38), then #46 moved upload-artifact to v7.0.2, download-artifact to v8.0.2, setup-node to v7.1.0 and pypi-publish to v1.14.2; `pypa/gh-action-pypi-publish` pinned to the v1.13.0 commit instead of the annotated tag object.
 - Sandbox images: base images pinned by multi-arch index digest, `USER 65534` by default, and the Python image installs from the new hash-locked `docker/sandbox-requirements.txt` (compiled from `docker/sandbox-requirements.in` against `requirements.lock`); a per-project image switches to `USER root` for its install and back. `requirements.lock` is regenerated with `--generate-hashes` (same versions).
 - The sdist ships `tests/` (incl. `conftest.py`), `examples/`, `main.py`, `action.yml`, the requirements files and locks, `docker/*`, `CONTRIBUTING.md`, `SECURITY.md` and both CHANGELOGs; Python 3.14 classifier; setuptools build backend capped at `<85`; Dependabot adds the docker ecosystem and `/docker` to the grouped pip update; the pre-commit ruff hook is v0.16.10 to match `requirements-dev.txt`.
 - New regression suites `tests/test_review_*.py` (blackbox, build, cache_only, cli_config, dedup_votes, extractor_scanner, known_limits, reports, sandbox_executor, sanitize, sanitize_blackbox_fixes, whitebox_fixes); `tests/test_review_build.py` guards the CI, packaging and image pinning above.
