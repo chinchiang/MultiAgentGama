@@ -21,7 +21,7 @@ on:
         options: [live, hybrid]
         default: hybrid
       max_model_calls:
-        description: "成本防護：每次稽核允許的真實模型呼叫數（正整數；JSON 重跑只會為未快取的呼叫再用最多同樣的數量）／ Cost guard: real model calls per audit run (positive integer; the JSON re-run only spends up to the same number again on uncached calls)"
+        description: "成本防護：整個 workflow 允許的真實模型呼叫數（正整數；JSON 重跑用 --cache-only，不會再呼叫模型）／ Cost guard: real model calls for the whole workflow (positive integer; the JSON re-run uses --cache-only and makes no further model calls)"
         default: "60"
 
 permissions:
@@ -83,15 +83,15 @@ jobs:
           # 判定碼 0-3 是對目標的結論；4（live 呼叫失敗）與 5（harness 錯誤）才是失敗
           # Verdict codes 0-3 are outcomes about the target; 4 (live call failed) and 5 (harness error) are failures
           if [ "$rc" -gt 3 ]; then echo "::error::live run failed (exit $rc)"; exit 1; fi
-          # 同一次執行改輸出 JSON。可用的回答都從回應快取取用（命中不呼叫供應商、不扣預算），
-          # 只有第一次沒能快取的呼叫（失敗或無效的回答）會重新詢問；CLI 沒有只讀快取的模式，
-          # 所以沿用同一個正數上限（0 會是不限）：最壞情況下整個 workflow 最多 2 × max_model_calls 次真實呼叫
-          # Same run as JSON. Usable answers are served from the response cache (a hit makes no provider call
-          # and costs no budget); only calls the first run could not cache (failed or invalid answers) are
-          # asked again. The CLI has no cache-only mode, so the same positive cap applies (0 would be
-          # unlimited): worst case the whole workflow makes 2 x max_model_calls real calls
-          python main.py --target "$VH_TARGET" --mode "$VH_MODE" \
-            --max-model-calls "$VH_MAX_CALLS" --max-files 10 --format json --output live-report.json \
+          # 同一次執行改輸出 JSON：--cache-only 讓每個回答都從第一次執行的回應快取取用，絕不呼叫供應商，
+          # 所以整個 workflow 最多只有 max_model_calls 次真實呼叫。第一次沒能快取的呼叫（失敗、無效或超出預算）
+          # 是證據缺口；這裡固定用 hybrid，讓它們改用模擬並照樣寫出 JSON，而不是在 live 模式以 exit 4 中止
+          # Same run as JSON: --cache-only serves every answer from the first run's response cache and never
+          # calls a provider, so the whole workflow makes at most max_model_calls real calls. Calls the first
+          # run could not cache (failed, invalid or over the budget) are evidence gaps; hybrid is used here so
+          # they are simulated and the JSON is still written, instead of aborting with exit 4 in live mode
+          python main.py --target "$VH_TARGET" --mode hybrid --cache-only \
+            --max-files 10 --format json --output live-report.json \
             --cache-dir .vibeharness-cache || true
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()

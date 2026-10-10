@@ -33,9 +33,17 @@ DEFAULT_MAX_CONCURRENT_CALLS = 6
 # 這是上限而非花費：威脅模型 JSON 與推理模型的思考 token 在線上執行時都曾超過 4096
 # A cap, not a spend: threat-model JSON and reasoning models' thinking tokens both overflowed 4096 in live runs
 DEFAULT_MAX_OUTPUT_TOKENS = 16384
+# 單次 LLM 請求的逾時（秒）與 litellm 層級的重試次數；設定為 null 時也採用這些值
+# Per-request LLM timeout (seconds) and litellm-level retry count; a null setting also means these values
+DEFAULT_TIMEOUT_SECONDS = 180
+DEFAULT_MAX_RETRIES = 2
 
 
 BUDGET_EXHAUSTED_REASON = bi("max_model_calls 預算已用盡", "max_model_calls budget exhausted")
+# --cache-only：快取沒有答案時不發出任何網路呼叫；與預算用盡一樣處理（hybrid 改用模擬、live 失敗），並列為證據缺口
+# --cache-only: a call the cache cannot answer makes no network call; handled like an exhausted budget
+# (simulation in hybrid, failure in live) and reported as an evidence gap
+CACHE_MISS_REASON = bi("--cache-only 模式下回應快取未命中", "cache miss in --cache-only mode")
 REASON_NOT_VALID_JSON = bi("回應不是有效的 JSON", "response is not valid JSON")
 REASON_CALL_CRASHED = bi("代理呼叫在產生輸出前就當掉", "agent call crashed before producing output")
 # 無法使用的線上回答（非 JSON、缺少鍵、空白）在登記為 `invalid` 之前
@@ -72,7 +80,14 @@ RESERVED_EXTRA_PARAMS = frozenset({
     "num_retries", "max_retries", "fallbacks", "stream", "aws_profile_name", "aws_region_name",
     "aws_access_key_id", "aws_secret_access_key", "aws_session_token", "aws_bedrock_runtime_endpoint",
     "aws_role_name", "aws_web_identity_token", "custom_llm_provider",
+    # 輸出 token 上限只能用 max_output_tokens 設定：這些鍵會覆寫它，--estimate 與快取鍵也會看錯上限
+    # The output-token cap is set only through max_output_tokens: these keys would override it, and
+    # --estimate and the cache key would see the wrong cap
+    "max_tokens", "max_completion_tokens", "max_output_tokens",
 })
+# 上面屬於輸出 token 上限的保留鍵；錯誤訊息會指向 max_output_tokens
+# The reserved keys above that are the output-token cap; the error message points at max_output_tokens
+_TOKEN_CAP_PARAMS = frozenset({"max_tokens", "max_completion_tokens", "max_output_tokens"})
 
 # 屬於端點身分的模型設定：任一個不同就是不同的服務端點，回應快取不得共用
 # Model settings that identify the endpoint: if any differs it is a different service, so the response cache must not be shared
@@ -146,6 +161,9 @@ class LLMGateway:
         # On-disk cache of usable live answers keyed by model + prompt: a re-run of the same target with
         # the same config costs nothing and gives the same answers. None disables it.
         self.cache_dir: Optional[str] = None
+        # --cache-only：每次模型呼叫都只從回應快取取用，未命中時絕不呼叫供應商（見 CACHE_MISS_REASON）
+        # --cache-only: every model call is served from the response cache only; a miss never calls a provider (see CACHE_MISS_REASON)
+        self.cache_only = False
         if global_cfg.get("cache_dir"):
             self.set_cache_dir(str(global_cfg["cache_dir"]))
         self._validate_endpoints()
@@ -240,10 +258,11 @@ class LLMGateway:
         Numeric settings are checked once at start-up. They used to be read only when a call was
         made, so a typo such as `timeout_seconds: "abc"` reached litellm, failed there, and in hybrid
         mode was booked as "live invocation failed" and silently replaced by the simulation engine."""
-        global_cfg = self.config.get("global") or {}
-        self._number(global_cfg.get("timeout_seconds", 180), "global.timeout_seconds", minimum=1)
-        self._number(global_cfg.get("max_retries", 2), "global.max_retries", minimum=0, integer=True)
-        self._number(global_cfg.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS), "global.max_output_tokens",
+        # null 與省略相同，都採用預設值（與其他數值設定一致）；0 或負數仍是 ConfigError
+        # null means the same as omitted, the default (consistent with the other numeric settings); 0 or a negative value is still a ConfigError
+        self._number(self._global_setting("timeout_seconds", DEFAULT_TIMEOUT_SECONDS), "global.timeout_seconds", minimum=1)
+        self._number(self._global_setting("max_retries", DEFAULT_MAX_RETRIES), "global.max_retries", minimum=0, integer=True)
+        self._number(self._global_setting("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS), "global.max_output_tokens",
                      minimum=1, integer=True)
         for alias, info in self.models_config.items():
             if isinstance(info, dict) and info.get("max_output_tokens") is not None:
@@ -261,14 +280,29 @@ class LLMGateway:
                 raise ConfigError(bi(f"models.{alias}.extra_params 必須是 litellm 參數名稱的對應表，目前為 {extra!r}",
                                      f"models.{alias}.extra_params must be a mapping of litellm parameter names, got {extra!r}"))
             reserved = sorted(set(extra or {}) & RESERVED_EXTRA_PARAMS)
+            if reserved and set(reserved) <= _TOKEN_CAP_PARAMS:
+                names = ", ".join(reserved)
+                raise ConfigError(bi(
+                    f"models.{alias}.extra_params 不可設定輸出 token 上限：{names}"
+                    f"（請改用 models.{alias}.max_output_tokens 或 global.max_output_tokens）",
+                    f"models.{alias}.extra_params must not set the output-token cap: {names} "
+                    f"(use models.{alias}.max_output_tokens or global.max_output_tokens instead)"
+                ))
             if reserved:
                 names = ", ".join(reserved)
                 raise ConfigError(bi(
                     f"models.{alias}.extra_params 不可設定保留的 litellm 參數：{names}"
-                    "（端點、憑證、逾時與重試請用 models.<alias> 或 global 的專用設定鍵）",
+                    "（端點、憑證、逾時與重試請用 models.<alias> 或 global 的專用設定鍵；輸出 token 上限請用 max_output_tokens）",
                     f"models.{alias}.extra_params must not set reserved litellm parameter(s): {names} "
-                    "(use the dedicated models.<alias> / global settings for endpoints, credentials, timeouts and retries)"
+                    "(use the dedicated models.<alias> / global settings for endpoints, credentials, timeouts and "
+                    "retries, and max_output_tokens for the output-token cap)"
                 ))
+
+    def _global_setting(self, key: str, default: Any) -> Any:
+        """`global.<key>` 的值；省略或為 null 時回傳 `default`，因此絕不會把 None 傳給 litellm。
+        The value of `global.<key>`; `default` when it is omitted or null, so None never reaches litellm."""
+        value = (self.config.get("global") or {}).get(key)
+        return default if value is None else value
 
     @staticmethod
     def _number(value: Any, key: str, minimum: float, maximum: Optional[float] = None, integer: bool = False) -> None:
@@ -312,6 +346,12 @@ class LLMGateway:
     @property
     def budget_exhausted_calls(self) -> List[AgentCallRecord]:
         return [rec for rec in self.call_log if rec.reason == BUDGET_EXHAUSTED_REASON]
+
+    @property
+    def cache_miss_calls(self) -> List[AgentCallRecord]:
+        """--cache-only 模式下快取沒有答案的呼叫（證據缺口；hybrid 改用模擬）。
+        Calls the cache could not answer in --cache-only mode (an evidence gap; simulated in hybrid)."""
+        return [rec for rec in self.call_log if rec.reason == CACHE_MISS_REASON]
 
     @property
     def used_simulation(self) -> bool:
@@ -423,6 +463,10 @@ class LLMGateway:
         fallback_reason: Optional[str] = None
         if self.execution_mode == "mock":
             fallback_reason = bi("execution_mode 為 'mock'", "execution_mode is 'mock'")
+        elif self.cache_only:
+            # 只讀快取不需要 litellm 或金鑰：命中直接取用，未命中在下方登記為 CACHE_MISS_REASON
+            # Reading the cache needs neither litellm nor a key: a hit is served, a miss is booked below as CACHE_MISS_REASON
+            pass
         elif litellm is None:
             fallback_reason = bi("未安裝 litellm", "litellm is not installed")
         elif not self.is_live_configured(model_alias):
@@ -433,7 +477,11 @@ class LLMGateway:
         if fallback_reason is None:
             cache_key = self._cache_key(model_alias, model_info, temperature, system_prompt, user_prompt)
             cached = self._cache_read(cache_key)
-            if cached is None and not self._reserve_live_call():
+            if cached is None and self.cache_only:
+                # 不呼叫網路、不扣預算；之後與預算用盡相同：live 拋出 LLMGatewayError，hybrid 改用模擬
+                # No network call and no budget spent; then the same as an exhausted budget: live raises LLMGatewayError, hybrid simulates
+                fallback_reason = CACHE_MISS_REASON
+            elif cached is None and not self._reserve_live_call():
                 fallback_reason = BUDGET_EXHAUSTED_REASON
 
         if fallback_reason is None:
@@ -479,9 +527,16 @@ class LLMGateway:
                 if problem is None and result is not None:
                     from_cache = cached is not None and attempt == 0
                     if not from_cache:
-                        self._cache_write(cache_key if attempt == 0 else self._cache_key(
+                        # 重新詢問後的可用回答也存到原始提示的鍵下：否則重新執行（尤其是 --cache-only）
+                        # 對第一次嘗試永遠未命中，因為重新詢問的提示取決於第一次那個無法使用的回答
+                        # A usable answer after a re-ask is also stored under the original prompt's key: otherwise a
+                        # re-run (especially --cache-only) always misses the first attempt, because the re-ask
+                        # prompt depends on the unusable first answer
+                        keys = [cache_key] if attempt == 0 else [cache_key, self._cache_key(
                             model_alias, model_info, temperature, system_prompt, prompt_text
-                        ), agent_id, model_name, raw_text, finish_reason, prompt_hash)
+                        )]
+                        for key in keys:
+                            self._cache_write(key, agent_id, model_name, raw_text, finish_reason, prompt_hash)
                     self._record(agent_id, model_alias, model_name, "live", prompt_sha256=prompt_hash, cached=from_cache)
                     result[PROVENANCE_KEY] = {"mode": "live", "model": model_name, "cached": from_cache}
                     return result
@@ -501,7 +556,10 @@ class LLMGateway:
                         f"output truncated at the max_output_tokens limit ({limit}); "
                         f"{en_only(reason)}. Raise max_output_tokens for this model (reasoning tokens count against it)"
                     )
-                if json_output and attempt < self.retry_invalid_output and self._reserve_live_call():
+                # --cache-only 絕不重新詢問：重新詢問是網路呼叫
+                # --cache-only never re-asks: a re-ask is a network call
+                if (not self.cache_only and json_output and attempt < self.retry_invalid_output
+                        and self._reserve_live_call()):
                     attempt += 1
                     logger.warning(bi(f"[{agent_id}] {model_name} 回傳無法使用的輸出（{reason}）；重新詢問（{attempt}/{self.retry_invalid_output}）",
                                       f"[{agent_id}] {model_name} returned unusable output ({reason}); re-asking ({attempt}/{self.retry_invalid_output})"))
@@ -537,7 +595,10 @@ class LLMGateway:
         `api_key_env` (e.g. Z.AI for GLM) still authenticate.
         Returns (text, model_actually_used, finish_reason); finish_reason "length" means the token limit cut it off.
         """
-        global_cfg = self.config.get("global") or {}
+        if self.cache_only:
+            # 縱深防禦：generate 在 --cache-only 下不會走到這裡；萬一走到，也絕不發出網路呼叫
+            # Defense in depth: generate never gets here under --cache-only; if it ever did, no network call is made
+            raise LLMGatewayError(bi("--cache-only 模式下不允許網路呼叫", "network calls are not allowed in --cache-only mode"))
         env_var = model_info.get("api_key_env")
         aws_profile = model_info.get("aws_profile_name")
         if not env_var and not aws_profile:
@@ -557,8 +618,10 @@ class LLMGateway:
             # Newer models reject sampling knobs (Claude Opus 5.5 on Bedrock accepts only temperature=1;
             # Gemini 3 is deprecating them): drop what a model does not support rather than failing the call
             "drop_params": True,
-            "timeout": global_cfg.get("timeout_seconds", 180),
-            "num_retries": global_cfg.get("max_retries", 2),
+            # null 已由 _global_setting 換成預設值：timeout=None 對 litellm 代表不限時，絕不傳出
+            # null is already replaced by the default in _global_setting: timeout=None means no limit to litellm and is never passed
+            "timeout": self._global_setting("timeout_seconds", DEFAULT_TIMEOUT_SECONDS),
+            "num_retries": self._global_setting("max_retries", DEFAULT_MAX_RETRIES),
             "max_tokens": self._max_output_tokens(model_info),
         }
         if env_var:
@@ -601,10 +664,13 @@ class LLMGateway:
         """逐模型的 `max_output_tokens` 會覆寫全域設定：推理模型（GLM、DeepSeek、
         Gemini 3）會把思考 token 計入此上限，因此需要較大的預算。
         Per-model `max_output_tokens` overrides the global one: reasoning models (GLM, DeepSeek,
-        Gemini 3) count thinking tokens against this limit and need a larger budget."""
-        value = model_info.get("max_output_tokens") or (self.config.get("global") or {}).get(
-            "max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS
-        )
+        Gemini 3) count thinking tokens against this limit and need a larger budget.
+        逐模型值省略或為 null 時採用全域值；全域值省略或為 null 時採用 DEFAULT_MAX_OUTPUT_TOKENS。
+        A per-model value that is omitted or null falls back to the global one; an omitted or null global
+        value falls back to DEFAULT_MAX_OUTPUT_TOKENS."""
+        value = model_info.get("max_output_tokens")
+        if value is None:
+            value = self._global_setting("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)
         return int(value)
 
     @staticmethod

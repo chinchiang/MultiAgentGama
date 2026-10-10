@@ -249,6 +249,42 @@ def test_reserved_extra_params_are_config_errors(tmp_path, key):
         LLMGateway(_write_config(tmp_path, text))
 
 
+@pytest.mark.parametrize("key", ["max_tokens", "max_completion_tokens", "max_output_tokens"])
+def test_output_token_caps_in_extra_params_point_at_max_output_tokens(tmp_path, key):
+    """extra_params 裡的輸出 token 上限是 ConfigError，訊息指向 max_output_tokens（否則會覆寫它並讓 --estimate 失準）。
+    An output-token cap in extra_params is a ConfigError whose message points at max_output_tokens (it would
+    override it and skew --estimate)."""
+    text = f"models:\n  a:\n    model: m\n    api_key_env: X\n    extra_params: {{{key}: 99}}\n"
+    with pytest.raises(ConfigError, match=r"output-token cap.*models\.a\.max_output_tokens"):
+        LLMGateway(_write_config(tmp_path, text))
+
+
+def test_null_request_settings_fall_back_to_their_defaults(tmp_path, fake_live):
+    """global 的 timeout_seconds／max_retries／max_output_tokens 與逐模型 max_output_tokens 為 null 時採用預設值，
+    絕不把 timeout=None（不限時）傳給 litellm。
+    A null global timeout_seconds / max_retries / max_output_tokens or per-model max_output_tokens means the
+    default, and timeout=None (no limit) never reaches litellm."""
+    text = (
+        "global: {execution_mode: live, timeout_seconds: null, max_retries: null, max_output_tokens: null}\n"
+        "models:\n  a: {model: m-a, api_key_env: ANTHROPIC_API_KEY, max_output_tokens: null}\n"
+        "agents:\n  x: {model_alias: a}\n"
+    )
+    gw = LLMGateway(_write_config(tmp_path, text))
+    fake = fake_live(lambda system, user: '{"ok": 1}')
+    gw.generate("x", "s", "u")
+    assert fake.calls[0]["timeout"] == 180
+    assert fake.calls[0]["num_retries"] == 2
+    assert fake.calls[0]["max_tokens"] == 16384
+
+
+@pytest.mark.parametrize("setting", ["timeout_seconds: 0", "max_retries: -1", "max_output_tokens: 0", "timeout_seconds: abc"])
+def test_out_of_range_request_settings_are_still_config_errors(tmp_path, setting):
+    """null 是預設值，但 0、負數與非數值仍是 ConfigError。
+    null is the default, but 0, negative and non-numeric values are still a ConfigError."""
+    with pytest.raises(ConfigError):
+        LLMGateway(_write_config(tmp_path, f"global: {{{setting}}}\n"))
+
+
 def test_ordinary_extra_params_still_pass_through(tmp_path, fake_live):
     """一般的 extra_params（例如 reasoning_effort）照常傳給 litellm，保留鍵則不會。
     Ordinary extra_params (e.g. reasoning_effort) still reach litellm, reserved ones never do."""

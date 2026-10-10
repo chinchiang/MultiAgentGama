@@ -232,6 +232,15 @@ def _main():
              "treat it like the reports"
     )
     parser.add_argument(
+        "--cache-only",
+        action="store_true",
+        help="每次模型呼叫都只從回應快取取用（需要 --cache-dir 或 global.cache_dir，否則 exit 5），絕不呼叫供應商、不扣預算、不重新詢問；"
+             "快取沒有的呼叫列為證據缺口：hybrid 改用模擬（判定不會是 READY_TO_SHIP），live 以 exit 4 中止 ／ "
+             "Serve every model call from the response cache only (needs --cache-dir or global.cache_dir, else exit 5): "
+             "no provider call, no budget, no re-ask. A call the cache cannot answer is an evidence gap: simulated in "
+             "hybrid (the verdict cannot be READY_TO_SHIP), exit 4 in live"
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="開啟除錯日誌 ／ Enable debug logging"
@@ -297,6 +306,11 @@ def _main():
             commander.changed_since = args.changed_since
         if args.cache_dir:
             commander.gateway.set_cache_dir(args.cache_dir)
+        if args.cache_only:
+            if not commander.gateway.cache_dir:
+                raise ConfigError(bi("--cache-only 需要回應快取：請指定 --cache-dir 或設定 global.cache_dir",
+                                     "--cache-only needs a response cache: pass --cache-dir or set global.cache_dir"))
+            commander.gateway.cache_only = True
         if args.baseline:
             commander.baseline = load_baseline(args.baseline)
     except (ConfigError, ValueError, SandboxUnavailableError) as e:

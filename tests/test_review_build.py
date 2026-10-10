@@ -126,15 +126,26 @@ def test_action_installs_from_its_own_path_with_hash_verified_dependencies():
 
 @needs_github
 def test_live_smoke_validates_inputs_and_never_runs_uncapped():
-    """live-smoke：inputs 經 env 傳入並驗證；兩次執行都用正數上限，絕不傳 `--max-model-calls 0`（0 = 不限）。
-    live-smoke: inputs go through env and are validated; both runs use the positive cap and never pass
-    `--max-model-calls 0` (0 = unlimited)."""
+    """live-smoke：inputs 經 env 傳入並驗證；唯一會呼叫模型的執行用正數上限，絕不傳 `--max-model-calls 0`（0 = 不限）；
+    JSON 重跑用 `--cache-only` 與同一個 `--cache-dir`，不會再呼叫模型。
+    live-smoke: inputs go through env and are validated; the only run that calls models uses the positive cap
+    and never passes `--max-model-calls 0` (0 = unlimited); the JSON re-run uses `--cache-only` with the same
+    `--cache-dir` and makes no further model calls."""
     doc = yaml.safe_load(_read(".github", "workflows", "live-smoke.yml"))
     step = next(s for s in doc["jobs"]["live"]["steps"] if "main.py" in str(s.get("run", "")))
     script = step["run"]
     assert {"VH_TARGET", "VH_MODE", "VH_MAX_CALLS"} <= set(step["env"])
     assert not re.search(r"--max-model-calls\s+\"?0\"?\s", script)
-    assert script.count('--max-model-calls "$VH_MAX_CALLS"') == 2
+    # 只看指令本身：註解裡也會提到這些旗標 ／ Only the commands themselves: the comments mention the flags too
+    commands = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+    runs = commands.split("python main.py")[1:]
+    assert len(runs) == 2
+    first, rerun = runs
+    assert '--max-model-calls "$VH_MAX_CALLS"' in first and "--cache-only" not in first
+    assert "--cache-only" in rerun and "--format json" in rerun
+    # 兩次執行共用同一個快取目錄 ／ Both runs share the same cache directory
+    cache_dirs = [re.search(r"--cache-dir\s+(\S+)", chunk).group(1) for chunk in runs]
+    assert cache_dirs[0] == cache_dirs[1]
     assert "live|hybrid)" in script and "^[1-9][0-9]" in script
 
 

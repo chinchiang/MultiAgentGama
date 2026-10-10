@@ -694,6 +694,13 @@ class VibeHarnessCommander:
                     f"The max_model_calls budget ({self.gateway.max_model_calls}) was exhausted; "
                     f"{len(budget_hits)} later agent call(s) used the simulation engine instead of a real model"
                 ))
+            cache_misses = self.gateway.cache_miss_calls
+            if cache_misses:
+                inconclusive_reasons.append(bi(
+                    f"--cache-only：{len(cache_misses)} 次代理呼叫在回應快取中沒有答案，未呼叫任何模型，改用模擬引擎",
+                    f"--cache-only: {len(cache_misses)} agent call(s) had no answer in the response cache; no model "
+                    "was called and the simulation engine was used instead"
+                ))
             if self.gateway.used_simulation:
                 simulated_agents = sorted({rec.agent_id for rec in self.gateway.call_log if rec.mode == "simulated"})
                 inconclusive_reasons.append(

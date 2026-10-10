@@ -64,6 +64,9 @@ class RunEstimate(BaseModel):
     assumptions: Dict[str, float] = Field(default_factory=dict)
     retry_invalid_output: int = 0
     max_model_calls: Optional[int] = None
+    # --cache-only：呼叫數照樣估算（快取命中與否要等執行時才知道），但不會有任何供應商呼叫或花費
+    # --cache-only: the calls are still estimated (hits are only known at run time), but no provider call or spend happens
+    cache_only: bool = False
     by_agent: List[CallEstimate] = Field(default_factory=list)
     calls_exact: int = 0
     calls_typical: int = 0
@@ -109,7 +112,7 @@ def estimate_run(
         whitebox_batches=len(wb_batches), threat_batches=len(tm_batches),
         assumptions={"findings_per_reviewer_batch": findings_per_batch, "threats_per_batch": threats_per_batch,
                      "confirmed_share": 0.7, "tests_per_finding": 1.0, "heal_rate": 0.3},
-        retry_invalid_output=retry, max_model_calls=gateway.max_model_calls,
+        retry_invalid_output=retry, max_model_calls=gateway.max_model_calls, cache_only=gateway.cache_only,
         mutation_sandbox_runs_max=commander._mutation_cfg["max_mutants"] if commander.mutation_testing else None,
     )
     if filters:
@@ -215,7 +218,17 @@ def estimate_run(
             ))
     if priced:
         est.estimated_cost_usd = round(total_cost, 4)
-    if est.max_model_calls is not None and est.calls_typical > est.max_model_calls:
+    if est.cache_only:
+        # 只讀快取：預算與費用都不適用，因此不提出預算警告
+        # Cache only: neither the budget nor the cost applies, so no budget warning is raised
+        est.warnings.append(bi(
+            "--cache-only：不會呼叫任何供應商，也沒有花費；上列呼叫都只從回應快取取用，快取沒有的會改用模擬（hybrid）或失敗（live），"
+            "費用與 token 只代表當初建立快取的花費",
+            "--cache-only: no provider is called and nothing is spent; the calls above are served from the response cache "
+            "only, and those it cannot answer are simulated (hybrid) or fail (live). Cost and tokens only describe what "
+            "filling the cache cost"
+        ))
+    elif est.max_model_calls is not None and est.calls_typical > est.max_model_calls:
         est.warnings.append(bi(
             f"max_model_calls={est.max_model_calls} 低於典型呼叫數（{est.calls_typical}）：之後的代理會退回模擬（hybrid）或失敗（live）",
             f"max_model_calls={est.max_model_calls} is below the typical call count ({est.calls_typical}): later agents "
