@@ -1,6 +1,6 @@
 import logging
 import re
-from typing import Dict, List, Set
+from typing import List, Set
 
 from vibeharness.core.models import ReviewFinding, FindingSeverity
 from vibeharness.core.i18n import bi
@@ -14,13 +14,20 @@ _SEVERITY_RANK = {
 _STOPWORDS = {
     "the", "and", "for", "with", "without", "from", "that", "this", "when", "into", "can", "may", "are",
     "not", "missing", "lack", "lacks", "potential", "possible", "issue", "bug", "defect", "function",
-    "method", "handler", "code", "value", "values",
+    "method", "handler", "code", "value", "values", "has", "via", "does",
 }
 # 較小那個發現的關鍵詞中，必須也出現在另一個發現裡的比例。
 # 刻意嚴格：合併兩個不同的缺陷會失去其中一個，而殘留的重複只多花一個測試。
 # Share of the smaller finding's key terms that must also appear in the other one.
 # Deliberately strict: merging two distinct defects loses one of them, a leftover duplicate only costs a test.
 SIMILARITY_THRESHOLD = 0.6
+# 關鍵詞少於這個數量時，「較小集合比例」沒有意義：像 "Missing input validation"
+# （{input, validation}）這種泛用發現幾乎會被任何其他發現「包含」。
+# 這類短發現改用 Jaccard（共有詞 / 合併詞）比較。
+# Below this many key terms the smaller-set ratio is meaningless: a generic finding such as
+# "Missing input validation" ({input, validation}) would be fully "contained" in almost any other
+# finding. Such short findings are compared by Jaccard (shared / combined terms) instead.
+MIN_TERMS_FOR_CONTAINMENT = 3
 
 
 def _stem(word: str) -> str:
@@ -46,7 +53,10 @@ def _similar(a: ReviewFinding, b: ReviewFinding) -> bool:
     ta, tb = _terms(a), _terms(b)
     if not ta or not tb:
         return a.title.strip().lower() == b.title.strip().lower()
-    return len(ta & tb) / min(len(ta), len(tb)) >= SIMILARITY_THRESHOLD
+    shared = len(ta & tb)
+    if min(len(ta), len(tb)) < MIN_TERMS_FOR_CONTAINMENT:
+        return shared / len(ta | tb) >= SIMILARITY_THRESHOLD
+    return shared / min(len(ta), len(tb)) >= SIMILARITY_THRESHOLD
 
 
 def _same_location(a: ReviewFinding, b: ReviewFinding) -> bool:
@@ -63,35 +73,42 @@ def deduplicate_findings(findings: List[ReviewFinding]) -> List[ReviewFinding]:
     保留最嚴重的那份；其餘記錄在 corroborated_by / merged_finding_ids 中，
     讓跨模型的一致性對仲裁者與報告仍然可見。維持首次出現的順序。
 
-    叢集具遞移性（union-find）：A~B 且 B~C 不論輸入順序都落在同一叢集，
-    因此結果不取決於哪個模型先回報。
+    叢集採完全連結（complete-linkage）：發現只有在與叢集每個成員都相符時才加入，
+    因此泛用發現無法把兩個不同缺陷串在一起（A~C 且 B~C 不再合併 A 與 B）。
+    發現依嚴重度由高到低處理、finding_id 打破平手，因此結果不取決於哪個模型先回報。
     Merges reports of the same defect (same file and symbol, overlapping title/root-cause terms) into one
     finding. The most severe report is kept; the others are recorded in corroborated_by / merged_finding_ids,
     so cross-model agreement stays visible to the arbiter and the report. Order of first appearance is kept.
 
-    Clustering is transitive (union-find): A~B and B~C land in one cluster regardless of input order,
-    so the result does not depend on which model reported first.
+    Clustering is complete-linkage: a finding joins a cluster only if it matches every member, so a
+    generic finding cannot chain two distinct defects together (A~C and B~C no longer merge A and B).
+    Findings are considered most severe first, finding_id breaking ties, so the result does not depend
+    on which model reported first.
     """
-    n = len(findings)
-    parent = list(range(n))
+    order = sorted(
+        range(len(findings)),
+        key=lambda i: (_SEVERITY_RANK.get(findings[i].severity, len(_SEVERITY_RANK)), findings[i].finding_id),
+    )
+    groups: List[List[int]] = []
+    for i in order:
+        f = findings[i]
+        home = next((
+            g for g in groups
+            if all(_same_location(findings[j], f) and _similar(findings[j], f) for j in g)
+        ), None)
+        if home is None:
+            groups.append([i])
+        else:
+            home.append(i)
 
-    def find(i: int) -> int:
-        while parent[i] != i:
-            parent[i] = parent[parent[i]]
-            i = parent[i]
-        return i
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            if _same_location(findings[i], findings[j]) and _similar(findings[i], findings[j]):
-                parent[find(j)] = find(i)
-
-    clusters: Dict[int, List[ReviewFinding]] = {}
-    for i in range(n):
-        clusters.setdefault(find(i), []).append(findings[i])
+    # 叢集依首次出現的順序回報，成員維持輸入順序
+    # Report clusters in order of first appearance, members in input order
+    clusters: List[List[ReviewFinding]] = [
+        [findings[j] for j in sorted(g)] for g in sorted(groups, key=min)
+    ]
 
     merged: List[ReviewFinding] = []
-    for cluster in clusters.values():
+    for cluster in clusters:
         # 最嚴重者勝出；finding_id 用來確定地打破平手，而不是依輸入順序
         # Most severe wins; finding_id breaks ties deterministically instead of input order
         primary = min(cluster, key=lambda f: (_SEVERITY_RANK.get(f.severity, len(_SEVERITY_RANK)), f.finding_id))

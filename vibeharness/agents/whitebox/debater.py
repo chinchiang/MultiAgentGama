@@ -48,11 +48,22 @@ class MultiModelDebater:
         # Verifier agents come from config, e.g. whitebox_verifier_claude -> model alias "claude".
         # Resolved like the gateway does: no model_alias means `unconfigured`, so the self-review
         # exclusion below matches the alias the calls are actually routed under.
-        self.verifiers: Dict[str, str] = {
-            agent_id: str((meta if isinstance(meta, dict) else {}).get("model_alias") or UNCONFIGURED_ALIAS)
-            for agent_id, meta in gateway.agents_config.items()
-            if agent_id.startswith(VERIFIER_PREFIX)
-        }
+        # 每個模型只留一個驗證者：兩個路由到同一別名的代理會讓同一模型對每個發現投兩次票。
+        # 每個別名保留（排序後）第一個 agent_id。
+        # One verifier per model: two agents routed to the same alias would let one model vote twice
+        # on every finding. The first agent_id (sorted) per alias is kept.
+        self.verifiers: Dict[str, str] = {}
+        for agent_id in sorted(gateway.agents_config):
+            if not agent_id.startswith(VERIFIER_PREFIX):
+                continue
+            meta = gateway.agents_config[agent_id]
+            alias = str((meta if isinstance(meta, dict) else {}).get("model_alias") or UNCONFIGURED_ALIAS)
+            duplicate_of = next((a for a, m in self.verifiers.items() if m == alias), None)
+            if duplicate_of:
+                logger.warning(bi(f"驗證者 {agent_id} 與 {duplicate_of} 使用同一模型「{alias}」；已略過，讓該模型只投一票。",
+                                  f"Verifier {agent_id} uses model '{alias}' like {duplicate_of}; skipped so the model votes once."))
+                continue
+            self.verifiers[agent_id] = alias
 
     def arbitrate(
         self,
@@ -114,9 +125,11 @@ class MultiModelDebater:
                 for idx, vote in job_votes:
                     votes[idx].append(vote)
 
-        # 只有真實、可用的裁決（或真實的佐證）才算驗證
-        # Only real, usable rulings (or real corroborations) count as verification
-        real_votes = sum(1 for vs in votes.values() for v in vs if v.verdict != "unsure")
+        # 只有驗證者真實、可用的裁決才算驗證。單靠佐證不算：
+        # 若每個驗證者批次都失敗，就沒有人裁決過，即使有重複被合併。
+        # Only real, usable rulings by a verifier count as verification. Corroborations alone are not:
+        # if every verifier batch failed, nobody ruled, even when duplicates were merged.
+        real_votes = sum(1 for vs in votes.values() for v in vs if v.verdict in ("confirm", "reject"))
         if real_votes == 0:
             reason = "simulated" if any_simulated or all(f.is_simulated for f in findings) else "no usable verifier output"
             logger.warning(bi(f"未套用驗證（{reason}）；全部 {len(findings)} 個發現未經篩選保留。",
