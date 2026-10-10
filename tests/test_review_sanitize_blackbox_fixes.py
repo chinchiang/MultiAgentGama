@@ -43,7 +43,7 @@ def _threat(tid: str = "T-1", **fields) -> ThreatItem:
     'url = "postgres://app:password@db:5432/app"',
     'url = "amqp://guest:guest@rabbit:5672//"',
     'url = "redis://:pass@cache:6379/0"',
-    'url = "postgres://u:changeme@db.internal/x"',
+    'url = "postgres://u:changeme@db/x"',
     'url = "postgres://u:%s@db.internal/x" % pw',
     'url = "mongodb://admin:xxxx@mongo.internal/x"',
 ])
@@ -55,6 +55,8 @@ def test_placeholder_url_credentials_are_redacted_but_not_reported(line):
 @pytest.mark.parametrize("line", [
     'DB = "postgres://admin:hunter2@db.internal:5432/app"',
     'url = "redis://:s3cr3t-Zq9@cache.prod:6379/0"',
+    # 預設密碼在看起來真實的主機上就是預設憑證（CWE-1392） ／ a stock password on a real-looking host is a default credential
+    'url = "postgres://u:changeme@db.internal/x"',
 ])
 def test_real_url_credentials_are_still_reported(line):
     assert find_secrets(line) == [(1, "url-credentials")]
@@ -64,7 +66,8 @@ def test_real_url_credentials_are_still_reported(line):
 def test_placeholder_helper_rules():
     assert is_placeholder_credential("u", "Zq9!x", "localhost")
     assert is_placeholder_credential("u", "Zq9!x", "[::1]")
-    assert is_placeholder_credential("app", "app", "db.internal")
+    assert is_placeholder_credential("app", "app", "db")
+    assert not is_placeholder_credential("app", "app", "db.internal")
     assert is_placeholder_credential("", "${REDIS_PASSWORD}", "cache")
     assert not is_placeholder_credential("admin", "hunter2", "db.internal")
     assert not is_placeholder_credential("", "hunter2", "cache")
