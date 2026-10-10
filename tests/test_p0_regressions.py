@@ -727,9 +727,9 @@ def test_url_guard_resolves_ipv6_literals_and_userinfo():
     Host extraction must not break on IPv6 literals ('[::1]' parsed as '[') or be
     fooled by userinfo ('user@evil.example.com'); unparseable literals fail closed."""
     check = ThreatScenarioBuilder._hosts_outside_base_url
-    # IPv6 迴路字面值與迴路 base URL 是同一台機器：不是違規者
-    # an IPv6 loopback literal is the same machine as a loopback base URL: not an offender
-    assert check('requests.get("http://[::1]:8080/admin")', "http://localhost:8000") == []
+    # IPv6 迴路字面值與迴路 base URL 是同一台機器（且同一連接埠）：不是違規者
+    # an IPv6 loopback literal is the same machine (and the same port) as a loopback base URL: not an offender
+    assert check('requests.get("http://[::1]:8000/admin")', "http://localhost:8000") == []
     # 宣告的 IPv6 base URL 本身永遠不是違規者
     # the declared IPv6 base URL itself is never an offender
     assert check('urllib.request.urlopen("http://[::1]:8000/api")', "http://[::1]:8000") == []
