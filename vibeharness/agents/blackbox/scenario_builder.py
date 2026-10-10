@@ -112,6 +112,30 @@ class ThreatScenarioBuilder:
         return [k for k in dict.fromkeys([name, name.split(".")[-1]]) if k]
 
     @staticmethod
+    def _key_pattern(key: str) -> str:
+        """比對一個符號鍵的正規表達式：識別字邊界把 `_` 與 JS 的 `$` 都算成識別字字元。
+
+        只由符號組成的路由路徑（根路由 `/`、萬用路由 `*`）在一般文字中到處都是（"and/or"、"read/write"、
+        "1 * 10^6"），所以單獨的路徑只在被引號或反引號包住時才算（`'/'`、`` `*` ``）；完整的 "GET /" 形式
+        後面不可緊接路徑字元，因此 "GET /admin" 或 "GET /.env" 不會指名根路由。
+        The regex matching one symbol key: identifier boundaries count both `_` and the JS `$` as identifier characters.
+
+        Route paths made only of symbols (the root route `/`, the wildcard `*`) occur all over ordinary text
+        ("and/or", "read/write", "1 * 10^6"), so such a bare path only counts inside quotes or backticks (`'/'`,
+        `` `*` ``); the full "GET /" form must not be followed by a path character, so "GET /admin" or "GET /.env"
+        does not name the root route."""
+        path = key.split(" ", 1)[-1]
+        symbolic = not re.search(r"[\w$]", path)
+        if symbolic and " " not in key:
+            return r"(?<=['\"`])" + re.escape(key) + r"(?=['\"`])"
+        head = r"(?<![\w$])" if re.match(r"[\w$]", key) else ""
+        if symbolic:
+            tail = r"(?![\w$/*]|\.[\w$])"
+        else:
+            tail = r"(?![\w$])" if re.search(r"[\w$]$", key) else ""
+        return head + re.escape(key) + tail
+
+    @staticmethod
     def _named_symbols(symbols: List[CodeSymbol], text: str) -> List[CodeSymbol]:
         """威脅文字以完整識別字（或完整路由）指名的符號。
 
@@ -131,9 +155,7 @@ class ThreatScenarioBuilder:
         for sym in symbols:
             found: List[Tuple[int, int]] = []
             for key in ThreatScenarioBuilder._symbol_keys(sym):
-                head = r"(?<![\w$])" if re.match(r"[\w$]", key) else ""
-                tail = r"(?![\w$])" if re.search(r"[\w$]$", key) else ""
-                found.extend(m.span() for m in re.finditer(head + re.escape(key) + tail, text))
+                found.extend(m.span() for m in re.finditer(ThreatScenarioBuilder._key_pattern(key), text))
             if found:
                 spans.append((sym, found))
         all_spans = [span for _sym, found in spans for span in found]
