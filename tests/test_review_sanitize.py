@@ -37,14 +37,25 @@ def test_value_only_redaction_keeps_the_surrounding_code_readable():
 
 
 @pytest.mark.parametrize("line", [
-    'url = f"postgres://{user}:{password}@{host}/db"',  # 範本佔位符，不是憑證 ／ template placeholders, not a credential
-    'url = "https://user:$PASSWORD@example.com"',  # 環境變數參照 ／ environment reference
     'url = "https://example.com:8443/path"',  # 連接埠不是密碼 ／ a port is not a password
     'email = "mailto:someone@example.com"',
     'aws_secret_access_key = os.environ["AWS_SECRET_ACCESS_KEY"]',
 ])
 def test_redactor_leaves_ordinary_code_alone(line):
     assert redact_secrets(line) == line
+    assert find_secrets(line) == []
+
+
+@pytest.mark.parametrize("line", [
+    'url = f"postgres://{user}:{password}@{host}/db"',  # 範本佔位符，不是憑證 ／ template placeholders, not a credential
+    'url = "https://user:$PASSWORD@example.com"',  # 環境變數參照 ／ environment reference
+    'url = "https://user:${PASSWORD}@db.prod.internal"',
+])
+def test_template_url_credentials_are_redacted_but_not_reported(line):
+    """密碼現在可以含 $ { } 等字元，所以整個是範本的密碼也會被比對到：一律遮蔽，但不回報為寫死的憑證。
+    Passwords may now hold $ { } and the like, so a password that is a template as a whole is matched too:
+    always redacted, never reported as a hard-coded credential."""
+    assert "<REDACTED:url-credentials>" in redact_secrets(line)
     assert find_secrets(line) == []
 
 
