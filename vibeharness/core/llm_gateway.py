@@ -88,6 +88,9 @@ RESERVED_EXTRA_PARAMS = frozenset({
     # litellm's canned-response keys: they return mock_completion's fake answer with no network call at all,
     # so simulated output would be booked as live evidence
     "mock_response", "mock_tool_calls", "mock_timeout", "mock_delay",
+    # TLS 驗證只能維持開啟：關掉後 api_base 的 https 檢查就失去意義
+    # TLS verification stays on: turning it off would make the https check on api_base meaningless
+    "ssl_verify",
 })
 # 上面屬於輸出 token 上限的保留鍵；錯誤訊息會指向 max_output_tokens
 # The reserved keys above that are the output-token cap; the error message points at max_output_tokens

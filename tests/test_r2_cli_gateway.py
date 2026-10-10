@@ -135,7 +135,7 @@ def test_python_dash_m_vibeharness_runs_the_cli():
 # --- 3. litellm 的罐頭回應鍵是保留參數 --------------------------------------------------------------------
 # --- 3. litellm's canned-response keys are reserved ---------------------------------------------------------
 
-@pytest.mark.parametrize("key", ["mock_response", "mock_tool_calls", "mock_timeout", "mock_delay"])
+@pytest.mark.parametrize("key", ["mock_response", "mock_tool_calls", "mock_timeout", "mock_delay", "ssl_verify"])
 def test_canned_response_extra_params_are_refused(tmp_path, key):
     """extra_params 裡的 mock_* 會讓 litellm 不連網就回傳假答案、被記成 live 證據：啟動即 ConfigError。
     A mock_* key in extra_params makes litellm return a fake answer with no network call, booked as live
