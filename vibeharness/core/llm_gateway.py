@@ -60,6 +60,24 @@ UNCONFIGURED_ALIAS = "unconfigured"
 
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
+# `extra_params` 不得覆寫的 litellm 參數：端點與憑證（會繞過 api_base 的 https 檢查，
+# 把目標原始碼送到任意主機）、harness 自己設定的請求內容與重試／逾時控制，以及會讓
+# 回應解析失效的 stream。這些都有專用的設定鍵（或由 harness 決定），放進 extra_params 即為 ConfigError。
+# litellm parameters `extra_params` must not override: endpoints and credentials (they would bypass
+# the https check on api_base and send the target source code to an arbitrary host), the request
+# content and the retry / timeout controls the harness sets itself, and stream, which would break
+# response parsing. Each has a dedicated setting (or is the harness's call); in extra_params it is a ConfigError.
+RESERVED_EXTRA_PARAMS = frozenset({
+    "model", "messages", "api_base", "base_url", "api_key", "api_version", "timeout", "request_timeout",
+    "num_retries", "max_retries", "fallbacks", "stream", "aws_profile_name", "aws_region_name",
+    "aws_access_key_id", "aws_secret_access_key", "aws_session_token", "aws_bedrock_runtime_endpoint",
+    "aws_role_name", "aws_web_identity_token", "custom_llm_provider",
+})
+
+# 屬於端點身分的模型設定：任一個不同就是不同的服務端點，回應快取不得共用
+# Model settings that identify the endpoint: if any differs it is a different service, so the response cache must not be shared
+_ENDPOINT_IDENTITY_KEYS = ("api_base", "aws_region_name", "aws_profile_name", "api_key_env")
+
 
 
 class LLMGatewayError(RuntimeError):
@@ -99,14 +117,16 @@ class LLMGateway:
 
     def __init__(self, config_path: str = DEFAULT_CONFIG_PATH, execution_mode: Optional[str] = None):
         self.config = self._load_config(config_path)
-        self.execution_mode = execution_mode or self.config.get("global", {}).get("execution_mode", "hybrid")
+        # 空的 `global:` 會載入成 None：當成空對應表，而不是在 .get() 時拋出 AttributeError
+        # An empty `global:` loads as None: treat it as an empty mapping instead of raising AttributeError on .get()
+        global_cfg = self.config.get("global") or {}
+        self.execution_mode = execution_mode or global_cfg.get("execution_mode") or "hybrid"
         if self.execution_mode not in ("live", "hybrid", "mock"):
             raise ValueError(bi(f"未知的 execution_mode '{self.execution_mode}'（應為 live、hybrid 或 mock）",
                                    f"Unknown execution_mode '{self.execution_mode}' (expected live, hybrid or mock)"))
         self.models_config = self.config.get("models") or {}
         self.agents_config = self.config.get("agents") or {}
         self.call_log: List[AgentCallRecord] = []
-        global_cfg = self.config.get("global") or {}
         # 成本防護：每次執行允許的線上模型呼叫次數（單次呼叫的 litellm 重試／fallback_model
         # 不另外計算）。None 或 0 表示不限制。
         # Cost guard: live model invocations allowed per run (litellm retries / fallback_model of one
@@ -172,9 +192,15 @@ class LLMGateway:
         self.cache_dir = target
 
     def _cache_key(self, model_alias: str, model_info: Dict[str, Any], temperature: float, system_prompt: str, user_prompt: str) -> str:
+        # 端點身分（api_base、AWS 區域／設定檔、金鑰環境變數）也在鍵內：同一個模型字串
+        # 指向另一個端點或帳號時，不得取用前一個端點的回答
+        # The endpoint identity (api_base, AWS region / profile, key env var) is part of the key: the same
+        # model string pointed at another endpoint or account must not be served the previous endpoint's answer
+        endpoint = json.dumps({k: model_info.get(k) for k in _ENDPOINT_IDENTITY_KEYS}, sort_keys=True, default=str)
         parts = "\x00".join([
             model_alias, str(model_info.get("model")), str(model_info.get("fallback_model")), str(temperature),
-            str(self._max_output_tokens(model_info)), json.dumps(model_info.get("extra_params") or {}, sort_keys=True),
+            str(self._max_output_tokens(model_info)),
+            json.dumps(model_info.get("extra_params") or {}, sort_keys=True, default=str), endpoint,
             system_prompt, user_prompt,
         ])
         return hashlib.sha256(parts.encode("utf-8")).hexdigest()
@@ -234,6 +260,15 @@ class LLMGateway:
             if extra is not None and (not isinstance(extra, dict) or not all(isinstance(k, str) for k in extra)):
                 raise ConfigError(bi(f"models.{alias}.extra_params 必須是 litellm 參數名稱的對應表，目前為 {extra!r}",
                                      f"models.{alias}.extra_params must be a mapping of litellm parameter names, got {extra!r}"))
+            reserved = sorted(set(extra or {}) & RESERVED_EXTRA_PARAMS)
+            if reserved:
+                names = ", ".join(reserved)
+                raise ConfigError(bi(
+                    f"models.{alias}.extra_params 不可設定保留的 litellm 參數：{names}"
+                    "（端點、憑證、逾時與重試請用 models.<alias> 或 global 的專用設定鍵）",
+                    f"models.{alias}.extra_params must not set reserved litellm parameter(s): {names} "
+                    "(use the dedicated models.<alias> / global settings for endpoints, credentials, timeouts and retries)"
+                ))
 
     @staticmethod
     def _number(value: Any, key: str, minimum: float, maximum: Optional[float] = None, integer: bool = False) -> None:
@@ -311,17 +346,40 @@ class LLMGateway:
             raise ConfigError(bi(f"找不到代理設定檔：{path}", f"Agent config not found: {path}"))
         try:
             with open(path, "r", encoding="utf-8") as f:
-                return yaml.safe_load(f) or {}
+                config = yaml.safe_load(f)
         except yaml.YAMLError as e:
             raise ConfigError(bi(f"代理設定檔不是有效的 YAML（{path}）：{e}",
                                  f"Agent config is not valid YAML ({path}): {e}")) from e
+        except (OSError, UnicodeDecodeError) as e:
+            # 例如把目錄、無法讀取的檔案或二進位檔當成 --config 傳入
+            # e.g. a directory, an unreadable file or a binary file passed as --config
+            raise ConfigError(bi(f"無法讀取代理設定檔（{path}）：{e}",
+                                 f"Agent config cannot be read ({path}): {e}")) from e
+        if config is None:
+            return {}
+        if not isinstance(config, dict):
+            raise ConfigError(bi(f"代理設定檔的最上層必須是 YAML 對應表，目前為 {type(config).__name__}（{path}）",
+                                 f"Agent config must be a YAML mapping at the top level, got {type(config).__name__} ({path})"))
+        for section in ("global", "models", "agents"):
+            value = config.get(section)
+            if value is not None and not isinstance(value, dict):
+                raise ConfigError(bi(f"代理設定檔的 '{section}' 區段必須是對應表，目前為 {type(value).__name__}（{path}）",
+                                     f"Agent config section '{section}' must be a mapping, got {type(value).__name__} ({path})"))
+        # 每個模型與代理項目本身也必須是對應表（或留空）：否則之後的 .get() 會在執行中途當掉
+        # Every model and agent entry must itself be a mapping (or empty): otherwise a later .get() crashes mid-run
+        for section in ("models", "agents"):
+            for name, entry in (config.get(section) or {}).items():
+                if entry is not None and not isinstance(entry, dict):
+                    raise ConfigError(bi(f"{section}.{name} 必須是對應表，目前為 {type(entry).__name__}（{path}）",
+                                         f"{section}.{name} must be a mapping, got {type(entry).__name__} ({path})"))
+        return config
 
     def is_live_configured(self, model_alias: str) -> bool:
         """檢查所要求的模型是否具備憑證：其 API 金鑰，或 AWS 設定檔
         （Bedrock 透過 AWS 憑證鏈驗證，而非 API 金鑰）。
         Checks whether the requested model has credentials: its API key, or an AWS profile
         (Bedrock authenticates through the AWS credential chain, not an API key)."""
-        model_info = self.models_config.get(model_alias, {})
+        model_info = self.models_config.get(model_alias) or {}
         if model_info.get("aws_profile_name"):
             return True
         env_var = model_info.get("api_key_env")
@@ -353,6 +411,11 @@ class LLMGateway:
         temperature = agent_meta.get("temperature", 0.2)
         model_info = self.models_config.get(model_alias) or {}
         model_name = model_info.get("model") or f"(no model configured for alias '{model_alias}')"
+        # 重新詢問一律從主要模型開始：model_name 之後會改成實際回答的模型（可能是 fallback），
+        # 若拿它當下一次的主要模型，主要模型會被跳過、fallback 被呼叫兩次
+        # A re-ask always starts from the primary: model_name later becomes the model that actually answered
+        # (possibly the fallback); using it as the next primary would skip the primary and call the fallback twice
+        primary_model = model_name
         prompt_hash = hashlib.sha256(f"{system_prompt}\x00{user_prompt}".encode("utf-8")).hexdigest()
 
         # 決定要呼叫線上 API 還是模擬引擎
@@ -398,7 +461,7 @@ class LLMGateway:
                         logger.info(bi(f"[{agent_id}] 回答取自回應快取（{model_name}）",
                                        f"[{agent_id}] answer served from the response cache ({model_name})"))
                     else:
-                        raw_text, model_name, finish_reason = self._complete(model_info, model_name, messages, temperature)
+                        raw_text, model_name, finish_reason = self._complete(model_info, primary_model, messages, temperature)
                 except Exception as e:
                     fallback_reason = f"{bi('線上呼叫失敗', 'live invocation failed')}: {self._safe_reason(str(e))}"
                     if self.execution_mode == "live":
@@ -510,7 +573,10 @@ class LLMGateway:
         # 讓推理模型不會把整個輸出預算花在思考上（啟動時驗證為對應表）
         # Per-model litellm passthrough, e.g. {thinking: {type: disabled}} or {reasoning_effort: low} so a
         # reasoning model does not spend the whole output budget thinking (validated as a mapping at start-up)
-        kwargs.update(model_info.get("extra_params") or {})
+        # 保留參數（端點、憑證、逾時、重試、請求內容）已在啟動時拒絕；這裡再過濾一次作為縱深防禦
+        # Reserved parameters (endpoint, credentials, timeout, retries, request content) are rejected at
+        # start-up; they are filtered again here as defense in depth
+        kwargs.update({k: v for k, v in (model_info.get("extra_params") or {}).items() if k not in RESERVED_EXTRA_PARAMS})
 
         candidates = [model_name] + ([model_info["fallback_model"]] if model_info.get("fallback_model") else [])
         last_error: Optional[Exception] = None

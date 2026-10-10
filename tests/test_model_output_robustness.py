@@ -410,11 +410,14 @@ def test_sarif_uri_relativization(tmp_path):
     assert uri(str(tmp_path / "a" / "app.py"), str(tmp_path / "a")) == "app.py"
     assert uri("app.py", str(tmp_path)) == "app.py"
     assert uri("./pkg/mod.py", str(tmp_path)) == "pkg/mod.py"
-    assert uri(str(tmp_path / "elsewhere" / "x.py"), str(tmp_path / "a")) == "x.py"
+    # %SRCROOT% 之外的檔案：絕對 file:// URI，絕不是只剩檔名（那會指到版本庫根目錄下別的檔案）
+    # A file outside %SRCROOT%: an absolute file:// URI, never a bare file name (that would point at another file at the repo root)
+    elsewhere = tmp_path / "elsewhere" / "x.py"
+    assert uri(str(elsewhere), str(tmp_path / "a")) == elsewhere.resolve().as_uri()
     assert uri("", str(tmp_path)) is None
-    # 在 Windows 上不同磁碟機無法相對化：退回只用檔名
-    # A different drive cannot be made relative on Windows: fall back to the file name
-    assert uri("E:\\other\\x.py", r"D:\work\proj") == "x.py"
+    # 不同磁碟機無法相對化：退回絕對 file:// URI
+    # A different drive cannot be made relative: fall back to an absolute file:// URI
+    assert uri("E:\\other\\x.py", r"D:\work\proj") == "file:///E:/other/x.py"
     # 同一磁碟機在 Windows 與 POSIX 主機上都能一致地相對化
     # Same drive relativizes consistently on Windows and on POSIX hosts
     assert uri(r"D:\proj\app.py", r"D:\proj") == "app.py"

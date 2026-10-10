@@ -1,7 +1,11 @@
 import html
 import json
+import ntpath
 import os
+import pathlib
+import posixpath
 import re
+import urllib.parse
 from typing import Dict, List, Optional, Tuple
 from vibeharness.core.models import (
     CodeSymbol,
@@ -25,6 +29,10 @@ from vibeharness.core.sanitize import clean_model_text, markdown_safe
 # Windows drive paths ("C:\...") count as absolute even on POSIX hosts, so a SARIF produced
 # on Windows relativizes identically when re-processed by a Linux CI runner.
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+# 單行情境中要收合的換行：\n 以及 Unicode 的行／段落分隔符號（\r 已由 clean_model_text 移除）
+# Line breaks collapsed in single-line contexts: \n and the Unicode line / paragraph separators
+# (\r is already removed by clean_model_text)
+_LINE_BREAK_RE = re.compile(r"[\n\u2028\u2029\x85]+")
 
 # 穩定的 SARIF 規則 id：GitHub Code Scanning 以 ruleId + 指紋追蹤警示，所以每次執行
 # 不同的發現 id（WB-CLA-01 只是「這次執行 Claude 的第一個發現」）會在編號變動時
@@ -69,6 +77,8 @@ HEADING_VERDICT = "### " + bi("判定結果", "Verdict")
 HEADING_STATIC_RULES = "### " + bi("確定性 AI 資安規則（不涉及模型）", "Deterministic AI-Security Rules (no model involved)")
 HEADING_PROVENANCE = "### " + bi("執行來源", "Execution Provenance")
 HEADING_CONFIRMED_FINDINGS = "### " + bi("已確認的邏輯與防禦盲點", "Confirmed Logic & Defensive Blindspots")
+HEADING_UNVERIFIED_FINDINGS = "### " + bi("未經驗證的缺陷假設（未套用跨模型驗證）",
+                                          "Unverified Defect Hypotheses (cross-model verification not applied)")
 HEADING_DISPUTED_FINDINGS = "### " + bi("有爭議的發現（遭跨模型多數否決，未測試）",
                                         "Disputed Findings (rejected by a cross-model majority, not tested)")
 HEADING_WHITEBOX_RESULTS = "### " + bi("白箱測試執行結果", "White-Box Test Execution Results")
@@ -123,7 +133,7 @@ class ReportGenerator:
         # 標頭
         # Header
         md.append(REPORT_TITLE)
-        md.append(f"**{bi('目標系統路徑', 'Target System Path')}**: `{os.path.abspath(target_path)}`  ")
+        md.append(f"**{bi('目標系統路徑', 'Target System Path')}**: {self._code_span(os.path.abspath(target_path))}  ")
         md.append(f"**{bi('協調者', 'Orchestrator')}**: {bi('Commander Harness 代理', 'Commander Harness Agent')}  ")
         md.append(f"**{bi('整體狀態', 'Overall Status')}**: `{summary.overall_status}`  ")
         if summary.run:
@@ -134,8 +144,8 @@ class ReportGenerator:
             md.append(f"**{bi('產生時間', 'Generated')}**: {run.generated_at} "
                       f"{bi(f'由 VibeHarness-MAS {run.harness_version} 產生', f'by VibeHarness-MAS {run.harness_version}')} "
                       f"(mode `{run.execution_mode}`, sandbox `{run.sandbox_provider}`)  ")
-            md.append(f"**{bi('目標修訂', 'Target revision')}**: `{self._cell(revision)}`  ")
-            md.append(f"**{bi('設定檔', 'Config')}**: `{self._cell(run.config_path)}`  ")
+            md.append(f"**{bi('目標修訂', 'Target revision')}**: {self._code_span(revision)}  ")
+            md.append(f"**{bi('設定檔', 'Config')}**: {self._code_span(run.config_path)}  ")
             if run.file_filters:
                 md.append(f"**{bi('檔案篩選', 'File selection')}**: {self._code_span('; '.join(run.file_filters))}  ")
         md.append("\n---\n")
@@ -166,17 +176,17 @@ class ReportGenerator:
         md.append(f"{HEADING_VERDICT}: {status_badge}\n")
         if summary.baseline_path:
             n_known = len(summary.baseline_suppressed)
-            md.append(f"**{bi('基準', 'Baseline')}**: `{self._cell(summary.baseline_path)}` — "
+            md.append(f"**{bi('基準', 'Baseline')}**: {self._code_span(summary.baseline_path)} — "
                       f"{bi(f'{n_known} 個已知問題已列出但不計入判定', f'{n_known} known problem(s) reported but not counted in the verdict')}  ")
             if summary.baseline_suppressed:
                 md.append(f"\n**{bi('基準中的已知問題（不計入）', 'Known from baseline (not counted)')}:**")
                 for item in summary.baseline_suppressed:
-                    md.append(f"- `{self._cell(item.id)}` ({item.kind}): {markdown_safe(item.title)}")
+                    md.append(f"- {self._code_span(item.id)} ({item.kind}): {self._inline(item.title)}")
             md.append("")
         if summary.inconclusive_reasons:
             md.append(f"**{bi('證據缺口', 'Evidence gaps')}:**")
             for reason in summary.inconclusive_reasons:
-                md.append(f"- {markdown_safe(reason)}")  # 原因會引用模型選的 id 與失敗文字 ／ reasons quote model-chosen ids and failure text
+                md.append(f"- {self._inline(reason)}")  # 原因會引用模型選的 id 與失敗文字 ／ reasons quote model-chosen ids and failure text
             md.append("")
 
         sim_tag = " `[SIMULATED]`" if debate_result.is_simulated else ""
@@ -194,7 +204,16 @@ class ReportGenerator:
             md.append(f"| **{bi('突變測試分數', 'Mutation Score')}** | `{mut_str}` | {bi('越高越好；是下界', 'higher is better; a lower bound')} |")
         if summary.distinct_whitebox_findings is not None:
             md.append(f"| **{bi('審查者發現（原始 → 去重後）', 'Reviewer Findings (raw → distinct)')}** | `{summary.total_whitebox_findings} → {summary.distinct_whitebox_findings}` | - |")
-        md.append(f"| **{bi('已確認的白箱邏輯缺陷', 'Confirmed White-Box Logic Flaws')}** | `{summary.confirmed_whitebox_bugs}` | {bi('0 個關鍵', '0 Critical')} |")
+        if debate_result.arbitration_applied:
+            md.append(f"| **{bi('已確認的白箱邏輯缺陷', 'Confirmed White-Box Logic Flaws')}** | `{summary.confirmed_whitebox_bugs}` | {bi('0 個關鍵', '0 Critical')} |")
+        else:
+            # 沒有套用驗證時沒有任何東西被確認：顯示 N/A 與未經驗證的假設數，而不是把它們稱為已確認的缺陷
+            # Without verification nothing was confirmed: show N/A and the number of unverified hypotheses
+            # instead of calling them confirmed flaws
+            n_hyp = len(debate_result.confirmed_findings)
+            md.append(f"| **{bi('已確認的白箱邏輯缺陷', 'Confirmed White-Box Logic Flaws')}** | `N/A` "
+                      f"({bi(f'{n_hyp} 個未經驗證的假設；未套用驗證', f'{n_hyp} unverified hypotheses; verification not applied')}) | "
+                      f"{bi('0 個關鍵', '0 Critical')} |")
         n_err = summary.whitebox_tests_errored
         md.append(f"| **{bi('白箱測試通過', 'White-Box Tests Passed')}** | `{summary.whitebox_tests_passed} / {len(whitebox_results)}` "
                   f"({bi(f'{n_err} 個錯誤或未執行', f'{n_err} errored / not run')}) | {bi('通過率 100%', '100% Pass Rate')} |")
@@ -208,9 +227,9 @@ class ReportGenerator:
         md.append("\n")
         if summary.reviewer_models:
             n_models = len(summary.reviewer_models)
-            md.append(f"**{bi('審查模型', 'Reviewer models')}** ({bi(f'{n_models} 個不同模型', f'{n_models} distinct')}): `{', '.join(summary.reviewer_models)}`  ")
+            md.append(f"**{bi('審查模型', 'Reviewer models')}** ({bi(f'{n_models} 個不同模型', f'{n_models} distinct')}): {self._code_span(', '.join(summary.reviewer_models))}  ")
         if summary.ai_components:
-            md.append(f"**{bi('偵測到的 AI/LLM 元件', 'AI/LLM components detected')}**: `{', '.join(summary.ai_components)}` — "
+            md.append(f"**{bi('偵測到的 AI/LLM 元件', 'AI/LLM components detected')}**: {self._code_span(', '.join(summary.ai_components))} — "
                       f"{bi('威脅建模已套用 OWASP Top 10 for LLM Applications 2026', 'OWASP Top 10 for LLM Applications 2026 applied to threat modeling')}  ")
         md.append("")
         md.extend(self._static_section(summary.static_findings))
@@ -232,7 +251,7 @@ class ReportGenerator:
                 mode_label = {"live": "🟢 " + bi("真實", "live"), "cached": "🟢 " + bi("真實（回應快取）", "live (response cache)"),
                               "simulated": "🟡 " + bi("模擬", "simulated"),
                               "retried": "🟠 " + bi("無法使用，已重問", "unusable, re-asked")}.get(mode, "🔴 " + bi("無效輸出", "invalid output"))
-                md.append(f"| `{self._cell(agent_id)}` | `{self._cell(model_name)}` | {mode_label} | {count} | {self._cell(reason) or '-'} |")
+                md.append(f"| {self._cell_code(agent_id)} | {self._cell_code(model_name)} | {mode_label} | {count} | {self._cell(reason) or '-'} |")
         else:
             md.append(bi("沒有記錄到任何代理呼叫。", "No agent invocations were recorded."))
         md.append("\n")
@@ -250,19 +269,22 @@ class ReportGenerator:
             md.append(f"> **{bi('去偏差架構', 'De-biasing Architecture')}**: "
                       + bi(f"發現已由 {models_zh} 交叉稽核；沒有模型裁決自己的發現。",
                            f"Findings cross-audited across {models}; no model rules on its own finding.") + "\n")
-        md.append(f"**{bi('辯論共識摘要', 'Debate Consensus Summary')}**{sim_tag}: {markdown_safe(debate_result.consensus_summary)}\n")
+        md.append(f"**{bi('辯論共識摘要', 'Debate Consensus Summary')}**{sim_tag}: {self._inline(debate_result.consensus_summary)}\n")
 
         if debate_result.confirmed_findings:
             n_tie = debate_result.undecided_count
             kept = f" ({bi(f'{n_tie} 個未決的平手已保留供測試', f'{n_tie} undecided tie(s) kept for testing')})" if n_tie else ""
-            md.append(f"{HEADING_CONFIRMED_FINDINGS}{kept}:")
+            if debate_result.arbitration_applied:
+                md.append(f"{HEADING_CONFIRMED_FINDINGS}{kept}:")
+            else:
+                md.append(f"{HEADING_UNVERIFIED_FINDINGS}:")
             for f in debate_result.confirmed_findings:
                 tag = " `[SIMULATED]`" if f.is_simulated else ""
                 also = f"; {bi('亦見於', 'also reported by')} {', '.join(f.corroborated_by)}" if f.corroborated_by else ""
-                mapping = f" `{self._cell(f.owasp_mapping)}`" if f.owasp_mapping else ""
-                md.append(f"- **[{f.severity.value}] {markdown_safe(f.title)}**{mapping}{tag} ({bi('發現者', 'Identified by')} {f.reviewer_name}{also})")
-                md.append(f"  - **{bi('根本原因', 'Root Cause')}**: {markdown_safe(f.root_cause)}")
-                md.append(f"  - **{bi('Vibe-Coding 缺陷', 'Vibe-Coding Flaw')}**: {markdown_safe(f.suspected_vibe_flaw)}")
+                mapping = f" {self._code_span(f.owasp_mapping)}" if f.owasp_mapping else ""
+                md.append(f"- **[{f.severity.value}] {self._inline(f.title)}**{mapping}{tag} ({bi('發現者', 'Identified by')} {f.reviewer_name}{also})")
+                md.append(f"  - **{bi('根本原因', 'Root Cause')}**: {self._inline(f.root_cause)}")
+                md.append(f"  - **{bi('Vibe-Coding 缺陷', 'Vibe-Coding Flaw')}**: {self._inline(f.suspected_vibe_flaw)}")
                 md.append(f"  - **{bi('建議情境', 'Suggested Scenario')}**: {self._code_span(f.suggested_test_scenario)}")
                 if f.verification_votes:
                     md.append(f"  - **{bi('驗證', 'Verification')}**: {self._votes(f)}")
@@ -272,14 +294,14 @@ class ReportGenerator:
         if debate_result.disputed_findings:
             md.append(f"\n{HEADING_DISPUTED_FINDINGS}:")
             for f in debate_result.disputed_findings:
-                md.append(f"- [{f.severity.value}] {markdown_safe(f.title)} ({bi('發現者', 'Identified by')} {f.reviewer_name}) — {self._votes(f)}")
+                md.append(f"- [{f.severity.value}] {self._inline(f.title)} ({bi('發現者', 'Identified by')} {f.reviewer_name}) — {self._votes(f)}")
 
         md.append(f"\n{HEADING_WHITEBOX_RESULTS}")
         if whitebox_results:
             md.append(WHITEBOX_TABLE_HEADER)
             md.append("| :--- | :--- | :--- | :--- | :--- | :--- |")
             for r in whitebox_results:
-                md.append(f"| `{self._cell(r.test_id)}` | {r.test_type} | `{self._cell(r.source_ref) or '-'}` | {self._status_label(r.status)} | `{r.duration_seconds}s` | {self._cell(r.failure_reason) or bi('通過', 'Passed')} |")
+                md.append(f"| {self._cell_code(r.test_id)} | {r.test_type} | {self._cell_code(r.source_ref)} | {self._status_label(r.status)} | `{r.duration_seconds}s` | {self._cell(r.failure_reason) or bi('通過', 'Passed')} |")
         else:
             md.append(bi("未執行任何白箱測試。", "No white-box tests executed."))
 
@@ -288,13 +310,13 @@ class ReportGenerator:
             md.append(f"\n{HEADING_MUTANTS}")
             survivors = [m for m in mutation.mutants if m.status == "survived"]
             if mutation.skipped_reason and mutation.score is None:
-                md.append(f"{bi('沒有結論', 'No conclusion')}: {markdown_safe(mutation.skipped_reason)}")
+                md.append(f"{bi('沒有結論', 'No conclusion')}: {self._inline(mutation.skipped_reason)}")
             elif survivors:
                 md.append(MUTANT_TABLE_HEADER)
                 md.append("| :--- | :--- | :--- | :--- | :--- |")
                 for m in survivors:
-                    md.append(f"| `{self._cell(m.file)}:{m.line}` | `{self._cell(m.symbol) or '-'}` | {m.operator} | "
-                              f"`{self._cell(m.original)}` | `{self._cell(m.mutated)}` |")
+                    md.append(f"| {self._cell_code(f'{m.file}:{m.line}')} | {self._cell_code(m.symbol)} | {m.operator} | "
+                              f"{self._cell_code(m.original)} | {self._cell_code(m.mutated)} |")
             else:
                 md.append(bi("沒有存活的變異體。", "No surviving mutants."))
 
@@ -303,7 +325,7 @@ class ReportGenerator:
         # 3. 黑箱威脅建模矩陣
         # 3. Black-Box Threat Modeling Matrix
         md.append(HEADING_THREAT_MODEL + (" `[SIMULATED]`" if threat_model.is_simulated else ""))
-        md.append(f"**{bi('系統描述', 'System Description')}**: {markdown_safe(threat_model.system_description)}  ")
+        md.append(f"**{bi('系統描述', 'System Description')}**: {self._inline(threat_model.system_description)}  ")
         md.append(f"**{bi('稽核的進入點', 'Entrypoints Audited')}**: {self._code_span(self._join_list(threat_model.entrypoints))}  ")
         md.append(f"**{bi('信任邊界', 'Trust Boundaries')}**: {self._code_span(self._join_list(threat_model.trust_boundaries))}\n")
 
@@ -312,7 +334,7 @@ class ReportGenerator:
         for t in threat_model.threats:
             owasp = self._cell(t.owasp_mapping) or "N/A"
             atlas = self._cell(t.atlas_mapping) or "-"
-            md.append(f"| `{self._cell(t.threat_id)}` | **{t.stride_category.value}** | {owasp} | {atlas} | `{t.severity.value}` | **{self._cell(t.title)}**<br>*{self._cell(t.attack_vector)}* |")
+            md.append(f"| {self._cell_code(t.threat_id)} | **{t.stride_category.value}** | {owasp} | {atlas} | `{t.severity.value}` | **{self._cell(t.title)}**<br>*{self._cell(t.attack_vector)}* |")
 
         md.append("\n")
 
@@ -324,7 +346,7 @@ class ReportGenerator:
             md.append("| :--- | :--- | :--- | :--- | :--- |")
             for r in blackbox_results:
                 status_icon = OUTCOME_VULNERABLE if r.is_security_exploit_confirmed else self._status_label(r.status)
-                md.append(f"| `{self._cell(r.test_id)}` | {r.test_type} | {status_icon} | `{r.duration_seconds}s` | {self._cell(r.failure_reason) or bi('邊界已防禦', 'Boundary defended')} |")
+                md.append(f"| {self._cell_code(r.test_id)} | {r.test_type} | {status_icon} | `{r.duration_seconds}s` | {self._cell(r.failure_reason) or bi('邊界已防禦', 'Boundary defended')} |")
 
             # 檢查是否有重現 PoC
             # Check for reproduction PoCs
@@ -332,7 +354,7 @@ class ReportGenerator:
             if pocs:
                 md.append(f"\n{HEADING_POCS}:")
                 for p in pocs:
-                    md.append(f"#### {bi('PoC 對象', 'PoC for')} `{p.test_id}`")
+                    md.append(f"#### {bi('PoC 對象', 'PoC for')} {self._code_span(p.test_id)}")
                     poc_text = p.reproduction_poc or ""
                     fence = self._fence(poc_text)
                     md.append(f"{fence}{self._fence_lang(p.language)}\n{poc_text}\n{fence}")
@@ -352,7 +374,7 @@ class ReportGenerator:
         # 5. Key Recommendations for Vibe Coder
         md.append(HEADING_NEXT_STEPS)
         for rec in summary.key_recommendations:
-            md.append(f"- {markdown_safe(rec)}")
+            md.append(f"- {self._inline(rec)}")
 
         md.extend(self._generated_tests_section(whitebox_tests, whitebox_results, blackbox_tests, blackbox_results))
 
@@ -487,6 +509,11 @@ class ReportGenerator:
                 desc += f"\n\n{bi('根本原因', 'Root cause')}: {f.root_cause}"
             if f.suggested_test_scenario:
                 desc += f"\n\n{bi('建議測試', 'Suggested test')}: {f.suggested_test_scenario}"
+            if not debate_result.arbitration_applied:
+                # 沒有套用跨模型驗證：結果只是未經過濾的假設，訊息與 properties 都要說清楚
+                # Cross-model verification was not applied: the result is an unfiltered hypothesis, and both
+                # the message and the properties say so
+                desc = bi("未經驗證的假設（未套用跨模型驗證）", "Unverified hypothesis (cross-model verification not applied)") + f": {desc}"
             desc = clean_model_text(desc)
             uri = self._sarif_uri(f.file_path, root)
             result: Dict[str, object] = {
@@ -504,6 +531,7 @@ class ReportGenerator:
                     "symbol": f.symbol_name or "",
                     "corroboratedBy": f.corroborated_by,
                     "simulated": f.is_simulated,
+                    "verified": debate_result.arbitration_applied,
                 },
             }
             if uri:
@@ -581,9 +609,15 @@ class ReportGenerator:
 
     @staticmethod
     def _location(uri: str, line: int) -> Dict[str, object]:
+        """SARIF 位置：相對 URI 以 %SRCROOT% 為基準；%SRCROOT% 之外的檔案是絕對 file:// URI，不帶 uriBaseId。
+        A SARIF location: relative URIs are based on %SRCROOT%; a file outside %SRCROOT% is an absolute
+        file:// URI without a uriBaseId."""
+        artifact: Dict[str, str] = {"uri": uri}
+        if not uri.startswith("file:"):
+            artifact["uriBaseId"] = "%SRCROOT%"
         return {
             "physicalLocation": {
-                "artifactLocation": {"uri": uri, "uriBaseId": "%SRCROOT%"},
+                "artifactLocation": artifact,
                 "region": {"startLine": line},
             }
         }
@@ -594,11 +628,24 @@ class ReportGenerator:
         """威脅的攻擊向量所指名的擷取符號（整字比對，路由優先）。
         The extracted symbol the threat's attack vector names (whole-word match, routes first)."""
         text = f"{threat.attack_vector} {threat.attack_scenario}"
-        for sym in sorted(symbols or [], key=lambda s: s.symbol_type != "route"):
-            short = sym.name.split(".")[-1]
-            if sym.name in text or re.search(rf"\b{re.escape(short)}\b", text):
-                return sym
-        return None
+        best: Optional[Tuple[bool, int, int]] = None
+        chosen: Optional[CodeSymbol] = None
+        for index, sym in enumerate(symbols or []):
+            names = {sym.name, sym.name.split(".")[-1]} - {""}
+            # 只比對完整的識別字／路由：前後不能緊接識別字字元，路由後面也不能接著路徑字元，
+            # 所以 `get` 不會命中 `get_user`，`GET /users` 也不會命中 `GET /users/admin`
+            # Whole identifiers / routes only: no identifier character may touch either end, and no path
+            # character may follow, so `get` does not hit `get_user` and `GET /users` does not hit `GET /users/admin`
+            matched = [n for n in names if re.search(rf"(?<!\w){re.escape(n)}(?![\w/-])", text)]
+            if not matched:
+                continue
+            # 路由優先，其次是最長的命中（最具體的路由或完整的限定名稱），平手時取先出現的符號
+            # Routes first, then the longest match (the most specific route or the full qualified name),
+            # ties go to the earlier symbol
+            rank = (sym.symbol_type == "route", max(len(n) for n in matched), -index)
+            if best is None or rank > best:
+                best, chosen = rank, sym
+        return chosen
 
     @staticmethod
     def _sarif_root(target_path: str) -> str:
@@ -654,24 +701,57 @@ class ReportGenerator:
         # "unknown" is the reviewer's placeholder for a finding it could not attribute, not a file
         if not file_path or not file_path.strip() or file_path.strip() == "unknown":
             return None
-        p = file_path.strip().replace("\\", "/").removeprefix("./")
-        drive = _WINDOWS_DRIVE_RE.match(file_path)
-        if os.path.isabs(file_path) or drive:
-            if os.path.isdir(target_path) or os.path.isabs(target_path) or _WINDOWS_DRIVE_RE.match(target_path or ""):
-                base = target_path
-            else:
-                base = os.path.dirname(os.path.abspath(target_path))
-            base_drive = _WINDOWS_DRIVE_RE.match(base or "")
-            if drive and (base_drive is None or file_path[:2].lower() != base[:2].lower()):
-                return os.path.basename(p)
-            try:
-                rel = os.path.relpath(file_path, base).replace("\\", "/")
-            except ValueError:  # Windows 上在不同磁碟機 ／ different drive on Windows
-                return os.path.basename(p)
-            if rel.startswith(".."):
-                return os.path.basename(p)
+        path = file_path.strip()
+        drive = _WINDOWS_DRIVE_RE.match(path)
+        if not drive and not os.path.isabs(path) and os.path.isfile(path):
+            # 擷取器相對於工作目錄記下的路徑（例如在子目錄執行 `--target .`）：先解析成絕對路徑，
+            # 才能相對於 %SRCROOT% 正確相對化，而不是原樣輸出
+            # A path the extractor recorded relative to the working directory (e.g. `--target .` run from a
+            # subdirectory): resolve it first, so it is relativized against %SRCROOT% instead of emitted as-is
+            path = os.path.abspath(path)
+        if drive or _WINDOWS_DRIVE_RE.match(target_path or ""):
+            return ReportGenerator._sarif_uri_windows(path, target_path)
+        if os.path.isabs(path):
+            base = os.path.abspath(target_path)
+            if os.path.isfile(base):
+                base = os.path.dirname(base)
+            rel = os.path.relpath(path, base).replace("\\", "/")
+            if rel == ".." or rel.startswith("../"):
+                # 在 %SRCROOT% 之外：絕不輸出 `..` 片段，改用絕對 file:// URI
+                # Outside %SRCROOT%: never emit `..` segments, use an absolute file:// URI instead
+                return pathlib.Path(path).resolve().as_uri()
             return rel
-        return p
+        # 模型回報的相對路徑：`..` 片段絕不能跳出 %SRCROOT%，跳出就省略位置
+        # A model-reported relative path: `..` segments must never escape %SRCROOT%; if they do, the location is omitted
+        norm = posixpath.normpath(path.replace("\\", "/"))
+        if norm in (".", "..") or norm.startswith("../") or norm.startswith("/"):
+            return None
+        return norm
+
+    @staticmethod
+    def _sarif_uri_windows(path: str, target_path: str) -> Optional[str]:
+        """Windows 磁碟機路徑的 URI（在任何主機上都用 ntpath 規則）：同一磁碟機且位於基準之內時是相對路徑，
+        否則是絕對 file:// URI；絕不輸出 `..` 片段。
+        The URI of a Windows drive path (ntpath rules on any host): relative when it is on the same drive
+        and inside the base, else an absolute file:// URI; `..` segments are never emitted."""
+        if not _WINDOWS_DRIVE_RE.match(path):
+            # 基準是 Windows 路徑而檔案不是：只有沒有 `..` 的相對路徑才能當成基準之下的路徑
+            # The base is a Windows path but the file is not: only a relative path without `..` can sit under the base
+            norm = ntpath.normpath(path).replace("\\", "/")
+            if norm in (".", "..") or norm.startswith(("../", "/")):
+                return None
+            return norm
+        absolute = "file:///" + urllib.parse.quote(ntpath.normpath(path).replace("\\", "/"), safe="/:")
+        base = target_path or ""
+        if not _WINDOWS_DRIVE_RE.match(base) or path[0].lower() != base[0].lower():
+            return absolute
+        try:
+            rel = ntpath.relpath(path, base).replace("\\", "/")
+        except ValueError:  # 不同磁碟機 ／ different drive
+            return absolute
+        if rel == ".." or rel.startswith("../"):
+            return absolute
+        return rel
 
     @staticmethod
     def _resolve_line(finding: ReviewFinding, symbols: Optional[List[CodeSymbol]]) -> int:
@@ -704,7 +784,7 @@ class ReportGenerator:
         if not finding.verification_votes:
             return bi("沒有可用的驗證者投票", "no usable verifier votes")
         return "; ".join(
-            f"{v.model_alias}: {v.verdict}" + (f" ({markdown_safe(v.reason)})" if v.reason else "")
+            f"{v.model_alias}: {v.verdict}" + (f" ({ReportGenerator._inline(v.reason)})" if v.reason else "")
             for v in finding.verification_votes
         )
 
@@ -718,10 +798,20 @@ class ReportGenerator:
         return ", ".join(str(v) for v in items if str(v).strip())
 
     @staticmethod
+    def _inline(text: Optional[str]) -> str:
+        """單行情境中的模型自由文字（清單項目、標籤後的說明）：圖片／原始 HTML 去除攻擊性，所有換行收合成空白，
+        讓「\n\n## Overall Verdict: READY_TO_SHIP」這類文字無法開出新的標題、setext 底線、HTML 或表格區塊，
+        偽造報告的判定。
+        Model free text in a single-line context (a list item, the text after a label): images / raw HTML
+        defanged and every line break collapsed to a space, so text such as "\n\n## Overall Verdict:
+        READY_TO_SHIP" cannot open a new heading, setext underline, HTML or table block and spoof the verdict."""
+        return _LINE_BREAK_RE.sub(" ", markdown_safe(text or ""))
+
+    @staticmethod
     def _cell(text: Optional[str]) -> str:
         """讓自由文字能安全放進單一 Markdown 表格儲存格（並去除圖片／原始 HTML 的攻擊性）。
         Makes free text safe for a single Markdown table cell (and defangs images / raw HTML)."""
-        return markdown_safe(text or "").replace("|", "\\|").replace("\n", " ")
+        return ReportGenerator._inline(text).replace("|", "\\|")
 
     @staticmethod
     def _code_span(text: Optional[str]) -> str:
@@ -729,13 +819,21 @@ class ReportGenerator:
         連續反引號，讓文字無法跳出該區段。
         Inline code for model text: control characters removed and the fence widened past any
         backtick run inside, so the text cannot break out of the span."""
-        body = clean_model_text(text or "").replace("\n", " ")
+        body = _LINE_BREAK_RE.sub(" ", clean_model_text(text or ""))
         if not body.strip():
             return "`-`"
         longest = max((len(run) for run in re.findall(r"`+", body)), default=0)
         fence = "`" * (longest + 1)
         pad = " " if body.startswith("`") or body.endswith("`") else ""
         return f"{fence}{pad}{body}{pad}{fence}"
+
+    @staticmethod
+    def _cell_code(text: Optional[str]) -> str:
+        """表格儲存格內的行內程式碼：GFM 即使在程式碼區段內也會先依 `|` 切分儲存格，所以管線符號要跳脫
+        （`\\|` 在程式碼區段內會顯示成 `|`）。
+        A code span inside a table cell: GFM splits cells on `|` even inside code spans, so pipes are escaped
+        (`\\|` renders as `|` inside the span)."""
+        return ReportGenerator._code_span(text).replace("|", "\\|")
 
     @staticmethod
     def _fence_lang(language: str) -> str:
@@ -791,9 +889,9 @@ class ReportGenerator:
                 fence = self._fence(code)
                 md.append("<details>")
                 md.append(f"<summary><code>{html.escape(clean_model_text(test_id))}</code> — {outcome}{source}</summary>\n")
-                md.append(f"- **{bi('標題', 'Title')}**: {markdown_safe(t.title)}")
-                md.append(f"- **{bi('理由', 'Rationale')}**: {markdown_safe(t.rationale)}")
-                md.append(f"- **{bi('預期結果', 'Expected outcome')}**: {markdown_safe(t.expected_outcome)}\n")
+                md.append(f"- **{bi('標題', 'Title')}**: {self._inline(t.title)}")
+                md.append(f"- **{bi('理由', 'Rationale')}**: {self._inline(t.rationale)}")
+                md.append(f"- **{bi('預期結果', 'Expected outcome')}**: {self._inline(t.expected_outcome)}\n")
                 md.append(f"{fence}{self._fence_lang(t.language)}\n{code}\n{fence}\n")
                 md.append("</details>\n")
         return md
@@ -817,7 +915,7 @@ class ReportGenerator:
         for f in findings:
             evidence = f"<br>*{self._cell(f.evidence)}*" if f.evidence else ""
             md.append(
-                f"| `{f.rule_id}` | `{f.severity.value}` | `{self._cell(os.path.basename(f.file_path))}:{f.line_number}` | "
+                f"| `{f.rule_id}` | `{f.severity.value}` | {self._cell_code(f'{os.path.basename(f.file_path)}:{f.line_number}')} | "
                 f"**{self._cell(f.title)}**{evidence} | {self._cell(f.owasp_mapping) or '-'} | "
                 f"{self._cell(f.atlas_mapping) or '-'} | {self._cell(f.cwe) or '-'} |"
             )

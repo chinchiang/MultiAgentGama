@@ -4,6 +4,7 @@ import logging
 import sys
 import os
 import traceback
+from typing import NoReturn
 
 from vibeharness import __version__
 from vibeharness.core.harness import VibeHarnessCommander, force_utf8_stdio
@@ -81,7 +82,30 @@ def _writable_location(path: str) -> bool:
     return os.access(os.path.dirname(target) or os.curdir, os.W_OK)
 
 
+def _crash_exit(stage_zh: str, stage_en: str, exc: BaseException) -> NoReturn:
+    """意外例外的共同出口：印出 traceback 後以 USAGE_ERROR_EXIT_CODE 結束，絕不落到結束碼 1（CI 會讀成 NEEDS_FIXES）。
+    The common exit for an unexpected exception: print the traceback and exit with USAGE_ERROR_EXIT_CODE,
+    never falling through to exit code 1, which CI reads as NEEDS_FIXES."""
+    traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
+    print(f"{bi('錯誤', 'Error')}: {bi(stage_zh, stage_en)}: {type(exc).__name__}: {exc}", file=sys.stderr)
+    sys.exit(USAGE_ERROR_EXIT_CODE)
+
+
 def main():
+    """CLI 進入點。任何沒被下方各階段處理的例外都以 5 結束（Ctrl-C 為 130），絕不以 Python 預設的 1 結束：
+    1 專屬於 NEEDS_FIXES 判定，當掉的執行絕不能被誤讀成判定結果。
+    The CLI entry point. Any exception not handled by the stages below exits 5 (Ctrl-C 130), never with
+    Python's default 1: that code belongs to the NEEDS_FIXES verdict, and a crash must never read as a verdict."""
+    try:
+        _main()
+    except KeyboardInterrupt:
+        print(bi("已中斷。", "Interrupted."), file=sys.stderr)
+        sys.exit(INTERRUPTED_EXIT_CODE)
+    except Exception as e:
+        _crash_exit("harness 意外崩潰", "harness crashed unexpectedly", e)
+
+
+def _main():
     parser = _UsageErrorParser(
         description="[VibeHarness-MAS] 針對 vibe coding 的多代理白箱與黑箱測試 harness ／ "
                     "Multi-Agent White-Box & Black-Box Testing Harness for Vibe Coding"
@@ -275,18 +299,27 @@ def main():
     except (ConfigError, ValueError, SandboxUnavailableError) as e:
         print(f"{bi('錯誤', 'Error')}: {bi('harness 設定問題', 'harness configuration problem')}: {e}", file=sys.stderr)
         sys.exit(USAGE_ERROR_EXIT_CODE)
+    except Exception as e:
+        # 與下方當掉的執行一樣：建構或設定 harness 時的意外錯誤絕不能落到結束碼 1（NEEDS_FIXES）
+        # Like a crashed run below: an unexpected error while building or configuring the harness must
+        # never fall through to exit code 1 (NEEDS_FIXES)
+        _crash_exit("harness 無法啟動", "harness failed to start", e)
     if args.estimate:
         try:
             estimate = estimate_run(commander, target_path)
-        except ValueError as e:
+            if args.format == "json":
+                with open(args.output, "w", encoding="utf-8") as f:
+                    f.write(estimate.model_dump_json(indent=2))
+                print(bi(f"估算已寫入 {args.output}", f"Estimate written to {args.output}"))
+            else:
+                print("\n".join(estimate_lines(estimate)))
+        except (ValueError, OSError) as e:
+            # 例如無法解析的 --changed-since ref，或寫不進 --output
+            # e.g. an unresolvable --changed-since ref, or --output cannot be written
             print(f"{bi('錯誤', 'Error')}: {e}", file=sys.stderr)
             sys.exit(USAGE_ERROR_EXIT_CODE)
-        if args.format == "json":
-            with open(args.output, "w", encoding="utf-8") as f:
-                f.write(estimate.model_dump_json(indent=2))
-            print(bi(f"估算已寫入 {args.output}", f"Estimate written to {args.output}"))
-        else:
-            print("\n".join(estimate_lines(estimate)))
+        except Exception as e:
+            _crash_exit("估算意外失敗", "the estimate failed unexpectedly", e)
         sys.exit(0)
     try:
         summary = commander.run_full_pipeline(
@@ -315,9 +348,7 @@ def main():
     except Exception as e:
         # 當掉的執行絕不能落到結束碼 1，CI 會把它讀成 NEEDS_FIXES
         # A crashed run must never fall through to exit code 1, which CI reads as NEEDS_FIXES
-        traceback.print_exc(file=sys.stderr)
-        print(f"{bi('錯誤', 'Error')}: {bi('harness 意外崩潰', 'harness crashed unexpectedly')}: {type(e).__name__}: {e}", file=sys.stderr)
-        sys.exit(USAGE_ERROR_EXIT_CODE)
+        _crash_exit("harness 意外崩潰", "harness crashed unexpectedly", e)
 
     # 依品質閘門回傳結束碼
     # Return exit code based on Quality Gate

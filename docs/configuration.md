@@ -66,7 +66,7 @@ CLI 啟動時可用 `--config <路徑>` 改用其他設定檔、`--mode` 覆蓋 
 | `api_base` | 選填 | 自訂 API 端點（例如自架的 OpenAI 相容閘道 `https://llm-gateway.example.com/v1`，或本機 Ollama 的 `http://localhost:11434`）。**必須是 `https://`**；`http://` 只允許迴路位址（`localhost`／`127.0.0.1`／`::1`），其他一律在啟動時報 `ConfigError`（exit 5）。目標原始碼會送往這些端點，因此只接受明確允許的端點（OWASP LLM04:2026 供應鏈） |
 | `aws_profile_name`／`aws_region_name` | 選填 | 以 AWS 憑證鏈驗證的模型（例如 `bedrock/...`）改用這兩欄取代 `api_key_env`：使用指定的 AWS profile（含 SSO）與區域；設定 profile 即視為具備 live 憑證 |
 | `price_per_million_input`／`price_per_million_output` | 選填 | 每百萬 token 的價格（美元，非負數）；兩者都設定時 `--estimate` 會算出該模型的估計花費，否則只列 token 數。程式本身不會用它控管成本（請用 `max_model_calls`） |
-| `extra_params` | 選填 | 原封不動傳給 litellm 的額外參數（mapping），例如 `{thinking: {type: disabled}}`、`{reasoning_effort: low}`，用來讓推理模型不要把輸出額度全花在思考；非 mapping 啟動即 `ConfigError` |
+| `extra_params` | 選填 | 原封不動傳給 litellm 的額外參數（mapping），例如 `{thinking: {type: disabled}}`、`{reasoning_effort: low}`，用來讓推理模型不要把輸出額度全花在思考；非 mapping 啟動即 `ConfigError`。保留鍵不可放進來（啟動即 `ConfigError`，exit 5）：端點與憑證 `api_base`、`base_url`、`api_key`、`api_version`、`custom_llm_provider`、`aws_*`（`aws_profile_name`、`aws_region_name`、`aws_access_key_id`、`aws_secret_access_key`、`aws_session_token`、`aws_bedrock_runtime_endpoint`、`aws_role_name`、`aws_web_identity_token`），以及 harness 自己設定的 `model`、`messages`、`timeout`、`request_timeout`、`num_retries`、`max_retries`、`fallbacks`、`stream`；否則就能繞過 `api_base` 的 https 檢查，把待審程式碼送到任意主機。端點請用 `api_base`，逾時與重試用 `global.timeout_seconds`／`max_retries` |
 | `max_output_tokens` | 選填 | 覆蓋 `global.max_output_tokens`。會思考的模型（GLM、DeepSeek、Gemini 3）的思考 token 也算在此上限內；太小時回應會是空的或被截斷，報告會標示「output truncated at the max_output_tokens limit」 |
 | `provider` | 選填 | **僅供標註，程式不讀取**（實際路由完全由 litellm model string 決定） |
 

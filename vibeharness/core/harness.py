@@ -23,7 +23,8 @@ from vibeharness.core.models import (
     MultiModelDebateResult,
     ThreatModelReport,
     TestExecutionResult,
-    StaticFinding
+    StaticFinding,
+    AgentCallRecord,
 )
 from vibeharness.core.llm_gateway import LLMGateway, DEFAULT_CONFIG_PATH
 from vibeharness.core.sandbox import (
@@ -52,6 +53,30 @@ DEFAULT_SANDBOX_MEMORY_MB = 2048
 # 突變測試的預設值：變異體上限與低於幾分（百分比）算證據缺口 ／ mutation-testing defaults: the mutant cap and the score (percent) below which an evidence gap is added
 DEFAULT_MUTATION_MAX_MUTANTS = 20
 DEFAULT_MUTATION_MIN_SCORE = 70.0
+# 沙盒逾時與 docker 程序數上限的預設值 ／ defaults for the sandbox timeouts and the docker process limit
+DEFAULT_SANDBOX_TIMEOUT_SECONDS = 120
+DEFAULT_PER_TEST_TIMEOUT_SECONDS = 30
+DEFAULT_DOCKER_PIDS_LIMIT = 256
+
+
+def _per_test_timeout(global_cfg: dict) -> int:
+    """`per_test_timeout_seconds`，與 sandbox_timeout_seconds 同一套規則：null／0 保留預設值，負數或非整數是
+    ConfigError（exit 5）。執行器與突變測試都從這裡取值，兩者不會各自解讀。
+    `per_test_timeout_seconds` under the same rule as sandbox_timeout_seconds: null / 0 keep the default, a
+    negative or non-integer value is a ConfigError (exit 5). The executor and mutation testing both read it from
+    here, so they never interpret the value differently."""
+    return LLMGateway._positive_int(
+        global_cfg.get("per_test_timeout_seconds"), "per_test_timeout_seconds"
+    ) or DEFAULT_PER_TEST_TIMEOUT_SECONDS
+
+
+def sorted_call_log(call_log: List[AgentCallRecord]) -> List[AgentCallRecord]:
+    """呼叫紀錄依穩定的鍵排序：代理在執行緒池上並行呼叫，完成順序每次都不同，排序後 JSON 輸出才會逐次一致。
+    The call log in a stable order: agents call in parallel on a thread pool, so the completion order differs
+    from run to run; sorting keeps the JSON output identical across runs."""
+    return sorted(call_log, key=lambda r: (
+        r.agent_id, r.model_alias, r.model_name, r.mode, r.prompt_sha256 or "", r.reason or "", r.cached
+    ))
 
 
 def force_utf8_stdio() -> None:
@@ -102,7 +127,7 @@ class VibeHarnessCommander:
         self.threat_modeler = AutomatedThreatModeler(self.gateway)
         self.scenario_builder = ThreatScenarioBuilder(self.gateway)
         self.executor = TestSuiteExecutor(
-            self.sandbox, per_test_timeout_seconds=int(global_cfg.get("per_test_timeout_seconds", 30)),
+            self.sandbox, per_test_timeout_seconds=_per_test_timeout(global_cfg),
             js_sandbox_factory=self._build_node_sandbox,
         )
         # JS/TS 測試以 Node 內建的執行器執行；沙盒採延遲建立，在第一次需要時才建立
@@ -232,7 +257,7 @@ class VibeHarnessCommander:
         if isinstance(max_mutants, bool) or not isinstance(max_mutants, int) or max_mutants < 1:
             raise ValueError(bi(f"global.mutation_max_mutants 必須是至少 1 的整數，目前為 {max_mutants!r}",
                                 f"global.mutation_max_mutants must be an integer >= 1, got {max_mutants!r}"))
-        per_test = LLMGateway._positive_int(global_cfg.get("per_test_timeout_seconds", 30), "per_test_timeout_seconds") or 30
+        per_test = _per_test_timeout(global_cfg)
         timeout = LLMGateway._positive_int(global_cfg.get("mutation_timeout_seconds", per_test), "mutation_timeout_seconds") or per_test
         min_score = global_cfg.get("mutation_min_score", DEFAULT_MUTATION_MIN_SCORE)
         LLMGateway._number(min_score, "mutation_min_score", 0, 100)
@@ -253,16 +278,27 @@ class VibeHarnessCommander:
         The settings shared by the Python and Node sandboxes, validated once at start-up (one set of rules, so the
         two sandboxes never interpret a value differently). docker_* keys are validated only when either sandbox
         uses docker: stale docker keys in a local-only config never block start-up."""
-        timeout = LLMGateway._positive_int(global_cfg.get("sandbox_timeout_seconds", 120), "sandbox_timeout_seconds") or 120
-        memory_mb = LLMGateway._positive_int(global_cfg.get("sandbox_memory_mb", DEFAULT_SANDBOX_MEMORY_MB), "sandbox_memory_mb") or 0
-        settings: Dict[str, Any] = {"timeout": timeout, "memory_mb": memory_mb, "pids_limit": 256, "network": "none",
+        timeout = LLMGateway._positive_int(
+            global_cfg.get("sandbox_timeout_seconds"), "sandbox_timeout_seconds"
+        ) or DEFAULT_SANDBOX_TIMEOUT_SECONDS
+        # null（或沒寫）保留預設上限；只有明確的 0 才關閉 RLIMIT_AS，留空的鍵不會悄悄拿掉記憶體上限
+        # null (or absent) keeps the default cap; only an explicit 0 disables RLIMIT_AS, so an empty key never
+        # silently removes the memory cap
+        raw_memory = global_cfg.get("sandbox_memory_mb")
+        memory_mb = DEFAULT_SANDBOX_MEMORY_MB if raw_memory is None else (
+            LLMGateway._positive_int(raw_memory, "sandbox_memory_mb") or 0
+        )
+        settings: Dict[str, Any] = {"timeout": timeout, "memory_mb": memory_mb, "pids_limit": DEFAULT_DOCKER_PIDS_LIMIT, "network": "none",
                                     "memory": "1g", "cpus": "2", "docker_bin": "docker"}
         if not need_docker:
             return settings
-        pids = global_cfg.get("docker_pids_limit", 256)
-        if isinstance(pids, bool) or not isinstance(pids, int) or pids < -1:
+        pids = global_cfg.get("docker_pids_limit")
+        if isinstance(pids, bool) or not (pids is None or isinstance(pids, int)) or (pids or 0) < -1:
             raise ValueError(bi(f"global.docker_pids_limit 必須是整數（-1 = 不限制），目前為 {pids!r}",
                                 f"global.docker_pids_limit must be an integer (-1 = unlimited), got {pids!r}"))
+        # Docker 把 `--pids-limit 0` 當成不限制：null／0 改用預設值，只有明確的 -1 才是不限制
+        # Docker treats `--pids-limit 0` as unlimited: null / 0 map to the default, only an explicit -1 means unlimited
+        pids = pids or DEFAULT_DOCKER_PIDS_LIMIT
         network = global_cfg.get("docker_network", "none")
         if not isinstance(network, str) or not network.strip():
             raise ValueError(bi("global.docker_network 必須是非空字串（例如 \"none\"、\"host\"）",
@@ -512,10 +548,23 @@ class VibeHarnessCommander:
                 self.console.print(f"[+] {bi('跨模型一致度', 'Cross-Model Agreement')}: [bold green]{ratio_display}[/bold green] | {bi(f'{n_disputed} 筆有爭議', f'{n_disputed} disputed')}")
             else:
                 self.console.print(f"[yellow][!] {bi('未套用跨模型驗證；發現是未經過濾的審查者假設。', 'Cross-model verification not applied; findings are unfiltered reviewer hypotheses.')}[/yellow]")
-            confirmed_majority = len(debate_result.confirmed_findings) - debate_result.undecided_count
-            n_tie = debate_result.undecided_count
-            tie_note = f" (+{bi(f'{n_tie} 個未決的平手已保留供測試', f'{n_tie} undecided tie(s) kept for testing')})" if n_tie else ""
-            self.console.print(f"[+] {bi('已確認的缺陷假設', 'Confirmed Defect Hypotheses')}: [bold red]{confirmed_majority}[/bold red]{tie_note}")
+            # 沒有套用驗證就沒有任何發現被確認：它們仍是未經過濾的假設，已確認數為 0（報告顯示 N/A）
+            # Without verification nothing was confirmed: the findings stay unfiltered hypotheses, so the
+            # confirmed count is 0 (the report shows N/A)
+            confirmed_majority = (
+                len(debate_result.confirmed_findings) - debate_result.undecided_count
+                if debate_result.arbitration_applied else 0
+            )
+            if debate_result.arbitration_applied:
+                n_tie = debate_result.undecided_count
+                tie_note = f" (+{bi(f'{n_tie} 個未決的平手已保留供測試', f'{n_tie} undecided tie(s) kept for testing')})" if n_tie else ""
+                self.console.print(f"[+] {bi('已確認的缺陷假設', 'Confirmed Defect Hypotheses')}: [bold red]{confirmed_majority}[/bold red]{tie_note}")
+            else:
+                n_unverified = len(debate_result.confirmed_findings)
+                self.console.print(
+                    f"[+] {bi('已確認的缺陷假設', 'Confirmed Defect Hypotheses')}: [bold]N/A[/bold] "
+                    f"({bi(f'{n_unverified} 個未經驗證的假設交付測試', f'{n_unverified} unverified hypotheses passed to testing')})"
+                )
 
             # -------------------------------------------------------------
             # 第 3 階段：白箱測試產生與沙盒執行
@@ -858,7 +907,7 @@ class VibeHarnessCommander:
                 run=run_meta,
                 total_whitebox_findings=len(raw_findings),
                 distinct_whitebox_findings=len(findings),
-                confirmed_whitebox_bugs=len(debate_result.confirmed_findings) - debate_result.undecided_count,
+                confirmed_whitebox_bugs=confirmed_majority,
                 whitebox_tests_passed=wb_passed,
                 whitebox_tests_failed=wb_failed,
                 whitebox_tests_errored=wb_errored,
@@ -869,7 +918,7 @@ class VibeHarnessCommander:
                 blackbox_tests_failed=len(bb_failed_unclassified),
                 blackbox_tests_errored=bb_errored,
                 untested_threat_ids=untested_threats,
-                agent_calls=list(self.gateway.call_log),
+                agent_calls=sorted_call_log(self.gateway.call_log),
                 inconclusive_reasons=inconclusive_reasons,
                 line_coverage_pct=cov_pct,
                 mutation=mutation_report,
@@ -949,7 +998,7 @@ class VibeHarnessCommander:
             "target_path": os.path.abspath(target_dir),
             "phase_reached": progress.get("phase", 0),
             "error": {"type": type(exc).__name__, "message": self.gateway._safe_reason(str(exc))},
-            "agent_calls": [rec.model_dump() for rec in self.gateway.call_log],
+            "agent_calls": [rec.model_dump() for rec in sorted_call_log(self.gateway.call_log)],
             **{key: dump(value) for key, value in progress.items() if key != "phase"},
         }
         try:
