@@ -11,6 +11,9 @@ import logging
 from typing import Dict, Optional, Tuple, List, Any
 
 from vibeharness.core.i18n import bi
+from vibeharness.core.jscoverage import (
+    LCOV_REPORT_NAME, JsLineCoverage, node_coverage_args, node_coverage_problem, read_lcov_file,
+)
 
 logger = logging.getLogger("VibeHarness.Sandbox")
 
@@ -306,15 +309,20 @@ class LocalSubprocessSandbox:
         working_dir: Optional[str] = None,
         collect_coverage: bool = False,
         coverage_target: Optional[str] = None,
-        timeout_seconds: Optional[int] = None
+        timeout_seconds: Optional[int] = None,
+        coverage_sink: Optional[JsLineCoverage] = None
     ) -> Tuple[int, str, str, float, Optional[float], Optional[str]]:
         """
         把每個 {filename: code} 項目寫成獨立的測試模組，並在同一個 pytest 行程中執行。
         某一模組的收集錯誤不會中止其他模組。
         回傳：(exit_code, stdout, stderr, duration_seconds, line_coverage_percent, junit_xml_text)
+        `coverage_sink`（只有 Node 沙盒使用）：collect_coverage 時，這次執行的逐行 JS/TS 涵蓋率以聯集併入其中，
+        讓呼叫端能跨模組合併；逾時的執行不會併入任何東西。
         Writes each {filename: code} entry as a separate test module and runs them in one pytest process.
         A collection error in one module does not abort the others.
         Returns: (exit_code, stdout, stderr, duration_seconds, line_coverage_percent, junit_xml_text)
+        `coverage_sink` (Node sandboxes only): with collect_coverage, this run's per-line JS/TS coverage is merged into
+        it as a union so the caller can combine modules; a timed-out run merges nothing.
         """
         timeout = self._effective_timeout(timeout_seconds)
         base_dir = os.path.abspath(working_dir or os.getcwd())
@@ -340,7 +348,9 @@ class LocalSubprocessSandbox:
                     f"Execution timed out after {timeout} seconds; module(s) attempted: {', '.join(sorted(files))}."
                 ), duration, None, None
 
-            coverage_percent = self._extract_coverage_percent(stdout) if collect_coverage else None
+            coverage_percent = self._collect_coverage(
+                run_dir, stdout, base_dir, coverage_target, coverage_sink
+            ) if collect_coverage else None
             junit_xml = None
             if os.path.exists(junit_path):
                 with open(junit_path, "r", encoding="utf-8") as f:
@@ -405,6 +415,17 @@ class LocalSubprocessSandbox:
         if collect_coverage:
             cmd.extend([f"--cov={coverage_target or base_dir}", "--cov-report=term-missing"])
         return cmd, base_dir, env
+
+    def _collect_coverage(
+        self, run_dir: str, stdout: str, base_dir: str, coverage_target: Optional[str],
+        coverage_sink: Optional[JsLineCoverage]
+    ) -> Optional[float]:
+        """一次（未逾時的）執行結束、執行目錄刪除之前呼叫：回傳這次執行的行涵蓋率百分比。Python 從 pytest-cov 的
+        輸出表格讀；Node 沙盒覆寫成讀 lcov 報告。
+        Called once a (non-timed-out) run finished, before the run directory is removed: returns this run's line
+        coverage percentage. Python reads pytest-cov's output table; the Node sandboxes override it to read the lcov
+        report."""
+        return self._extract_coverage_percent(stdout)
 
     def _after_timeout(self, cmd: List[str]):
         """在逾時指令的行程樹被砍掉之後，以該指令呼叫。
@@ -932,20 +953,76 @@ def detect_node(node_bin: str = "node") -> Tuple[Optional[str], Optional[Tuple[i
 
 
 def node_test_command(node: str, files: List[str], junit_path: str, strip_types: bool,
-                      collect_coverage: bool, max_old_space_mb: int) -> List[str]:
-    """`node --test`，spec 報告器輸出到 stdout，junit 報告器寫入 junit_path。
-    `node --test` with the spec reporter on stdout and the junit reporter into junit_path."""
+                      collect_coverage: bool, max_old_space_mb: int, lcov_path: Optional[str] = None,
+                      node_version: Optional[Tuple[int, int, int]] = None,
+                      coverage_include_root: Optional[str] = None) -> List[str]:
+    """`node --test`，spec 報告器輸出到 stdout，junit 報告器寫入 junit_path。collect_coverage 加上
+    --experimental-test-coverage；再給 lcov_path 與 node_version 時（呼叫端已確認版本有 lcov 報告器，見
+    jscoverage.node_coverage_problem），多一組 lcov 報告器寫到 lcov_path，Node >= 22.5 時再加上限制在
+    coverage_include_root 的涵蓋率篩選（見 jscoverage.node_coverage_args）。spec／junit 兩組報告器維持原樣。
+    `node --test` with the spec reporter on stdout and the junit reporter into junit_path. collect_coverage adds
+    --experimental-test-coverage; with lcov_path and node_version as well (the caller has checked that the version has
+    the lcov reporter, see jscoverage.node_coverage_problem) an lcov reporter writes into lcov_path, and Node >= 22.5
+    also gets coverage filters limited to coverage_include_root (see jscoverage.node_coverage_args). The spec / junit
+    reporter pairs stay as they are."""
     cmd = [node]
     if max_old_space_mb > 0:
         cmd.append(f"--max-old-space-size={max_old_space_mb}")
     if strip_types:
         cmd.append("--experimental-strip-types")
+    lcov = collect_coverage and lcov_path is not None and node_version is not None
+    options, filters = node_coverage_args(node_version, coverage_include_root) if lcov and node_version else ([], [])
+    cmd += options
     cmd += ["--test", "--test-reporter=spec", "--test-reporter-destination=stdout",
             "--test-reporter=junit", f"--test-reporter-destination={junit_path}"]
-    if collect_coverage:
+    if lcov:
+        cmd += ["--test-reporter=lcov", f"--test-reporter-destination={lcov_path}", *filters]
+    elif collect_coverage:
         cmd.append("--experimental-test-coverage")
     cmd += files
     return cmd
+
+
+class _NodeCoverageMixin:
+    """兩個 Node 沙盒共用的 JS/TS 行涵蓋率邏輯：依 Node 版本決定能不能收集（`js_coverage_problem`），執行結束後
+    讀回執行目錄裡的 lcov 報告、只留下目標自己的檔案並併入 coverage_sink。子類別提供 `_coverage_paths`
+    （lcov 的 SF 要對照的根目錄、解析相對路徑用的 cwd，以及路徑規則）。
+    The JS/TS line-coverage logic shared by both Node sandboxes: whether the Node version can collect it
+    (`js_coverage_problem`), and after a run reading the lcov report back from the run directory, keeping the target's
+    own files and merging them into coverage_sink. Subclasses provide `_coverage_paths` (the roots the lcov SF values
+    are matched against, the cwd relative paths resolve from, and the path rules)."""
+
+    node_version: Optional[Tuple[int, int, int]] = None
+
+    def _node_version_for_coverage(self) -> Optional[Tuple[int, int, int]]:
+        return self.node_version
+
+    def js_coverage_problem(self) -> Optional[str]:
+        """收集不到 JS/TS 行涵蓋率的原因；可以收集時為 None（絕不讓測試執行因此失敗）。
+        Why JS/TS line coverage cannot be collected; None when it can (it never makes the test run fail)."""
+        return node_coverage_problem(self._node_version_for_coverage())
+
+    def _coverage_paths(self, base_dir: str, coverage_target: Optional[str]) -> Tuple[List[str], str, bool]:
+        raise NotImplementedError
+
+    def _collect_coverage(
+        self, run_dir: str, stdout: str, base_dir: str, coverage_target: Optional[str],
+        coverage_sink: Optional[JsLineCoverage]
+    ) -> Optional[float]:
+        """讀 `run_dir` 裡的 lcov 報告：回傳這次執行自己的百分比，並把逐行結果併入 coverage_sink。沒有報告時為 None。
+        Reads the lcov report in `run_dir`: returns this run's own percentage and merges the per-line result into
+        coverage_sink. None without a report."""
+        if self.js_coverage_problem() is not None:
+            return None
+        text = read_lcov_file(os.path.join(run_dir, LCOV_REPORT_NAME))
+        if text is None:
+            return None
+        roots, cwd, windows = self._coverage_paths(base_dir, coverage_target)
+        run = JsLineCoverage()
+        run.add_lcov(text, roots, cwd, windows=windows)
+        if coverage_sink is not None:
+            coverage_sink.merge(run)
+        return run.percent()
 
 
 def link_node_modules(run_dir: str, base_dir: str) -> Optional[str]:
@@ -974,7 +1051,7 @@ def link_node_modules(run_dir: str, base_dir: str) -> Optional[str]:
     return None
 
 
-class NodeSubprocessSandbox(LocalSubprocessSandbox):
+class NodeSubprocessSandbox(_NodeCoverageMixin, LocalSubprocessSandbox):
     """用 Node 內建的執行器執行 `node:test` 模組（ESM，test_vh_NNN.mjs）。驅動方式與逾時處理
     和 Python 沙盒相同；不使用 RLIMIT_AS（V8 啟動時會保留很大的位址空間，受限時會中止），
     改以 --max-old-space-size 限制堆積大小。
@@ -983,11 +1060,34 @@ class NodeSubprocessSandbox(LocalSubprocessSandbox):
     start-up and aborts under one), the heap is capped with --max-old-space-size instead."""
 
     def __init__(self, timeout_seconds: int = 30, memory_mb: int = 0, node_bin: str = "node", strip_types: bool = False,
-                 supports_typescript: bool = True):
+                 supports_typescript: bool = True, node_version: Optional[Tuple[int, int, int]] = None):
         super().__init__(timeout_seconds, memory_mb=memory_mb)
         self.node = shutil.which(node_bin) or node_bin
         self.strip_types = strip_types
         self.supports_typescript = supports_typescript
+        # harness 從 detect_node 傳入；沒給時第一次需要涵蓋率才執行 `node --version`（只做一次）
+        # Passed by the harness from detect_node; without it `node --version` runs the first time coverage is needed
+        # (once)
+        self.node_version = node_version
+        self._node_version_probed = node_version is not None
+
+    def _node_version_for_coverage(self) -> Optional[Tuple[int, int, int]]:
+        if not self._node_version_probed:
+            self._node_version_probed = True
+            try:
+                result = subprocess.run([self.node, "--version"], capture_output=True, text=True, encoding="utf-8",
+                                        errors="replace", env=build_safe_env(), timeout=10)
+                self.node_version = parse_node_version(result.stdout) if result.returncode == 0 else None
+            except (OSError, subprocess.TimeoutExpired):
+                self.node_version = None
+        return self.node_version
+
+    def _coverage_paths(self, base_dir: str, coverage_target: Optional[str]) -> Tuple[List[str], str, bool]:
+        # Node 寫的 SF 是相對於行程 cwd（實體路徑）或模組的實體路徑：兩種根目錄（abspath 與 realpath）都接受
+        # Node writes SF relative to the process cwd (a physical path) or as the module's physical path: both root
+        # spellings (abspath and realpath) are accepted
+        root = os.path.abspath(coverage_target or base_dir)
+        return [root, os.path.realpath(root)], os.path.realpath(base_dir), sys.platform == "win32"
 
     def _build_command(
         self,
@@ -1006,18 +1106,25 @@ class NodeSubprocessSandbox(LocalSubprocessSandbox):
         env = _without_real_home(build_safe_env(extra))
         if custom_env:
             env.update(filter_custom_env(custom_env))
+        coverage = collect_coverage and self.js_coverage_problem() is None
+        # include 模式只用在 POSIX（Windows 路徑的 glob 比對不可靠）；實體路徑，與 Node 回報的一致
+        # The include pattern is POSIX-only (glob matching of Windows paths is unreliable); the physical path, matching
+        # what Node reports
+        include_root = os.path.realpath(coverage_target or base_dir) if sys.platform != "win32" else None
         cmd = node_test_command(self.node, [os.path.join(run_dir, f) for f in filenames],
-                                os.path.join(run_dir, "junit.xml"), self.strip_types, False, self.memory_mb)
+                                os.path.join(run_dir, "junit.xml"), self.strip_types, coverage, self.memory_mb,
+                                lcov_path=os.path.join(run_dir, LCOV_REPORT_NAME) if coverage else None,
+                                node_version=self.node_version, coverage_include_root=include_root)
         return cmd, base_dir, env
 
     def _limits(self, timeout: int) -> Dict[str, int]:
         return {"cpu_seconds": int(timeout) + 10}
 
     def _extract_coverage_percent(self, stdout: str) -> Optional[float]:
-        return None  # 不蒐集 JS 涵蓋率（v1）；行涵蓋率仍僅限 Python ／ JS coverage is not collected (v1); line coverage stays Python-only
+        return None  # Node 沒有 pytest-cov 的表格；JS/TS 涵蓋率從 lcov 報告讀（見 _collect_coverage） ／ Node has no pytest-cov table; JS/TS coverage is read from the lcov report (see _collect_coverage)
 
 
-class NodeDockerSandbox(DockerSandbox):
+class NodeDockerSandbox(_NodeCoverageMixin, DockerSandbox):
     """容器沙盒的 Node 版本：同樣的強化措施，換成 Node 映像檔（docker/sandbox-node.Dockerfile）。
     The Node flavour of the container sandbox: same hardening, a Node image (docker/sandbox-node.Dockerfile)."""
 
@@ -1033,9 +1140,14 @@ class NodeDockerSandbox(DockerSandbox):
         verify: bool = True,
         strip_types: bool = False,
         supports_typescript: bool = True,
+        node_version: Optional[Tuple[int, int, int]] = None,
     ):
         self.strip_types = strip_types
         self.supports_typescript = supports_typescript
+        # 映像檔內的 Node 版本（harness 以 _docker_node_version 探測後設定）；未知時不收集涵蓋率，也不另外探測
+        # The Node version inside the image (set by the harness after probing it with _docker_node_version); unknown
+        # means no coverage, and no extra probe
+        self.node_version = node_version
         super().__init__(timeout_seconds, image, network, memory, cpus, pids_limit, docker_bin, verify)
 
     def _verify_available(self):
@@ -1060,6 +1172,30 @@ class NodeDockerSandbox(DockerSandbox):
             env.update(filter_custom_env(custom_env))
         cmd = self._docker_run_prefix(run_dir, base_dir, env)
         cmd += [self.image, "timeout", "--kill-after=5", str(self._effective_timeout(timeout_seconds))]
+        coverage = collect_coverage and self.js_coverage_problem() is None
         cmd += node_test_command("node", [f"{CONTAINER_RUN_DIR}/{f}" for f in filenames],
-                                 f"{CONTAINER_RUN_DIR}/junit.xml", self.strip_types, False, 0)
+                                 f"{CONTAINER_RUN_DIR}/junit.xml", self.strip_types, coverage, 0,
+                                 lcov_path=f"{CONTAINER_RUN_DIR}/{LCOV_REPORT_NAME}" if coverage else None,
+                                 node_version=self.node_version,
+                                 coverage_include_root=self._container_coverage_root(base_dir, coverage_target))
         return cmd, run_dir, self._cli_env()
+
+    def _container_coverage_root(self, base_dir: str, coverage_target: Optional[str]) -> str:
+        """涵蓋率根目錄在容器內的路徑：coverage_target 在掛載的目標底下時改寫成容器路徑，否則就是目標掛載點。
+        The coverage root's path inside the container: coverage_target rewritten to the container when it lies under
+        the mounted target, the target mount point otherwise."""
+        target = container_target_dir(base_dir)
+        if coverage_target:
+            rewritten = rewrite_host_paths(os.path.abspath(coverage_target), self._path_mapping(base_dir))
+            if rewritten == target or rewritten.startswith(target + "/"):
+                return rewritten
+        return target
+
+    def _coverage_paths(self, base_dir: str, coverage_target: Optional[str]) -> Tuple[List[str], str, bool]:
+        # 容器內：cwd 是目標掛載點（-w），SF 是容器路徑（/work/<name>/...，或相對於它）；目標相對路徑與主機無關，
+        # 所以不必改寫回主機路徑就能和本機執行的結果合併；/sandbox 底下的測試模組不在根目錄內，自然被排除
+        # Inside the container: the cwd is the target mount point (-w) and SF values are container paths
+        # (/work/<name>/..., or relative to it); target-relative paths do not depend on the host, so they merge with
+        # local results without being rewritten back to host paths; the test modules under /sandbox are outside the
+        # root and drop out
+        return [self._container_coverage_root(base_dir, coverage_target)], container_target_dir(base_dir), False

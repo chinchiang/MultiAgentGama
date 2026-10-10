@@ -198,6 +198,12 @@ class ReportGenerator:
         ratio_str = agreement_display(debate_result)
         md.append(f"| **{bi('跨模型一致度', 'Cross-Model Agreement')}** | `{ratio_str}`{sim_tag} | {bi('一致度 ≥ 70%', '≥ 70% Agreement')} |")
         cov_str = f"{summary.line_coverage_pct:.1f}%" if summary.line_coverage_pct is not None else "N/A"
+        if summary.js_line_coverage_pct is not None or any(r.language != "python" for r in whitebox_results):
+            # 有 JS/TS 白箱測試時兩種語言分開列（各自的分母不同，不合併成一個數字）；純 Python 的報告維持原樣
+            # With JS/TS white-box tests both languages are listed separately (their denominators differ, so they are
+            # never merged into one number); a Python-only report stays as it was
+            js_str = f"{summary.js_line_coverage_pct:.1f}%" if summary.js_line_coverage_pct is not None else "N/A"
+            cov_str = f"Python {cov_str} / JS/TS {js_str}"
         md.append(f"| **{bi('程式碼行涵蓋率', 'Code Line Coverage')}** | `{cov_str}` | {bi('基準 ≥ 80%', '≥ 80% Baseline')} |")
         if summary.mutation is not None:
             mut = summary.mutation

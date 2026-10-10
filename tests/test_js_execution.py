@@ -731,7 +731,11 @@ def test_js_target_is_dynamically_verified_end_to_end(tmp_path, fake_live):
     assert "```javascript" in text or "````javascript" in text
     assert POC_HEADER_JS in text and "Reproduction PoC" in text
     assert "Line Coverage (Python)" not in text  # 只在終端機顯示的標籤；報告保留其指標表 ／ console-only label; the report keeps its metric table
-    assert summary.line_coverage_pct is None  # 不收集 JS 覆蓋率 ／ JS coverage is not collected
+    assert summary.line_coverage_pct is None  # 只代表 Python，這裡沒有 Python 測試 ／ Python only, and there is no Python test here
+    # JS/TS 行涵蓋率另外放；白箱的 node:test 匯入了 auth.mjs，所以一定有值 ／ JS/TS coverage is kept separately; the
+    # white-box node:test imported auth.mjs, so it has a value
+    assert summary.js_line_coverage_pct is not None and 0 < summary.js_line_coverage_pct <= 100
+    assert f"JS/TS {summary.js_line_coverage_pct:.1f}%" in text
 
 
 def test_js_target_without_a_node_runtime_is_an_evidence_gap(tmp_path, fake_live):
@@ -757,6 +761,7 @@ def test_mock_mode_discloses_that_no_js_test_was_generated(tmp_path):
         target_dir=str(target), base_url="http://localhost:59999", output_report_path=str(tmp_path / "r.md"))
     assert summary.overall_status == "INCONCLUSIVE"
     assert any("no JS/TS test was generated" in r for r in summary.inconclusive_reasons)
+    assert summary.js_line_coverage_pct is None  # 沒有 JS/TS 測試就沒有涵蓋率，也不另外算缺口 ／ no JS/TS test, no coverage, no extra gap
 
 
 def test_other_languages_keep_the_static_only_gap(tmp_path):
