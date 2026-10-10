@@ -72,10 +72,14 @@ def _per_test_timeout(global_cfg: dict) -> int:
 
 def sorted_call_log(call_log: List[AgentCallRecord]) -> List[AgentCallRecord]:
     """呼叫紀錄依穩定的鍵排序：代理在執行緒池上並行呼叫，完成順序每次都不同，排序後 JSON 輸出才會逐次一致。
+    鍵是（代理、原始提示的 SHA、attempt），所以同一次邏輯呼叫的紀錄維持時間順序：先是各次 "retried"，
+    最後才是 "live"／"invalid"／"simulated"；其餘欄位只用來打破完全相同的提示之間的平手。
     The call log in a stable order: agents call in parallel on a thread pool, so the completion order differs
-    from run to run; sorting keeps the JSON output identical across runs."""
+    from run to run; sorting keeps the JSON output identical across runs. The key is (agent, original prompt
+    SHA, attempt), so the entries of one logical call stay chronological: its "retried" entries first, then the
+    final "live" / "invalid" / "simulated" one; the other fields only break ties between identical prompts."""
     return sorted(call_log, key=lambda r: (
-        r.agent_id, r.model_alias, r.model_name, r.mode, r.prompt_sha256 or "", r.reason or "", r.cached
+        r.agent_id, r.prompt_sha256 or "", r.attempt, r.model_alias, r.model_name, r.mode, r.reason or "", r.cached
     ))
 
 
@@ -548,12 +552,13 @@ class VibeHarnessCommander:
                 self.console.print(f"[+] {bi('跨模型一致度', 'Cross-Model Agreement')}: [bold green]{ratio_display}[/bold green] | {bi(f'{n_disputed} 筆有爭議', f'{n_disputed} disputed')}")
             else:
                 self.console.print(f"[yellow][!] {bi('未套用跨模型驗證；發現是未經過濾的審查者假設。', 'Cross-model verification not applied; findings are unfiltered reviewer hypotheses.')}[/yellow]")
-            # 沒有套用驗證就沒有任何發現被確認：它們仍是未經過濾的假設，已確認數為 0（報告顯示 N/A）
+            # 沒有套用驗證就沒有任何發現被確認：它們仍是未經過濾的假設，已確認數為 None（JSON 為 null、報告顯示 N/A），
+            # 不是 0 —— 0 會被讀成「審查過、沒有缺陷」
             # Without verification nothing was confirmed: the findings stay unfiltered hypotheses, so the
-            # confirmed count is 0 (the report shows N/A)
-            confirmed_majority = (
+            # confirmed count is None (null in JSON, N/A in the report), not 0, which would read as "reviewed, no flaws"
+            confirmed_majority: Optional[int] = (
                 len(debate_result.confirmed_findings) - debate_result.undecided_count
-                if debate_result.arbitration_applied else 0
+                if debate_result.arbitration_applied else None
             )
             if debate_result.arbitration_applied:
                 n_tie = debate_result.undecided_count

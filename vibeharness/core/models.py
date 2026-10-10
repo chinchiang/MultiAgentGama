@@ -189,6 +189,12 @@ class AgentCallRecord(BaseModel):
     # True when the answer came from the on-disk response cache (a real model's earlier answer to the
     # same prompt), so no provider call was made for it
     cached: bool = False
+    # 同一次邏輯呼叫的第幾次詢問（0 = 第一次；重新詢問為 1、2……）：sorted_call_log 以（代理、原始提示 SHA、attempt）
+    # 排序，同一次呼叫的 "retried" 一定排在最後的 "live"／"invalid" 之前，而且與執行緒完成順序無關
+    # Which ask of the same logical call this is (0 = the first; re-asks are 1, 2, ...): sorted_call_log orders by
+    # (agent, original prompt SHA, attempt), so a call's "retried" entries always precede its final "live" /
+    # "invalid" one, independent of thread completion order
+    attempt: int = 0
 
 
 class StaticFinding(BaseModel):
@@ -267,7 +273,10 @@ class VibeHarnessSummary(BaseModel):
     run: Optional[RunMetadata] = None
     total_whitebox_findings: int  # 審查者的原始回報數，合併重複之前 ／ raw reviewer reports, before duplicates are merged
     distinct_whitebox_findings: Optional[int] = None
-    confirmed_whitebox_bugs: int
+    # 沒有套用跨模型驗證時為 None（JSON 為 null）：沒有任何發現被確認，0 會被誤讀成「沒有缺陷」
+    # None (null in JSON) when cross-model verification was not applied: nothing was confirmed, and 0 would
+    # misread as "no flaws"
+    confirmed_whitebox_bugs: Optional[int]
     whitebox_tests_passed: int
     whitebox_tests_failed: int
     whitebox_tests_errored: int = 0

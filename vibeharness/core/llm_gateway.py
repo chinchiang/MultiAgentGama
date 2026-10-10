@@ -84,6 +84,10 @@ RESERVED_EXTRA_PARAMS = frozenset({
     # The output-token cap is set only through max_output_tokens: these keys would override it, and
     # --estimate and the cache key would see the wrong cap
     "max_tokens", "max_completion_tokens", "max_output_tokens",
+    # litellm 的罐頭回應鍵：完全不連網就回傳 mock_completion 的假答案，模擬的輸出會被登記成 live 證據
+    # litellm's canned-response keys: they return mock_completion's fake answer with no network call at all,
+    # so simulated output would be booked as live evidence
+    "mock_response", "mock_tool_calls", "mock_timeout", "mock_delay",
 })
 # 上面屬於輸出 token 上限的保留鍵；錯誤訊息會指向 max_output_tokens
 # The reserved keys above that are the output-token cap; the error message points at max_output_tokens
@@ -476,6 +480,9 @@ class LLMGateway:
             fallback_reason = bi(f"未設定 API 金鑰環境變數 {env_var}", f"API key env var {env_var} is not set")
         cached: Optional[Dict[str, Any]] = None
         cache_key = ""
+        # 這次邏輯呼叫的第幾次詢問，登記在每筆紀錄上，讓 sorted_call_log 保留時間順序
+        # Which ask of this logical call is current, booked on every record so sorted_call_log keeps the chronology
+        attempt = 0
         if fallback_reason is None:
             cache_key = self._cache_key(model_alias, model_info, temperature, system_prompt, user_prompt)
             cached = self._cache_read(cache_key)
@@ -497,7 +504,6 @@ class LLMGateway:
             # filter) is re-asked up to retry_invalid_output times, naming the problem, before it is
             # booked as `invalid`: in live runs most such answers are one-off format slips, and each
             # one used to turn the whole run INCONCLUSIVE. Re-asks are real calls against the budget.
-            attempt = 0
             prompt_text = user_prompt
             while True:
                 messages = [
@@ -539,7 +545,8 @@ class LLMGateway:
                         )]
                         for key in keys:
                             self._cache_write(key, agent_id, model_name, raw_text, finish_reason, prompt_hash)
-                    self._record(agent_id, model_alias, model_name, "live", prompt_sha256=prompt_hash, cached=from_cache)
+                    self._record(agent_id, model_alias, model_name, "live", prompt_sha256=prompt_hash, cached=from_cache,
+                                 attempt=attempt)
                     result[PROVENANCE_KEY] = {"mode": "live", "model": model_name, "cached": from_cache}
                     return result
                 reason = problem or REASON_NOT_VALID_JSON
@@ -562,17 +569,17 @@ class LLMGateway:
                 # --cache-only never re-asks: a re-ask is a network call
                 if (not self.cache_only and json_output and attempt < self.retry_invalid_output
                         and self._reserve_live_call()):
+                    self._record(agent_id, model_alias, model_name, "retried", reason, prompt_sha256=prompt_hash, attempt=attempt)
                     attempt += 1
                     logger.warning(bi(f"[{agent_id}] {model_name} 回傳無法使用的輸出（{reason}）；重新詢問（{attempt}/{self.retry_invalid_output}）",
                                       f"[{agent_id}] {model_name} returned unusable output ({reason}); re-asking ({attempt}/{self.retry_invalid_output})"))
-                    self._record(agent_id, model_alias, model_name, "retried", reason, prompt_sha256=prompt_hash)
                     # 提示維持英文：只有原因的英文部分會送達模型
                     # The prompt stays English: only the English half of the reason reaches the model
                     prompt_text = user_prompt + _RETRY_SUFFIX.format(reason=en_only(reason))
                     continue
                 logger.error(bi(f"[{agent_id}] {model_name} 回傳無法使用的輸出：{reason}",
                                 f"[{agent_id}] {model_name} returned unusable output: {reason}"))
-                self._record(agent_id, model_alias, model_name, "invalid", reason, prompt_sha256=prompt_hash)
+                self._record(agent_id, model_alias, model_name, "invalid", reason, prompt_sha256=prompt_hash, attempt=attempt)
                 return {PROVENANCE_KEY: {"mode": "invalid", "model": model_name, "reason": reason}}
         elif self.execution_mode == "live":
             raise LLMGatewayError(f"[{agent_id}] {bi(f'無法以 {model_name} 執行線上模式', f'cannot run live with {model_name}')}: {fallback_reason}")
@@ -581,7 +588,7 @@ class LLMGateway:
         # Offline / Mock Fallback
         logger.info(bi(f"將 [{agent_id}] 派送至模擬引擎（模型別名：{model_alias}；原因：{fallback_reason}）",
                        f"Dispatching [{agent_id}] to Simulation Engine (Model Alias: {model_alias}; reason: {fallback_reason})"))
-        self._record(agent_id, model_alias, model_name, "simulated", fallback_reason, prompt_sha256=prompt_hash)
+        self._record(agent_id, model_alias, model_name, "simulated", fallback_reason, prompt_sha256=prompt_hash, attempt=attempt)
         result = self._generate_simulated_response(agent_id, model_alias, user_prompt)
         result[PROVENANCE_KEY] = {"mode": "simulated", "model": model_name, "reason": fallback_reason}
         return result
@@ -709,12 +716,12 @@ class LLMGateway:
 
     def _record(
         self, agent_id: str, model_alias: str, model_name: str, mode: str,
-        reason: Optional[str] = None, prompt_sha256: Optional[str] = None, cached: bool = False
+        reason: Optional[str] = None, prompt_sha256: Optional[str] = None, cached: bool = False, attempt: int = 0
     ):
         self.call_log.append(AgentCallRecord(
             agent_id=agent_id, model_alias=model_alias, model_name=model_name, mode=mode,
             reason=self._safe_reason(reason) if reason is not None else None,
-            prompt_sha256=prompt_sha256, cached=cached
+            prompt_sha256=prompt_sha256, cached=cached, attempt=attempt
         ))
 
     @property

@@ -1,19 +1,83 @@
 #!/usr/bin/env python3
+"""`vibeharness` 指令列介面。模組層級只匯入標準函式庫與零相依的 vibeharness 模組：harness 本體
+（pydantic、yaml、rich、litellm……）在 main() 的防護內才延遲匯入，所以安裝不完整或缺少相依套件時
+以 exit 5 結束並說明原因，絕不會在 main() 之前以 Python 預設的 1（= NEEDS_FIXES）當掉。
+The `vibeharness` command-line interface. At module level only the standard library and the
+dependency-free vibeharness modules are imported: the harness itself (pydantic, yaml, rich, litellm, ...)
+is imported lazily inside main()'s guard, so a broken install or a missing dependency exits 5 with an
+explanation instead of crashing before main() with Python's default 1 (= NEEDS_FIXES)."""
 import argparse
+import importlib
 import logging
+import shutil
 import sys
 import os
 import traceback
-from typing import NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, Optional, Tuple
 
 from vibeharness import __version__
-from vibeharness.core.harness import VibeHarnessCommander, force_utf8_stdio
-from vibeharness.core.llm_gateway import LLMGatewayError, ConfigError, DEFAULT_CONFIG_PATH
-from vibeharness.core.sandbox import SandboxUnavailableError
-from vibeharness.agents.blackbox.scenario_builder import validate_base_url
-from vibeharness.core.baseline import load_baseline
-from vibeharness.core.estimate import estimate_lines, estimate_run
 from vibeharness.core.i18n import bi
+
+if TYPE_CHECKING:
+    # 型別檢查器看得到這些名稱；執行時由 _load_dependencies() 放進模組命名空間
+    # Type checkers see these names; at run time _load_dependencies() puts them into the module namespace
+    from vibeharness.core.harness import VibeHarnessCommander, force_utf8_stdio
+    from vibeharness.core.llm_gateway import LLMGatewayError, ConfigError, DEFAULT_CONFIG_PATH
+    from vibeharness.core.sandbox import SandboxUnavailableError
+    from vibeharness.agents.blackbox.scenario_builder import validate_base_url
+    from vibeharness.core.baseline import load_baseline
+    from vibeharness.core.estimate import estimate_lines, estimate_run
+
+# 延遲匯入的名稱 → （模組, 屬性）；測試以 cli.<名稱> 存取或替換它們，與過去的模組層級匯入相同
+# Lazily imported names -> (module, attribute); tests read or replace them as cli.<name>, as with the former module-level imports
+_LAZY_IMPORTS = {
+    "VibeHarnessCommander": ("vibeharness.core.harness", "VibeHarnessCommander"),
+    "force_utf8_stdio": ("vibeharness.core.harness", "force_utf8_stdio"),
+    "LLMGatewayError": ("vibeharness.core.llm_gateway", "LLMGatewayError"),
+    "ConfigError": ("vibeharness.core.llm_gateway", "ConfigError"),
+    "DEFAULT_CONFIG_PATH": ("vibeharness.core.llm_gateway", "DEFAULT_CONFIG_PATH"),
+    "SandboxUnavailableError": ("vibeharness.core.sandbox", "SandboxUnavailableError"),
+    "validate_base_url": ("vibeharness.agents.blackbox.scenario_builder", "validate_base_url"),
+    "load_baseline": ("vibeharness.core.baseline", "load_baseline"),
+    "estimate_lines": ("vibeharness.core.estimate", "estimate_lines"),
+    "estimate_run": ("vibeharness.core.estimate", "estimate_run"),
+}
+
+# 沒有 --config 時，依序在目前目錄尋找這些檔名；都沒有就用套件內的預設設定
+# Without --config these file names are looked for in the current directory, in order; if none exists the bundled default is used
+DISCOVERED_CONFIG_NAMES = ("vibeharness.yaml", ".vibeharness.yaml")
+# --init-config 沒給路徑時寫到這裡 ／ where --init-config writes when no path is given
+DEFAULT_INIT_CONFIG_PATH = "vibeharness.yaml"
+
+
+def __getattr__(name: str) -> Any:
+    """模組層級的延遲匯入（PEP 562）：第一次存取 cli.<名稱> 時才匯入並快取在模組命名空間。
+    Module-level lazy import (PEP 562): cli.<name> is imported on first access and cached in the module namespace."""
+    if name not in _LAZY_IMPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module, attr = _LAZY_IMPORTS[name]
+    value = getattr(importlib.import_module(module), attr)
+    globals()[name] = value
+    return value
+
+
+def _load_dependencies() -> None:
+    """匯入 CLI 需要的每個 harness 名稱；已經存在（例如被測試替換）的名稱保留原值。
+    Imports every harness name the CLI needs; a name already present (e.g. replaced by a test) keeps its value."""
+    for name in _LAZY_IMPORTS:
+        if name not in globals():
+            __getattr__(name)
+
+
+def _print_error(text: str) -> None:
+    """印到 stderr；主控台無法編碼某些字元時（例如還沒重新設定的 Windows 字碼頁）以 ? 取代，而不是當掉。
+    Prints to stderr; characters the console cannot encode (e.g. a Windows codepage not yet reconfigured)
+    are replaced with ? instead of crashing."""
+    try:
+        print(text, file=sys.stderr)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stderr, "encoding", None) or "ascii"
+        print(text.encode(encoding, "replace").decode(encoding), file=sys.stderr)
 
 # 保留給 harness／用法問題的結束碼。判定結果碼（0/1/2/3/4）記載於
 # README；這些碼絕不能與之衝突，否則 CI 會把當掉的執行誤讀成判定結果。
@@ -34,8 +98,6 @@ class _UsageErrorParser(argparse.ArgumentParser):
         print(f"{self.prog}: {bi('錯誤', 'error')}: {message}", file=sys.stderr)
         sys.exit(USAGE_ERROR_EXIT_CODE)
 
-
-force_utf8_stdio()
 
 
 def setup_logging(verbose: bool = False):
@@ -91,12 +153,73 @@ def _crash_exit(stage_zh: str, stage_en: str, exc: BaseException) -> NoReturn:
     sys.exit(USAGE_ERROR_EXIT_CODE)
 
 
+def resolve_config_path(explicit: Optional[str], cwd: Optional[str] = None) -> Tuple[str, str]:
+    """決定要用的設定檔與它的來源說明。優先序：--config ＞ ./vibeharness.yaml ＞ ./.vibeharness.yaml ＞ 套件內的預設。
+    --config 原樣回傳（不存在時由 harness 以 ConfigError 回報，exit 5）。
+    Decides which config file is used and describes where it came from. Precedence: --config >
+    ./vibeharness.yaml > ./.vibeharness.yaml > the bundled default. --config is returned as given (if it does
+    not exist the harness reports a ConfigError, exit 5)."""
+    if explicit is not None:
+        return explicit, "--config"
+    base = cwd or os.getcwd()
+    for name in DISCOVERED_CONFIG_NAMES:
+        candidate = os.path.join(base, name)
+        if os.path.isfile(candidate):
+            return candidate, bi(f"在目前目錄找到 {name}", f"found {name} in the current directory")
+    return DEFAULT_CONFIG_PATH, bi("套件內的預設設定", "bundled default")
+
+
+def _init_config(path: str, force: bool) -> int:
+    """--init-config：把套件內的預設設定複製到 `path`。成功回傳 0；已存在（沒有 --force）或無法寫入回傳 5。
+    --init-config: copies the bundled default config to `path`. Returns 0 on success; 5 when the file exists
+    (without --force) or cannot be written."""
+    target = os.path.abspath(path)
+    if os.path.isdir(target):
+        _print_error(f"{bi('錯誤', 'Error')}: " + bi(f"--init-config：'{path}' 是目錄，請給檔案路徑",
+                                                    f"--init-config: '{path}' is a directory; give a file path"))
+        return USAGE_ERROR_EXIT_CODE
+    if os.path.exists(target) and not force:
+        _print_error(f"{bi('錯誤', 'Error')}: " + bi(f"--init-config：'{path}' 已存在，未覆寫（要覆寫請加 --force）",
+                                                    f"--init-config: '{path}' already exists and was not overwritten (add --force to overwrite)"))
+        return USAGE_ERROR_EXIT_CODE
+    try:
+        shutil.copyfile(DEFAULT_CONFIG_PATH, target)
+    except OSError as e:
+        _print_error(f"{bi('錯誤', 'Error')}: " + bi(f"--init-config：無法寫入 '{path}'", f"--init-config: cannot write '{path}'") + f": {e}")
+        return USAGE_ERROR_EXIT_CODE
+    print(bi(f"已寫入預設設定 {path}；編輯後在同一個目錄執行 vibeharness 就會自動採用（或以 --config 指定）",
+             f"Default config written to {path}; edit it, then run vibeharness in the same directory to pick it up "
+             "automatically (or pass it with --config)"))
+    return 0
+
+
 def main():
     """CLI 進入點。任何沒被下方各階段處理的例外都以 5 結束（Ctrl-C 為 130），絕不以 Python 預設的 1 結束：
     1 專屬於 NEEDS_FIXES 判定，當掉的執行絕不能被誤讀成判定結果。
     The CLI entry point. Any exception not handled by the stages below exits 5 (Ctrl-C 130), never with
-    Python's default 1: that code belongs to the NEEDS_FIXES verdict, and a crash must never read as a verdict."""
+    Python's default 1: that code belongs to the NEEDS_FIXES verdict, and a crash must never read as a verdict.
+    安裝不完整（缺少相依套件、損壞的模組）也在這裡處理：harness 是在防護內才匯入的。
+    A broken install (a missing dependency, a corrupt module) is handled here too: the harness is imported inside the guard."""
     try:
+        _load_dependencies()
+    except KeyboardInterrupt:
+        _print_error(bi("已中斷。", "Interrupted."))
+        sys.exit(INTERRUPTED_EXIT_CODE)
+    except Exception as e:
+        # 不印 traceback：使用者需要的是重新安裝的指示（--verbose 此時還沒解析）
+        # No traceback: the user needs reinstall instructions (--verbose is not parsed yet)
+        missing = getattr(e, "name", None)
+        zh_missing = f"（缺少的模組：{missing}）" if missing else ""
+        en_missing = f" (missing module: {missing})" if missing else ""
+        _print_error(f"{bi('錯誤', 'Error')}: " + bi(
+            f"VibeHarness 安裝不完整，無法載入 harness（{type(e).__name__}: {e}）{zh_missing}。"
+            "請在同一個 Python 環境重新安裝：pip install --force-reinstall vibeharness-mas",
+            f"VibeHarness is not installed correctly and the harness could not be loaded ({type(e).__name__}: {e}){en_missing}. "
+            "Reinstall it in the same Python environment: pip install --force-reinstall vibeharness-mas",
+        ))
+        sys.exit(USAGE_ERROR_EXIT_CODE)
+    try:
+        force_utf8_stdio()
         _main()
     except KeyboardInterrupt:
         print(bi("已中斷。", "Interrupted."), file=sys.stderr)
@@ -115,8 +238,8 @@ def _main():
     )
     parser.add_argument(
         "--target", "-t",
-        default="examples",
-        help="要稽核與測試的目標目錄或檔案（預設 'examples'）／ Directory or file of the target codebase to audit and test (default: 'examples')"
+        default=".",
+        help="要稽核與測試的目標目錄或檔案（預設為目前目錄 '.'）／ Directory or file of the target codebase to audit and test (default: the current directory '.')"
     )
     parser.add_argument(
         "--base-url", "-u",
@@ -138,8 +261,27 @@ def _main():
     )
     parser.add_argument(
         "--config", "-c",
-        default=DEFAULT_CONFIG_PATH,
-        help="agent 與模型設定 YAML 的路徑（預設為套件內的 config/agents_config.yaml）／ Path to agents and models configuration YAML (default: the bundled config/agents_config.yaml)"
+        default=None,
+        help="agent 與模型設定 YAML 的路徑；未指定時依序使用目前目錄的 ./vibeharness.yaml、./.vibeharness.yaml，"
+             "都沒有才用套件內的 config/agents_config.yaml ／ Path to agents and models configuration YAML; without it "
+             "./vibeharness.yaml, then ./.vibeharness.yaml in the current directory is used, and the bundled "
+             "config/agents_config.yaml only when neither exists"
+    )
+    parser.add_argument(
+        "--init-config",
+        nargs="?",
+        const=DEFAULT_INIT_CONFIG_PATH,
+        default=None,
+        metavar="PATH",
+        help=f"把套件內的預設 agents_config.yaml 複製到 PATH（預設 ./{DEFAULT_INIT_CONFIG_PATH}，之後在該目錄執行會自動採用）後結束（exit 0）；"
+             "已存在的檔案不會被覆寫，除非加上 --force ／ Write a copy of the bundled default agents_config.yaml to PATH "
+             f"(default ./{DEFAULT_INIT_CONFIG_PATH}, which later runs in that directory pick up automatically) and exit 0; "
+             "an existing file is never overwritten unless --force is given"
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="與 --init-config 一起使用：覆寫已存在的檔案 ／ With --init-config: overwrite an existing file"
     )
     parser.add_argument(
         "--mode", "-m",
@@ -266,6 +408,13 @@ def _main():
     args = parser.parse_args()
     setup_logging(args.verbose)
 
+    if args.init_config is not None:
+        sys.exit(_init_config(args.init_config, args.force))
+    if args.force:
+        parser.error(bi("--force 只能與 --init-config 一起使用", "--force is only valid with --init-config"))
+    args.config, config_source = resolve_config_path(args.config)
+    print(f"{bi('設定檔', 'Config')}: {args.config} ({config_source})", file=sys.stderr)
+
     target_path = os.path.abspath(args.target)
     if not os.path.exists(target_path):
         print(f"{bi('錯誤', 'Error')}: {bi(f'目標路徑 {target_path!r} 不存在。', f'Target path {target_path!r} does not exist.')}", file=sys.stderr)
@@ -311,6 +460,13 @@ def _main():
                 raise ConfigError(bi("--cache-only 需要回應快取：請指定 --cache-dir 或設定 global.cache_dir",
                                      "--cache-only needs a response cache: pass --cache-dir or set global.cache_dir"))
             commander.gateway.cache_only = True
+            if commander.gateway.execution_mode == "mock":
+                # mock 模式根本不讀快取：--cache-only 不會有任何作用，說出來而不是默默接受
+                # Mock mode never reads the cache: --cache-only has no effect, so say so instead of silently accepting it
+                print(f"{bi('警告', 'Warning')}: " + bi(
+                    "--cache-only 在 mock 模式下沒有作用：每次呼叫都是模擬的，不會讀取回應快取（要重播快取請用 --mode hybrid 或 live）",
+                    "--cache-only has no effect in mock mode: every call is simulated and the response cache is never "
+                    "read (use --mode hybrid or live to replay the cache)"), file=sys.stderr)
         if args.baseline:
             commander.baseline = load_baseline(args.baseline)
     except (ConfigError, ValueError, SandboxUnavailableError) as e:
