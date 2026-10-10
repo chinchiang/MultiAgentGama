@@ -193,8 +193,21 @@ runs:
         # sandbox_provider: docker and pass --config last (argparse keeps the last one). The CLI has no --sandbox
         # flag, so this goes through the config file
         config_override=()
+        # 被稽核的 repo 不可信：extra-args 沒給 --config 時明確傳入套件內建的設定檔，
+        # 不讓 CLI 自動讀取工作目錄裡（可能由 PR 加入）的 vibeharness.yaml／.vibeharness.yaml
+        # The audited repo is untrusted: without --config in extra-args, pass the bundled config explicitly so the
+        # CLI never auto-discovers a vibeharness.yaml / .vibeharness.yaml in the workspace (a PR could add one)
+        has_config=0
+        for arg in "${extra[@]}"; do
+          case "$arg" in --config|--config=*|-c|-c?*) has_config=1 ;; esac
+        done
         case "$VH_SANDBOX" in
-          local_subprocess) ;;
+          local_subprocess)
+            if [ "$has_config" = 0 ]; then
+              bundled=$(python -c 'from vibeharness.core.llm_gateway import DEFAULT_CONFIG_PATH; print(DEFAULT_CONFIG_PATH)') \
+                || { echo "::error::could not locate the bundled config"; exit 5; }
+              config_override=(--config "$bundled")
+            fi ;;
           docker)
             cfg="$RUNNER_TEMP/vibeharness-sandbox-config.yaml"
             python - "$RUNNER_TEMP/vh_extra_args" "$cfg" <<'PY' || { echo "::error::could not write the docker sandbox config"; exit 5; }
