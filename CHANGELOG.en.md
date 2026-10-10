@@ -9,6 +9,7 @@ All notable changes to this project are documented in this file. The format foll
 ### Fixed
 
 - Executor: the remaining timeout budget is computed by `_remaining_seconds`, which takes a small tolerance off before rounding up and never exceeds the budget itself. With large `monotonic()` values, the float error in `(t0 + 30.0) - t0` used to add a second ("timed out after 31s" on Windows).
+- `--init-config` with a file name outside config discovery now says to pass `--config` instead of promising automatic pickup.
 
 ## [0.7.0] - 2026-10-10
 

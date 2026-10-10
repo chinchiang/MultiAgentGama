@@ -187,9 +187,16 @@ def _init_config(path: str, force: bool) -> int:
     except OSError as e:
         _print_error(f"{bi('錯誤', 'Error')}: " + bi(f"--init-config：無法寫入 '{path}'", f"--init-config: cannot write '{path}'") + f": {e}")
         return USAGE_ERROR_EXIT_CODE
-    print(bi(f"已寫入預設設定 {path}；編輯後在同一個目錄執行 vibeharness 就會自動採用（或以 --config 指定）",
-             f"Default config written to {path}; edit it, then run vibeharness in the same directory to pick it up "
-             "automatically (or pass it with --config)"))
+    # 只有 DISCOVERED_CONFIG_NAMES 裡的檔名會被自動採用；其他檔名只能以 --config 指定
+    # Only the file names in DISCOVERED_CONFIG_NAMES are picked up automatically; any other name needs --config
+    if os.path.basename(target) in DISCOVERED_CONFIG_NAMES:
+        print(bi(f"已寫入預設設定 {path}；編輯後在同一個目錄執行 vibeharness 就會自動採用（或以 --config 指定）",
+                 f"Default config written to {path}; edit it, then run vibeharness in the same directory to pick it up "
+                 "automatically (or pass it with --config)"))
+    else:
+        print(bi(f"已寫入預設設定 {path}；這個檔名不會被自動採用，執行時請以 --config {path} 指定",
+                 f"Default config written to {path}; this file name is not picked up automatically, so pass "
+                 f"--config {path} when running"))
     return 0
 
 

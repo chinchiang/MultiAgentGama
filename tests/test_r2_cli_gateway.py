@@ -329,3 +329,14 @@ def test_resolve_config_path_uses_the_given_directory(tmp_path):
     (tmp_path / ".vibeharness.yaml").write_text(_MOCK_CONFIG, encoding="utf-8")
     assert cli.resolve_config_path(None, str(tmp_path))[0] == str(tmp_path / ".vibeharness.yaml")
     assert cli.resolve_config_path("x.yaml", str(tmp_path)) == ("x.yaml", "--config")
+
+
+def test_init_config_message_only_promises_discovery_for_discovered_names(tmp_path, capsys):
+    """只有 vibeharness.yaml／.vibeharness.yaml 會被自動採用；其他檔名的訊息改為提示 --config。
+    Only vibeharness.yaml / .vibeharness.yaml are picked up automatically; other names are told to use --config."""
+    from vibeharness import cli
+    assert cli._init_config(str(tmp_path / "vibeharness.yaml"), force=False) == 0
+    assert "pick it up automatically" in capsys.readouterr().out
+    assert cli._init_config(str(tmp_path / "custom.yaml"), force=False) == 0
+    out = capsys.readouterr().out
+    assert "not picked up automatically" in out and "--config" in out
