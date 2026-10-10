@@ -1,3 +1,16 @@
-include README.md README.en.md CHANGELOG.md CHANGELOG.en.md
+# sdist 必須能獨立重建、測試與審視：文件、範例目標、完整測試套件（含 tests/conftest.py 的假 litellm）、
+# 相依與鎖定檔、沙盒 Dockerfile 與其雜湊鎖定檔、複合 action 與專案政策檔都要附上。
+# tests/test_review_build.py 與 tests.yml 的 package job 會檢查 sdist 內容。
+# The sdist must be rebuildable, testable and reviewable on its own: docs, the sample target, the full test
+# suite (including the fake litellm in tests/conftest.py), dependency and lock files, the sandbox Dockerfiles
+# with their hashed lock, the composite action and the project policy files all ship.
+# tests/test_review_build.py and the package job in tests.yml check the sdist contents.
+include README.md README.en.md CHANGELOG.md CHANGELOG.en.md CONTRIBUTING.md SECURITY.md LICENSE
+include main.py action.yml
+include requirements.txt requirements-dev.txt requirements.lock
+include docker/*.Dockerfile docker/sandbox-requirements.in docker/sandbox-requirements.txt
 recursive-include docs *.md
+recursive-include examples *.py
+recursive-include tests *.py
 recursive-include vibeharness/config *.yaml
+global-exclude __pycache__ *.py[cod]
