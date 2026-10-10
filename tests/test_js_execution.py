@@ -392,14 +392,19 @@ def test_executor_keeps_order_across_languages_and_runs_js_modules_one_per_proce
     assert results[0].status == TestStatus.PASSED and coverage == 88.0
     assert results[1].status == TestStatus.FAILED  # NODE_JUNIT 中的斷言失敗 ／ the assertion failure in NODE_JUNIT
     assert results[2].status == TestStatus.ERROR and "No test was collected" in results[2].failure_reason
-    assert js.calls == [(["test_vh_001.mjs"], 7), (["test_vh_002.mjs"], 7)]  # 全域索引，每個模組一個行程 ／ global index, one process each
+    assert [files for files, _ in js.calls] == [["test_vh_001.mjs"], ["test_vh_002.mjs"]]  # 全域索引，每個模組一個行程 ／ global index, one process each
+    # 第一輪用的是剩下的批次預算（沙盒的 30 秒），不是單測預算 ／ the first pass uses what is left of the batch budget (the sandbox's 30s), not the per-test one
+    assert all(7 < budget <= 30 for _, budget in js.calls)
 
 
 def test_executor_js_timeout_and_unparseable_report(tmp_path):
     js = _RecordingSandbox(exit_code=TIMEOUT_EXIT_CODE)
     executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: js, per_test_timeout_seconds=3)
     results, _ = executor.execute_test_suite([_js_test("J", GOOD)], working_dir=str(tmp_path))
-    assert results[0].status == TestStatus.ERROR and "timed out after 3s" in results[0].failure_reason
+    # 唯一的模組已拿到整個批次預算（30 秒 >= 單測的 3 秒）：不重跑，回報實際用掉的預算
+    # The only module already had the whole batch budget (30s >= the per-test 3s): no rerun, the budget it used is reported
+    assert results[0].status == TestStatus.ERROR and "timed out after 30s" in results[0].failure_reason
+    assert len(js.calls) == 1
     js = _RecordingSandbox({"test_vh_000": "<broken"})
     executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: js)
     results, _ = executor.execute_test_suite([_js_test("J", GOOD)], working_dir=str(tmp_path))
@@ -604,12 +609,12 @@ def test_node_runs_esm_cjs_and_bare_specifier_modules(tmp_path):
 
 
 @node_only
-def test_node_hang_is_killed_on_the_per_test_budget(tmp_path):
-    sandbox = NodeSubprocessSandbox(timeout_seconds=30)
+def test_node_hang_is_killed_on_the_batch_budget(tmp_path):
+    sandbox = NodeSubprocessSandbox(timeout_seconds=3)
     executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: sandbox, per_test_timeout_seconds=2)
     hang = _js_test("hang", _esm_test("", 'test("spin", () => { while (true) {} assert.ok(1); });'))
     results, _ = executor.execute_test_suite([hang], working_dir=str(tmp_path))
-    assert results[0].status == TestStatus.ERROR and "timed out after 2s" in results[0].failure_reason
+    assert results[0].status == TestStatus.ERROR and "timed out after 3s" in results[0].failure_reason
 
 
 @node_only

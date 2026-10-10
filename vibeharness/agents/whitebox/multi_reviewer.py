@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any, Optional
 from pydantic import ValidationError
@@ -8,12 +9,32 @@ from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError, UNCONFIGUR
 from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import render_symbols, batch_symbols
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
+from vibeharness.agents.whitebox.common import cancel_pending
 
 logger = logging.getLogger("VibeHarness.MultiReviewer")
 
 # 模型輸出的嚴重度字串若與列舉不符（大小寫怪異、拼錯）就落到這裡
 # Model-emitted severity strings that do not match the enum (odd casing, typos) land here
 _DEFAULT_SEVERITY = FindingSeverity.MEDIUM
+# 模型常用的嚴重度同義詞（比對前已去除空白與標點並轉大寫）
+# Severity synonyms models commonly emit (matched after stripping whitespace / punctuation and upper-casing)
+_SEVERITY_SYNONYMS = {
+    "CRIT": FindingSeverity.CRITICAL, "BLOCKER": FindingSeverity.CRITICAL, "SEVERE": FindingSeverity.HIGH,
+    "MAJOR": FindingSeverity.HIGH, "MED": FindingSeverity.MEDIUM, "MODERATE": FindingSeverity.MEDIUM,
+    "MINOR": FindingSeverity.LOW, "INFORMATIONAL": FindingSeverity.INFO, "INFORMATION": FindingSeverity.INFO,
+    "NOTE": FindingSeverity.INFO,
+}
+
+
+def parse_severity(value: Any) -> Optional[FindingSeverity]:
+    """把模型輸出的嚴重度轉成列舉：去除空白、引號與標點、不分大小寫，並接受常見同義詞（"critical "、"Severe"、"P1" 除外）；
+    無法辨識時回傳 None。
+    Converts a model-emitted severity to the enum: whitespace, quotes and punctuation stripped, case-insensitive,
+    common synonyms accepted ("critical ", "Severe"; not "P1"); None when it cannot be recognized."""
+    text = re.sub(r"[^A-Z]", "", str(value).upper())
+    if text in FindingSeverity.__members__:
+        return FindingSeverity(text)
+    return _SEVERITY_SYNONYMS.get(text)
 
 
 REVIEWER_PREFIX = "whitebox_reviewer_"
@@ -79,18 +100,24 @@ class HeterogeneousReviewerEnsemble:
         with ThreadPoolExecutor(max_workers=min(self.gateway.max_concurrent_calls, len(jobs))) as pool:
             futures = [pool.submit(self._review_batch, job[0], job[1], root) for job in jobs]
             responses = []
-            for job, future in zip(jobs, futures, strict=True):
-                try:
-                    responses.append(future.result())
-                except LLMGatewayError:
-                    raise
-                except Exception as e:
-                    logger.error(bi(f"{job[0]['name']} 的審查批次失敗：{type(e).__name__}: {e}",
-                                    f"Reviewer batch for {job[0]['name']} failed: {type(e).__name__}: {e}"))
-                    # 記為一次無效呼叫：該批次的發現是缺漏，而不是不存在
-                    # Booked as an invalid call: the batch's findings are missing, not absent
-                    self.gateway.record_failure(job[0]["agent_id"], f"{type(e).__name__}: {e}")
-                    responses.append(({}, False))
+            try:
+                for job, future in zip(jobs, futures, strict=True):
+                    try:
+                        responses.append(future.result())
+                    except LLMGatewayError:
+                        raise
+                    except Exception as e:
+                        logger.error(bi(f"{job[0]['name']} 的審查批次失敗：{type(e).__name__}: {e}",
+                                        f"Reviewer batch for {job[0]['name']} failed: {type(e).__name__}: {e}"))
+                        # 記為一次無效呼叫：該批次的發現是缺漏，而不是不存在
+                        # Booked as an invalid call: the batch's findings are missing, not absent
+                        self.gateway.record_failure(job[0]["agent_id"], f"{type(e).__name__}: {e}")
+                        responses.append(({}, False))
+            except BaseException:
+                # live 失敗或 Ctrl-C：取消尚未開始的呼叫，不再為一次注定失敗的執行付費
+                # A live failure or Ctrl-C: cancel the calls not started yet instead of paying for a run that already failed
+                cancel_pending(futures)
+                raise
 
         all_findings: List[ReviewFinding] = []
         counters: Dict[str, int] = {}
@@ -110,13 +137,13 @@ class HeterogeneousReviewerEnsemble:
                     logger.warning(bi(f"略過 {reviewer['name']} 沒有可用標題或描述的發現",
                                       f"Skipping finding without a usable title or description from {reviewer['name']}"))
                     continue
-                severity_str = str(item.get("severity", "MEDIUM")).upper()
-                try:
-                    severity = FindingSeverity(severity_str)
-                except ValueError:
-                    logger.warning(bi(f"{reviewer['name']} 回傳未知的嚴重度 '{severity_str.strip()}'；改用 MEDIUM",
-                                      f"Unknown severity '{severity_str.strip()}' from {reviewer['name']}; using MEDIUM"))
-                    severity = _DEFAULT_SEVERITY
+                raw_severity = item.get("severity", "MEDIUM")
+                parsed = parse_severity(raw_severity)
+                if parsed is None:
+                    shown = str(raw_severity).strip()[:40]
+                    logger.warning(bi(f"{reviewer['name']} 回傳未知的嚴重度 '{shown}'；改用 MEDIUM",
+                                      f"Unknown severity '{shown}' from {reviewer['name']}; using MEDIUM"))
+                severity = parsed or _DEFAULT_SEVERITY
 
                 reported_symbol = item.get("symbol_name") if isinstance(item.get("symbol_name"), str) else None
                 symbol = self._match_symbol(reported_symbol, batch)

@@ -33,9 +33,17 @@ DEFAULT_MAX_CONCURRENT_CALLS = 6
 # 這是上限而非花費：威脅模型 JSON 與推理模型的思考 token 在線上執行時都曾超過 4096
 # A cap, not a spend: threat-model JSON and reasoning models' thinking tokens both overflowed 4096 in live runs
 DEFAULT_MAX_OUTPUT_TOKENS = 16384
+# 單次 LLM 請求的逾時（秒）與 litellm 層級的重試次數；設定為 null 時也採用這些值
+# Per-request LLM timeout (seconds) and litellm-level retry count; a null setting also means these values
+DEFAULT_TIMEOUT_SECONDS = 180
+DEFAULT_MAX_RETRIES = 2
 
 
 BUDGET_EXHAUSTED_REASON = bi("max_model_calls 預算已用盡", "max_model_calls budget exhausted")
+# --cache-only：快取沒有答案時不發出任何網路呼叫；與預算用盡一樣處理（hybrid 改用模擬、live 失敗），並列為證據缺口
+# --cache-only: a call the cache cannot answer makes no network call; handled like an exhausted budget
+# (simulation in hybrid, failure in live) and reported as an evidence gap
+CACHE_MISS_REASON = bi("--cache-only 模式下回應快取未命中", "cache miss in --cache-only mode")
 REASON_NOT_VALID_JSON = bi("回應不是有效的 JSON", "response is not valid JSON")
 REASON_CALL_CRASHED = bi("代理呼叫在產生輸出前就當掉", "agent call crashed before producing output")
 # 無法使用的線上回答（非 JSON、缺少鍵、空白）在登記為 `invalid` 之前
@@ -59,6 +67,31 @@ _RETRY_SUFFIX = (
 UNCONFIGURED_ALIAS = "unconfigured"
 
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+# `extra_params` 不得覆寫的 litellm 參數：端點與憑證（會繞過 api_base 的 https 檢查，
+# 把目標原始碼送到任意主機）、harness 自己設定的請求內容與重試／逾時控制，以及會讓
+# 回應解析失效的 stream。這些都有專用的設定鍵（或由 harness 決定），放進 extra_params 即為 ConfigError。
+# litellm parameters `extra_params` must not override: endpoints and credentials (they would bypass
+# the https check on api_base and send the target source code to an arbitrary host), the request
+# content and the retry / timeout controls the harness sets itself, and stream, which would break
+# response parsing. Each has a dedicated setting (or is the harness's call); in extra_params it is a ConfigError.
+RESERVED_EXTRA_PARAMS = frozenset({
+    "model", "messages", "api_base", "base_url", "api_key", "api_version", "timeout", "request_timeout",
+    "num_retries", "max_retries", "fallbacks", "stream", "aws_profile_name", "aws_region_name",
+    "aws_access_key_id", "aws_secret_access_key", "aws_session_token", "aws_bedrock_runtime_endpoint",
+    "aws_role_name", "aws_web_identity_token", "custom_llm_provider",
+    # 輸出 token 上限只能用 max_output_tokens 設定：這些鍵會覆寫它，--estimate 與快取鍵也會看錯上限
+    # The output-token cap is set only through max_output_tokens: these keys would override it, and
+    # --estimate and the cache key would see the wrong cap
+    "max_tokens", "max_completion_tokens", "max_output_tokens",
+})
+# 上面屬於輸出 token 上限的保留鍵；錯誤訊息會指向 max_output_tokens
+# The reserved keys above that are the output-token cap; the error message points at max_output_tokens
+_TOKEN_CAP_PARAMS = frozenset({"max_tokens", "max_completion_tokens", "max_output_tokens"})
+
+# 屬於端點身分的模型設定：任一個不同就是不同的服務端點，回應快取不得共用
+# Model settings that identify the endpoint: if any differs it is a different service, so the response cache must not be shared
+_ENDPOINT_IDENTITY_KEYS = ("api_base", "aws_region_name", "aws_profile_name", "api_key_env")
 
 
 
@@ -99,14 +132,16 @@ class LLMGateway:
 
     def __init__(self, config_path: str = DEFAULT_CONFIG_PATH, execution_mode: Optional[str] = None):
         self.config = self._load_config(config_path)
-        self.execution_mode = execution_mode or self.config.get("global", {}).get("execution_mode", "hybrid")
+        # 空的 `global:` 會載入成 None：當成空對應表，而不是在 .get() 時拋出 AttributeError
+        # An empty `global:` loads as None: treat it as an empty mapping instead of raising AttributeError on .get()
+        global_cfg = self.config.get("global") or {}
+        self.execution_mode = execution_mode or global_cfg.get("execution_mode") or "hybrid"
         if self.execution_mode not in ("live", "hybrid", "mock"):
             raise ValueError(bi(f"未知的 execution_mode '{self.execution_mode}'（應為 live、hybrid 或 mock）",
                                    f"Unknown execution_mode '{self.execution_mode}' (expected live, hybrid or mock)"))
         self.models_config = self.config.get("models") or {}
         self.agents_config = self.config.get("agents") or {}
         self.call_log: List[AgentCallRecord] = []
-        global_cfg = self.config.get("global") or {}
         # 成本防護：每次執行允許的線上模型呼叫次數（單次呼叫的 litellm 重試／fallback_model
         # 不另外計算）。None 或 0 表示不限制。
         # Cost guard: live model invocations allowed per run (litellm retries / fallback_model of one
@@ -119,13 +154,18 @@ class LLMGateway:
         ) or DEFAULT_MAX_CONCURRENT_CALLS
         self.live_calls_attempted = 0
         self._budget_lock = threading.Lock()
-        retries = global_cfg.get("retry_invalid_output", DEFAULT_RETRY_INVALID_OUTPUT)
-        self.retry_invalid_output = 0 if retries is None else retries
+        # null 與未設定相同，都用預設值（與 timeout_seconds、max_retries 一致）；只有明確的 0 才關閉
+        # null means the same as unset, the default (consistent with timeout_seconds, max_retries); only an explicit 0 disables
+        retries = global_cfg.get("retry_invalid_output")
+        self.retry_invalid_output = DEFAULT_RETRY_INVALID_OUTPUT if retries is None else retries
         # 以模型 + 提示為鍵、存放可用線上回答的磁碟快取：以相同設定重新執行相同目標
         # 不需任何花費，且得到相同的回答。None 表示停用。
         # On-disk cache of usable live answers keyed by model + prompt: a re-run of the same target with
         # the same config costs nothing and gives the same answers. None disables it.
         self.cache_dir: Optional[str] = None
+        # --cache-only：每次模型呼叫都只從回應快取取用，未命中時絕不呼叫供應商（見 CACHE_MISS_REASON）
+        # --cache-only: every model call is served from the response cache only; a miss never calls a provider (see CACHE_MISS_REASON)
+        self.cache_only = False
         if global_cfg.get("cache_dir"):
             self.set_cache_dir(str(global_cfg["cache_dir"]))
         self._validate_endpoints()
@@ -172,9 +212,15 @@ class LLMGateway:
         self.cache_dir = target
 
     def _cache_key(self, model_alias: str, model_info: Dict[str, Any], temperature: float, system_prompt: str, user_prompt: str) -> str:
+        # 端點身分（api_base、AWS 區域／設定檔、金鑰環境變數）也在鍵內：同一個模型字串
+        # 指向另一個端點或帳號時，不得取用前一個端點的回答
+        # The endpoint identity (api_base, AWS region / profile, key env var) is part of the key: the same
+        # model string pointed at another endpoint or account must not be served the previous endpoint's answer
+        endpoint = json.dumps({k: model_info.get(k) for k in _ENDPOINT_IDENTITY_KEYS}, sort_keys=True, default=str)
         parts = "\x00".join([
             model_alias, str(model_info.get("model")), str(model_info.get("fallback_model")), str(temperature),
-            str(self._max_output_tokens(model_info)), json.dumps(model_info.get("extra_params") or {}, sort_keys=True),
+            str(self._max_output_tokens(model_info)),
+            json.dumps(model_info.get("extra_params") or {}, sort_keys=True, default=str), endpoint,
             system_prompt, user_prompt,
         ])
         return hashlib.sha256(parts.encode("utf-8")).hexdigest()
@@ -214,10 +260,11 @@ class LLMGateway:
         Numeric settings are checked once at start-up. They used to be read only when a call was
         made, so a typo such as `timeout_seconds: "abc"` reached litellm, failed there, and in hybrid
         mode was booked as "live invocation failed" and silently replaced by the simulation engine."""
-        global_cfg = self.config.get("global") or {}
-        self._number(global_cfg.get("timeout_seconds", 180), "global.timeout_seconds", minimum=1)
-        self._number(global_cfg.get("max_retries", 2), "global.max_retries", minimum=0, integer=True)
-        self._number(global_cfg.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS), "global.max_output_tokens",
+        # null 與省略相同，都採用預設值（與其他數值設定一致）；0 或負數仍是 ConfigError
+        # null means the same as omitted, the default (consistent with the other numeric settings); 0 or a negative value is still a ConfigError
+        self._number(self._global_setting("timeout_seconds", DEFAULT_TIMEOUT_SECONDS), "global.timeout_seconds", minimum=1)
+        self._number(self._global_setting("max_retries", DEFAULT_MAX_RETRIES), "global.max_retries", minimum=0, integer=True)
+        self._number(self._global_setting("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS), "global.max_output_tokens",
                      minimum=1, integer=True)
         for alias, info in self.models_config.items():
             if isinstance(info, dict) and info.get("max_output_tokens") is not None:
@@ -234,6 +281,30 @@ class LLMGateway:
             if extra is not None and (not isinstance(extra, dict) or not all(isinstance(k, str) for k in extra)):
                 raise ConfigError(bi(f"models.{alias}.extra_params 必須是 litellm 參數名稱的對應表，目前為 {extra!r}",
                                      f"models.{alias}.extra_params must be a mapping of litellm parameter names, got {extra!r}"))
+            reserved = sorted(set(extra or {}) & RESERVED_EXTRA_PARAMS)
+            if reserved and set(reserved) <= _TOKEN_CAP_PARAMS:
+                names = ", ".join(reserved)
+                raise ConfigError(bi(
+                    f"models.{alias}.extra_params 不可設定輸出 token 上限：{names}"
+                    f"（請改用 models.{alias}.max_output_tokens 或 global.max_output_tokens）",
+                    f"models.{alias}.extra_params must not set the output-token cap: {names} "
+                    f"(use models.{alias}.max_output_tokens or global.max_output_tokens instead)"
+                ))
+            if reserved:
+                names = ", ".join(reserved)
+                raise ConfigError(bi(
+                    f"models.{alias}.extra_params 不可設定保留的 litellm 參數：{names}"
+                    "（端點、憑證、逾時與重試請用 models.<alias> 或 global 的專用設定鍵；輸出 token 上限請用 max_output_tokens）",
+                    f"models.{alias}.extra_params must not set reserved litellm parameter(s): {names} "
+                    "(use the dedicated models.<alias> / global settings for endpoints, credentials, timeouts and "
+                    "retries, and max_output_tokens for the output-token cap)"
+                ))
+
+    def _global_setting(self, key: str, default: Any) -> Any:
+        """`global.<key>` 的值；省略或為 null 時回傳 `default`，因此絕不會把 None 傳給 litellm。
+        The value of `global.<key>`; `default` when it is omitted or null, so None never reaches litellm."""
+        value = (self.config.get("global") or {}).get(key)
+        return default if value is None else value
 
     @staticmethod
     def _number(value: Any, key: str, minimum: float, maximum: Optional[float] = None, integer: bool = False) -> None:
@@ -279,6 +350,12 @@ class LLMGateway:
         return [rec for rec in self.call_log if rec.reason == BUDGET_EXHAUSTED_REASON]
 
     @property
+    def cache_miss_calls(self) -> List[AgentCallRecord]:
+        """--cache-only 模式下快取沒有答案的呼叫（證據缺口；hybrid 改用模擬）。
+        Calls the cache could not answer in --cache-only mode (an evidence gap; simulated in hybrid)."""
+        return [rec for rec in self.call_log if rec.reason == CACHE_MISS_REASON]
+
+    @property
     def used_simulation(self) -> bool:
         return any(rec.mode == "simulated" for rec in self.call_log)
 
@@ -311,17 +388,40 @@ class LLMGateway:
             raise ConfigError(bi(f"找不到代理設定檔：{path}", f"Agent config not found: {path}"))
         try:
             with open(path, "r", encoding="utf-8") as f:
-                return yaml.safe_load(f) or {}
+                config = yaml.safe_load(f)
         except yaml.YAMLError as e:
             raise ConfigError(bi(f"代理設定檔不是有效的 YAML（{path}）：{e}",
                                  f"Agent config is not valid YAML ({path}): {e}")) from e
+        except (OSError, UnicodeDecodeError) as e:
+            # 例如把目錄、無法讀取的檔案或二進位檔當成 --config 傳入
+            # e.g. a directory, an unreadable file or a binary file passed as --config
+            raise ConfigError(bi(f"無法讀取代理設定檔（{path}）：{e}",
+                                 f"Agent config cannot be read ({path}): {e}")) from e
+        if config is None:
+            return {}
+        if not isinstance(config, dict):
+            raise ConfigError(bi(f"代理設定檔的最上層必須是 YAML 對應表，目前為 {type(config).__name__}（{path}）",
+                                 f"Agent config must be a YAML mapping at the top level, got {type(config).__name__} ({path})"))
+        for section in ("global", "models", "agents"):
+            value = config.get(section)
+            if value is not None and not isinstance(value, dict):
+                raise ConfigError(bi(f"代理設定檔的 '{section}' 區段必須是對應表，目前為 {type(value).__name__}（{path}）",
+                                     f"Agent config section '{section}' must be a mapping, got {type(value).__name__} ({path})"))
+        # 每個模型與代理項目本身也必須是對應表（或留空）：否則之後的 .get() 會在執行中途當掉
+        # Every model and agent entry must itself be a mapping (or empty): otherwise a later .get() crashes mid-run
+        for section in ("models", "agents"):
+            for name, entry in (config.get(section) or {}).items():
+                if entry is not None and not isinstance(entry, dict):
+                    raise ConfigError(bi(f"{section}.{name} 必須是對應表，目前為 {type(entry).__name__}（{path}）",
+                                         f"{section}.{name} must be a mapping, got {type(entry).__name__} ({path})"))
+        return config
 
     def is_live_configured(self, model_alias: str) -> bool:
         """檢查所要求的模型是否具備憑證：其 API 金鑰，或 AWS 設定檔
         （Bedrock 透過 AWS 憑證鏈驗證，而非 API 金鑰）。
         Checks whether the requested model has credentials: its API key, or an AWS profile
         (Bedrock authenticates through the AWS credential chain, not an API key)."""
-        model_info = self.models_config.get(model_alias, {})
+        model_info = self.models_config.get(model_alias) or {}
         if model_info.get("aws_profile_name"):
             return True
         env_var = model_info.get("api_key_env")
@@ -353,6 +453,11 @@ class LLMGateway:
         temperature = agent_meta.get("temperature", 0.2)
         model_info = self.models_config.get(model_alias) or {}
         model_name = model_info.get("model") or f"(no model configured for alias '{model_alias}')"
+        # 重新詢問一律從主要模型開始：model_name 之後會改成實際回答的模型（可能是 fallback），
+        # 若拿它當下一次的主要模型，主要模型會被跳過、fallback 被呼叫兩次
+        # A re-ask always starts from the primary: model_name later becomes the model that actually answered
+        # (possibly the fallback); using it as the next primary would skip the primary and call the fallback twice
+        primary_model = model_name
         prompt_hash = hashlib.sha256(f"{system_prompt}\x00{user_prompt}".encode("utf-8")).hexdigest()
 
         # 決定要呼叫線上 API 還是模擬引擎
@@ -360,6 +465,10 @@ class LLMGateway:
         fallback_reason: Optional[str] = None
         if self.execution_mode == "mock":
             fallback_reason = bi("execution_mode 為 'mock'", "execution_mode is 'mock'")
+        elif self.cache_only:
+            # 只讀快取不需要 litellm 或金鑰：命中直接取用，未命中在下方登記為 CACHE_MISS_REASON
+            # Reading the cache needs neither litellm nor a key: a hit is served, a miss is booked below as CACHE_MISS_REASON
+            pass
         elif litellm is None:
             fallback_reason = bi("未安裝 litellm", "litellm is not installed")
         elif not self.is_live_configured(model_alias):
@@ -370,7 +479,11 @@ class LLMGateway:
         if fallback_reason is None:
             cache_key = self._cache_key(model_alias, model_info, temperature, system_prompt, user_prompt)
             cached = self._cache_read(cache_key)
-            if cached is None and not self._reserve_live_call():
+            if cached is None and self.cache_only:
+                # 不呼叫網路、不扣預算；之後與預算用盡相同：live 拋出 LLMGatewayError，hybrid 改用模擬
+                # No network call and no budget spent; then the same as an exhausted budget: live raises LLMGatewayError, hybrid simulates
+                fallback_reason = CACHE_MISS_REASON
+            elif cached is None and not self._reserve_live_call():
                 fallback_reason = BUDGET_EXHAUSTED_REASON
 
         if fallback_reason is None:
@@ -398,7 +511,7 @@ class LLMGateway:
                         logger.info(bi(f"[{agent_id}] 回答取自回應快取（{model_name}）",
                                        f"[{agent_id}] answer served from the response cache ({model_name})"))
                     else:
-                        raw_text, model_name, finish_reason = self._complete(model_info, model_name, messages, temperature)
+                        raw_text, model_name, finish_reason = self._complete(model_info, primary_model, messages, temperature)
                 except Exception as e:
                     fallback_reason = f"{bi('線上呼叫失敗', 'live invocation failed')}: {self._safe_reason(str(e))}"
                     if self.execution_mode == "live":
@@ -416,9 +529,16 @@ class LLMGateway:
                 if problem is None and result is not None:
                     from_cache = cached is not None and attempt == 0
                     if not from_cache:
-                        self._cache_write(cache_key if attempt == 0 else self._cache_key(
+                        # 重新詢問後的可用回答也存到原始提示的鍵下：否則重新執行（尤其是 --cache-only）
+                        # 對第一次嘗試永遠未命中，因為重新詢問的提示取決於第一次那個無法使用的回答
+                        # A usable answer after a re-ask is also stored under the original prompt's key: otherwise a
+                        # re-run (especially --cache-only) always misses the first attempt, because the re-ask
+                        # prompt depends on the unusable first answer
+                        keys = [cache_key] if attempt == 0 else [cache_key, self._cache_key(
                             model_alias, model_info, temperature, system_prompt, prompt_text
-                        ), agent_id, model_name, raw_text, finish_reason, prompt_hash)
+                        )]
+                        for key in keys:
+                            self._cache_write(key, agent_id, model_name, raw_text, finish_reason, prompt_hash)
                     self._record(agent_id, model_alias, model_name, "live", prompt_sha256=prompt_hash, cached=from_cache)
                     result[PROVENANCE_KEY] = {"mode": "live", "model": model_name, "cached": from_cache}
                     return result
@@ -438,7 +558,10 @@ class LLMGateway:
                         f"output truncated at the max_output_tokens limit ({limit}); "
                         f"{en_only(reason)}. Raise max_output_tokens for this model (reasoning tokens count against it)"
                     )
-                if json_output and attempt < self.retry_invalid_output and self._reserve_live_call():
+                # --cache-only 絕不重新詢問：重新詢問是網路呼叫
+                # --cache-only never re-asks: a re-ask is a network call
+                if (not self.cache_only and json_output and attempt < self.retry_invalid_output
+                        and self._reserve_live_call()):
                     attempt += 1
                     logger.warning(bi(f"[{agent_id}] {model_name} 回傳無法使用的輸出（{reason}）；重新詢問（{attempt}/{self.retry_invalid_output}）",
                                       f"[{agent_id}] {model_name} returned unusable output ({reason}); re-asking ({attempt}/{self.retry_invalid_output})"))
@@ -474,7 +597,10 @@ class LLMGateway:
         `api_key_env` (e.g. Z.AI for GLM) still authenticate.
         Returns (text, model_actually_used, finish_reason); finish_reason "length" means the token limit cut it off.
         """
-        global_cfg = self.config.get("global") or {}
+        if self.cache_only:
+            # 縱深防禦：generate 在 --cache-only 下不會走到這裡；萬一走到，也絕不發出網路呼叫
+            # Defense in depth: generate never gets here under --cache-only; if it ever did, no network call is made
+            raise LLMGatewayError(bi("--cache-only 模式下不允許網路呼叫", "network calls are not allowed in --cache-only mode"))
         env_var = model_info.get("api_key_env")
         aws_profile = model_info.get("aws_profile_name")
         if not env_var and not aws_profile:
@@ -494,8 +620,10 @@ class LLMGateway:
             # Newer models reject sampling knobs (Claude Opus 5.5 on Bedrock accepts only temperature=1;
             # Gemini 3 is deprecating them): drop what a model does not support rather than failing the call
             "drop_params": True,
-            "timeout": global_cfg.get("timeout_seconds", 180),
-            "num_retries": global_cfg.get("max_retries", 2),
+            # null 已由 _global_setting 換成預設值：timeout=None 對 litellm 代表不限時，絕不傳出
+            # null is already replaced by the default in _global_setting: timeout=None means no limit to litellm and is never passed
+            "timeout": self._global_setting("timeout_seconds", DEFAULT_TIMEOUT_SECONDS),
+            "num_retries": self._global_setting("max_retries", DEFAULT_MAX_RETRIES),
             "max_tokens": self._max_output_tokens(model_info),
         }
         if env_var:
@@ -510,7 +638,10 @@ class LLMGateway:
         # 讓推理模型不會把整個輸出預算花在思考上（啟動時驗證為對應表）
         # Per-model litellm passthrough, e.g. {thinking: {type: disabled}} or {reasoning_effort: low} so a
         # reasoning model does not spend the whole output budget thinking (validated as a mapping at start-up)
-        kwargs.update(model_info.get("extra_params") or {})
+        # 保留參數（端點、憑證、逾時、重試、請求內容）已在啟動時拒絕；這裡再過濾一次作為縱深防禦
+        # Reserved parameters (endpoint, credentials, timeout, retries, request content) are rejected at
+        # start-up; they are filtered again here as defense in depth
+        kwargs.update({k: v for k, v in (model_info.get("extra_params") or {}).items() if k not in RESERVED_EXTRA_PARAMS})
 
         candidates = [model_name] + ([model_info["fallback_model"]] if model_info.get("fallback_model") else [])
         last_error: Optional[Exception] = None
@@ -535,10 +666,13 @@ class LLMGateway:
         """逐模型的 `max_output_tokens` 會覆寫全域設定：推理模型（GLM、DeepSeek、
         Gemini 3）會把思考 token 計入此上限，因此需要較大的預算。
         Per-model `max_output_tokens` overrides the global one: reasoning models (GLM, DeepSeek,
-        Gemini 3) count thinking tokens against this limit and need a larger budget."""
-        value = model_info.get("max_output_tokens") or (self.config.get("global") or {}).get(
-            "max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS
-        )
+        Gemini 3) count thinking tokens against this limit and need a larger budget.
+        逐模型值省略或為 null 時採用全域值；全域值省略或為 null 時採用 DEFAULT_MAX_OUTPUT_TOKENS。
+        A per-model value that is omitted or null falls back to the global one; an omitted or null global
+        value falls back to DEFAULT_MAX_OUTPUT_TOKENS."""
+        value = model_info.get("max_output_tokens")
+        if value is None:
+            value = self._global_setting("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)
         return int(value)
 
     @staticmethod

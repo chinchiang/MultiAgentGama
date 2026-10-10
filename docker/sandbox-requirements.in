@@ -1,0 +1,9 @@
+# docker/sandbox.Dockerfile 以 --require-hashes 安裝的雜湊鎖定檔（docker/sandbox-requirements.txt）的直接輸入。
+# 版本以 requirements.lock 為約束（-c），容器與 CI 用同一組版本。重新產生：
+# Direct inputs of docker/sandbox-requirements.txt, the hashed lock docker/sandbox.Dockerfile installs with
+# --require-hashes. Versions are constrained (-c) by requirements.lock so the container matches CI. Regenerate with:
+#   uv pip compile --universal --generate-hashes --python-version 3.12 -c requirements.lock \
+#     docker/sandbox-requirements.in -o docker/sandbox-requirements.txt
+pytest
+pytest-cov
+requests

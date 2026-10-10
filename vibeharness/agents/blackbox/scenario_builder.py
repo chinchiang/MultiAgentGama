@@ -1,18 +1,21 @@
+import functools
 import logging
 import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 import os
 from vibeharness.core.models import ThreatItem, GeneratedTest, CodeSymbol, text_or
-from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
+from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.codecheck import check_test_code_for, strip_code_fences
 from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import render_symbols, import_instructions, language_for_file
-from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
+from vibeharness.core.sanitize import (
+    UNTRUSTED_CODE_POLICY, UNTRUSTED_MODEL_POLICY, untrusted_block, untrusted_model_block,
+)
+from vibeharness.agents.blackbox.threat_modeler import run_ordered
 
 logger = logging.getLogger("VibeHarness.ScenarioBuilder")
 
@@ -87,14 +90,7 @@ class ThreatScenarioBuilder:
             return "", "python"
         root = root_dir or os.path.dirname(os.path.abspath(symbols[0].file_path))
         text = f"{threat.attack_vector} {threat.attack_scenario}"
-        # 整字比對：子字串測試會把每個提到 "user" 的威脅都綁到
-        # get_user() 符號，把真正相關的程式碼藏在它後面。
-        # Whole-word matching: a substring test would tie every threat mentioning "user" to a
-        # get_user() symbol and hide the actually relevant code behind it.
-        relevant = [
-            s for s in symbols
-            if re.search(rf"\b{re.escape(s.name.split('.')[-1])}\b", text)
-        ]
+        relevant = ThreatScenarioBuilder._named_symbols(symbols, text)
         if not relevant:
             relevant = sorted(symbols, key=lambda s: s.symbol_type != "route")
         language = language_for_file(relevant[0].file_path)
@@ -102,6 +98,50 @@ class ThreatScenarioBuilder:
         imports = "\n".join(import_instructions(f, root) for f in files)
         listing = render_symbols(relevant, root, max_tokens=CODE_CONTEXT_TOKENS)
         return f"How to import the target:\n{imports}\n\nRelevant target code:\n{untrusted_block(listing)}\n\n", language
+
+    @staticmethod
+    def _symbol_keys(sym: CodeSymbol) -> List[str]:
+        """威脅文字中可以指名這個符號的寫法：完整名稱，方法再加上最後一段；
+        "GET /api/x" 這種路由再加上路徑本身（路徑裡的 "." 不是方法分隔符）。
+        The spellings by which threat text can name the symbol: the full name, plus the last part for a
+        method; a "GET /api/x" route also by its bare path (a "." in a path is no method separator)."""
+        name = sym.name.strip()
+        if " " in name or name.startswith("/"):
+            path = name.split(" ", 1)[-1].strip()
+            return [k for k in dict.fromkeys([name, path]) if k]
+        return [k for k in dict.fromkeys([name, name.split(".")[-1]]) if k]
+
+    @staticmethod
+    def _named_symbols(symbols: List[CodeSymbol], text: str) -> List[CodeSymbol]:
+        """威脅文字以完整識別字（或完整路由）指名的符號。
+
+        整字比對：子字串測試會把每個提到 "user" 的威脅都綁到 get_user() 符號，把真正相關的程式碼
+        藏在它後面；識別字邊界把 `_` 與 JS 的 `$` 都算成識別字字元。偏好最長的比對：只出現在另一個
+        符號比對範圍內的符號會被丟掉，所以 "/api/users/:id" 不會連帶拉進 "/api/users"，
+        "Service.get_user" 也不會拉進同名函式。
+        Symbols the threat text names by a whole identifier (or a whole route).
+
+        Whole-word matching: a substring test would tie every threat mentioning "user" to a get_user()
+        symbol and hide the actually relevant code behind it; identifier boundaries count both `_` and the
+        JS `$` as identifier characters. The longest match wins: a symbol matched only inside another
+        symbol's match is dropped, so "/api/users/:id" does not drag in "/api/users" and "Service.get_user"
+        does not drag in a same-named function.
+        """
+        spans: List[Tuple[CodeSymbol, List[Tuple[int, int]]]] = []
+        for sym in symbols:
+            found: List[Tuple[int, int]] = []
+            for key in ThreatScenarioBuilder._symbol_keys(sym):
+                head = r"(?<![\w$])" if re.match(r"[\w$]", key) else ""
+                tail = r"(?![\w$])" if re.search(r"[\w$]$", key) else ""
+                found.extend(m.span() for m in re.finditer(head + re.escape(key) + tail, text))
+            if found:
+                spans.append((sym, found))
+        all_spans = [span for _sym, found in spans for span in found]
+
+        def inside_longer(span: Tuple[int, int]) -> bool:
+            return any(o[0] <= span[0] and span[1] <= o[1] and o != span for o in all_spans)
+
+        return [sym for sym, found in spans if not all(inside_longer(span) for span in found)]
 
     # 迴環名稱都是同一台機器；目標本身在本機時允許瞄準它們
     # Loopback names are the same machine; targeting them is allowed when the target itself is local
@@ -125,22 +165,42 @@ class ThreatScenarioBuilder:
         cannot be parsed at all (e.g. a cut-off IPv6 address) cannot be cleared, so it is
         flagged — the net fails closed.
         """
-        base_host = (urllib.parse.urlsplit(base_url).hostname or "").lower()
+        base = urllib.parse.urlsplit(base_url)
+        base_host = (base.hostname or "").lower()
+        try:
+            base_port: Optional[int] = ThreatScenarioBuilder._effective_port(base)
+        except ValueError:
+            base_port = None
         offenders: List[str] = []
         for match in re.finditer(r"https?://[^/'\"\s<>())\\]+", code, re.IGNORECASE):
             try:
-                host = (urllib.parse.urlsplit(match.group(0)).hostname or "").lower()
+                parts = urllib.parse.urlsplit(match.group(0))
+                host = (parts.hostname or "").lower()
+                port = ThreatScenarioBuilder._effective_port(parts) if host else None
             except ValueError:
                 if match.group(0) not in offenders:
                     offenders.append(match.group(0))
                 continue
-            if not host or host == base_host:
+            if not host:
                 continue
-            if base_host in ThreatScenarioBuilder._LOOPBACK_HOSTS and host in ThreatScenarioBuilder._LOOPBACK_HOSTS:
+            same_machine = host == base_host or (
+                base_host in ThreatScenarioBuilder._LOOPBACK_HOSTS and host in ThreatScenarioBuilder._LOOPBACK_HOSTS)
+            # 同一台機器上的其他連接埠是其他服務（redis 的 6379、ssh 的 22）：連接埠也必須相同
+            # Another port on the same machine is another service (redis on 6379, ssh on 22): the port must match too
+            if same_machine and port == base_port:
                 continue
             if match.group(0) not in offenders:
                 offenders.append(match.group(0))
         return offenders
+
+    @staticmethod
+    def _effective_port(parts: "urllib.parse.SplitResult") -> int:
+        """URL 的連接埠，沒寫時用協定預設值（http 80、https 443）；無效的連接埠拋出 ValueError。
+        The URL's port, or the scheme default when omitted (http 80, https 443); an invalid port raises ValueError."""
+        port = parts.port
+        if port is not None:
+            return port
+        return 443 if parts.scheme.lower() == "https" else 80
 
     def build_test_cases_from_threats(
         self,
@@ -175,28 +235,28 @@ class ThreatScenarioBuilder:
                 "its functions/handlers directly with attacker-controlled arguments. Do not start servers or use the network.\n"
             )
 
-        # 威脅彼此獨立：並行合成它們的攻擊測試，維持威脅順序
-        # Threats are independent: synthesize their attack tests concurrently, keeping threat order
-        with ThreadPoolExecutor(max_workers=min(self.gateway.max_concurrent_calls, len(threats))) as pool:
-            futures = [
-                pool.submit(self._test_for_threat, threat, base_url, server_is_live, mode_label, mode_rules,
-                            symbols, root_dir)
-                for threat in threats
-            ]
-            tests: List[GeneratedTest] = []
-            for threat, future in zip(threats, futures, strict=True):
-                try:
-                    test = future.result()
-                except LLMGatewayError:
-                    raise  # 嚴格的 live 模式會大聲地失敗 ／ strict live mode fails loudly
-                except Exception as e:
-                    # 該威脅回報為未測試，而不是中止其他的合成
-                    # The threat is reported as untested rather than aborting the other syntheses
-                    logger.error(bi(f"[{threat.threat_id}] 的攻擊合成失敗：{type(e).__name__}: {e}",
-                                    f"Attack synthesis for [{threat.threat_id}] failed: {type(e).__name__}: {e}"))
-                    continue
-                if test is not None:
-                    tests.append(test)
+        # 威脅彼此獨立：並行合成它們的攻擊測試，維持威脅順序；嚴格的 live 模式（LLMGatewayError）
+        # 與 KeyboardInterrupt 會在取消尚未開始的合成之後大聲地失敗
+        # Threats are independent: synthesize their attack tests concurrently, keeping threat order; strict
+        # live mode (LLMGatewayError) and KeyboardInterrupt fail loudly after the syntheses not yet started are cancelled
+        calls: List[Callable[[], Optional[GeneratedTest]]] = [
+            functools.partial(self._test_for_threat, threat, base_url, server_is_live, mode_label, mode_rules,
+                              symbols, root_dir)
+            for threat in threats
+        ]
+        tests: List[GeneratedTest] = []
+        for threat, (test, error) in zip(threats, run_ordered(calls, self.gateway.max_concurrent_calls), strict=True):
+            if error is not None:
+                # 該威脅回報為未測試，而不是中止其他的合成
+                # The threat is reported as untested rather than aborting the other syntheses
+                logger.error(bi(f"[{threat.threat_id}] 的攻擊合成失敗：{type(error).__name__}: {error}",
+                                f"Attack synthesis for [{threat.threat_id}] failed: {type(error).__name__}: {error}"))
+                # 記入 call_log，讓品質閘門把未測試的威脅視為證據缺口
+                # Booked in call_log so the quality gate sees the untested threat as an evidence gap
+                self.gateway.record_failure("blackbox_test_synthesizer", f"{type(error).__name__}: {error}")
+                continue
+            if test is not None:
+                tests.append(test)
         return tests
 
     def _test_for_threat(
@@ -255,19 +315,33 @@ class ThreatScenarioBuilder:
             f'  "code": {example}\n'
             "}"
             f"{UNTRUSTED_CODE_POLICY}"
+            f"{UNTRUSTED_MODEL_POLICY}"
         )
 
+        # 威脅模型的欄位是模型寫的（可能轉述目標程式碼中的注入文字），所以放進 <untrusted_model_output> 通道；
+        # 模擬引擎／預設值的雙語欄位只送英文半（提示詞維持英文）；en_only 只切 bi() 產生的字串，
+        # 所以真實模型剛好含「 ／ 」的中文描述會完整保留
+        # The threat-model fields are model-written (and may relay injected text from the target code), so they go
+        # in the <untrusted_model_output> channel; bilingual simulated / default fields send their English half only
+        # (prompts stay English), and since en_only only splits bi() output, a live model's Chinese text that
+        # happens to contain " ／ " is kept whole
+        def field(value: Optional[str]) -> str:
+            return en_only(value or "")
+
+        threat_text = (
+            f"Title: {field(threat.title)}\n"
+            f"OWASP Mapping: {field(threat.owasp_mapping)}\n"
+            + (f"MITRE ATLAS Mapping: {field(threat.atlas_mapping)}\n" if threat.atlas_mapping else "")
+            + f"Attack Vector: {field(threat.attack_vector)}\n"
+            f"Attack Scenario: {field(threat.attack_scenario)}\n"
+            f"Defense Verification Goal: {field(threat.test_verification_goal)}"
+        )
         user_prompt = (
             f"Target Base URL: {base_url or 'none (in-process only)'}\n"
             f"Server Live Status: {server_is_live}\n"
             f"Threat ID: {threat.threat_id}\n"
             f"STRIDE Category: {threat.stride_category.value}\n"
-            f"OWASP Mapping: {threat.owasp_mapping}\n"
-            + (f"MITRE ATLAS Mapping: {threat.atlas_mapping}\n" if threat.atlas_mapping else "")
-            # 雙語的模擬／預設欄位只送英文半（提示詞維持英文）／ bilingual simulated / default fields send their English half only
-            + f"Attack Vector: {en_only(threat.attack_vector)}\n"
-            f"Attack Scenario: {en_only(threat.attack_scenario)}\n"
-            f"Defense Verification Goal: {en_only(threat.test_verification_goal)}\n\n"
+            f"Threat model item:\n{untrusted_model_block(threat_text)}\n\n"
             f"{context}"
             f"{closing}"
         )

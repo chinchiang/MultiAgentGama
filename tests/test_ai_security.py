@@ -40,9 +40,15 @@ FAKE_OPENAI_KEY = "sk-proj-" + "A1b2C3d4" * 6
 # --- Sanitization primitives -----------------------------------------------------------------------
 
 def test_invisible_characters_are_stripped_and_classified():
-    text = f"ok = 1\nx = 'a{TAG_A}b'\ny = 'c{ZWSP}d'\nz = 'e{RLO}f'\nheart = '\u2764\ufe0f'\nfamily = 'a{ZWJ}b'\n"
-    assert strip_invisible(text) == "ok = 1\nx = 'ab'\ny = 'cd'\nz = 'ef'\nheart = '\u2764'\nfamily = 'ab'\n"
-    assert [(line, sev) for line, sev, _ in find_invisible(text)] == [(2, "HIGH"), (3, "MEDIUM"), (4, "HIGH")]
+    family = "\U0001F468" + ZWJ + "\U0001F469" + ZWJ + "\U0001F467"
+    text = (f"ok = 1\nx = 'a{TAG_A}b'\ny = 'c{ZWSP}d'\nz = 'e{RLO}f'\nheart = '\u2764\ufe0f'\nfamily = '{family}'\n"
+            f"joined = 'a{ZWJ}b'\n")
+    assert strip_invisible(text) == ("ok = 1\nx = 'ab'\ny = 'cd'\nz = 'ef'\nheart = '\u2764'\n"
+                                     "family = '\U0001F468\U0001F469\U0001F467'\njoined = 'ab'\n")
+    # emoji 序列中的 ZWJ 與 U+FE0F 不回報；夾在 ASCII 字母之間的 ZWJ 是 MEDIUM
+    # ZWJ and U+FE0F inside emoji sequences are not reported; a ZWJ between ASCII letters is MEDIUM
+    assert [(line, sev) for line, sev, _ in find_invisible(text)] == [(2, "HIGH"), (3, "MEDIUM"), (4, "HIGH"),
+                                                                      (7, "MEDIUM")]
 
 
 def test_leading_byte_order_mark_is_not_reported():
