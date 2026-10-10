@@ -66,6 +66,25 @@ inputs:
   mutation:
     description: "突變測試：true 開啟、false 關閉、留空沿用設定檔的 global.mutation_testing ／ Mutation testing: true on, false off, empty follows global.mutation_testing in the config"
     default: ""
+  sandbox:
+    description: >-
+      生成測試的沙盒：local_subprocess（預設；沿用設定檔的 sandbox_provider，內建設定檔即為 local_subprocess，不是安全邊界）
+      或 docker（從 action 自帶的 docker/sandbox.Dockerfile 與 sandbox-node.Dockerfile 建置沙盒映像，並以
+      sandbox_provider: docker 的設定檔覆本執行；需要有 Docker 的 runner，例如 ubuntu-latest）。extra-args 有 --config 時，
+      docker 以該設定檔為底稿 ／
+      Sandbox for generated tests: local_subprocess (default; keeps the config's sandbox_provider, which is
+      local_subprocess in the bundled config and is NOT a security boundary) or docker (builds the sandbox images from
+      the action's own docker/sandbox.Dockerfile and sandbox-node.Dockerfile and runs with a copy of the config set to
+      sandbox_provider: docker; needs a runner with Docker, e.g. ubuntu-latest). With --config in extra-args, docker
+      uses that file as the base
+    default: "local_subprocess"
+  artifact-name:
+    description: >-
+      上傳報告、SARIF 與 .partial.json 的 artifact 名稱；同一個 workflow 執行內 artifact 名稱不可重複，
+      矩陣或多次呼叫時每一格要設不同的名稱（例如以 matrix 值組成的 vibeharness-report-src）／
+      Name of the artifact holding the report, SARIF and .partial.json; artifact names must be unique within a
+      workflow run, so matrix jobs or repeated uses must each set a distinct one (e.g. vibeharness-report-src built from a matrix value)
+    default: "vibeharness-report"
   fail-on:
     description: >-
       讓 job 失敗的最低判定：blocked（只有 BLOCKED_CRITICAL_RISK）、needs-fixes（BLOCKED 或 NEEDS_FIXES）、
@@ -102,27 +121,45 @@ runs:
       run: |
         # 從 runner 已經取出的 action 本身安裝（$GITHUB_ACTION_PATH），稽核版本永遠與 action 版本一致，
         # `uses: owner/repo@ref` 與 `uses: ./` 都適用，也不需要再從網路抓一次原始碼。
-        # 相依套件先以 requirements.lock 帶雜湊安裝（--require-hashes），再以 --no-deps 安裝套件本身。
+        # 相依套件與建置後端（setuptools）先以 requirements.lock／requirements-build.txt 帶雜湊安裝（--require-hashes），
+        # 再以 --no-deps --no-build-isolation 安裝套件本身：建置不會另外抓未釘版的 setuptools，整個安裝都經雜湊驗證。
         # 原始碼先複製到 $RUNNER_TEMP 再建置，建置產物（build/、*.egg-info）不會落在 action 目錄或 workspace。
         # Install from the action's own copy the runner already fetched ($GITHUB_ACTION_PATH), so the audit
         # always matches the action version; works for both `uses: owner/repo@ref` and `uses: ./`, with no
-        # second source download. Dependencies are installed hash-verified from requirements.lock
-        # (--require-hashes), then the package itself with --no-deps. The sources are copied to
-        # $RUNNER_TEMP before building so build output (build/, *.egg-info) never lands in the action
-        # directory or the workspace.
+        # second source download. Dependencies and the build backend (setuptools) are installed hash-verified
+        # from requirements.lock / requirements-build.txt (--require-hashes), then the package itself with
+        # --no-deps --no-build-isolation: the build never fetches an unpinned setuptools, so the whole install is
+        # hash-verified. The sources are copied to $RUNNER_TEMP before building so build output (build/,
+        # *.egg-info) never lands in the action directory or the workspace.
         if [ -z "$GITHUB_ACTION_PATH" ] || [ ! -f "$GITHUB_ACTION_PATH/pyproject.toml" ] \
-          || [ ! -f "$GITHUB_ACTION_PATH/requirements.lock" ]; then
+          || [ ! -f "$GITHUB_ACTION_PATH/requirements.lock" ] || [ ! -f "$GITHUB_ACTION_PATH/requirements-build.txt" ]; then
           echo "::error::VibeHarness-MAS action sources not found at GITHUB_ACTION_PATH='$GITHUB_ACTION_PATH' (ref '${VH_ACTION_REF:-<none>}')"
           exit 5
         fi
         echo "Installing VibeHarness-MAS from $GITHUB_ACTION_PATH (ref ${VH_ACTION_REF:-local})"
         src="$RUNNER_TEMP/vibeharness-src"
         rm -rf "$src" && mkdir -p "$src"
-        cp -R "$GITHUB_ACTION_PATH/pyproject.toml" "$GITHUB_ACTION_PATH/README.md" "$GITHUB_ACTION_PATH/LICENSE" \
-          "$GITHUB_ACTION_PATH/MANIFEST.in" "$GITHUB_ACTION_PATH/vibeharness" "$src/"
-        python -m pip install --quiet --require-hashes -r "$GITHUB_ACTION_PATH/requirements.lock"
-        python -m pip install --quiet --no-deps "$src"
+        # pyproject.toml 的 readme 指向 README.en.md，建置時必須存在 ／ pyproject.toml's readme points at README.en.md, which the build needs
+        cp -R "$GITHUB_ACTION_PATH/pyproject.toml" "$GITHUB_ACTION_PATH/README.md" "$GITHUB_ACTION_PATH/README.en.md" \
+          "$GITHUB_ACTION_PATH/LICENSE" "$GITHUB_ACTION_PATH/MANIFEST.in" "$GITHUB_ACTION_PATH/vibeharness" "$src/"
+        python -m pip install --quiet --require-hashes -r "$GITHUB_ACTION_PATH/requirements.lock" \
+          -r "$GITHUB_ACTION_PATH/requirements-build.txt"
+        python -m pip install --quiet --no-deps --no-build-isolation "$src"
         python -m pip check
+
+    - name: Build the Docker sandbox images ／ 建置 Docker 沙盒映像
+      if: inputs.sandbox == 'docker'
+      shell: bash
+      run: |
+        # 映像從 action 自帶的 Dockerfile 建置（基底以 digest 釘死、測試工具帶雜湊安裝），版本與 action 一致
+        # The images are built from the action's own Dockerfiles (digest-pinned bases, hash-verified test tools),
+        # so they match the action version
+        if ! command -v docker >/dev/null 2>&1; then
+          echo "::error::sandbox: docker needs a runner with Docker (e.g. ubuntu-latest)"
+          exit 5
+        fi
+        docker build --quiet -t vibeharness-sandbox:latest -f "$GITHUB_ACTION_PATH/docker/sandbox.Dockerfile" "$GITHUB_ACTION_PATH"
+        docker build --quiet -t vibeharness-sandbox-node:latest -f "$GITHUB_ACTION_PATH/docker/sandbox-node.Dockerfile" "$GITHUB_ACTION_PATH"
 
     - name: Run the audit ／ 執行稽核
       id: audit
@@ -140,6 +177,7 @@ runs:
         VH_EXTRA: ${{ inputs.extra-args }}
         VH_MUTATION: ${{ inputs.mutation }}
         VH_FAIL_ON: ${{ inputs.fail-on }}
+        VH_SANDBOX: ${{ inputs.sandbox }}
       run: |
         # extra-args 以 shlex 規則切字（引號有效；不執行任何 shell、不展開 glob）；切不開就以 exit 5 失敗
         # extra-args is split by shlex rules (quotes work; no shell execution, no glob expansion); unparsable input exits 5
@@ -149,6 +187,40 @@ runs:
         extra=()
         while IFS= read -r -d '' arg; do extra+=("$arg"); done < "$RUNNER_TEMP/vh_extra_args"
         # extra-args-split-end
+        # sandbox: docker → 以設定檔（extra-args 的 --config，否則套件內建的）為底稿寫一份 sandbox_provider: docker 的覆本，
+        # 並把 --config 放在最後（argparse 取最後一個）。CLI 沒有 --sandbox 旗標，所以走設定檔
+        # sandbox: docker → write a copy of the config (extra-args' --config, else the bundled one) with
+        # sandbox_provider: docker and pass --config last (argparse keeps the last one). The CLI has no --sandbox
+        # flag, so this goes through the config file
+        config_override=()
+        case "$VH_SANDBOX" in
+          local_subprocess) ;;
+          docker)
+            cfg="$RUNNER_TEMP/vibeharness-sandbox-config.yaml"
+            python - "$RUNNER_TEMP/vh_extra_args" "$cfg" <<'PY' || { echo "::error::could not write the docker sandbox config"; exit 5; }
+        import sys
+        import yaml
+        from vibeharness.core.llm_gateway import DEFAULT_CONFIG_PATH
+        with open(sys.argv[1], encoding="utf-8") as f:
+            args = [a for a in f.read().split("\0") if a]
+        base = DEFAULT_CONFIG_PATH
+        for i, arg in enumerate(args):
+            if arg in ("--config", "-c") and i + 1 < len(args):
+                base = args[i + 1]
+            elif arg.startswith("--config="):
+                base = arg.split("=", 1)[1]
+            elif arg.startswith("-c") and len(arg) > 2:
+                base = arg[2:]
+        with open(base, encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+        config.setdefault("global", {})["sandbox_provider"] = "docker"
+        with open(sys.argv[2], "w", encoding="utf-8") as f:
+            yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False)
+        print(f"sandbox: docker (config based on {base})")
+        PY
+            config_override=(--config "$cfg") ;;
+          *) echo "::error::unknown sandbox value '$VH_SANDBOX' (use local_subprocess or docker)"; exit 5 ;;
+        esac
         set +e
         args=(--target "$VH_TARGET" --mode "$VH_MODE" --max-model-calls "$VH_MAX_CALLS" --max-files "$VH_MAX_FILES"
               --output "$VH_OUTPUT" --format "$VH_FORMAT")
@@ -162,7 +234,7 @@ runs:
           "") ;;
           *) echo "::error::unknown mutation value '$VH_MUTATION' (use true, false or leave empty)"; exit 5 ;;
         esac
-        vibeharness "${args[@]}" "${extra[@]}"
+        vibeharness "${args[@]}" "${extra[@]}" "${config_override[@]}"
         rc=$?
         set -e
         case "$rc" in
@@ -189,7 +261,7 @@ runs:
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       if: always()
       with:
-        name: vibeharness-report
+        name: ${{ inputs.artifact-name }}
         path: |
           ${{ inputs.output }}
           ${{ inputs.output }}.partial.json

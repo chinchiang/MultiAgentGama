@@ -120,7 +120,7 @@ def test_action_installs_from_its_own_path_with_hash_verified_dependencies():
     script = install["run"]
     assert "git+https://" not in script
     assert '--require-hashes -r "$GITHUB_ACTION_PATH/requirements.lock"' in script
-    assert '--no-deps "$src"' in script
+    assert '--no-deps --no-build-isolation "$src"' in script
     assert "exit 5" in script
 
 
@@ -238,7 +238,8 @@ def test_python_sandbox_installs_only_hash_verified_packages():
 SDIST_REQUIRED = [
     "PKG-INFO", "pyproject.toml", "MANIFEST.in", "LICENSE", "README.md", "README.en.md", "CHANGELOG.md",
     "CHANGELOG.en.md", "CONTRIBUTING.md", "SECURITY.md", "main.py", "action.yml", "requirements.txt",
-    "requirements-dev.txt", "requirements.lock", "docker/sandbox.Dockerfile", "docker/sandbox-node.Dockerfile",
+    "requirements-dev.txt", "requirements.lock", "requirements-build.in", "requirements-build.txt",
+    "docker/sandbox.Dockerfile", "docker/sandbox-node.Dockerfile", "vibeharness/py.typed",
     "docker/sandbox-requirements.in", "docker/sandbox-requirements.txt", "examples/vibe_sample_app.py",
     "tests/conftest.py", "tests/test_review_build.py", "vibeharness/config/agents_config.yaml", "docs/design.md",
 ]
@@ -266,7 +267,7 @@ def test_manifest_lists_the_sdist_extras():
     """MANIFEST.in 明列 sdist 額外需要的檔案（setuptools 預設不會帶的那些）。
     MANIFEST.in lists the extra files the sdist needs (the ones setuptools would not include by default)."""
     manifest = _read("MANIFEST.in")
-    for needle in ("CONTRIBUTING.md", "SECURITY.md", "main.py", "action.yml", "requirements.lock",
+    for needle in ("CONTRIBUTING.md", "SECURITY.md", "main.py", "action.yml", "requirements.lock", "requirements-build.txt",
                    "requirements-dev.txt", "docker/sandbox-requirements.txt", "recursive-include tests *.py",
                    "recursive-include examples *.py", "CHANGELOG.en.md"):
         assert needle in manifest, needle

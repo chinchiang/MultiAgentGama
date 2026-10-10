@@ -77,8 +77,12 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements.lock
+      # 建置後端從帶雜湊的 requirements-build.txt 安裝，以 --no-isolation 建置（與 action.yml 的安裝相同，不另抓未釘版的 setuptools）
+      # The build backend comes from the hashed requirements-build.txt and the build runs with --no-isolation
+      # (same as the action.yml install; no unpinned setuptools is fetched)
+      - run: python -m pip install --require-hashes -r requirements-build.txt
       - run: python -m pip install "$(grep '^build==' requirements-dev.txt)"
-      - run: python -m build
+      - run: python -m build --no-isolation
       - name: Install the wheel and run a mock audit outside the checkout ／ 安裝 wheel 並在 checkout 之外跑一次 mock 稽核
         run: |
           python -m venv "$RUNNER_TEMP/venv"
