@@ -10,12 +10,11 @@ import pytest
 
 from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
 from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
-from vibeharness.agents.whitebox.common import prompt_english
 from vibeharness.agents.whitebox.debater import MultiModelDebater
 from vibeharness.agents.whitebox.deduplicator import deduplicate_findings
 from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble, parse_severity
 from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
-from vibeharness.core.i18n import bi
+from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.llm_gateway import LLMGatewayError
 from vibeharness.core.models import CodeSymbol, FindingSeverity, ReviewFinding
 from vibeharness.core.sanitize import UNTRUSTED_CODE_CLOSE, UNTRUSTED_CODE_OPEN
@@ -438,8 +437,8 @@ def test_verifier_and_test_generator_fence_reviewer_written_text(tmp_path):
     assert _inside_channel(gen_gw.prompts[0], injected)
 
 
-def test_prompt_english_keeps_model_text_that_contains_the_separator():
-    assert prompt_english(bi("標題", "Title")) == "Title"
-    assert prompt_english("read path ／ write path") == "read path ／ write path"
-    assert prompt_english("讀取 ／ 寫入") == "讀取 ／ 寫入"
-    assert prompt_english("") == ""
+def test_en_only_keeps_model_text_that_contains_the_separator():
+    assert en_only(bi("標題", "Title")) == "Title"
+    assert en_only("read path ／ write path") == "read path ／ write path"
+    assert en_only("讀取 ／ 寫入") == "讀取 ／ 寫入"
+    assert en_only("") == ""
