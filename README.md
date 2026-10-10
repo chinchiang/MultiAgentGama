@@ -1,8 +1,8 @@
 # 🛡️ VibeHarness-MAS: Multi-Agent Testing Harness for Vibe Coding
 
-正體中文（臺灣）｜ [English (US)](README.en.md)
+正體中文（臺灣）｜ [English (US)](https://github.com/chinchiang/MultiAgentGama/blob/master/README.en.md)
 
-[![tests](https://github.com/chinchiang/MultiAgentGama/actions/workflows/tests.yml/badge.svg)](https://github.com/chinchiang/MultiAgentGama/actions/workflows/tests.yml)
+[![tests](https://github.com/chinchiang/MultiAgentGama/actions/workflows/tests.yml/badge.svg)](https://github.com/chinchiang/MultiAgentGama/actions/workflows/tests.yml) [![PyPI](https://img.shields.io/pypi/v/vibeharness-mas)](https://pypi.org/project/vibeharness-mas/) [![Python](https://img.shields.io/pypi/pyversions/vibeharness-mas)](https://pypi.org/project/vibeharness-mas/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/chinchiang/MultiAgentGama/blob/master/LICENSE)
 
 > **先白箱（異構模型交叉評議 + 可執行測試驗證）後黑箱（STRIDE/OWASP 威脅建模驅動的攻擊測試）的 AI 軟體品質保證工具包。**
 
@@ -74,7 +74,7 @@ flowchart TD
 
 ### 🤖 各 Agent 分工
 
-每個 Agent 的模型與提示詞都定義在 [`vibeharness/config/agents_config.yaml`](vibeharness/config/agents_config.yaml)，可自由改派模型；白箱審查者由設定檔中所有 `whitebox_reviewer_*` 項目組成（名稱、模型與 `focus` 都會帶入提示詞），新增或刪除項目即可調整評議陣容（欄位細節見 [docs/configuration.md](docs/configuration.md)）：
+每個 Agent 的模型與提示詞都定義在 [`vibeharness/config/agents_config.yaml`](https://github.com/chinchiang/MultiAgentGama/blob/master/vibeharness/config/agents_config.yaml)，可自由改派模型；白箱審查者由設定檔中所有 `whitebox_reviewer_*` 項目組成（名稱、模型與 `focus` 都會帶入提示詞），新增或刪除項目即可調整評議陣容（欄位細節見 [docs/configuration.md](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/configuration.md)）：
 
 | 子 Agent（agent_id） | 預設模型 | 職責 | temperature |
 | :--- | :--- | :--- | :--- |
@@ -162,7 +162,7 @@ MultiAgentGama/
 │   ├── PULL_REQUEST_TEMPLATE.md
 │   └── workflows/
 │       ├── tests.yml            # CI：lint（ruff／mypy）、audit（pip-audit）、package（sdist＋wheel：wheel 冒煙測試、從 sdist 跑測試套件）、test（Ubuntu／Windows × Python 3.10–3.14，另加 macOS × 3.12，覆蓋率門檻 93%）
-│       ├── publish.yml          # 發佈：tag 推送時先跑 tests.yml、驗證版本一致、建置 sdist／wheel、在乾淨的 venv 對 wheel 冒煙測試、上傳 GitHub Release（PyPI 需設 ENABLE_PYPI_PUBLISH）
+│       ├── publish.yml          # 發佈：tag 推送時先跑 tests.yml、驗證版本一致、建置 sdist／wheel、在乾淨的 venv 對 wheel 冒煙測試、上傳 GitHub Release，並以 Trusted Publishing 發布到 PyPI
 │       └── live-smoke.yml       # 手動觸發：以 repo secrets 的真實金鑰對 examples 跑一次 live／hybrid，上傳報告
 ├── docker/
 │   ├── sandbox.Dockerfile       # docker 沙盒的基底映像（以 digest 釘死的 python:3.12-slim，USER 65534；pytest / pytest-cov / requests）
@@ -267,28 +267,33 @@ MultiAgentGama/
 
 ## 🛠️ 快速開始
 
-### 1. 安裝依賴
+### 1. 安裝
+
+從 [PyPI](https://pypi.org/project/vibeharness-mas/) 安裝（會註冊 `vibeharness` 指令；需 Python 3.10 以上）：
 
 ```bash
-pip install -r requirements.txt
+pip install vibeharness-mas
+vibeharness --version
+```
+
+當作獨立的命令列工具安裝：`pipx install vibeharness-mas` 或 `uv tool install vibeharness-mas`。CI 要可重現時請釘版本：`pip install vibeharness-mas==0.6.0`。
+
+從原始碼安裝（開發用；在 checkout 裡也可以直接 `python main.py`）：
+
+```bash
+git clone https://github.com/chinchiang/MultiAgentGama.git && cd MultiAgentGama
+pip install -e .
 ```
 
 要與 CI 測試時完全相同的相依套件（帶雜湊驗證）：`pip install --require-hashes -r requirements.lock`。
-
-或安裝為套件（會一併註冊 `vibeharness` 指令）：
-
-```bash
-pip install .
-vibeharness --version
-```
 
 ### 2. 設定 API 金鑰（可選）
 
 工具包支援真實 API 調用與本機模擬模式（Hybrid Mode）：
 
-> 設定檔（`vibeharness/config/agents_config.yaml`）每個欄位的完整說明——含預設值、改派模型與 Docker 沙盒範例——見 **[docs/configuration.md](docs/configuration.md)**（[English](docs/configuration.en.md)）。
+> 設定檔（`vibeharness/config/agents_config.yaml`）每個欄位的完整說明——含預設值、改派模型與 Docker 沙盒範例——見 **[docs/configuration.md](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/configuration.md)**（[English](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/configuration.en.md)）。
 >
-> 想了解每個元件為什麼這樣設計、資料怎麼在階段之間流動、閘門與 evidence gap 怎麼判定，見 **[docs/design.md](docs/design.md)**（設計文件，正體中文；[English](docs/design.en.md)）。
+> 想了解每個元件為什麼這樣設計、資料怎麼在階段之間流動、閘門與 evidence gap 怎麼判定，見 **[docs/design.md](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/design.md)**（設計文件，正體中文；[English](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/design.en.md)）。
 
 ```bash
 # 若要使用即時模型：
@@ -344,9 +349,9 @@ docker build -t vibeharness-sandbox-node:latest -f docker/sandbox-node.Dockerfil
 python main.py --target examples --output vibe_harness_report.md
 ```
 
-`--target`（`-t`，預設 `examples`）可為目錄或單一檔案；`--output`（`-o`）預設 `vibe_harness_report.md`。`--desc`（`-d`）可提供系統的高階描述供威脅建模參考；`--config`（`-c`）指定其他設定檔；`--verbose`（`-v`）開啟除錯日誌。黑箱測試預設以 in-process 方式直接 import 目標呼叫；只有明確指定 `--base-url`（`-u`，例如 `--base-url http://localhost:8000`；只接受含主機名的 `http://`／`https://`，其他 scheme 為用法錯誤）且該位址有服務回應時，才會改發真實 HTTP 請求。不會自動探測任何預設位址，以免攻擊腳本打到本機上無關的服務；live HTTP 模式下，攻擊程式碼若指向 `--base-url` 以外的主機，或同一主機的其他連接埠，會被靜態拒絕。範例輸出見 [`docs/sample_report.md`](docs/sample_report.md)。
+`--target`（`-t`，預設 `examples`）可為目錄或單一檔案；`--output`（`-o`）預設 `vibe_harness_report.md`。`--desc`（`-d`）可提供系統的高階描述供威脅建模參考；`--config`（`-c`）指定其他設定檔；`--verbose`（`-v`）開啟除錯日誌。黑箱測試預設以 in-process 方式直接 import 目標呼叫；只有明確指定 `--base-url`（`-u`，例如 `--base-url http://localhost:8000`；只接受含主機名的 `http://`／`https://`，其他 scheme 為用法錯誤）且該位址有服務回應時，才會改發真實 HTTP 請求。不會自動探測任何預設位址，以免攻擊腳本打到本機上無關的服務；live HTTP 模式下，攻擊程式碼若指向 `--base-url` 以外的主機，或同一主機的其他連接埠，會被靜態拒絕。範例輸出見 [`docs/sample_report.md`](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/sample_report.md)。
 
-執行前可先用 `--estimate` 看規模：它只跑第 1 階段（符號擷取與靜態規則，不呼叫模型），印出每個 agent 與每個模型的預期呼叫數（審查者與威脅建模的次數是精確值，驗證、測試生成與攻擊合成依「每批發現數」等假設列為情境值，另給含重問與自癒修復的最大值）、估計的 prompt／輸出 token，以及設定了 `price_per_million_*` 的模型的估計花費；`--format json` 時寫到 `--output`，exit code 為 0（`--changed-since` 的 ref 無法解析或 `--output` 寫不進去時為 5）。規模與成本上限可從 CLI 直接覆蓋設定檔：`--max-files`（單次分析的檔案數上限，預設 50，須 ≥ 1；其餘檔案列為 skipped 並記為證據缺口）與 `--max-model-calls`（單次執行的模型呼叫數上限，預設不限制，`0` 亦表示不限制，負數為用法錯誤；重試與 fallback 不另計次；用完時 hybrid 退回模擬並列為證據缺口、live 直接失敗）。檔案篩選：`--include GLOB`／`--exclude GLOB`（可重複，比對相對於 `--target` 的路徑或檔名，例如 `--exclude 'tests/*' --exclude '*.min.js'`；會覆蓋設定檔的 `include`／`exclude`），以及 `--changed-since <git ref>`（只分析相對該 ref 有變更的檔案，含未暫存與未追蹤，適合 PR 檢查：`--changed-since origin/main`）。超過 `max_file_bytes`（預設 1 MB）的檔案不分析並列為證據缺口。模型回應無法使用時會先重問一次（`retry_invalid_output`）再記為 `invalid`。`--output`／`--sarif` 的目錄不可寫時在任何模型呼叫前就以 exit 5 結束；執行中途崩潰或被 Ctrl-C 中斷時，已完成的階段（模型呼叫紀錄、發現、測試結果、威脅）會寫到 `<output>.partial.json`。`--cache-dir DIR` 開啟回應快取：可用的 live 回應存在 DIR，之後相同提示直接取用、不呼叫供應商也不扣預算（適合重跑或切換報告格式）；重問後才可用的回答也會存在原始提示的 key 下，重跑時第一次嘗試就能命中。`--cache-only` 只從回應快取取用（需要 `--cache-dir` 或 `global.cache_dir`，否則 exit 5）：絕不呼叫供應商、不扣預算、不重問；快取沒有的呼叫列為證據缺口，hybrid 改用模擬（判定不會是 `READY_TO_SHIP`），live 以 exit 4 中止。`--estimate` 加上 `--cache-only` 時照樣列出呼叫數，並註明不會呼叫供應商、沒有花費。詳見 [`docs/configuration.md`](docs/configuration.md)。
+執行前可先用 `--estimate` 看規模：它只跑第 1 階段（符號擷取與靜態規則，不呼叫模型），印出每個 agent 與每個模型的預期呼叫數（審查者與威脅建模的次數是精確值，驗證、測試生成與攻擊合成依「每批發現數」等假設列為情境值，另給含重問與自癒修復的最大值）、估計的 prompt／輸出 token，以及設定了 `price_per_million_*` 的模型的估計花費；`--format json` 時寫到 `--output`，exit code 為 0（`--changed-since` 的 ref 無法解析或 `--output` 寫不進去時為 5）。規模與成本上限可從 CLI 直接覆蓋設定檔：`--max-files`（單次分析的檔案數上限，預設 50，須 ≥ 1；其餘檔案列為 skipped 並記為證據缺口）與 `--max-model-calls`（單次執行的模型呼叫數上限，預設不限制，`0` 亦表示不限制，負數為用法錯誤；重試與 fallback 不另計次；用完時 hybrid 退回模擬並列為證據缺口、live 直接失敗）。檔案篩選：`--include GLOB`／`--exclude GLOB`（可重複，比對相對於 `--target` 的路徑或檔名，例如 `--exclude 'tests/*' --exclude '*.min.js'`；會覆蓋設定檔的 `include`／`exclude`），以及 `--changed-since <git ref>`（只分析相對該 ref 有變更的檔案，含未暫存與未追蹤，適合 PR 檢查：`--changed-since origin/main`）。超過 `max_file_bytes`（預設 1 MB）的檔案不分析並列為證據缺口。模型回應無法使用時會先重問一次（`retry_invalid_output`）再記為 `invalid`。`--output`／`--sarif` 的目錄不可寫時在任何模型呼叫前就以 exit 5 結束；執行中途崩潰或被 Ctrl-C 中斷時，已完成的階段（模型呼叫紀錄、發現、測試結果、威脅）會寫到 `<output>.partial.json`。`--cache-dir DIR` 開啟回應快取：可用的 live 回應存在 DIR，之後相同提示直接取用、不呼叫供應商也不扣預算（適合重跑或切換報告格式）；重問後才可用的回答也會存在原始提示的 key 下，重跑時第一次嘗試就能命中。`--cache-only` 只從回應快取取用（需要 `--cache-dir` 或 `global.cache_dir`，否則 exit 5）：絕不呼叫供應商、不扣預算、不重問；快取沒有的呼叫列為證據缺口，hybrid 改用模擬（判定不會是 `READY_TO_SHIP`），live 以 exit 4 中止。`--estimate` 加上 `--cache-only` 時照樣列出呼叫數，並註明不會呼叫供應商、沒有花費。詳見 [`docs/configuration.md`](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/configuration.md)。
 
 報告格式可用 `--format md`（預設）或 `--format json`（機器可讀，含完整的 findings、威脅模型與測試結果，適合接 CI/CD）。兩種格式都會保存每個生成測試的程式碼：Markdown 附錄「產生的測試程式碼（稽核軌跡） ／ Generated Test Code (audit trail)」以可收合區塊列出程式碼與其執行結果（已去除控制字元）；JSON 的 `generated_tests`／`blackbox_generated_tests` 則原封不動保存，可用來稽核或重跑。模型寫的測試也只是假設——「通過」的測試可能是在斷言缺陷本身（例如 `pytest.raises(KeyError)`），請一併檢查斷言是否描述正確的行為：
 
@@ -358,6 +363,10 @@ python main.py --target examples --output report.json --format json
 
 ```yaml
 # 目標專案的 .github/workflows/security.yml 範例：本 repo 提供 composite GitHub Action（action.yml）
+- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+  with:
+    fetch-depth: 0                             # changed-since 需要完整歷史才能與該 ref 比對
+    persist-credentials: false
 - uses: chinchiang/MultiAgentGama@v0.6.0      # 從 action 本身的 checkout 安裝套件（相依套件帶雜湊驗證）並執行稽核
   with:
     target: src
@@ -366,6 +375,8 @@ python main.py --target examples --output report.json --format json
     changed-since: origin/main                 # PR 檢查：只分析有變更的檔案（可省略）
     baseline: .vibeharness/baseline.json       # 可選：只有「新出現」的問題才讓 job 失敗
     mutation: "true"                            # 可選：true／false 單次開關突變測試，留空沿用設定檔
+    sandbox: docker                            # 可選：local_subprocess（預設）| docker（建置沙盒映像；需要有 Docker 的 runner）
+    artifact-name: vibeharness-report          # 可選：同一次執行內不可重複，矩陣的每一格要各自命名
     fail-on: needs-fixes                       # blocked | needs-fixes | inconclusive | never
   env:
     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -378,9 +389,9 @@ python main.py --target examples --output report.json --format json
     sarif_file: vibeharness.sarif
 ```
 
-Action 的 outputs 有 `verdict`（`READY_TO_SHIP`／`NEEDS_FIXES`／`BLOCKED_CRITICAL_RISK`／`INCONCLUSIVE`，harness 本身失敗時為 `ERROR`）與 `exit-code`；報告、SARIF 與崩潰時的 `.partial.json` 會以 artifact `vibeharness-report` 上傳。不用 Action 的話，`pip install "git+https://github.com/chinchiang/MultiAgentGama@v0.6.0"` 後直接呼叫 `vibeharness` 即可。
+Action 的 outputs 有 `verdict`（`READY_TO_SHIP`／`NEEDS_FIXES`／`BLOCKED_CRITICAL_RISK`／`INCONCLUSIVE`，harness 本身失敗時為 `ERROR`）與 `exit-code`；報告、SARIF 與崩潰時的 `.partial.json` 會以 `artifact-name` 指定的 artifact 上傳（預設 `vibeharness-report`；同一次 workflow 執行內 artifact 名稱不可重複，矩陣或多次使用本 action 時要各自命名）。`changed-since` 要與 git ref 比對，checkout 時請設 `fetch-depth: 0`（預設的淺層 clone 沒有可比對的歷史）。`sandbox: docker` 會從 action 自帶的 `docker/*.Dockerfile` 建置沙盒映像，並以設成 `sandbox_provider: docker` 的設定檔覆本執行（底稿為內建設定檔，或 `extra-args` 裡 `--config` 指定的檔案）；需要有 Docker 的 runner，例如 `ubuntu-latest`。不用 Action 的話，`pip install vibeharness-mas==0.6.0` 後直接呼叫 `vibeharness` 即可。
 
-**突變測試開關**：`--mutation` 開啟、`--no-mutation` 關閉；優先順序為 CLI 旗標 > 設定檔 `global.mutation_testing` > 預設關閉，因此設定檔開啟時可用 `--no-mutation` 單次關掉，設定檔關閉時可用 `--mutation` 單次打開。`--mutation-max-mutants N`（≥ 1）覆蓋變異體上限（預設 20）；每個變異體跑一批沙盒、不呼叫模型，`--estimate` 在開啟時會列出上限。報告的指標表有 Mutation Score 一列並列出存活的變異體；其餘鍵見 [`docs/configuration.md`](docs/configuration.md)。
+**突變測試開關**：`--mutation` 開啟、`--no-mutation` 關閉；優先順序為 CLI 旗標 > 設定檔 `global.mutation_testing` > 預設關閉，因此設定檔開啟時可用 `--no-mutation` 單次關掉，設定檔關閉時可用 `--mutation` 單次打開。`--mutation-max-mutants N`（≥ 1）覆蓋變異體上限（預設 20）；每個變異體跑一批沙盒、不呼叫模型，`--estimate` 在開啟時會列出上限。報告的指標表有 Mutation Score 一列並列出存活的變異體；其餘鍵見 [`docs/configuration.md`](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/configuration.md)。
 
 **只對新問題把關（`--baseline`）**：把一次 `--format json` 的報告存起來（例如提交到 repo 的 `.vibeharness/baseline.json`），之後以 `--baseline` 指定它：報告中已經存在的白箱測試失敗（以其來源發現識別）、探針失敗、黑箱突破與 HIGH 以上的規則命中仍會列在報告的「基準中的已知問題（不計入） ／ Known from baseline (not counted)」清單與建議中，但不再計入判定與 exit code，只有新出現的問題會讓 CI 失敗。比對 key 與執行次序無關（finding 以檔案相對路徑＋符號＋標題正規化、突破以威脅的 STRIDE 分類＋標題＋攻擊向量、靜態命中以規則＋檔案＋證據但不含行號、探針以符號名），所以模型重新編號或無關的行數位移不會讓舊問題變新的。JSON 報告每個項目都帶 `fingerprint` 欄位；0.3.0 之前沒有該欄位的報告會自動重算。崩潰產生的 `.partial.json` 不能當 baseline。
 
@@ -420,7 +431,7 @@ pip install "$(grep '^pip-audit==' requirements-dev.txt)"
 python -m pip_audit -r requirements.lock --disable-pip --require-hashes
 ```
 
-可選：安裝 [pre-commit](https://pre-commit.com/) 讓每次 `git commit` 前自動執行 ruff 與 mypy 檢查（貢獻流程見 [CONTRIBUTING.md](CONTRIBUTING.md)，弱點通報見 [SECURITY.md](SECURITY.md)）：
+可選：安裝 [pre-commit](https://pre-commit.com/) 讓每次 `git commit` 前自動執行 ruff 與 mypy 檢查（貢獻流程見 [CONTRIBUTING.md](https://github.com/chinchiang/MultiAgentGama/blob/master/CONTRIBUTING.md)，弱點通報見 [SECURITY.md](https://github.com/chinchiang/MultiAgentGama/blob/master/SECURITY.md)）：
 
 ```bash
 pip install pre-commit

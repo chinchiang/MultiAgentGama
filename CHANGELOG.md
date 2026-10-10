@@ -270,3 +270,14 @@ CI 整合（`--baseline`、GitHub Action）、`--estimate`、JS/TS 動態測試�
 - ruff 靜態檢查與 pre-commit 整合
 - CI 矩陣：ubuntu / windows × Python 3.10 / 3.13，含 lint 與覆蓋率報告
 - MIT 授權
+
+[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.5.1...v0.6.0
+[0.5.1]: https://github.com/chinchiang/MultiAgentGama/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.1.2...v0.2.0
+[0.1.2]: https://github.com/chinchiang/MultiAgentGama/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/chinchiang/MultiAgentGama/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/chinchiang/MultiAgentGama/releases/tag/v0.1.0
