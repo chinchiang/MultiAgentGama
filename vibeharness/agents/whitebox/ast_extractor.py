@@ -3,7 +3,7 @@ import fnmatch
 import logging
 import os
 import re
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
 from vibeharness.core.models import CodeSymbol
 from vibeharness.core.i18n import bi
@@ -47,10 +47,47 @@ _JSX_CLOSE_RE = re.compile(r"</\s*([A-Za-z][\w$.:-]*)?\s*>")
 # JSX 巢狀層數上限（每層是兩個遞迴呼叫）；更深的 `<` 照一般程式碼分析
 # Maximum JSX nesting depth (each level is two recursive calls); a deeper `<` is lexed as plain code
 _JSX_MAX_DEPTH = 120
-# 每個檔案最多容許幾次失敗的 JSX 嘗試（每次可能掃到檔尾）；用完後其餘的 `<` 照一般程式碼分析，避免平方時間
-# How many failed JSX attempts a file may have (each may scan to the end of the file); once spent, the remaining
-# `<` are lexed as plain code, which avoids quadratic time
-_JSX_MAX_FAILURES = 32
+# 失敗的 JSX 嘗試共用的掃描預算（字元數）：檔案大小的 _JSX_FAILED_SCAN_FACTOR 倍，至少 _JSX_FAILED_SCAN_MIN。
+# 每次失敗按它實際掃過的字元數扣除，所以馬上失敗的便宜嘗試（`<T,>`）幾乎不花預算；用完後其餘的 `<` 照一般程式碼分析，
+# 進行中的嘗試也立即放棄，讓最壞情況維持在檔案大小的線性倍數
+# The scan budget (in characters) shared by failed JSX attempts: _JSX_FAILED_SCAN_FACTOR times the file size, at
+# least _JSX_FAILED_SCAN_MIN. Each failure is charged the characters it actually scanned, so a cheap attempt that
+# fails at once (`<T,>`) costs almost nothing; once spent, the remaining `<` are lexed as plain code and attempts in
+# progress are abandoned at once, which keeps the worst case a linear multiple of the file size
+_JSX_FAILED_SCAN_FACTOR = 4
+_JSX_FAILED_SCAN_MIN = 256_000
+# 已知的 TS 泛型開頭（`<T,>`、`<T extends U>`、`<T = U>`）：絕不是 JSX，所以不嘗試
+# Known TS generic openings (`<T,>`, `<T extends U>`, `<T = U>`): never JSX, so no attempt is made
+# TS 泛型參數 `<...>` 最多看幾個字元（箭頭函式前往回找、宣告名稱後往前比對）：泛型清單很短，
+# 不設上限時每個沒有結尾的 `<` 都可能掃到檔頭或檔尾（平方時間）
+# How many characters a TS generic parameter list `<...>` may span (looked for backwards before an arrow, matched
+# forwards after a declaration name): generic lists are short, and without a bound every unterminated `<` may scan
+# to the start or the end of the file (quadratic time)
+_JS_GENERIC_LOOKBACK = 512
+# 路由引數、參數清單與路由物件最多檢查幾個字元：判斷只需要開頭，切出整個（可能巢狀到檔尾的）引數是平方時間
+# How many characters of a route argument, a parameter list or a route object are inspected: the verdict only needs
+# the beginning, and slicing out the whole argument (which may nest to the end of the file) takes quadratic time
+_JS_ARG_SCAN = 4096
+# 每個檔案所有符號原始碼的總字元數上限（檔案大小的倍數再加上固定額度）：巢狀類別／路由的片段彼此包含，
+# 總量可能是檔案大小的平方；超過時該檔案略過並回報為解析失敗
+# The cap on the total source characters of all symbols of one file (a multiple of the file size plus a fixed
+# allowance): snippets of nested classes / routes contain one another and their total can be quadratic in the file
+# size; beyond it the file is skipped and reported as a parse failure
+_JS_SNIPPET_FACTOR = 16
+_JS_SNIPPET_ALLOWANCE = 2_000_000
+# 類別主體頂層的方法宣告開頭（從一段空白開始比對）與一段空白
+# The start of a method declaration at the top level of a class body (matched from a whitespace run), and a whitespace run
+_JS_METHOD_RE = re.compile(
+    rf"\s+((?:(?:public|private|protected|static|async|override|readonly|abstract)\s+|\*\s*)*"
+    rf"({_JS_IDENTIFIER}))\s*(?:<[^(){{}};]{{0,{_JS_GENERIC_LOOKBACK}}}>\s*)?\("
+)
+_WHITESPACE_RUN_RE = re.compile(r"\s+")
+_NON_SPACE_RE = re.compile(r"\S")
+# 引數清單中的頂層 token：逗號與開啟括號（及其配對）
+# Top-level tokens of an argument list: commas and opening brackets (and their partners)
+_ARG_TOKEN_RE = re.compile(r"[,(\[{]")
+_CLOSERS = {"(": ")", "[": "]", "{": "}"}
+_TS_GENERIC_RE = re.compile(r"<\s*[A-Za-z_$][\w$]*\s*(?:,|=|extends\b)")
 # 路由註冊方法：HTTP 動詞加上 Express 的 `all`（`route` 另外處理：鏈式與物件形式）
 # Route registration methods: the HTTP verbs plus Express's `all` (`route` is handled separately: chained and object forms)
 _JS_ROUTE_METHODS = _JS_HTTP_VERBS | {"all"}
@@ -91,6 +128,11 @@ _JS_REGEX_LITERAL_RE = re.compile(r"/(?:\\.|\[(?:\\.|[^\]\\\n])*\]|[^/\\\[\n])+/
 _PY_ROUTE_RECEIVERS = {"app", "router", "api", "bp", "blueprint", "application", "server"}
 
 
+class _ExtractionBudgetExceeded(RuntimeError):
+    """單一檔案的擷取超過資源上限；該檔案略過並回報為解析失敗。
+    Extraction of one file exceeded a resource cap; the file is skipped and reported as a parse failure."""
+
+
 class ASTExtractor:
     """
     把原始碼解析成結構化的 CodeSymbol 物件。
@@ -121,6 +163,20 @@ class ASTExtractor:
         # 在 max_files 上限之內的原始碼檔案（靜態 AI 安全規則掃描的正是這些）
         # Source files within the max_files cap (the static AI-security rules scan exactly these)
         self.analyzed_files: List[str] = []
+        # 正在分析的 JS/TS 檔案的（原文, 行串列），每個檔案只切一次行；以及 _match_delim 的配對表
+        # (content, lines) of the JS/TS file being analyzed, split into lines once per file; and _match_delim's pair tables
+        self._content_lines: Optional[Tuple[str, List[str]]] = None
+        self._delim_src: Optional[str] = None
+        # `_statement_end` 的索引：（括號位置, 該括號之後的深度, 深度 -> `;`／換行位置）
+        # `_statement_end`'s index: (bracket positions, the depth after each, depth -> `;` / newline positions)
+        self._stmt_src: Optional[str] = None
+        # 目前檔案剩餘的回傳型別掃描預算與符號原始碼字元預算（None：不限，例如直接呼叫輔助函式時）
+        # The current file's remaining return-type scan budget and symbol-source character budget (None: unlimited,
+        # e.g. when a helper is called directly)
+        self._type_scan_left: Optional[int] = None
+        self._snippet_left: Optional[int] = None
+        self._stmt_index: Tuple[List[int], List[int], Dict[int, List[int]]] = ([], [], {})
+        self._delim_cache: Dict[Tuple[str, str], Dict[int, int]] = {}
 
     def parse_file(self, file_path: str) -> List[CodeSymbol]:
         if not os.path.exists(file_path):
@@ -194,7 +250,16 @@ class ASTExtractor:
         self.analyzed_files = source_files[:max_files]
         all_symbols: List[CodeSymbol] = []
         for full_path in self.analyzed_files:
-            all_symbols.extend(self.parse_file(full_path))
+            try:
+                all_symbols.extend(self.parse_file(full_path))
+            except Exception as e:  # noqa: BLE001
+                # 最後一道防線：單一檔案的意外錯誤不會中止整次執行；該檔案列入 parse_failures（證據缺口）
+                # Last line of defense: an unexpected error in one file never aborts the run; the file is listed
+                # in parse_failures (an evidence gap)
+                logger.warning(bi(f"無法分析 {full_path}（{type(e).__name__}），已略過：{e}",
+                                  f"Could not analyze {full_path} ({type(e).__name__}), skipped: {e}"))
+                if full_path not in self.parse_failures:
+                    self.parse_failures.append(full_path)
         return all_symbols
 
     @staticmethod
@@ -291,14 +356,31 @@ class ASTExtractor:
             self.parse_failures.append(file_path)
             return []
 
-        masked = self._mask_source(content, jsx=file_path.lower().endswith(_JSX_EXTENSIONS))
-        line_offsets = [0] + [i + 1 for i, ch in enumerate(masked) if ch == "\n"]
+        try:
+            masked = self._mask_source(content, jsx=file_path.lower().endswith(_JSX_EXTENSIONS))
+            line_offsets = [0] + [i + 1 for i, ch in enumerate(masked) if ch == "\n"]
 
-        def line_of(pos: int) -> int:
-            return bisect_right(line_offsets, pos)
+            def line_of(pos: int) -> int:
+                return bisect_right(line_offsets, pos)
 
-        functions = self._extract_js_functions(content, masked, file_path, line_of)
-        routes = self._extract_js_routes(content, masked, file_path, line_of, functions)
+            self._content_lines = (content, content.splitlines())
+            self._type_scan_left = 4 * len(masked) + 100_000
+            self._snippet_left = _JS_SNIPPET_FACTOR * len(content) + _JS_SNIPPET_ALLOWANCE
+            functions = self._extract_js_functions(content, masked, file_path, line_of)
+            routes = self._extract_js_routes(content, masked, file_path, line_of, functions)
+        except Exception as e:  # noqa: BLE001
+            # 詞法分析器的任何意外錯誤（例如病態輸入）只略過這個檔案並回報為解析失敗（證據缺口），不中止整次執行
+            # Any unexpected lexer error (e.g. a pathological input) only skips this file and reports it as a
+            # parse failure (an evidence gap); it never aborts the whole run
+            logger.warning(bi(f"無法分析 {file_path}（{type(e).__name__}），已略過：{e}",
+                              f"Could not analyze {file_path} ({type(e).__name__}), skipped: {e}"))
+            self.parse_failures.append(file_path)
+            return []
+        finally:
+            self._content_lines = None
+            self._type_scan_left = self._snippet_left = None
+            self._delim_src, self._delim_cache = None, {}
+            self._stmt_src, self._stmt_index = None, ([], [], {})
         # Next.js 動詞處理函式被改標為路由；只保留一個符號，讓它只被審查一次
         # A Next.js verb handler is retagged as a route; keep one symbol so it is reviewed once
         retagged = {(r.name, r.line_start) for r in routes}
@@ -324,18 +406,21 @@ class ASTExtractor:
         comment or literal; a `<` that is not valid JSX (e.g. a TS generic) falls back to plain lexing.
         """
         out = list(source)
-        ASTExtractor._mask_code(source, out, 0, [_JSX_MAX_FAILURES] if jsx else None, 0)
+        budget = [max(_JSX_FAILED_SCAN_MIN, _JSX_FAILED_SCAN_FACTOR * len(source))] if jsx else None
+        ASTExtractor._mask_code(source, out, 0, budget, 0)
         return "".join(out)
 
     @staticmethod
     def _mask_code(source: str, out: List[str], i: int, jsx: Optional[List[int]], depth: int) -> Optional[int]:
         """從 i 起詞法分析程式碼並清空其中的註解與字面值。depth 為 0 時處理到檔尾並回傳 n；
         depth > 0 時是在 JSX 運算式容器 `{...}` 裡（i 指向 `{` 之後），回傳配對的 `}` 之後的位置，
-        若到檔尾都沒有閉合則回傳 None。`jsx` 是剩餘的 JSX 失敗次數（單一元素的串列，整個檔案共用），None 表示不辨識 JSX。
+        若到檔尾都沒有閉合（或 JSX 掃描預算已用完，放棄進行中的嘗試）則回傳 None。`jsx` 是剩餘的 JSX 失敗掃描預算
+        （單一元素的串列，整個檔案共用），None 表示不辨識 JSX。
         Lexes code from i, blanking its comments and literals. At depth 0 it runs to the end of the file and
         returns n; at depth > 0 it is inside a JSX expression container `{...}` (i points just after the `{`)
-        and returns the position after the matching `}`, or None when the file ends before it closes. `jsx` is
-        the remaining JSX failure budget (a one-element list shared by the whole file); None disables JSX."""
+        and returns the position after the matching `}`, or None when the file ends before it closes (or the JSX
+        scan budget is spent, abandoning the attempt in progress). `jsx` is the remaining failed-JSX scan budget
+        (a one-element list shared by the whole file); None disables JSX."""
         n = len(source)
         prev_char = "{" if depth else ""  # 最後看到的有意義程式碼字元 ／ last significant code character seen
         prev_word = ""       # 最後看到的識別字／關鍵字 ／ last identifier/keyword seen
@@ -383,13 +468,17 @@ class ASTExtractor:
                     after_value = True
                 expression_pos = not after_value or prev_word in _JS_REGEX_KEYWORDS
                 if c == "<" and jsx is not None and jsx[0] > 0 and expression_pos and depth < _JSX_MAX_DEPTH \
-                        and (nxt.isalpha() or nxt == ">"):
+                        and (nxt.isalpha() or nxt == ">") and not _TS_GENERIC_RE.match(source, i):
                     end = ASTExtractor._mask_jsx(source, out, i, depth + 1, jsx)
                     if end is not None:
                         # JSX 元素是一個值 ／ A JSX element is a value
                         i = end
                         prev3, prev2, prev_char, prev_word = "", "", ")", ""
                         continue
+                    if depth and jsx[0] <= 0:
+                        # 預算用完：外層的 JSX 嘗試也放棄，不再把檔案其餘部分重新掃一遍
+                        # Budget spent: the enclosing JSX attempt gives up too instead of re-scanning the rest of the file
+                        return None
                 # 正規表達式字面值還是除法？`</tag>` 與 `/>` 是 JSX，正規表達式字面值也絕不跨行
                 # Regex literal or division? `</tag>` and `/>` are JSX, and a regex literal never spans a line break
                 if c == "/" and nxt not in ("", "/", "*", ">") and prev_char != "<" and expression_pos:
@@ -406,9 +495,15 @@ class ASTExtractor:
                         return i + 1
                     braces -= 1
             if not c.isspace():
-                word_continues = prev_char and (prev_char.isalnum() or prev_char in "_$")
+                # 只有緊鄰的前一個字元是識別字字元時才延續同一個詞（`x\nreturn` 是兩個詞）；超過最長關鍵字的詞
+                # 不再加長，否則一長串 `A class A class ...` 會讓字串串接變成平方時間
+                # The word continues only when the immediately preceding character is an identifier character
+                # (`x\nreturn` is two words); a word longer than the longest keyword stops growing, otherwise a long
+                # run like `A class A class ...` makes the string concatenation quadratic
+                prev_src = source[i - 1] if i > 0 else ""
+                word_continues = prev_src.isalnum() or prev_src in ("_", "$")
                 if c.isalnum() or c in "_$":
-                    prev_word = (prev_word + c) if word_continues else c
+                    prev_word = (prev_word + c if len(prev_word) < 16 else prev_word) if word_continues else c
                 else:
                     prev_word = ""
                 prev3, prev2, prev_char = prev2, prev_char, c
@@ -431,10 +526,16 @@ class ASTExtractor:
         n = len(source)
 
         def fail(upto: int) -> Optional[int]:
-            # 呼叫端還沒碰過 i 之後的位置，所以原文就是正確的還原值
-            # The caller has not touched anything after i yet, so the source is the right value to restore
-            out[i:upto] = source[i:upto]
-            budget[0] -= 1
+            # 呼叫端還沒碰過 i 之後的位置，所以原文就是正確的還原值。按掃過的字元數扣預算；預算用完時
+            # 所有外層嘗試都會跟著失敗，只有最外層（depth 1）還原到檔尾，涵蓋被放棄的內層寫入
+            # The caller has not touched anything after i yet, so the source is the right value to restore. The
+            # budget is charged the characters scanned; once it is spent every enclosing attempt fails too, and only
+            # the outermost one (depth 1) restores to the end of the file, covering the abandoned inner writes
+            budget[0] -= max(1, upto - i)
+            if budget[0] > 0:
+                out[i:upto] = source[i:upto]
+            elif depth == 1:
+                out[i:] = source[i:]
             return None
 
         m = _JSX_NAME_RE.match(source, i + 1)
@@ -537,45 +638,56 @@ class ASTExtractor:
 
     @staticmethod
     def _mask_template(source: str, out: List[str], i: int) -> int:
+        """清空從 i 處反引號開始的樣板字面值，回傳結尾反引號之後的位置（未閉合時為檔尾）。
+
+        `${...}` 插值內是程式碼：其中的字串、巢狀樣板、註解與正規表達式字面值都正確詞法分析，
+        因此 `${s.replace(/\\{/g, "")}` 或 `${x || "{"}` 裡落單的 `{` 不會吞掉檔案其餘部分。整個插值
+        （含結尾的 `}`，那是樣板語法而不是程式碼）都清空。巢狀的樣板與插值用明確的堆疊處理而不是遞迴，
+        所以 `${` 巢狀數百層的檔案不會觸發 RecursionError。
+        Blanks the template literal whose backtick is at i and returns the position after its closing
+        backtick (the end of the file when it is unclosed).
+
+        A `${...}` interpolation is code: strings, nested templates, comments and regex literals inside it are
+        lexed properly, so a stray `{` in `${s.replace(/\\{/g, "")}` or `${x || "{"}` cannot swallow the rest
+        of the file. The whole interpolation (including its closing `}`, template syntax rather than code) is
+        blanked. Nested templates and interpolations use an explicit stack instead of recursion, so a file
+        nesting `${` hundreds deep cannot raise RecursionError."""
         n = len(source)
+        # 堆疊的每一層：None 是樣板文字；[起點, 大括號深度, 前一個有意義字元] 是 `${...}` 插值
+        # One stack entry per level: None is template text; [start, brace depth, previous significant char] is a `${...}` interpolation
+        stack: List[Optional[List]] = [None]
+        open_interpolations = 0
         i += 1
-        while i < n and source[i] != "`":
-            if source[i] == "\\":
-                out[i] = " "
-                i += 1
-                if i < n and source[i] != "\n":
+        while stack and i < n:
+            c = source[i]
+            frame = stack[-1]
+            if frame is None:
+                # 樣板文字 ／ template text
+                if c == "`":
+                    out[i] = " "  # 結尾反引號 ／ closing backtick
+                    i += 1
+                    stack.pop()
+                    if stack:
+                        stack[-1][2] = "`"  # type: ignore[index]
+                    continue
+                if c == "\\":
+                    out[i] = " "
+                    i += 1
+                    if i < n and source[i] != "\n":
+                        out[i] = " "
+                    i += 1
+                    continue
+                if c == "$" and i + 1 < n and source[i + 1] == "{":
+                    out[i] = out[i + 1] = " "
+                    stack.append([i + 2, 1, "{"])
+                    open_interpolations += 1
+                    i += 2
+                    continue
+                if c != "\n":
                     out[i] = " "
                 i += 1
                 continue
-            if source[i] == "$" and i + 1 < n and source[i + 1] == "{":
-                out[i] = out[i + 1] = " "
-                i = ASTExtractor._mask_substitution(source, out, i + 2)
-                continue
-            if source[i] != "\n":
-                out[i] = " "
-            i += 1
-        if i < n:
-            out[i] = " "  # 結尾反引號 ／ closing backtick
-        return i + 1
-
-    @staticmethod
-    def _mask_substitution(source: str, out: List[str], i: int) -> int:
-        """清空樣板字面值的 `${...}` 插值（i 指向 `${` 之後），回傳結尾 `}` 之後的位置。
-
-        插值內是程式碼：其中的字串、巢狀樣板、註解與正規表達式字面值都正確詞法分析，
-        因此 `${s.replace(/\\{/g, "")}` 或 `${x || "{"}` 裡落單的 `{` 不會吞掉檔案其餘部分。
-        Blanks a template literal's `${...}` interpolation (i points just after `${`) and returns the
-        position after its closing `}`.
-
-        The interpolation is code: strings, nested templates, comments and regex literals inside it are
-        lexed properly, so a stray `{` in `${s.replace(/\\{/g, "")}` or `${x || "{"}` cannot swallow the
-        rest of the file."""
-        n = len(source)
-        start = i
-        depth = 1
-        prev_char = "{"
-        while i < n:
-            c = source[i]
+            # `${...}` 插值裡的程式碼 ／ code inside a `${...}` interpolation
             nxt = source[i + 1] if i + 1 < n else ""
             if c == "/" and nxt == "/":
                 while i < n and source[i] != "\n":
@@ -587,34 +699,50 @@ class ASTExtractor:
                 continue
             if c in "\"'":
                 i = ASTExtractor._mask_quoted(source, out, i, c)
-                prev_char = c
+                frame[2] = c
                 continue
             if c == "`":
-                i = ASTExtractor._mask_template(source, out, i)
-                prev_char = c
+                stack.append(None)
+                i += 1
                 continue
+            prev_char = frame[2]
             if c == "/" and not (prev_char.isalnum() or prev_char in ")]}$_.\"'`"):
                 end_re = ASTExtractor._mask_regex(source, out, i)
                 if end_re is not None:
                     i = end_re
-                    prev_char = "/"
+                    frame[2] = "/"
                     continue
             if c == "{":
-                depth += 1
+                frame[1] += 1
             elif c == "}":
-                depth -= 1
-                if depth == 0:
+                frame[1] -= 1
+                if frame[1] == 0:
                     i += 1
-                    break
+                    stack.pop()
+                    open_interpolations -= 1
+                    if open_interpolations == 0:
+                        # 只清空最外層的插值：它涵蓋內層，巢狀時才不會重複清空成平方時間
+                        # Only the outermost interpolation is blanked: it covers the inner ones, so nesting
+                        # does not re-blank the same text quadratically
+                        ASTExtractor._blank_range(source, out, frame[0], i)
+                    continue
             if not c.isspace():
-                prev_char = c
+                frame[2] = c
             i += 1
-        # 整個插值（含結尾的 '}'，那是樣板語法而不是程式碼）都清空
-        # The whole interpolation (including its closing '}', template syntax rather than code) is blanked
-        for k in range(start, min(i, n)):
+        # 到檔尾仍未閉合：未閉合的插值照樣清空（只需清最外層，它涵蓋內層）
+        # Unclosed at the end of the file: unclosed interpolations are blanked all the same (the outermost covers the inner ones)
+        outermost = next((f for f in stack if f is not None), None)
+        if outermost is not None:
+            ASTExtractor._blank_range(source, out, outermost[0], n)
+        return min(i, n) if stack else i
+
+    @staticmethod
+    def _blank_range(source: str, out: List[str], start: int, end: int) -> None:
+        """清空 [start, end)，保留換行。
+        Blanks [start, end), keeping newlines."""
+        for k in range(start, min(end, len(source))):
             if source[k] != "\n":
                 out[k] = " "
-        return i
 
     @staticmethod
     def _mask_regex(source: str, out: List[str], i: int) -> Optional[int]:
@@ -677,36 +805,66 @@ class ASTExtractor:
                     return i
         return None
 
-    @staticmethod
-    def _split_params(params_text: str) -> List[str]:
-        """以頂層逗號切分參數清單；去掉預設值與 TS 型別註記。
-        Splits a parameter list on top-level commas; drops defaults and TS annotations."""
+    def _match_pair(self, masked: str, open_pos: int, open_ch: str, close_ch: str) -> Optional[int]:
+        """與 `_match_delim` 結果相同（open_pos 必須是開啟分隔符），但每種分隔符在每個檔案只以堆疊配對一次（線性），
+        之後查表；否則每個未閉合的 `(` 都要掃到檔尾，許多未閉合的呼叫會變成平方時間。
+        Same result as `_match_delim` (open_pos must be an opening delimiter), but each delimiter kind is paired
+        once per file with a stack (linear) and then looked up; otherwise every unclosed `(` would scan to the
+        end of the file and many unclosed calls would take quadratic time."""
+        if masked[open_pos:open_pos + 1] != open_ch:
+            return self._match_delim(masked, open_pos, open_ch, close_ch)
+        return self._pairs(masked, open_ch, close_ch).get(open_pos)
+
+    def _pairs(self, masked: str, open_ch: str, close_ch: str) -> Dict[int, int]:
+        """清空文字中 open_ch／close_ch 的配對表（開啟位置 -> 閉合位置），每個檔案只建一次；反向表存在
+        (close_ch, open_ch) 鍵下。
+        The open_ch / close_ch pair table of the masked text (open position -> close position), built once per
+        file; the reverse table is stored under the (close_ch, open_ch) key."""
+        if self._delim_src is not masked:
+            self._delim_src, self._delim_cache = masked, {}
+        key = (open_ch, close_ch)
+        pairs = self._delim_cache.get(key)
+        if pairs is None:
+            pairs = {}
+            stack: List[int] = []
+            for m in re.finditer(re.escape(open_ch) + "|" + re.escape(close_ch), masked):
+                if m.group(0) == open_ch:
+                    stack.append(m.start())
+                elif stack:
+                    pairs[stack.pop()] = m.start()
+            self._delim_cache[key] = pairs
+            self._delim_cache[(close_ch, open_ch)] = {v: k for k, v in pairs.items()}
+        return pairs
+
+    def _params(self, content: str, masked: str, open_paren: int, close_paren: int) -> List[str]:
+        """參數清單（在 open_paren 與 close_paren 之間）的參數名稱；去掉預設值與 TS 型別註記。
+
+        以清空後的文字切分頂層逗號（巢狀括號整段跳過，字串裡的逗號不會切分），每個參數只看開頭
+        _JS_GENERIC_LOOKBACK 個字元，因此巢狀到檔尾的參數清單不會讓每一層都逐字元重掃（平方時間）。
+        The parameter names of the list between open_paren and close_paren; defaults and TS annotations dropped.
+
+        Top-level commas are split on the masked text (nested brackets skipped whole, commas inside strings do
+        not split) and only the first _JS_GENERIC_LOOKBACK characters of each parameter are read, so a parameter
+        list nesting to the end of the file does not make every level rescan it character by character
+        (quadratic time)."""
         params: List[str] = []
-        depth = 0
-        current: List[str] = []
-        for c in params_text:
-            if c in "([{":
-                depth += 1
-            elif c in ")]}":
-                depth -= 1
-            if c == "," and depth == 0:
-                params.append("".join(current))
-                current = []
-            else:
-                current.append(c)
-        params.append("".join(current))
-        cleaned = []
-        for p in params:
-            p = p.split("=")[0].split(":")[0].strip()
-            if p:
-                cleaned.append(p)
-        return cleaned
+        for a, b in self._top_level_args(content, masked, open_paren, close_paren):
+            name = content[a:min(b, a + _JS_GENERIC_LOOKBACK)].split("=")[0].split(":")[0].strip()
+            if name:
+                params.append(name)
+        return params
 
     def _snippet(self, content: str, line_of, start_pos: int, end_pos: int, file_path: str,
                  name: str, symbol_type: str, parameters: Optional[List[str]] = None,
                  signature: Optional[str] = None) -> CodeSymbol:
         start_line, end_line = line_of(start_pos), line_of(end_pos)
-        lines = content.splitlines()
+        cached = self._content_lines
+        lines = cached[1] if cached is not None and cached[0] is content else content.splitlines()
+        source_code = "\n".join(lines[start_line - 1:end_line])
+        if self._snippet_left is not None:
+            self._snippet_left -= len(source_code)
+            if self._snippet_left < 0:
+                raise _ExtractionBudgetExceeded("total symbol source exceeds the cap (too many nested snippets)")
         return CodeSymbol(
             name=name,
             symbol_type=symbol_type,
@@ -714,7 +872,7 @@ class ASTExtractor:
             line_start=start_line,
             line_end=end_line,
             signature=signature or f"{name}({', '.join(parameters or [])})",
-            source_code="\n".join(lines[start_line - 1:end_line]),
+            source_code=source_code,
             parameters=parameters or []
         )
 
@@ -723,10 +881,22 @@ class ASTExtractor:
 
     def _extract_js_functions(self, content: str, masked: str, file_path: str, line_of) -> List[CodeSymbol]:
         symbols: List[CodeSymbol] = []
-        taken: List[Tuple[int, int]] = []  # 已包含在某個符號內的清空文字範圍 ／ masked-text ranges already inside a symbol
+        # 已包含在某個符號內的清空文字範圍，依起點排序（彼此不重疊且長度為正，所以終點也有序）
+        # Masked-text ranges already inside a symbol, sorted by start (disjoint and non-empty, so the ends are sorted too)
+        taken_starts: List[int] = []
+        taken_ends: List[int] = []
 
         def overlaps(start: int, end: int) -> bool:
-            return any(start < t_end and end > t_start for t_start, t_end in taken)
+            # 起點在 end 之前的範圍中，終點最大的是最後一個：只需比較它（對數時間，而不是每個符號線性掃描）
+            # Among the ranges starting before end the last one has the largest end: only it needs checking
+            # (logarithmic time instead of a linear scan per symbol)
+            idx = bisect_left(taken_starts, end)
+            return idx > 0 and taken_ends[idx - 1] > start
+
+        def take(start: int, end: int) -> None:
+            idx = bisect_left(taken_starts, start)
+            taken_starts.insert(idx, start)
+            taken_ends.insert(idx, end)
 
         # 函式宣告與函式運算式：
         # [export] [default] [async] function[*] name[<T>](params)[: ReturnType] {...}
@@ -734,15 +904,15 @@ class ASTExtractor:
         # [export] [default] [async] function[*] name[<T>](params)[: ReturnType] {...}
         fn_re = re.compile(
             rf"(?<![\w$.])(?:export\s+)?(?:default\s+)?(?:async\s+)?\bfunction\b\s*\*?\s*"
-            rf"({_JS_IDENTIFIER})\s*(?:<[^(){{}};]*>\s*)?\("
+            rf"({_JS_IDENTIFIER})\s*(?:<[^(){{}};]{{0,{_JS_GENERIC_LOOKBACK}}}>\s*)?\("
         )
         for m in fn_re.finditer(masked):
             open_paren = m.end() - 1
-            close_paren = self._match_delim(masked, open_paren, "(", ")")
+            close_paren = self._match_pair(masked, open_paren, "(", ")")
             if close_paren is None:
                 continue
             name = m.group(1)
-            params = self._split_params(content[open_paren + 1:close_paren])
+            params = self._params(content, masked, open_paren, close_paren)
             body_pos = self._body_after_params(masked, close_paren)
             if body_pos is None or masked[body_pos] == ";" or re.match(
                     r"(?:export|function|declare|async)\b", masked[body_pos:body_pos + 8]):
@@ -751,14 +921,14 @@ class ASTExtractor:
                 continue
             end_pos = close_paren
             if masked[body_pos] == "{":
-                end_pos = self._match_delim(masked, body_pos, "{", "}") or close_paren
+                end_pos = self._match_pair(masked, body_pos, "{", "}") or close_paren
             else:
                 # 直接用在運算式陳述式中的函式運算式
                 # a function expression used directly in an expression statement
-                end_pos = self._end_of_statement(masked, body_pos)
+                end_pos = self._statement_end(masked, body_pos)
             if overlaps(m.start(), end_pos):
                 continue
-            taken.append((m.start(), end_pos))
+            take(m.start(), end_pos)
             symbols.append(self._snippet(
                 content, line_of, m.start(), end_pos, file_path, name, "function", params
             ))
@@ -773,28 +943,47 @@ class ASTExtractor:
             if body_pos is None:
                 continue
             if masked[body_pos] == "{":
-                end_pos = self._match_delim(masked, body_pos, "{", "}") or arrow_pos + 1
+                end_pos = self._match_pair(masked, body_pos, "{", "}") or arrow_pos + 1
             else:
-                end_pos = self._end_of_statement(masked, body_pos)
+                end_pos = self._statement_end(masked, body_pos)
             if overlaps(start_pos, end_pos):
                 continue
-            taken.append((start_pos, end_pos))
+            take(start_pos, end_pos)
             arrow_params: List[str] = []
             if close_paren is not None:
                 open_paren = self._find_open_paren(masked, close_paren)
-                arrow_params = self._split_params(content[open_paren + 1:close_paren])
+                arrow_params = self._params(content, masked, open_paren, close_paren)
             symbols.append(self._snippet(
                 content, line_of, start_pos, end_pos, file_path, name, "function", arrow_params
             ))
 
         # 含方法的類別：[export] [abstract] class Name [...] { ... }
         # classes with methods: [export] [abstract] class Name [...] { ... }
-        class_re = re.compile(rf"(?:export\s+)?(?:abstract\s+)?class\s+({_JS_IDENTIFIER})[^{{;]*\{{")
+        # 名稱之後第一個 `{` 或 `;` 以預先排序的位置表二分搜尋（等同 `[^{;]*\{`，但沒有 `{` 的檔案不會讓每個
+        # `class X` 都掃到檔尾）。位於已擷取類別之內的巢狀類別不再各自成為符號：它們的原始碼已在外層
+        # 類別／方法中，否則巢狀的片段總量是平方大小
+        # The first `{` or `;` after the name is found by bisecting a presorted position table (equivalent to
+        # `[^{;]*\{`, but a file without `{` no longer makes every `class X` scan to the end of the file). A class nested
+        # inside an extracted class is no symbol of its own: its source is already in the enclosing class / method,
+        # and nested snippets would otherwise add up to quadratic size
+        class_re = re.compile(rf"(?:export\s+)?(?:abstract\s+)?class\s+({_JS_IDENTIFIER})")
+        stops = [s.start() for s in re.finditer(r"[{;]", masked)]
+        consumed = 0
+        class_end = -1
         for m in class_re.finditer(masked):
-            open_brace = m.end() - 1
-            close_brace = self._match_delim(masked, open_brace, "{", "}")
+            if m.start() < consumed:
+                continue
+            k = bisect_left(stops, m.end())
+            if k >= len(stops) or masked[stops[k]] != "{":
+                continue
+            open_brace = stops[k]
+            consumed = open_brace + 1
+            if m.start() < class_end:
+                continue
+            close_brace = self._match_pair(masked, open_brace, "{", "}")
             if close_brace is None:
                 continue
+            class_end = close_brace
             symbols.append(self._snippet(
                 content, line_of, m.start(), close_brace, file_path, m.group(1), "class", [],
                 signature=f"class {m.group(1)}"
@@ -808,37 +997,39 @@ class ASTExtractor:
         """類別主體頂層的方法：[modifiers] name(params) { ... }。
         Methods at the top level of a class body: [modifiers] name(params) { ... }."""
         symbols: List[CodeSymbol] = []
+        # 只在每段空白的開頭嘗試比對（`\s+` 可回溯，所以同一段空白裡較後的位置只會得到相同結果），並以 pos/endpos
+        # 比對而不是切片：否則長段空白的類別主體是平方時間
+        # Matching is tried only where a whitespace run starts (`\s+` backtracks, so a later position in the same run
+        # gives the same result) and uses pos/endpos rather than a slice: otherwise a class body with long
+        # whitespace runs takes quadratic time
         pos = body_start
         while pos < body_end:
-            if not masked[pos].isspace():
-                pos += 1
-                continue
-            m = re.match(
-                rf"\s+((?:(?:public|private|protected|static|async|override|readonly|abstract)\s+|\*\s*)*"
-                rf"({_JS_IDENTIFIER}))\s*(?:<[^(){{}};]*>\s*)?\(",
-                masked[pos:body_end],
-            )
+            run = _WHITESPACE_RUN_RE.search(masked, pos, body_end)
+            if run is None:
+                break
+            pos, run_end = run.start(), run.end()
+            m = _JS_METHOD_RE.match(masked, pos, body_end)
             if not m:
-                pos += 1
+                pos = run_end
                 continue
             name = m.group(2)
             if name in _JS_CONTROL_KEYWORDS:
-                pos += 1
+                pos = run_end
                 continue
-            open_paren = pos + m.end() - 1
-            close_paren = self._match_delim(masked, open_paren, "(", ")")
+            open_paren = m.end() - 1
+            close_paren = self._match_pair(masked, open_paren, "(", ")")
             if close_paren is None:
-                pos += 1
+                pos = run_end
                 continue
             body_pos = self._body_after_params(masked, close_paren)
             if body_pos is None or masked[body_pos] != "{":
-                pos += 1
+                pos = run_end
                 continue
-            close_body = self._match_delim(masked, body_pos, "{", "}")
+            close_body = self._match_pair(masked, body_pos, "{", "}")
             if close_body is None or close_body > body_end:
-                pos += 1
+                pos = run_end
                 continue
-            params = self._split_params(content[open_paren + 1:close_paren])
+            params = self._params(content, masked, open_paren, close_paren)
             symbols.append(self._snippet(
                 content, line_of, pos + 1, close_body, file_path, f"{class_name}.{name}", "method", params
             ))
@@ -881,7 +1072,7 @@ class ASTExtractor:
             if receiver in clients or receiver.lower() in _JS_HTTP_CLIENTS or receiver in _JS_CONTROL_KEYWORDS:
                 continue
             open_paren = m.end() - 1
-            close_paren = self._match_delim(masked, open_paren, "(", ")")
+            close_paren = self._match_pair(masked, open_paren, "(", ")")
             if close_paren is None:
                 continue
             path = self._route_path(content, masked, open_paren, close_paren, is_router(receiver))
@@ -909,25 +1100,36 @@ class ASTExtractor:
                 routers.add(b.group(1))
         return routers, clients
 
-    @staticmethod
-    def _top_level_args(content: str, masked: str, open_paren: int, close_paren: int) -> List[Tuple[int, int]]:
+    def _top_level_args(self, content: str, masked: str, open_paren: int, close_paren: int) -> List[Tuple[int, int]]:
         """呼叫的頂層引數範圍（字面值已清空，所以字串裡的逗號不會切分）；空白引數（尾端逗號）被略過。
+
+        巢狀的括號以每個檔案只建一次的配對表整段跳過（未閉合時其後不再有頂層逗號），因此巢狀呼叫不會讓
+        每一層都把內層逐字元重掃一遍（平方時間）。
         Spans of a call's top-level arguments (literals are blanked, so commas inside strings do not split);
-        blank arguments (a trailing comma) are dropped."""
+        blank arguments (a trailing comma) are dropped.
+
+        Nested brackets are skipped whole via the pair tables built once per file (an unclosed one leaves no
+        further top-level comma), so nested calls do not make every level rescan the inner ones character by
+        character (quadratic time)."""
         spans: List[Tuple[int, int]] = []
-        depth = 0
         start = open_paren + 1
-        for i in range(open_paren + 1, close_paren):
-            c = masked[i]
-            if c in "([{":
-                depth += 1
-            elif c in ")]}":
-                depth -= 1
-            elif c == "," and depth == 0:
+        i = start
+        while i < close_paren:
+            m = _ARG_TOKEN_RE.search(masked, i, close_paren)
+            if m is None:
+                break
+            c, i = m.group(0), m.start()
+            if c == ",":
                 spans.append((start, i))
                 start = i + 1
+                i += 1
+                continue
+            close = self._match_pair(masked, i, c, _CLOSERS[c])
+            if close is None:
+                break
+            i = close + 1
         spans.append((start, close_paren))
-        return [(s, e) for s, e in spans if content[s:e].strip()]
+        return [(s, e) for s, e in spans if _NON_SPACE_RE.search(content, s, e)]
 
     def _route_path(self, content: str, masked: str, open_paren: int, close_paren: int,
                     known_router: bool) -> Optional[str]:
@@ -937,8 +1139,13 @@ class ASTExtractor:
         if not args:
             return None
         start, end = args[0]
-        raw = content[start:end].strip()
-        handler = len(args) >= 2 and self._handler_like(masked[args[-1][0]:args[-1][1]])
+        # 只看開頭 _JS_ARG_SCAN 個字元；更長的第一個引數只可能是字串路徑，不會是識別字或正規表達式路徑
+        # Only the first _JS_ARG_SCAN characters are inspected; a longer first argument can only be a string path,
+        # never an identifier or regex path
+        long_arg = end - start > _JS_ARG_SCAN
+        raw = content[start:min(end, start + _JS_ARG_SCAN)].strip()
+        last_start, last_end = args[-1]
+        handler = len(args) >= 2 and self._handler_like(masked[last_start:min(last_end, last_start + _JS_ARG_SCAN)])
         if raw[:1] in "\"'":
             path = self._first_string_literal(raw)
             if path is None:
@@ -953,7 +1160,7 @@ class ASTExtractor:
             if template is None or "/" not in template:
                 return None
             return template if known_router or handler else None
-        if raw[:1] == "/" and known_router and handler and _JS_REGEX_LITERAL_RE.fullmatch(raw):
+        if raw[:1] == "/" and known_router and handler and not long_arg and _JS_REGEX_LITERAL_RE.fullmatch(raw):
             # Express 的正規表達式路徑：`app.get(/^\/users\/(\d+)$/, h)` -> `GET /^\/users\/(\d+)$/`
             # An Express regex path: `app.get(/^\/users\/(\d+)$/, h)` -> `GET /^\/users\/(\d+)$/`
             return raw
@@ -961,7 +1168,8 @@ class ASTExtractor:
         # 因為 Express 的 `app.get('setting')`／`app.get(SETTING_NAME)` 是讀取應用程式設定
         # An identifier path counts only with a handler argument: `app.get(PATH)` without one is intentionally
         # not a route, because Express's `app.get('setting')` / `app.get(SETTING_NAME)` reads an app setting
-        if known_router and handler and re.fullmatch(r"[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*", raw):
+        if known_router and handler and not long_arg \
+                and re.fullmatch(r"[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*", raw):
             return raw
         return None
 
@@ -989,37 +1197,37 @@ class ASTExtractor:
             if receiver in clients or receiver.lower() in _JS_HTTP_CLIENTS:
                 continue
             open_paren = m.end() - 1
-            close_paren = self._match_delim(masked, open_paren, "(", ")")
+            close_paren = self._match_pair(masked, open_paren, "(", ")")
             if close_paren is None:
                 continue
             first = self._skip_ws(masked, open_paren + 1)
             if first is None:
                 continue
             if masked[first] == "{":
-                name = self._object_route_name(content[first:close_paren])
+                name = self._object_route_name(self._object_head(content, masked, first, close_paren))
                 if name is not None:
                     symbols.append(self._snippet(content, line_of, m.start(1), close_paren, file_path, name, "route",
                                                  [], signature=name))
                 continue
             if masked[first] == "[":
-                close_bracket = self._match_delim(masked, first, "[", "]")
+                close_bracket = self._match_pair(masked, first, "[", "]")
                 if close_bracket is None or close_bracket > close_paren:
                     continue
                 for obj_start, obj_end in self._top_level_args(content, masked, first, close_bracket):
                     obj_open = self._skip_ws(masked, obj_start)
                     if obj_open is None or masked[obj_open] != "{":
                         continue
-                    obj_close = self._match_delim(masked, obj_open, "{", "}")
+                    obj_close = self._match_pair(masked, obj_open, "{", "}")
                     if obj_close is None or obj_close > obj_end:
                         continue
-                    name = self._object_route_name(content[obj_open:obj_close])
+                    name = self._object_route_name(self._object_head(content, masked, obj_open, obj_close))
                     if name is not None:
                         symbols.append(self._snippet(content, line_of, obj_open, obj_close, file_path, name, "route",
                                                      [], signature=name))
                 continue
             if content[first] not in "\"'`":
                 continue
-            path = self._first_string_literal(content[first:close_paren])
+            path = self._first_string_literal(content[first:min(close_paren, first + _JS_ARG_SCAN)])
             if path is None or not path.startswith("/"):
                 continue
             # 沿著鏈往後：.get(h).post(h)...
@@ -1031,7 +1239,7 @@ class ASTExtractor:
                 if nxt is None or chained is None:
                     break
                 call_open = nxt + chained.end() - 1
-                call_close = self._match_delim(masked, call_open, "(", ")")
+                call_close = self._match_pair(masked, call_open, "(", ")")
                 if call_close is None:
                     break
                 name = f"{chained.group(1).upper()} {path}"
@@ -1039,6 +1247,15 @@ class ASTExtractor:
                                              signature=name))
                 seg_start, pos = nxt, call_close
         return symbols
+
+    def _object_head(self, content: str, masked: str, obj_open: int, obj_close: int) -> str:
+        """物件字面值的頂層屬性，每個只取開頭 _JS_GENERIC_LOOKBACK 個字元，以逗號串接成 `{...}`：
+        `method`／`path` 在處理函式本體之後也找得到，而巢狀到檔尾的物件不會被整段切出（平方時間）。
+        The top-level properties of an object literal, each cut to its first _JS_GENERIC_LOOKBACK characters and
+        joined with commas into `{...}`: `method` / `path` are found even after a long handler body, and an object
+        nesting to the end of the file is never sliced out whole (quadratic time)."""
+        props = self._top_level_args(content, masked, obj_open, obj_close)
+        return "{" + ",".join(content[a:min(b, a + _JS_GENERIC_LOOKBACK)] for a, b in props) + "}"
 
     @staticmethod
     def _object_route_name(obj: str) -> Optional[str]:
@@ -1095,20 +1312,16 @@ class ASTExtractor:
                 return pos
         return None
 
-    @staticmethod
-    def _find_open_paren(masked: str, close_pos: int) -> int:
-        """與 close_pos 處的 ')' 配對的 '(' 的位置（含端點）；不平衡時回傳 0。
-        Position of the '(' matching the ')' at close_pos (inclusive); returns 0 when unbalanced."""
-        depth = 0
-        for i in range(close_pos, -1, -1):
-            c = masked[i]
-            if c == ")":
-                depth += 1
-            elif c == "(":
-                depth -= 1
-                if depth == 0:
-                    return i
-        return 0
+    def _find_open_paren(self, masked: str, close_pos: int) -> int:
+        """與 close_pos 處的 ')' 配對的 '(' 的位置（含端點）；不平衡時回傳 0。查每個檔案只建一次的配對表，
+        所以許多未配對的 `) =>` 不會各自往回掃到檔頭（平方時間）。
+        Position of the '(' matching the ')' at close_pos (inclusive); returns 0 when unbalanced. It looks up the
+        pair table built once per file, so many unmatched `) =>` do not each scan back to the start of the file
+        (quadratic time)."""
+        if masked[close_pos:close_pos + 1] != ")":
+            return 0
+        self._pairs(masked, "(", ")")
+        return self._delim_cache[(")", "(")].get(close_pos, 0)
 
     def _arrow_declaration_back(self, masked: str, arrow_pos: int) -> Tuple[Optional[int], Optional[str], Optional[int]]:
         """從 '=>' 往回走到 [export] [const|let|var] name = 宣告。
@@ -1136,7 +1349,9 @@ class ASTExtractor:
             # TS generic parameters before the params: <T,>(x: T) => x
             g = self._skip_ws_back(masked, i)
             if g is not None and masked[g] == ">":
-                lt = masked.rfind("<", 0, g)
+                # 泛型參數清單很短：只往回找有限的距離，否則每個 `>(...) =>` 都可能掃到檔頭
+                # Generic parameter lists are short: look back a bounded distance, otherwise every `>(...) =>` may scan to the start of the file
+                lt = masked.rfind("<", max(0, g - _JS_GENERIC_LOOKBACK), g)
                 if lt >= 0:
                     i = lt - 1
         else:
@@ -1186,12 +1401,23 @@ class ASTExtractor:
 
     def _skip_type(self, masked: str, colon: int) -> Optional[int]:
         """從 TS 回傳型別的 ':' 起算，其後函式本體 '{' 的位置（None：沒有本體）。
-        From the ':' of a TS return type, the position of the body '{' after it (None: no body)."""
+
+        每個檔案的型別掃描共用一份與檔案大小成正比的預算（`_type_scan_left`）：許多未閉合的 `(): <` 否則會
+        各自掃到檔尾（平方時間）；預算用完後其餘的回傳型別視為沒有本體。
+        From the ':' of a TS return type, the position of the body '{' after it (None: no body).
+
+        The type scans of a file share a budget proportional to the file size (`_type_scan_left`): many
+        unclosed `(): <` would otherwise each scan to the end of the file (quadratic time); once it is spent the
+        remaining return types count as having no body."""
         n = len(masked)
         i = colon + 1
         depth = 0
         expect_type = True  # 緊接在 ':'、'|'、'&'、','、'<'、'(' 或 '=>' 之後的 '{' 是物件型別 ／ right after ':', '|', '&', ',', '<', '(' or '=>' a '{' is an object type
         while i < n:
+            if self._type_scan_left is not None:
+                self._type_scan_left -= 1
+                if self._type_scan_left < 0:
+                    return None
             c = masked[i]
             if c.isspace():
                 i += 1
@@ -1203,7 +1429,7 @@ class ASTExtractor:
             if c == "{":
                 if not expect_type and depth == 0:
                     return i
-                close = self._match_delim(masked, i, "{", "}")
+                close = self._match_pair(masked, i, "{", "}")
                 if close is None:
                     return None
                 i, expect_type = close + 1, False
@@ -1267,6 +1493,33 @@ class ASTExtractor:
         while pos >= 0 and masked[pos].isspace():
             pos -= 1
         return pos if pos >= 0 else None
+
+    def _statement_end(self, masked: str, pos: int) -> int:
+        """與 `_end_of_statement` 結果相同，但查每個檔案只建一次的索引：每個括號深度下 `;`／換行的位置。
+        否則許多未閉合的 `=> (` 會各自掃到檔尾（平方時間）。
+        Same result as `_end_of_statement`, but looks up an index built once per file: the positions of `;` /
+        newlines at each bracket depth. Otherwise many unclosed `=> (` would each scan to the end of the file
+        (quadratic time)."""
+        if self._stmt_src is not masked:
+            bracket_pos: List[int] = []
+            bracket_depth: List[int] = []  # 該括號之後的深度 ／ the depth after that bracket
+            ends: Dict[int, List[int]] = {}
+            depth = 0
+            for m in re.finditer(r"[(\[{)\]};\n]", masked):
+                c = m.group(0)
+                if c in ";\n":
+                    ends.setdefault(depth, []).append(m.start())
+                    continue
+                depth += 1 if c in "([{" else -1
+                bracket_pos.append(m.start())
+                bracket_depth.append(depth)
+            self._stmt_src, self._stmt_index = masked, (bracket_pos, bracket_depth, ends)
+        bracket_pos, bracket_depth, ends = self._stmt_index
+        k = bisect_left(bracket_pos, pos)
+        base = bracket_depth[k - 1] if k else 0
+        candidates = ends.get(base, [])
+        idx = bisect_left(candidates, pos)
+        return candidates[idx] if idx < len(candidates) else len(masked) - 1
 
     @staticmethod
     def _end_of_statement(masked: str, pos: int) -> int:
