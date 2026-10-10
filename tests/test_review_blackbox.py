@@ -22,6 +22,7 @@ def _threat(tid: str) -> ThreatItem:
     )
 
 
+# --- 威脅解析：模型選的 id 與 STRIDE 拼法 ---------------------------------------------------------
 # --- Threat parsing: model-chosen ids and STRIDE spellings -------------------------------------------
 
 def _modeler_report(fake_live, threats):
@@ -53,6 +54,7 @@ def test_stride_category_spelling_is_normalized(fake_live, raw, expected):
     assert report.threats[0].stride_category == expected
 
 
+# --- 當掉的批次會記入 call_log ---------------------------------------------------------------------
 # --- Crashed batches are booked in call_log --------------------------------------------------------
 
 def test_crashed_threat_modeling_batch_is_recorded(monkeypatch):

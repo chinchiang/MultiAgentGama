@@ -6,6 +6,7 @@ logs and reason strings are written as "中文 ／ English".
 Model prompts stay English: use `en_only` before a bilingual reason goes into a prompt.
 """
 import re
+from typing import Optional, Tuple
 
 # 全形斜線（U+FF0F）前後各一個半形空格，與設定檔、CLI --help 的慣例相同
 # A full-width slash (U+FF0F) with one ASCII space on each side, the same convention as the config files and CLI --help
@@ -20,18 +21,35 @@ def bi(zh: str, en: str) -> str:
     return f"{zh}{SEP}{en}"
 
 
+def _bilingual_split(text: str) -> Optional[Tuple[str, str]]:
+    """`bi()` 產生的字串在最後一個分隔符處切成（中文半, 英文半）；否則為 None。
+
+    只有分隔符前面含中日韓表意文字、後面不含時才算 `bi()` 的產物：模型自己寫的中文描述
+    可能剛好含有「 ／ 」，切開它會把描述截斷成最後一小段。
+    (Chinese half, English half) of a `bi()` string, split at the last separator; else None.
+
+    Only text with CJK before the separator and none after it counts as `bi()` output: a model's own
+    Chinese description may happen to contain " ／ ", and splitting it would truncate the description
+    to its last fragment.
+    """
+    head, sep, tail = (text or "").rpartition(SEP)
+    if sep and _CJK_RE.search(head) and not _CJK_RE.search(tail):
+        return head, tail
+    return None
+
+
 def en_only(text: str) -> str:
-    """取雙語字串的英文半（最後一個分隔符之後）；沒有分隔符就原樣回傳。
-    The English half of a bilingual string (after the last separator); unchanged when there is none."""
-    head, sep, tail = text.rpartition(SEP)
-    return tail if sep else text
+    """取雙語字串的英文半（最後一個分隔符之後）；不是 `bi()` 產生的字串就原樣回傳。
+    The English half of a bilingual string (after the last separator); text not produced by `bi()` is unchanged."""
+    parts = _bilingual_split(text)
+    return parts[1] if parts else text
 
 
 def zh_only(text: str) -> str:
-    """取雙語字串的中文半（最後一個分隔符之前）；沒有分隔符就原樣回傳。
-    The Chinese half of a bilingual string (before the last separator); unchanged when there is none."""
-    head, sep, _tail = text.rpartition(SEP)
-    return head if sep else text
+    """取雙語字串的中文半（最後一個分隔符之前）；不是 `bi()` 產生的字串就原樣回傳。
+    The Chinese half of a bilingual string (before the last separator); text not produced by `bi()` is unchanged."""
+    parts = _bilingual_split(text)
+    return parts[0] if parts else text
 
 
 def has_cjk(text: str) -> bool:
