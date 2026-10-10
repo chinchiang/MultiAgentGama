@@ -4,7 +4,7 @@ import logging
 import os
 import re
 from bisect import bisect_right
-from typing import Iterable, List, Optional, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
 from vibeharness.core.models import CodeSymbol
 from vibeharness.core.i18n import bi
 
@@ -36,13 +36,38 @@ _JS_CONTROL_KEYWORDS = {"if", "for", "while", "switch", "catch", "return", "func
 _JS_REGEX_KEYWORDS = {"return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw",
                       "case", "do", "else", "yield", "await"}
 _JS_IDENTIFIER = r"[A-Za-z0-9_$]+"
-# 其 .<verb>('/path', ...) 呼叫屬於路由的接收者（由路由器工廠指派的變數也算）
-# Receivers whose .<verb>('/path', ...) calls are routes (variables assigned from a router factory count too)
-_JS_ROUTE_RECEIVERS = {"app", "router", "server", "fastify", "api", "routes", "route"}
+# 路由註冊方法：HTTP 動詞加上 Express 的 `all`（`route` 另外處理：鏈式與物件形式）
+# Route registration methods: the HTTP verbs plus Express's `all` (`route` is handled separately: chained and object forms)
+_JS_ROUTE_METHODS = _JS_HTTP_VERBS | {"all"}
+# 常見的路由器接收者名稱：路徑可以是識別字（`app.post(USERS_PATH, h)`）或空字串（`router.get("", h)`）
+# Common router receiver names: the path may be an identifier (`app.post(USERS_PATH, h)`) or empty (`router.get("", h)`)
+_JS_ROUTE_RECEIVERS = {"app", "router", "server", "fastify", "instance", "api", "routes", "route", "r",
+                       "koa", "hono", "elysia", "srv", "application"}
+# 以這些字尾結尾的名稱也視為路由器（usersRouter、adminApp、v1Routes）
+# Names ending with these suffixes count as routers too (usersRouter, adminApp, v1Routes)
+_JS_ROUTE_RECEIVER_SUFFIXES = ("router", "routes", "app", "server")
+# HTTP 用戶端：`axios.get('/api/users', cb)` 是發出請求，不是註冊路由
+# HTTP clients: `axios.get('/api/users', cb)` sends a request, it does not register a route
+_JS_HTTP_CLIENTS = {"axios", "http", "https", "client", "httpclient", "request", "req", "res", "response",
+                    "supertest", "superagent", "agent", "ky", "got", "fetch", "fetcher", "needle", "$http",
+                    "$", "jquery", "rest", "msw", "mock", "nock"}
+# 變數綁定：`name[: Type] = <運算式>`，運算式可延續到以 `.` 開頭的下一行
+# A variable binding: `name[: Type] = <expression>`, the expression may continue on a next line starting with `.`
+_JS_BINDING_RE = re.compile(rf"(?<![\w$.])({_JS_IDENTIFIER})\s*(?::[^=;\n]*)?=(?![=>])\s*((?:[^;\n]|\n\s*\.)*)")
+# 綁定運算式中任何位置出現這些工廠時，該變數就是路由器（`require('express').Router()`、`new Koa()`）
+# A binding whose expression contains one of these factories anywhere is a router (`require('express').Router()`, `new Koa()`)
 _JS_ROUTER_FACTORY_RE = re.compile(
-    rf"\b({_JS_IDENTIFIER})\s*(?::[^=;\n]*)?=\s*(?:new\s+)?"
-    r"(?:express\s*\(|(?:express\s*\.\s*)?Router\s*\(|[Ff]astify\s*\(|Hono\s*\(|Elysia\s*\(|KoaRouter\s*\()"
+    r"(?:\bexpress\s*\(|\bRouter\s*\(|\b[Ff]astify\s*\(|\bnew\s+(?:Koa|Hono|Elysia|Router|KoaRouter)\b|"
+    r"\bHono\s*\(|\bElysia\s*\(|\bKoaRouter\s*\(|\bcreateRouter\s*\(|\bpolka\s*\(|\brestify\s*\.\s*createServer\s*\()"
 )
+# 綁定運算式中出現這些時，該變數是 HTTP 用戶端（`const api = axios.create()`）
+# A binding whose expression contains one of these is an HTTP client (`const api = axios.create()`)
+_JS_CLIENT_FACTORY_RE = re.compile(
+    r"\b(?:axios\s*\.\s*create|ky\s*\.\s*(?:create|extend)|got\s*\.\s*extend|supertest|superagent)\b"
+)
+# Next.js 的別名匯出：`export { handler as GET, handler as POST }`（`... from '...'` 的轉匯出除外）
+# Next.js alias exports: `export { handler as GET, handler as POST }` (re-exports `... from '...'` excluded)
+_JS_EXPORT_LIST_RE = re.compile(r"\bexport\s*\{([^{}]*)\}(?!\s*from\b)")
 # 即使路徑不是字串字面值也會註冊路由的 Python 裝飾器接收者
 # Python decorator receivers that register routes even when the path is not a string literal
 _PY_ROUTE_RECEIVERS = {"app", "router", "api", "bp", "blueprint", "application", "server"}
@@ -186,22 +211,56 @@ class ASTExtractor:
         symbols: List[CodeSymbol] = []
         source_lines = source.splitlines()
 
-        for node in ast.iter_child_nodes(tree):
+        for node in self._py_definitions(tree.body):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                sym = self._extract_python_function(node, file_path, source_lines)
-                if sym:
-                    symbols.append(sym)
+                symbols.append(self._extract_python_function(node, file_path, source_lines))
+                symbols.extend(self._nested_python_routes(node, file_path, source_lines))
             elif isinstance(node, ast.ClassDef):
-                sym = self._extract_python_class(node, file_path, source_lines)
-                if sym:
-                    symbols.append(sym)
-                for item in node.body:
+                symbols.append(self._extract_python_class(node, file_path, source_lines))
+                for item in self._py_definitions(node.body):
                     if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        method_sym = self._extract_python_function(item, file_path, source_lines, class_name=node.name)
-                        if method_sym:
-                            symbols.append(method_sym)
+                        symbols.append(self._extract_python_function(item, file_path, source_lines, class_name=node.name))
+                        symbols.extend(self._nested_python_routes(item, file_path, source_lines))
 
         return symbols
+
+    @staticmethod
+    def _py_definitions(body: List[ast.stmt]) -> List[ast.stmt]:
+        """一個主體中的 def／class，包括包在 `if`／`try`／`with`／`for`／`while`／`match` 裡的
+        （例如 `if TYPE_CHECKING:` 或 `try: ... except ImportError:` 底下定義的函式）。
+        The defs/classes of a body, including those wrapped in `if` / `try` / `with` / `for` / `while` /
+        `match` (e.g. functions defined under `if TYPE_CHECKING:` or `try: ... except ImportError:`)."""
+        found: List[ast.stmt] = []
+        stack = list(reversed(body))
+        while stack:
+            node = stack.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                found.append(node)
+                continue
+            children: List[ast.stmt] = []
+            for field in ("body", "orelse", "finalbody"):
+                children += [n for n in getattr(node, field, []) or [] if isinstance(n, ast.stmt)]
+            for handler in getattr(node, "handlers", []) or []:
+                children += handler.body
+            for case in getattr(node, "cases", []) or []:
+                children += case.body
+            if isinstance(node, (ast.If, ast.Try, ast.With, ast.AsyncWith, ast.For, ast.AsyncFor, ast.While)) \
+                    or type(node).__name__ in ("Match", "TryStar"):
+                stack.extend(reversed(children))
+        return found
+
+    def _nested_python_routes(self, func: Union[ast.FunctionDef, ast.AsyncFunctionDef], file_path: str,
+                              source_lines: List[str]) -> List[CodeSymbol]:
+        """函式內部以路由裝飾器註冊的處理函式（Flask `create_app()` 工廠中的 `@app.route`），任意深度。
+        Route handlers registered with a route decorator inside a function (`@app.route` in a Flask
+        `create_app()` factory), at any depth."""
+        routes: List[CodeSymbol] = []
+        for node in ast.walk(func):
+            if node is func or not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if any(self._is_route_decorator(dec) for dec in node.decorator_list):
+                routes.append(self._extract_python_function(node, file_path, source_lines))
+        return routes
 
     def _parse_js_ts_file(self, file_path: str) -> List[CodeSymbol]:
         """擷取 JS/TS 的函式、箭頭函式、含方法的類別，以及 HTTP 路由處理函式。
@@ -246,6 +305,9 @@ class ASTExtractor:
         i = 0
         prev_char = ""       # 最後看到的有意義程式碼字元 ／ last significant code character seen
         prev_word = ""       # 最後看到的識別字／關鍵字 ／ last identifier/keyword seen
+        # prev_char 之前的兩個有意義字元：用來辨識後置的 `a++ / 2`
+        # The two significant characters before prev_char: they recognize a postfix `a++ / 2`
+        prev2 = prev3 = ""
         while i < n:
             c = source[i]
             nxt = source[i + 1] if i + 1 < n else ""
@@ -281,6 +343,10 @@ class ASTExtractor:
                 # unless the token is a keyword that opens a regex position (return /x/, typeof /y/).
                 # `</tag>` and `/>` are JSX, and a regex literal never spans a line break.
                 after_value = prev_char and (prev_char.isalnum() or prev_char in ")]}$_.\"'`")
+                # 值之後的後置 ++／-- 仍是值：`a++ / 2` 是除法
+                # A postfix ++ / -- after a value is still a value: `a++ / 2` is division
+                if prev_char in ("+", "-") and prev2 == prev_char and prev3 and (prev3.isalnum() or prev3 in ")]_$"):
+                    after_value = True
                 if not after_value or prev_word in _JS_REGEX_KEYWORDS:
                     end = ASTExtractor._mask_regex(source, out, i)
                     if end is not None:
@@ -293,7 +359,7 @@ class ASTExtractor:
                     prev_word = (prev_word + c) if word_continues else c
                 else:
                     prev_word = ""
-                prev_char = c
+                prev3, prev2, prev_char = prev2, prev_char, c
             i += 1
         return "".join(out)
 
@@ -331,23 +397,7 @@ class ASTExtractor:
                 continue
             if source[i] == "$" and i + 1 < n and source[i + 1] == "{":
                 out[i] = out[i + 1] = " "
-                i += 2
-                depth = 1
-                while i < n and depth:
-                    if source[i] == "$" and i + 1 < n and source[i + 1] == "{":
-                        depth += 1
-                        out[i] = out[i + 1] = " "
-                        i += 2
-                        continue
-                    if source[i] == "{":
-                        depth += 1
-                    elif source[i] == "}":
-                        depth -= 1
-                    # 插值結尾的 '}' 是樣板語法，不是程式碼
-                    # the closing '}' of the interpolation is template syntax, not code
-                    if source[i] != "\n":
-                        out[i] = " "
-                    i += 1
+                i = ASTExtractor._mask_substitution(source, out, i + 2)
                 continue
             if source[i] != "\n":
                 out[i] = " "
@@ -355,6 +405,64 @@ class ASTExtractor:
         if i < n:
             out[i] = " "  # 結尾反引號 ／ closing backtick
         return i + 1
+
+    @staticmethod
+    def _mask_substitution(source: str, out: List[str], i: int) -> int:
+        """清空樣板字面值的 `${...}` 插值（i 指向 `${` 之後），回傳結尾 `}` 之後的位置。
+
+        插值內是程式碼：其中的字串、巢狀樣板、註解與正規表達式字面值都正確詞法分析，
+        因此 `${s.replace(/\\{/g, "")}` 或 `${x || "{"}` 裡落單的 `{` 不會吞掉檔案其餘部分。
+        Blanks a template literal's `${...}` interpolation (i points just after `${`) and returns the
+        position after its closing `}`.
+
+        The interpolation is code: strings, nested templates, comments and regex literals inside it are
+        lexed properly, so a stray `{` in `${s.replace(/\\{/g, "")}` or `${x || "{"}` cannot swallow the
+        rest of the file."""
+        n = len(source)
+        start = i
+        depth = 1
+        prev_char = "{"
+        while i < n:
+            c = source[i]
+            nxt = source[i + 1] if i + 1 < n else ""
+            if c == "/" and nxt == "/":
+                while i < n and source[i] != "\n":
+                    i += 1
+                continue
+            if c == "/" and nxt == "*":
+                end = source.find("*/", i + 2)
+                i = n if end < 0 else end + 2
+                continue
+            if c in "\"'":
+                i = ASTExtractor._mask_quoted(source, out, i, c)
+                prev_char = c
+                continue
+            if c == "`":
+                i = ASTExtractor._mask_template(source, out, i)
+                prev_char = c
+                continue
+            if c == "/" and not (prev_char.isalnum() or prev_char in ")]}$_.\"'`"):
+                end_re = ASTExtractor._mask_regex(source, out, i)
+                if end_re is not None:
+                    i = end_re
+                    prev_char = "/"
+                    continue
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    i += 1
+                    break
+            if not c.isspace():
+                prev_char = c
+            i += 1
+        # 整個插值（含結尾的 '}'，那是樣板語法而不是程式碼）都清空
+        # The whole interpolation (including its closing '}', template syntax rather than code) is blanked
+        for k in range(start, min(i, n)):
+            if source[k] != "\n":
+                out[k] = " "
+        return i
 
     @staticmethod
     def _mask_regex(source: str, out: List[str], i: int) -> Optional[int]:
@@ -484,10 +592,15 @@ class ASTExtractor:
             name = m.group(1)
             params = self._split_params(content[open_paren + 1:close_paren])
             body_pos = self._body_after_params(masked, close_paren)
+            if body_pos is None or masked[body_pos] == ";" or re.match(
+                    r"(?:export|function|declare|async)\b", masked[body_pos:body_pos + 8]):
+                # 沒有本體的宣告（TS 多載簽章、`declare function`）：實作本身才是符號
+                # A declaration without a body (a TS overload signature, `declare function`): the implementation is the symbol
+                continue
             end_pos = close_paren
-            if body_pos is not None and masked[body_pos] == "{":
+            if masked[body_pos] == "{":
                 end_pos = self._match_delim(masked, body_pos, "{", "}") or close_paren
-            elif body_pos is not None and masked[body_pos] != ";":
+            else:
                 # 直接用在運算式陳述式中的函式運算式
                 # a function expression used directly in an expression statement
                 end_pos = self._end_of_statement(masked, body_pos)
@@ -582,52 +695,204 @@ class ASTExtractor:
 
     def _extract_js_routes(self, content: str, masked: str, file_path: str, line_of,
                            functions: List[CodeSymbol]) -> List[CodeSymbol]:
-        """<router>.<verb>('/path', handler) 呼叫，加上 Next.js 以動詞命名的處理函式。
+        """<router>.<verb>(path, handler) 呼叫、鏈式 `app.route('/x').get(h)`、物件形式
+        `server.route({method, path})`，加上 Next.js 以動詞命名（或以別名匯出）的處理函式。
 
-        只有已知的路由接收者才算（app/router/server/fastify/api/routes、`*Router` 名稱，以及
-        由 express()/Router()/fastify()/... 指派的變數），且第一個引數必須是路徑字面值，
-        因此 `headers.get("authorization")` 或 `cache.delete(key)` 都不是路由。
-        <router>.<verb>('/path', handler) calls, plus Next.js verb-named handlers.
+        已知的路由器接收者（常見名稱、`*Router`／`*App` 等名稱，以及綁定運算式中含有
+        express()/Router()/fastify()/new Koa()/... 的變數）接受以 `/` 開頭的字串、空字串、含 `/` 的
+        樣板字面值，或（有處理函式引數時）識別字路徑。其他任何接收者只有在第一個引數是 `/` 開頭的
+        路徑、而且後面跟著像處理函式的引數時才算；HTTP 用戶端（axios、`axios.create()` 的結果…）
+        永遠不算。因此 `map.get('key')`、`headers.get("authorization")` 與 `cache.delete(key)` 都不是路由。
+        <router>.<verb>(path, handler) calls, chained `app.route('/x').get(h)`, the object form
+        `server.route({method, path})`, plus Next.js verb-named (or alias-exported) handlers.
 
-        Only known router receivers count (app/router/server/fastify/api/routes, `*Router` names, and
-        variables assigned from express()/Router()/fastify()/...), and the first argument must be a
-        path literal, so `headers.get("authorization")` or `cache.delete(key)` is not a route."""
+        Known router receivers (common names, `*Router` / `*App`-style names, and variables whose binding
+        expression contains express()/Router()/fastify()/new Koa()/...) accept a string starting with `/`,
+        an empty string, a template literal containing `/`, or (with a handler argument) an identifier path.
+        Any other receiver counts only when the first argument is a `/` path followed by a handler-like
+        argument; HTTP clients (axios, the result of `axios.create()`, ...) never count. So `map.get('key')`,
+        `headers.get("authorization")` and `cache.delete(key)` are not routes."""
         symbols: List[CodeSymbol] = []
-        verbs = "|".join(_JS_HTTP_VERBS)
+        routers, clients = self._js_router_bindings(masked)
+
+        def is_router(receiver: str) -> bool:
+            low = receiver.lower()
+            return receiver in routers or low in _JS_ROUTE_RECEIVERS or low.endswith(_JS_ROUTE_RECEIVER_SUFFIXES)
+
+        verbs = "|".join(sorted(_JS_ROUTE_METHODS))
         route_re = re.compile(rf"(?:^|[^.\w$])(({_JS_IDENTIFIER})\.({verbs}))\s*\(")
-        receivers = _JS_ROUTE_RECEIVERS | {f.group(1) for f in _JS_ROUTER_FACTORY_RE.finditer(masked)}
         for m in route_re.finditer(masked):
             receiver, verb = m.group(2), m.group(3)
-            if receiver not in receivers and not receiver.lower().endswith("router"):
+            if receiver in clients or receiver.lower() in _JS_HTTP_CLIENTS or receiver in _JS_CONTROL_KEYWORDS:
                 continue
             open_paren = m.end() - 1
             close_paren = self._match_delim(masked, open_paren, "(", ")")
             if close_paren is None:
                 continue
-            first_arg = self._skip_ws(masked, open_paren + 1)
-            if first_arg is None or content[first_arg] not in "\"'`":
-                continue
-            path = self._first_string_literal(content[first_arg:close_paren])
-            if not path or not (path.startswith("/") or path == "*"):
+            path = self._route_path(content, masked, open_paren, close_paren, is_router(receiver))
+            if path is None:
                 continue
             name = f"{verb.upper()} {path}"
             symbols.append(self._snippet(
                 content, line_of, m.start(1), close_paren, file_path, name, "route", [],
                 signature=name
             ))
-        # Next.js App Router 處理函式：export [async] function GET(request) {...} —— 以動詞命名的
-        # 函式會重新標記為路由。
-        # Next.js App Router handlers: export [async] function GET(request) {...} — the verb-named
-        # functions are retagged as routes.
-        # Next.js requires the exact upper-case export name; a helper `function get(key)` is no route
+        symbols.extend(self._js_route_method_calls(content, masked, file_path, line_of, clients))
+        symbols.extend(self._nextjs_handlers(masked, functions))
+        return symbols
+
+    @staticmethod
+    def _js_router_bindings(masked: str) -> Tuple[Set[str], Set[str]]:
+        """綁定運算式中含有路由器工廠的變數，以及含有 HTTP 用戶端工廠的變數。
+        Variables whose binding expression contains a router factory, and those containing an HTTP-client factory."""
+        routers: Set[str] = set()
+        clients: Set[str] = set()
+        for b in _JS_BINDING_RE.finditer(masked):
+            if _JS_CLIENT_FACTORY_RE.search(b.group(2)):
+                clients.add(b.group(1))
+            elif _JS_ROUTER_FACTORY_RE.search(b.group(2)):
+                routers.add(b.group(1))
+        return routers, clients
+
+    @staticmethod
+    def _top_level_args(content: str, masked: str, open_paren: int, close_paren: int) -> List[Tuple[int, int]]:
+        """呼叫的頂層引數範圍（字面值已清空，所以字串裡的逗號不會切分）；空白引數（尾端逗號）被略過。
+        Spans of a call's top-level arguments (literals are blanked, so commas inside strings do not split);
+        blank arguments (a trailing comma) are dropped."""
+        spans: List[Tuple[int, int]] = []
+        depth = 0
+        start = open_paren + 1
+        for i in range(open_paren + 1, close_paren):
+            c = masked[i]
+            if c in "([{":
+                depth += 1
+            elif c in ")]}":
+                depth -= 1
+            elif c == "," and depth == 0:
+                spans.append((start, i))
+                start = i + 1
+        spans.append((start, close_paren))
+        return [(s, e) for s, e in spans if content[s:e].strip()]
+
+    def _route_path(self, content: str, masked: str, open_paren: int, close_paren: int,
+                    known_router: bool) -> Optional[str]:
+        """路由註冊呼叫的路徑文字；不像路由註冊時回傳 None。
+        The path text of a route-registration call; None when it does not look like one."""
+        args = self._top_level_args(content, masked, open_paren, close_paren)
+        if not args:
+            return None
+        start, end = args[0]
+        raw = content[start:end].strip()
+        handler = len(args) >= 2 and self._handler_like(masked[args[-1][0]:args[-1][1]])
+        if raw[:1] in "\"'":
+            path = self._first_string_literal(raw)
+            if path is None:
+                return None
+            if path.startswith("/") or path == "*":
+                return path if known_router or handler else None
+            # 已知路由器上的空路徑（掛在帶前綴的路由器上）；`app.get('port')` 是設定讀取，不是路由
+            # An empty path on a known router (mounted under a prefix); `app.get('port')` is a settings read, no route
+            return '""' if known_router and path == "" and len(args) >= 2 else None
+        if raw[:1] == "`":
+            template = self._first_string_literal(raw)
+            if template is None or "/" not in template:
+                return None
+            return template if known_router or handler else None
+        if known_router and handler and re.fullmatch(r"[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*", raw):
+            return raw
+        return None
+
+    @staticmethod
+    def _handler_like(arg: str) -> bool:
+        """引數看起來像處理函式（識別字、成員、呼叫結果、箭頭或 function 運算式），而不是設定物件或數字。
+        Whether an argument looks like a handler (identifier, member, call result, arrow or function
+        expression) rather than a config object or a number."""
+        text = arg.strip()
+        if not text or text[0] in "{[" or text[0].isdigit():
+            return False
+        return bool("=>" in text or re.match(r"(?:async\s+)?function\b", text)
+                    or re.match(r"[A-Za-z_$][\w$.]*\s*(?:\(|$)", text))
+
+    def _js_route_method_calls(self, content: str, masked: str, file_path: str, line_of,
+                               clients: Set[str]) -> List[CodeSymbol]:
+        """`<recv>.route('/x').get(h).post(h)`（Express 鏈式）與 `<recv>.route({method, url|path})`（Fastify／Hapi）。
+        `<recv>.route('/x').get(h).post(h)` (Express chain) and `<recv>.route({method, url|path})` (Fastify / Hapi)."""
+        symbols: List[CodeSymbol] = []
+        verbs = "|".join(sorted(_JS_ROUTE_METHODS))
+        for m in re.finditer(rf"(?:^|[^.\w$])(({_JS_IDENTIFIER})\.route)\s*\(", masked):
+            receiver = m.group(2)
+            if receiver in clients or receiver.lower() in _JS_HTTP_CLIENTS:
+                continue
+            open_paren = m.end() - 1
+            close_paren = self._match_delim(masked, open_paren, "(", ")")
+            if close_paren is None:
+                continue
+            first = self._skip_ws(masked, open_paren + 1)
+            if first is None:
+                continue
+            if masked[first] == "{":
+                obj = content[first:close_paren]
+                methods = re.search(r"\bmethod\s*:\s*(\[[^\]]*\]|['\"][A-Za-z]+['\"])", obj)
+                path_m = re.search(r"\b(?:url|path)\s*:\s*(['\"`])([^'\"`\n]*)\1", obj)
+                if not methods or not path_m:
+                    continue
+                verb_list = [v.upper() for v in re.findall(r"[A-Za-z]+", methods.group(1))]
+                name = f"{'|'.join(verb_list)} {path_m.group(2)}"
+                symbols.append(self._snippet(content, line_of, m.start(1), close_paren, file_path, name, "route", [],
+                                             signature=name))
+                continue
+            if content[first] not in "\"'`":
+                continue
+            path = self._first_string_literal(content[first:close_paren])
+            if path is None or not path.startswith("/"):
+                continue
+            # 沿著鏈往後：.get(h).post(h)...
+            # Follow the chain: .get(h).post(h)...
+            seg_start, pos = m.start(1), close_paren
+            while True:
+                nxt = self._skip_ws(masked, pos + 1)
+                chained = re.match(rf"\.\s*({verbs})\s*\(", masked[nxt:]) if nxt is not None else None
+                if nxt is None or chained is None:
+                    break
+                call_open = nxt + chained.end() - 1
+                call_close = self._match_delim(masked, call_open, "(", ")")
+                if call_close is None:
+                    break
+                name = f"{chained.group(1).upper()} {path}"
+                symbols.append(self._snippet(content, line_of, seg_start, call_close, file_path, name, "route", [],
+                                             signature=name))
+                seg_start, pos = nxt, call_close
+        return symbols
+
+    @staticmethod
+    def _nextjs_handlers(masked: str, functions: List[CodeSymbol]) -> List[CodeSymbol]:
+        """Next.js App Router 處理函式：`export [async] function GET(...)`、`export const GET = ...`，
+        以及以別名匯出的 `export { handler as GET }`（處理函式本身被重新標記，因此只審查一次）。
+        Next.js App Router handlers: `export [async] function GET(...)`, `export const GET = ...`, and
+        alias exports `export { handler as GET }` (the handler itself is retagged, so it is reviewed once)."""
         verb_names = {v.upper() for v in _JS_HTTP_VERBS}
+        aliased: Dict[str, List[str]] = {}
+        for m in _JS_EXPORT_LIST_RE.finditer(masked):
+            for entry in m.group(1).split(","):
+                parts = entry.split()
+                if len(parts) == 3 and parts[1] == "as" and parts[2] in verb_names:
+                    aliased.setdefault(parts[0], []).append(parts[2])
+                elif len(parts) == 1 and parts[0] in verb_names:
+                    aliased.setdefault(parts[0], []).append(parts[0])
+        symbols: List[CodeSymbol] = []
         for sym in functions:
-            if (sym.symbol_type == "function" and sym.name in verb_names
-                    and sym.source_code.lstrip().startswith("export")):
-                symbols.append(sym.model_copy(update={
-                    "symbol_type": "route",
-                    "signature": f"export async function {sym.name}({', '.join(sym.parameters)})",
-                }))
+            if sym.symbol_type != "function":
+                continue
+            # Next.js 要求完全相同的大寫匯出名稱；輔助函式 `function get(key)` 不是路由
+            # Next.js requires the exact upper-case export name; a helper `function get(key)` is no route
+            if sym.name in verb_names and sym.source_code.lstrip().startswith("export"):
+                signature = f"export async function {sym.name}({', '.join(sym.parameters)})"
+            elif sym.name in aliased:
+                signature = "export { " + ", ".join(
+                    v if v == sym.name else f"{sym.name} as {v}" for v in aliased[sym.name]) + " }"
+            else:
+                continue
+            symbols.append(sym.model_copy(update={"symbol_type": "route", "signature": signature}))
         return symbols
 
     # --- 小型掃描器 ---
@@ -758,6 +1023,8 @@ class ASTExtractor:
                 continue
             if depth == 0 and c in ";=":
                 return None  # 多載／沒有本體的宣告 ／ an overload / declaration without a body
+            if depth == 0 and not masked[i - 1].isalnum() and re.match(r"(?:function|export|declare)\b", masked[i:i + 9]):
+                return None  # 沒有分號的多載後面緊接下一個宣告 ／ a semicolon-less overload followed by the next declaration
             if c in "([<":
                 depth += 1
                 expect_type = True
@@ -863,7 +1130,7 @@ class ASTExtractor:
         file_path: str,
         source_lines: List[str],
         class_name: Optional[str] = None
-    ) -> Optional[CodeSymbol]:
+    ) -> CodeSymbol:
         # 包含裝飾器：它們帶有審查者需要看到的路由路徑與授權守衛
         # Include decorators: they carry route paths and auth guards the reviewers need to see
         start = min([d.lineno for d in node.decorator_list] + [node.lineno])
@@ -903,19 +1170,22 @@ class ASTExtractor:
         if not (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
                 and dec.func.attr in ROUTE_DECORATORS):
             return False
-        first = dec.args[0] if dec.args else next((k.value for k in dec.keywords if k.arg in ("path", "rule")), None)
-        if isinstance(first, ast.Constant) and isinstance(first.value, str):
-            return first.value.startswith("/")
         receiver = dec.func.value
         name = (receiver.attr if isinstance(receiver, ast.Attribute) else getattr(receiver, "id", "")).lower()
-        return name in _PY_ROUTE_RECEIVERS or name.endswith(("router", "_bp", "blueprint", "_app"))
+        # 路由器接收者先判斷：`APIRouter(prefix=...)` 上的 `@router.get("")` 與不以 '/' 開頭的路徑都是路由
+        # The router receiver is checked first: `@router.get("")` on an `APIRouter(prefix=...)` and paths
+        # without a leading '/' are routes
+        if name in _PY_ROUTE_RECEIVERS or name.endswith(("router", "_bp", "blueprint", "_app", "_api")):
+            return True
+        first = dec.args[0] if dec.args else next((k.value for k in dec.keywords if k.arg in ("path", "rule")), None)
+        return isinstance(first, ast.Constant) and isinstance(first.value, str) and first.value.startswith("/")
 
     def _extract_python_class(
         self,
         node: ast.ClassDef,
         file_path: str,
         source_lines: List[str]
-    ) -> Optional[CodeSymbol]:
+    ) -> CodeSymbol:
         # 包含裝飾器，與函式一致：它們帶有註冊／行為的脈絡
         # Include decorators, consistent with functions: they carry registration/behavior context
         start = min([d.lineno for d in node.decorator_list] + [node.lineno])

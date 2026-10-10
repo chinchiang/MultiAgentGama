@@ -28,6 +28,15 @@ SIMILARITY_THRESHOLD = 0.6
 # "Missing input validation" ({input, validation}) would be fully "contained" in almost any other
 # finding. Such short findings are compared by Jaccard (shared / combined terms) instead.
 MIN_TERMS_FOR_CONTAINMENT = 3
+# 不指名任何特定缺陷的泛用詞：只由這些詞構成的短發現（"Missing input validation"）不能靠子集規則併入具體發現
+# Generic words that name no specific defect: a short finding made only of these ("Missing input validation")
+# cannot be absorbed into a specific finding by the subset rule
+_GENERIC_TERMS = {
+    "input", "validation", "validate", "validated", "unvalidated", "sanitization", "sanitize", "sanitized",
+    "unsanitized", "check", "checking", "error", "handling", "exception", "improper", "insecure", "unsafe",
+    "weak", "security", "vulnerability", "vulnerable", "risk", "data", "user", "incorrect", "invalid", "bad",
+    "logic", "edge", "case", "unchecked", "untrusted", "parameter", "argument", "output", "control",
+}
 
 
 def _stem(word: str) -> str:
@@ -44,9 +53,13 @@ def _stem(word: str) -> str:
     return word
 
 
-def _terms(finding: ReviewFinding) -> Set[str]:
-    words = re.findall(r"[a-z0-9_]+", f"{finding.title} {finding.root_cause}".lower())
+def _words(text: str) -> Set[str]:
+    words = re.findall(r"[a-z0-9_]+", text.lower())
     return {w for w in (_stem(w) for w in words if len(w) >= 3 and w not in _STOPWORDS)}
+
+
+def _terms(finding: ReviewFinding) -> Set[str]:
+    return _words(f"{finding.title} {finding.root_cause}")
 
 
 def _similar(a: ReviewFinding, b: ReviewFinding) -> bool:
@@ -55,8 +68,22 @@ def _similar(a: ReviewFinding, b: ReviewFinding) -> bool:
         return a.title.strip().lower() == b.title.strip().lower()
     shared = len(ta & tb)
     if min(len(ta), len(tb)) < MIN_TERMS_FOR_CONTAINMENT:
-        return shared / len(ta | tb) >= SIMILARITY_THRESHOLD
+        return shared / len(ta | tb) >= SIMILARITY_THRESHOLD or _terse_subset(a, b, ta, tb)
     return shared / min(len(ta), len(tb)) >= SIMILARITY_THRESHOLD
+
+
+def _terse_subset(a: ReviewFinding, b: ReviewFinding, ta: Set[str], tb: Set[str]) -> bool:
+    """簡短發現（"SQL injection"，沒有根因）的關鍵詞全部出現在詳細發現的「標題」中，且至少含一個
+    具體（非泛用）詞時，視為同一缺陷；兩者若都填了 OWASP 分類則必須相同。泛用的 "Missing input validation"
+    只有泛用詞，因此無法藉此併入 "SQL injection via search term"。
+    A terse finding ("SQL injection", no root cause) is the same defect as a detailed one when all of its
+    key terms appear in the detailed finding's *title* and at least one of them is specific (not generic);
+    when both carry an OWASP mapping it must be the same. The generic "Missing input validation" has only
+    generic terms, so it cannot be absorbed into "SQL injection via search term" this way."""
+    terse, detailed, terse_terms = (a, b, ta) if len(ta) <= len(tb) else (b, a, tb)
+    if not terse_terms - _GENERIC_TERMS or not terse_terms <= _words(detailed.title):
+        return False
+    return not (terse.owasp_mapping and detailed.owasp_mapping and terse.owasp_mapping != detailed.owasp_mapping)
 
 
 def _same_location(a: ReviewFinding, b: ReviewFinding) -> bool:
