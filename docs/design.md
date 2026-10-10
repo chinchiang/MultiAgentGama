@@ -2,7 +2,7 @@
 
 [English](design.en.md) ｜ 正體中文（臺灣）
 
-本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.6.0`（`CHANGELOG.md` 的 `[0.6.0]`，2026-10-10，依審查結果的強化並新增 `--cache-only`；`[0.5.1]` 為修正版，`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出），另含 `[Unreleased]` 的第二輪審查修正。文中的 `path:line` 引用以 commit `34ef5bc` 的檔案為準。
+本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.7.0`（`CHANGELOG.md` 的 `[0.7.0]`，2026-10-10，第二輪審查修正、PyPI 打包、`--init-config` 與設定檔自動尋找；`[0.6.0]` 為依審查結果的強化並新增 `--cache-only`，`[0.5.1]` 為修正版，`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。文中的 `path:line` 引用以 commit `34ef5bc` 的檔案為準。
 
 與其他文件的分工：
 
@@ -880,10 +880,10 @@ DAST／fuzzing、hypothesis、e2b 沙盒（突變測試已實作 Python 版，�
 | 任何意外例外都是 exit 5；live 失敗或 Ctrl-C 時取消排隊中的呼叫 | 執行階段之外的崩潰曾以 1 結束，CI 會讀成 NEEDS_FIXES；失敗的嚴格 live 執行還會繼續送出（並付費）排隊中的呼叫 | 進行中的呼叫仍會跑完 | 0.6.0 |
 | 帶雜湊的安裝（`--require-hashes`）、以 digest 釘死的沙盒基底映像、發布前先跑完整的測試 workflow、Action 從自己的 checkout 安裝 | 供應鏈：重新發布的套件或被移動的映像 tag 不能改變 CI、沙盒或目標稽核實際執行的內容 | Dependabot 無法重新產生的鎖定檔要照檔頭的 `uv pip compile` 指令手動重建 | 0.6.0 |
 | `--cache-only`：只從回應快取取用，未命中與預算用完同樣處理；重問後的回答也存在原始提示的 key 下 | live smoke 的 JSON 重跑會為第一次沒能快取的呼叫再花一次預算；重問的 key 取決於第一次無法使用的回答，重跑永遠不會命中 | 未命中只是 evidence gap（hybrid）或 exit 4（live），沒有部分重問 | 0.6.0 |
-| 沒有驗證時已確認數為 `null`（`JSON_SCHEMA_VERSION` "2"）；呼叫紀錄帶 `attempt`；harness 延遲到 `main()` 的防護內才匯入；為 pip 使用者提供 `--target .`、設定檔探索與 `--init-config` | 0 會被讀成「審查過、沒有缺陷」；缺少相依套件時在 `main()` 之前以 Python 的 1（= NEEDS_FIXES）當掉；pip 使用者必須給 `--target`，也沒有方便的方式取得可編輯的內建設定副本 | 工作區的 `vibeharness.yaml` 會被自動載入，所以不受信任的 checkout 需要明確的 `--config`（Action 會傳） | Unreleased |
-| 測試執行中目標載入失敗判為 ERROR「目標已損壞」；單檔 `RLIMIT_FSIZE`；JS 模組每 10 個一份預算；重跑上限為剩下的預算；只在本機沙盒強化 harness | 延遲匯入缺少的套件被讀成缺陷；print 迴圈可能塞滿 tmpfs；許多慢但會通過的 JS 模組用光同一份預算 | docker CLI 在主機端的輸出仍沒有上限 | Unreleased |
-| VH-AI-009 的否定詞只看緊鄰動詞的位置，條件與疑問需要引導詞；URL 憑證改用掃描而不是正規表達式比對；常見預設密碼只在迴環或範例／開發用主機上豁免；所有清理樣式都是線性時間 | 句子前段的否定詞或條件會讓真正的指令失效；含 `$ ' " { } < > @` 的密碼逃過遮蔽；`postgres:postgres@prod.internal` 從不回報；部分正規表達式在特製輸入上是平方時間 | `admin:admin@prod-db`（單一標籤主機）仍不回報 | Unreleased |
-| JS/TS 詞法分析改用明確的 template 堆疊、JSX 掃描預算、往回看／引數／片段上限與逐檔例外防護；VH-AI-006 解析真正的 argv 程式 | 惡意檔案可能觸發 `RecursionError` 或跑出平方時間而中止整次執行；`/usr/bin/env bash -c`、`python3.11`、`sudo sh` 被當成安全的 argv | `os.exec*`／`os.spawn*` 不算執行點、`env -S` 不解析、常數以整個檔案解析 | Unreleased |
+| 沒有驗證時已確認數為 `null`（`JSON_SCHEMA_VERSION` "2"）；呼叫紀錄帶 `attempt`；harness 延遲到 `main()` 的防護內才匯入；為 pip 使用者提供 `--target .`、設定檔探索與 `--init-config` | 0 會被讀成「審查過、沒有缺陷」；缺少相依套件時在 `main()` 之前以 Python 的 1（= NEEDS_FIXES）當掉；pip 使用者必須給 `--target`，也沒有方便的方式取得可編輯的內建設定副本 | 工作區的 `vibeharness.yaml` 會被自動載入，所以不受信任的 checkout 需要明確的 `--config`（Action 會傳） | 0.7.0 |
+| 測試執行中目標載入失敗判為 ERROR「目標已損壞」；單檔 `RLIMIT_FSIZE`；JS 模組每 10 個一份預算；重跑上限為剩下的預算；只在本機沙盒強化 harness | 延遲匯入缺少的套件被讀成缺陷；print 迴圈可能塞滿 tmpfs；許多慢但會通過的 JS 模組用光同一份預算 | docker CLI 在主機端的輸出仍沒有上限 | 0.7.0 |
+| VH-AI-009 的否定詞只看緊鄰動詞的位置，條件與疑問需要引導詞；URL 憑證改用掃描而不是正規表達式比對；常見預設密碼只在迴環或範例／開發用主機上豁免；所有清理樣式都是線性時間 | 句子前段的否定詞或條件會讓真正的指令失效；含 `$ ' " { } < > @` 的密碼逃過遮蔽；`postgres:postgres@prod.internal` 從不回報；部分正規表達式在特製輸入上是平方時間 | `admin:admin@prod-db`（單一標籤主機）仍不回報 | 0.7.0 |
+| JS/TS 詞法分析改用明確的 template 堆疊、JSX 掃描預算、往回看／引數／片段上限與逐檔例外防護；VH-AI-006 解析真正的 argv 程式 | 惡意檔案可能觸發 `RecursionError` 或跑出平方時間而中止整次執行；`/usr/bin/env bash -c`、`python3.11`、`sudo sh` 被當成安全的 argv | `os.exec*`／`os.spawn*` 不算執行點、`env -S` 不解析、常數以整個檔案解析 | 0.7.0 |
 
 ---
 

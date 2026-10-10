@@ -287,7 +287,7 @@ pip install vibeharness-mas
 vibeharness --version
 ```
 
-As an isolated command-line tool: `pipx install vibeharness-mas` or `uv tool install vibeharness-mas`. For reproducible CI, pin the version: `pip install vibeharness-mas==0.6.0`. `python -m vibeharness …` is the same as `vibeharness …`; an incomplete install (a missing dependency) exits 5 with reinstall instructions instead of a traceback.
+As an isolated command-line tool: `pipx install vibeharness-mas` or `uv tool install vibeharness-mas`. For reproducible CI, pin the version: `pip install vibeharness-mas==0.7.0`. `python -m vibeharness …` is the same as `vibeharness …`; an incomplete install (a missing dependency) exits 5 with reinstall instructions instead of a traceback.
 
 From source (for development; `python main.py` works from the checkout as well):
 
@@ -380,7 +380,7 @@ You can also pass `--sarif <path>` to emit a [SARIF 2.1.0](https://docs.oasis-op
   with:
     fetch-depth: 0                             # changed-since needs the history to diff against the ref
     persist-credentials: false
-- uses: chinchiang/MultiAgentGama@v0.6.0      # installs the package from the action's own checkout (hash-verified dependencies) and runs the audit
+- uses: chinchiang/MultiAgentGama@v0.7.0      # installs the package from the action's own checkout (hash-verified dependencies) and runs the audit
   with:
     target: src
     mode: hybrid
@@ -402,7 +402,7 @@ You can also pass `--sarif <path>` to emit a [SARIF 2.1.0](https://docs.oasis-op
     sarif_file: vibeharness.sarif
 ```
 
-The action's outputs are `verdict` (`READY_TO_SHIP` / `NEEDS_FIXES` / `BLOCKED_CRITICAL_RISK` / `INCONCLUSIVE`, or `ERROR` when the harness itself failed) and `exit-code`; the report, the SARIF and a crash's `.partial.json` are uploaded as an artifact named by `artifact-name` (default `vibeharness-report`; artifact names must be unique within a workflow run, so matrix jobs or repeated uses of the action need distinct names). `changed-since` diffs against a git ref, so check out with `fetch-depth: 0` (the default shallow clone has no history to compare). `sandbox: docker` builds the sandbox images from the action's own `docker/*.Dockerfile` and runs with a copy of the config (the bundled one, or the `--config` passed in `extra-args`) set to `sandbox_provider: docker`; it needs a runner with Docker such as `ubuntu-latest`. Without the action, `pip install vibeharness-mas==0.6.0` and call `vibeharness` directly.
+The action's outputs are `verdict` (`READY_TO_SHIP` / `NEEDS_FIXES` / `BLOCKED_CRITICAL_RISK` / `INCONCLUSIVE`, or `ERROR` when the harness itself failed) and `exit-code`; the report, the SARIF and a crash's `.partial.json` are uploaded as an artifact named by `artifact-name` (default `vibeharness-report`; artifact names must be unique within a workflow run, so matrix jobs or repeated uses of the action need distinct names). `changed-since` diffs against a git ref, so check out with `fetch-depth: 0` (the default shallow clone has no history to compare). `sandbox: docker` builds the sandbox images from the action's own `docker/*.Dockerfile` and runs with a copy of the config (the bundled one, or the `--config` passed in `extra-args`) set to `sandbox_provider: docker`; it needs a runner with Docker such as `ubuntu-latest`. Without the action, `pip install vibeharness-mas==0.7.0` and call `vibeharness` directly.
 
 **Mutation testing switch**: `--mutation` turns it on, `--no-mutation` off; precedence is CLI flag > config `global.mutation_testing` > off, so a config that enables it can be switched off for one run with `--no-mutation`, and a config that disables it can be switched on with `--mutation`. `--mutation-max-mutants N` (≥ 1) overrides the mutant cap (default 20); each mutant costs one sandbox batch and no model call, and `--estimate` lists the ceiling when it is on. The report has a Mutation Score row in the metrics table and lists surviving mutants; the other keys are in [`docs/configuration.en.md`](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/configuration.en.md).
 
