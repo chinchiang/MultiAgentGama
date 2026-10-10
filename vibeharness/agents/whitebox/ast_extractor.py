@@ -36,6 +36,21 @@ _JS_CONTROL_KEYWORDS = {"if", "for", "while", "switch", "catch", "return", "func
 _JS_REGEX_KEYWORDS = {"return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw",
                       "case", "do", "else", "yield", "await"}
 _JS_IDENTIFIER = r"[A-Za-z0-9_$]+"
+# 可能含 JSX 的副檔名：.ts/.mts/.cts 不算（`<T>x` 是型別斷言，不是 JSX）
+# Extensions that may hold JSX: .ts/.mts/.cts are excluded (`<T>x` is a type assertion there, not JSX)
+_JSX_EXTENSIONS = (".js", ".jsx", ".mjs", ".cjs", ".tsx")
+# JSX 標籤名稱（含成員與命名空間：`Foo.Bar`、`svg:rect`）、屬性名稱與結尾標籤
+# JSX tag names (members and namespaces included: `Foo.Bar`, `svg:rect`), attribute names and closing tags
+_JSX_NAME_RE = re.compile(r"[A-Za-z][\w$.:-]*")
+_JSX_ATTR_RE = re.compile(r"[A-Za-z_$][\w$:.-]*")
+_JSX_CLOSE_RE = re.compile(r"</\s*([A-Za-z][\w$.:-]*)?\s*>")
+# JSX 巢狀層數上限（每層是兩個遞迴呼叫）；更深的 `<` 照一般程式碼分析
+# Maximum JSX nesting depth (each level is two recursive calls); a deeper `<` is lexed as plain code
+_JSX_MAX_DEPTH = 120
+# 每個檔案最多容許幾次失敗的 JSX 嘗試（每次可能掃到檔尾）；用完後其餘的 `<` 照一般程式碼分析，避免平方時間
+# How many failed JSX attempts a file may have (each may scan to the end of the file); once spent, the remaining
+# `<` are lexed as plain code, which avoids quadratic time
+_JSX_MAX_FAILURES = 32
 # 路由註冊方法：HTTP 動詞加上 Express 的 `all`（`route` 另外處理：鏈式與物件形式）
 # Route registration methods: the HTTP verbs plus Express's `all` (`route` is handled separately: chained and object forms)
 _JS_ROUTE_METHODS = _JS_HTTP_VERBS | {"all"}
@@ -68,6 +83,9 @@ _JS_CLIENT_FACTORY_RE = re.compile(
 # Next.js 的別名匯出：`export { handler as GET, handler as POST }`（`... from '...'` 的轉匯出除外）
 # Next.js alias exports: `export { handler as GET, handler as POST }` (re-exports `... from '...'` excluded)
 _JS_EXPORT_LIST_RE = re.compile(r"\bexport\s*\{([^{}]*)\}(?!\s*from\b)")
+# 單行的正規表達式字面值（含字元類別與跳脫）加上旗標，用於辨識正規表達式路由路徑
+# A single-line regex literal (character classes and escapes included) plus flags, to recognize regex route paths
+_JS_REGEX_LITERAL_RE = re.compile(r"/(?:\\.|\[(?:\\.|[^\]\\\n])*\]|[^/\\\[\n])+/[A-Za-z]*")
 # 即使路徑不是字串字面值也會註冊路由的 Python 裝飾器接收者
 # Python decorator receivers that register routes even when the path is not a string literal
 _PY_ROUTE_RECEIVERS = {"app", "router", "api", "bp", "blueprint", "application", "server"}
@@ -273,7 +291,7 @@ class ASTExtractor:
             self.parse_failures.append(file_path)
             return []
 
-        masked = self._mask_source(content)
+        masked = self._mask_source(content, jsx=file_path.lower().endswith(_JSX_EXTENSIONS))
         line_offsets = [0] + [i + 1 for i, ch in enumerate(masked) if ch == "\n"]
 
         def line_of(pos: int) -> int:
@@ -290,24 +308,41 @@ class ASTExtractor:
     # --- JS/TS lexing helpers ---------------------------------------------------
 
     @staticmethod
-    def _mask_source(source: str) -> str:
+    def _mask_source(source: str, jsx: bool = False) -> str:
         """把註解、字串／樣板／正規表達式字面值清空，同時保留長度與換行。
 
         結構性掃描（宣告的正規表達式、大括號配對）在清空後的文字上執行，因此被註解掉的
-        路由或含有 'function fake()' 的字串都無法製造幻影。
+        路由或含有 'function fake()' 的字串都無法製造幻影。`jsx=True`（.js/.jsx/.tsx 等可能含 JSX 的檔案）時，
+        位於運算式位置的 JSX 元素會被當成 JSX 解析：子元素文字被清空，因此文字裡的 `/*`、反引號或引號
+        不會開啟註解或字面值；不是合法 JSX 的 `<`（例如 TS 泛型）會還原成一般詞法分析。
         Blanks out comments, string/template/regex literals while preserving length and newlines.
 
         Structural scans (declaration regexes, brace matching) run on the masked text so a
-        commented-out route or a string containing 'function fake()' cannot create phantoms.
+        commented-out route or a string containing 'function fake()' cannot create phantoms. With
+        `jsx=True` (.js/.jsx/.tsx and other files that may hold JSX) a JSX element in expression position is
+        parsed as JSX: its child text is blanked, so a `/*`, a backtick or a quote in that text opens no
+        comment or literal; a `<` that is not valid JSX (e.g. a TS generic) falls back to plain lexing.
         """
         out = list(source)
+        ASTExtractor._mask_code(source, out, 0, [_JSX_MAX_FAILURES] if jsx else None, 0)
+        return "".join(out)
+
+    @staticmethod
+    def _mask_code(source: str, out: List[str], i: int, jsx: Optional[List[int]], depth: int) -> Optional[int]:
+        """從 i 起詞法分析程式碼並清空其中的註解與字面值。depth 為 0 時處理到檔尾並回傳 n；
+        depth > 0 時是在 JSX 運算式容器 `{...}` 裡（i 指向 `{` 之後），回傳配對的 `}` 之後的位置，
+        若到檔尾都沒有閉合則回傳 None。`jsx` 是剩餘的 JSX 失敗次數（單一元素的串列，整個檔案共用），None 表示不辨識 JSX。
+        Lexes code from i, blanking its comments and literals. At depth 0 it runs to the end of the file and
+        returns n; at depth > 0 it is inside a JSX expression container `{...}` (i points just after the `{`)
+        and returns the position after the matching `}`, or None when the file ends before it closes. `jsx` is
+        the remaining JSX failure budget (a one-element list shared by the whole file); None disables JSX."""
         n = len(source)
-        i = 0
-        prev_char = ""       # 最後看到的有意義程式碼字元 ／ last significant code character seen
+        prev_char = "{" if depth else ""  # 最後看到的有意義程式碼字元 ／ last significant code character seen
         prev_word = ""       # 最後看到的識別字／關鍵字 ／ last identifier/keyword seen
         # prev_char 之前的兩個有意義字元：用來辨識後置的 `a++ / 2`
         # The two significant characters before prev_char: they recognize a postfix `a++ / 2`
         prev2 = prev3 = ""
+        braces = 0           # 運算式容器內未閉合的 `{` 數 ／ unclosed `{` inside an expression container
         while i < n:
             c = source[i]
             nxt = source[i + 1] if i + 1 < n else ""
@@ -336,23 +371,40 @@ class ASTExtractor:
                 i = ASTExtractor._mask_template(source, out, i)
                 prev_char, prev_word = c, ""
                 continue
-            if c == "/" and nxt not in ("", "/", "*", ">") and prev_char != "<":
-                # 正規表達式字面值還是除法？值結尾 token 之後的 `/` 是除法，
-                # 除非該 token 是會開啟正規表達式位置的關鍵字（return /x/、typeof /y/）。
-                # Regex literal or division? A `/` after a value-ending token is division,
-                # unless the token is a keyword that opens a regex position (return /x/, typeof /y/).
-                # `</tag>` and `/>` are JSX, and a regex literal never spans a line break.
-                after_value = prev_char and (prev_char.isalnum() or prev_char in ")]}$_.\"'`")
+            if c in "/<":
+                # 值結尾 token 之後是運算子位置（`/` 是除法、`<` 是比較），除非該 token 是會開啟運算式的
+                # 關鍵字（return /x/、typeof /y/、return <p/>）
+                # After a value-ending token we are in operator position (`/` divides, `<` compares), unless
+                # the token is a keyword that opens an expression (return /x/, typeof /y/, return <p/>)
+                after_value = bool(prev_char) and (prev_char.isalnum() or prev_char in ")]}$_.\"'`")
                 # 值之後的後置 ++／-- 仍是值：`a++ / 2` 是除法
                 # A postfix ++ / -- after a value is still a value: `a++ / 2` is division
                 if prev_char in ("+", "-") and prev2 == prev_char and prev3 and (prev3.isalnum() or prev3 in ")]_$"):
                     after_value = True
-                if not after_value or prev_word in _JS_REGEX_KEYWORDS:
-                    end = ASTExtractor._mask_regex(source, out, i)
+                expression_pos = not after_value or prev_word in _JS_REGEX_KEYWORDS
+                if c == "<" and jsx is not None and jsx[0] > 0 and expression_pos and depth < _JSX_MAX_DEPTH \
+                        and (nxt.isalpha() or nxt == ">"):
+                    end = ASTExtractor._mask_jsx(source, out, i, depth + 1, jsx)
                     if end is not None:
+                        # JSX 元素是一個值 ／ A JSX element is a value
                         i = end
+                        prev3, prev2, prev_char, prev_word = "", "", ")", ""
+                        continue
+                # 正規表達式字面值還是除法？`</tag>` 與 `/>` 是 JSX，正規表達式字面值也絕不跨行
+                # Regex literal or division? `</tag>` and `/>` are JSX, and a regex literal never spans a line break
+                if c == "/" and nxt not in ("", "/", "*", ">") and prev_char != "<" and expression_pos:
+                    end_re = ASTExtractor._mask_regex(source, out, i)
+                    if end_re is not None:
+                        i = end_re
                         prev_char, prev_word = c, ""
                         continue
+            if depth:
+                if c == "{":
+                    braces += 1
+                elif c == "}":
+                    if braces == 0:
+                        return i + 1
+                    braces -= 1
             if not c.isspace():
                 word_continues = prev_char and (prev_char.isalnum() or prev_char in "_$")
                 if c.isalnum() or c in "_$":
@@ -361,7 +413,107 @@ class ASTExtractor:
                     prev_word = ""
                 prev3, prev2, prev_char = prev2, prev_char, c
             i += 1
-        return "".join(out)
+        return None if depth else n
+
+    @staticmethod
+    def _mask_jsx(source: str, out: List[str], i: int, depth: int, budget: List[int]) -> Optional[int]:
+        """把 i 處開始的 JSX 元素當成 JSX 處理，回傳元素結束後的位置；不是合法的 JSX 時還原 out 並回傳 None。
+
+        屬性字串與子元素文字被清空（保留換行）；`{...}` 運算式容器與巢狀元素遞迴處理。開頭標籤裡出現
+        非屬性語法（`<T,>`）、結尾標籤名稱不符或到檔尾都沒有閉合時視為不是 JSX，讓呼叫端照一般程式碼分析。
+        Treats the JSX element starting at i as JSX and returns the position after it; when it is not valid
+        JSX, out is restored and None is returned.
+
+        Attribute strings and child text are blanked (newlines kept); `{...}` expression containers and
+        nested elements are handled recursively. Non-attribute syntax in the opening tag (`<T,>`), a
+        mismatched closing tag name, or reaching the end of the file unclosed means it is not JSX, so the
+        caller lexes it as plain code."""
+        n = len(source)
+
+        def fail(upto: int) -> Optional[int]:
+            # 呼叫端還沒碰過 i 之後的位置，所以原文就是正確的還原值
+            # The caller has not touched anything after i yet, so the source is the right value to restore
+            out[i:upto] = source[i:upto]
+            budget[0] -= 1
+            return None
+
+        m = _JSX_NAME_RE.match(source, i + 1)
+        name = m.group(0) if m else ""
+        j = m.end() if m else i + 1
+        # 開頭標籤：屬性、`{...props}` 展開，直到 `>` 或 `/>`
+        # The opening tag: attributes and `{...props}` spreads, up to `>` or `/>`
+        while True:
+            while j < n and source[j].isspace():
+                j += 1
+            if j >= n:
+                return fail(n)
+            ch = source[j]
+            if ch == "/" and source[j + 1:j + 2] == ">" and name:
+                return j + 2  # 自我閉合 ／ self-closing
+            if ch == ">":
+                j += 1
+                break
+            if not name:
+                return fail(j)
+            if ch == "{":
+                end = ASTExtractor._mask_code(source, out, j + 1, budget, depth)
+                if end is None:
+                    return fail(n)
+                j = end
+                continue
+            attr = _JSX_ATTR_RE.match(source, j)
+            if attr is None:
+                return fail(j)
+            j = attr.end()
+            k = j
+            while k < n and source[k].isspace():
+                k += 1
+            if k >= n or source[k] != "=":
+                continue  # 沒有值的布林屬性 ／ a boolean attribute without a value
+            k += 1
+            while k < n and source[k].isspace():
+                k += 1
+            if k < n and source[k] in "\"'":
+                close = source.find(source[k], k + 1)
+                if close < 0:
+                    return fail(n)
+                for p in range(k + 1, close):
+                    if source[p] != "\n":
+                        out[p] = " "
+                j = close + 1
+            elif k < n and source[k] == "{":
+                end = ASTExtractor._mask_code(source, out, k + 1, budget, depth)
+                if end is None:
+                    return fail(n)
+                j = end
+            else:
+                return fail(k)
+        # 子元素：文字、`{...}` 運算式容器與巢狀元素，直到名稱相符的結尾標籤
+        # Children: text, `{...}` expression containers and nested elements, up to the closing tag of the same name
+        while True:
+            while j < n and source[j] not in "<{":
+                if source[j] != "\n":
+                    out[j] = " "
+                j += 1
+            if j >= n:
+                return fail(n)
+            if source[j] == "{":
+                end = ASTExtractor._mask_code(source, out, j + 1, budget, depth)
+                if end is None:
+                    return fail(n)
+                j = end
+                continue
+            if source[j + 1:j + 2] == "/":
+                closing = _JSX_CLOSE_RE.match(source, j)
+                if closing is None or (closing.group(1) or "") != name:
+                    return fail(j)
+                return closing.end()
+            end = None if depth >= _JSX_MAX_DEPTH else ASTExtractor._mask_jsx(source, out, j, depth + 1, budget)
+            if end is None:
+                # JSX 子元素文字裡不可能有落單的 `<`：這不是 JSX
+                # A stray `<` cannot appear in JSX child text: this is not JSX
+                return fail(j)
+            j = end
 
     @staticmethod
     def _mask_quoted(source: str, out: List[str], i: int, quote: str) -> int:
@@ -696,19 +848,22 @@ class ASTExtractor:
     def _extract_js_routes(self, content: str, masked: str, file_path: str, line_of,
                            functions: List[CodeSymbol]) -> List[CodeSymbol]:
         """<router>.<verb>(path, handler) 呼叫、鏈式 `app.route('/x').get(h)`、物件形式
-        `server.route({method, path})`，加上 Next.js 以動詞命名（或以別名匯出）的處理函式。
+        `server.route({method, path})` 與 hapi 的陣列形式 `server.route([{...}, {...}])`，加上 Next.js
+        以動詞命名（或以別名匯出）的處理函式。
 
         已知的路由器接收者（常見名稱、`*Router`／`*App` 等名稱，以及綁定運算式中含有
         express()/Router()/fastify()/new Koa()/... 的變數）接受以 `/` 開頭的字串、空字串、含 `/` 的
-        樣板字面值，或（有處理函式引數時）識別字路徑。其他任何接收者只有在第一個引數是 `/` 開頭的
+        樣板字面值，或（有處理函式引數時）識別字路徑或正規表達式字面值。其他任何接收者只有在第一個引數是 `/` 開頭的
         路徑、而且後面跟著像處理函式的引數時才算；HTTP 用戶端（axios、`axios.create()` 的結果…）
         永遠不算。因此 `map.get('key')`、`headers.get("authorization")` 與 `cache.delete(key)` 都不是路由。
         <router>.<verb>(path, handler) calls, chained `app.route('/x').get(h)`, the object form
-        `server.route({method, path})`, plus Next.js verb-named (or alias-exported) handlers.
+        `server.route({method, path})` and hapi's array form `server.route([{...}, {...}])`, plus Next.js
+        verb-named (or alias-exported) handlers.
 
         Known router receivers (common names, `*Router` / `*App`-style names, and variables whose binding
         expression contains express()/Router()/fastify()/new Koa()/...) accept a string starting with `/`,
-        an empty string, a template literal containing `/`, or (with a handler argument) an identifier path.
+        an empty string, a template literal containing `/`, or (with a handler argument) an identifier path
+        or a regex literal.
         Any other receiver counts only when the first argument is a `/` path followed by a handler-like
         argument; HTTP clients (axios, the result of `axios.create()`, ...) never count. So `map.get('key')`,
         `headers.get("authorization")` and `cache.delete(key)` are not routes."""
@@ -798,6 +953,14 @@ class ASTExtractor:
             if template is None or "/" not in template:
                 return None
             return template if known_router or handler else None
+        if raw[:1] == "/" and known_router and handler and _JS_REGEX_LITERAL_RE.fullmatch(raw):
+            # Express 的正規表達式路徑：`app.get(/^\/users\/(\d+)$/, h)` -> `GET /^\/users\/(\d+)$/`
+            # An Express regex path: `app.get(/^\/users\/(\d+)$/, h)` -> `GET /^\/users\/(\d+)$/`
+            return raw
+        # 識別字路徑只在有處理函式引數時才算：沒有處理函式的 `app.get(PATH)` 刻意不是路由，
+        # 因為 Express 的 `app.get('setting')`／`app.get(SETTING_NAME)` 是讀取應用程式設定
+        # An identifier path counts only with a handler argument: `app.get(PATH)` without one is intentionally
+        # not a route, because Express's `app.get('setting')` / `app.get(SETTING_NAME)` reads an app setting
         if known_router and handler and re.fullmatch(r"[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*", raw):
             return raw
         return None
@@ -815,8 +978,10 @@ class ASTExtractor:
 
     def _js_route_method_calls(self, content: str, masked: str, file_path: str, line_of,
                                clients: Set[str]) -> List[CodeSymbol]:
-        """`<recv>.route('/x').get(h).post(h)`（Express 鏈式）與 `<recv>.route({method, url|path})`（Fastify／Hapi）。
-        `<recv>.route('/x').get(h).post(h)` (Express chain) and `<recv>.route({method, url|path})` (Fastify / Hapi)."""
+        """`<recv>.route('/x').get(h).post(h)`（Express 鏈式）、`<recv>.route({method, url|path})`（Fastify／Hapi），
+        以及 hapi 的陣列形式 `<recv>.route([{...}, {...}])`（每個物件各成一個路由，範圍是該物件）。
+        `<recv>.route('/x').get(h).post(h)` (Express chain), `<recv>.route({method, url|path})` (Fastify / Hapi),
+        and hapi's array form `<recv>.route([{...}, {...}])` (one route per object, spanning that object)."""
         symbols: List[CodeSymbol] = []
         verbs = "|".join(sorted(_JS_ROUTE_METHODS))
         for m in re.finditer(rf"(?:^|[^.\w$])(({_JS_IDENTIFIER})\.route)\s*\(", masked):
@@ -831,15 +996,26 @@ class ASTExtractor:
             if first is None:
                 continue
             if masked[first] == "{":
-                obj = content[first:close_paren]
-                methods = re.search(r"\bmethod\s*:\s*(\[[^\]]*\]|['\"][A-Za-z]+['\"])", obj)
-                path_m = re.search(r"\b(?:url|path)\s*:\s*(['\"`])([^'\"`\n]*)\1", obj)
-                if not methods or not path_m:
+                name = self._object_route_name(content[first:close_paren])
+                if name is not None:
+                    symbols.append(self._snippet(content, line_of, m.start(1), close_paren, file_path, name, "route",
+                                                 [], signature=name))
+                continue
+            if masked[first] == "[":
+                close_bracket = self._match_delim(masked, first, "[", "]")
+                if close_bracket is None or close_bracket > close_paren:
                     continue
-                verb_list = [v.upper() for v in re.findall(r"[A-Za-z]+", methods.group(1))]
-                name = f"{'|'.join(verb_list)} {path_m.group(2)}"
-                symbols.append(self._snippet(content, line_of, m.start(1), close_paren, file_path, name, "route", [],
-                                             signature=name))
+                for obj_start, obj_end in self._top_level_args(content, masked, first, close_bracket):
+                    obj_open = self._skip_ws(masked, obj_start)
+                    if obj_open is None or masked[obj_open] != "{":
+                        continue
+                    obj_close = self._match_delim(masked, obj_open, "{", "}")
+                    if obj_close is None or obj_close > obj_end:
+                        continue
+                    name = self._object_route_name(content[obj_open:obj_close])
+                    if name is not None:
+                        symbols.append(self._snippet(content, line_of, obj_open, obj_close, file_path, name, "route",
+                                                     [], signature=name))
                 continue
             if content[first] not in "\"'`":
                 continue
@@ -863,6 +1039,17 @@ class ASTExtractor:
                                              signature=name))
                 seg_start, pos = nxt, call_close
         return symbols
+
+    @staticmethod
+    def _object_route_name(obj: str) -> Optional[str]:
+        """`{method, url|path}` 路由物件的名稱（`GET|POST /x`）；缺少任何一個時回傳 None。
+        The name of a `{method, url|path}` route object (`GET|POST /x`); None when either is missing."""
+        methods = re.search(r"\bmethod\s*:\s*(\[[^\]]*\]|['\"][A-Za-z*]+['\"])", obj)
+        path_m = re.search(r"\b(?:url|path)\s*:\s*(['\"`])([^'\"`\n]*)\1", obj)
+        if not methods or not path_m:
+            return None
+        verb_list = [v.upper() for v in re.findall(r"[A-Za-z]+|\*", methods.group(1))]
+        return f"{'|'.join(verb_list)} {path_m.group(2)}"
 
     @staticmethod
     def _nextjs_handlers(masked: str, functions: List[CodeSymbol]) -> List[CodeSymbol]:
@@ -1135,7 +1322,7 @@ class ASTExtractor:
         # Include decorators: they carry route paths and auth guards the reviewers need to see
         start = min([d.lineno for d in node.decorator_list] + [node.lineno])
         end = node.end_lineno or start
-        source_snippet = "\n".join(source_lines[start - 1 : end])
+        source_snippet = self._without_nested_routes(node, source_lines, start, end)
 
         args = [arg.arg for arg in node.args.posonlyargs + node.args.args + node.args.kwonlyargs]
         # *args / **kwargs 是函式契約的一部分；審查者與探測都需要它們
@@ -1162,6 +1349,41 @@ class ASTExtractor:
             source_code=source_snippet,
             parameters=args
         )
+
+    def _without_nested_routes(self, node: Union[ast.FunctionDef, ast.AsyncFunctionDef], source_lines: List[str],
+                               start: int, end: int) -> str:
+        """第 start–end 行的原始碼，其中巢狀路由處理函式（Flask 工廠裡的 `@app.route`）的本體縮成一行佔位註解。
+
+        那些處理函式各自以 route 符號送審（`_nested_python_routes`），所以外層函式不必再帶一次它們的本體；
+        裝飾器與 `def` 行保留（註冊的脈絡），佔位行寫出被省略的檔案行號，讓審查者仍能對應回檔案。
+        結果仍是合法的 Python（本體是 `...`）。
+        The source of lines start-end, with the body of each nested route handler (`@app.route` in a Flask
+        factory) collapsed into a one-line placeholder comment.
+
+        Those handlers are reviewed as their own route symbols (`_nested_python_routes`), so the enclosing
+        function need not carry their bodies again; the decorators and the `def` line stay (registration
+        context) and the placeholder names the omitted file lines, so reviewers can still map back to the
+        file. The result is still valid Python (the body is `...`)."""
+        nested = [n for n in ast.walk(node) if n is not node and isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                  and any(self._is_route_decorator(dec) for dec in n.decorator_list)]
+        # 只收合最外層的巢狀路由：更深的那些已經在它們的本體裡
+        # Collapse only the outermost nested routes: deeper ones are already inside their bodies
+        outermost = [n for n in nested if not any(o is not n and o.lineno < n.lineno <= (o.end_lineno or o.lineno)
+                                                  for o in nested)]
+        lines = source_lines[start - 1:end]
+        # 由下往上替換，讓前面的行號維持有效
+        # Replace bottom-up so earlier line numbers stay valid
+        for route in sorted(outermost, key=lambda n: n.lineno, reverse=True):
+            body_start, body_end = route.body[0].lineno, route.end_lineno or route.lineno
+            if body_start <= route.lineno:
+                continue  # 單行處理函式（`def f(): return 1`）已經夠短 ／ a one-line handler is already short
+            # 沿用原本的縮排字元（tab 或空白），讓結果仍可解析
+            # Reuse the original indentation characters (tabs or spaces) so the result still parses
+            indent = source_lines[body_start - 1][:route.body[0].col_offset]
+            lines[body_start - start:body_end - start + 1] = [
+                f"{indent}...  # lines {body_start}-{body_end}: body of route handler `{route.name}`, listed separately"
+            ]
+        return "\n".join(lines)
 
     @staticmethod
     def _is_route_decorator(dec: ast.expr) -> bool:

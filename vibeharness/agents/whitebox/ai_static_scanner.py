@@ -556,28 +556,101 @@ class AISecurityStaticScanner:
                 cwe = _SQL_SINK_ATTRS.get(node.func.attr)
             if cwe is None or not node.args:
                 continue
-            if self._sink_arg_tainted(node, dotted, tainted, aliases):
+            if self._sink_arg_tainted(node, dotted, tainted, aliases, body):
                 out.append(self._finding("VH-AI-006", path, node.lineno, f"model output reaches {sink}()", cwe=cwe))
         return out
 
-    def _sink_arg_tainted(self, node: ast.Call, dotted: str, tainted: Set[str], aliases: Dict[str, str]) -> bool:
+    def _sink_arg_tainted(self, node: ast.Call, dotted: str, tainted: Set[str], aliases: Dict[str, str],
+                          body: Optional[List[ast.AST]] = None) -> bool:
         """執行點的第一個引數是否帶有模型輸出。不經 shell 的字面值引數清單（建議的安全形式
-        `subprocess.run(["git", "checkout", "--", branch])`）只有在 argv[0] 被污染、或 argv[0] 是 shell／直譯器時才算。
+        `subprocess.run(["git", "checkout", "--", branch])`）只有在 argv[0] 被污染、或 argv[0] 是 shell／直譯器時才算；
+        同一範疇裡只被指派為字面值清單的名稱（`cmd = ["git", "checkout", branch]; subprocess.run(cmd)`）套用相同規則。
         Whether the sink's first argument carries model output. A literal argument list without a shell (the
         recommended safe form `subprocess.run(["git", "checkout", "--", branch])`) only counts when argv[0] is
-        tainted or argv[0] is a shell / interpreter."""
+        tainted or argv[0] is a shell / interpreter; a name the same scope only ever binds to a literal list
+        (`cmd = ["git", "checkout", branch]; subprocess.run(cmd)`) gets the same rule."""
         first = node.args[0]
-        if dotted in _ARGV_SINKS and isinstance(first, (ast.List, ast.Tuple)) \
-                and not self._is_true(self._kw(node, "shell")):
-            if not first.elts:
-                return False
-            program = first.elts[0]
-            if self._expr_tainted(program, tainted, aliases):
-                return True
-            is_shell = isinstance(program, ast.Constant) and isinstance(program.value, str) \
-                and os.path.basename(program.value).lower() in _SHELL_PROGRAMS
-            return is_shell and any(self._expr_tainted(e, tainted, aliases) for e in first.elts[1:])
+        if dotted in _ARGV_SINKS and not self._is_true(self._kw(node, "shell")):
+            if isinstance(first, (ast.List, ast.Tuple)):
+                return self._argv_tainted(first, tainted, aliases)
+            if isinstance(first, ast.Name) and body is not None:
+                # 用被污染的資料修改清單（`cmd.append(branch)`）不是綁定，一般污染追不到：保守地標記
+                # Mutating the list with tainted data (`cmd.append(branch)`) is no binding plain taint can see: flag it
+                if self._mutated_with_taint(first.id, body, tainted, aliases):
+                    return True
+                literals = self._argv_literals(first.id, body)
+                if literals:
+                    return any(self._argv_tainted(lit, tainted, aliases) for lit in literals)
         return self._expr_tainted(first, tainted, aliases)
+
+    def _mutated_with_taint(self, name: str, body: List[ast.AST], tainted: Set[str], aliases: Dict[str, str]) -> bool:
+        """範疇中是否以被污染的資料 `append`／`extend`／`insert`／`+=` 修改 `name`。
+        Whether the scope mutates `name` with tainted data via `append` / `extend` / `insert` / `+=`."""
+        for n in body:
+            if isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Name) and n.target.id == name:
+                if self._expr_tainted(n.value, tainted, aliases):
+                    return True
+            elif isinstance(n, ast.Call) and self._list_mutation(n, name):
+                if any(self._expr_tainted(a, tainted, aliases) for a in list(n.args) + [k.value for k in n.keywords]):
+                    return True
+        return False
+
+    @staticmethod
+    def _list_mutation(node: ast.Call, name: str) -> bool:
+        return isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) \
+            and node.func.value.id == name and node.func.attr in ("append", "extend", "insert")
+
+    def _argv_tainted(self, argv: ast.expr, tainted: Set[str], aliases: Dict[str, str]) -> bool:
+        """字面值引數清單是否危險：argv[0] 被污染，或 argv[0] 是 shell／直譯器且後面有被污染的元素。
+        Whether a literal argument list is dangerous: argv[0] is tainted, or argv[0] is a shell / interpreter
+        and a later element is tainted."""
+        elts = argv.elts if isinstance(argv, (ast.List, ast.Tuple)) else []
+        if not elts:
+            return False
+        program = elts[0]
+        if self._expr_tainted(program, tainted, aliases):
+            return True
+        is_shell = isinstance(program, ast.Constant) and isinstance(program.value, str) \
+            and os.path.basename(program.value).lower() in _SHELL_PROGRAMS
+        return is_shell and any(self._expr_tainted(e, tainted, aliases) for e in elts[1:])
+
+    def _argv_literals(self, name: str, body: List[ast.AST]) -> Optional[List[ast.expr]]:
+        """範疇中 `name` 的所有字面值清單／tuple 指派；若它也有別的綁定方式就回傳 None（保守：照一般污染判斷）。
+
+        非字面值的重新指派、拆包、下標指派、迴圈／with／海象目標、`global`／`nonlocal`，以及任何 `insert`
+        （可能換掉 argv[0]）都讓清單內容無法確定。以未污染資料 `append`／`extend`／`+=` 附加元素不改變判斷
+        （被污染的修改由 `_mutated_with_taint` 先行標記）。
+        Every literal list/tuple assignment of `name` in the scope; None when it is also bound some other way
+        (conservative: fall back to plain taint).
+
+        A non-literal reassignment, unpacking, subscript assignment, loop / with / walrus target, `global` /
+        `nonlocal`, or any `insert` (it may replace argv[0]) makes the list contents unknowable. Appending
+        untainted data with `append` / `extend` / `+=` does not change the verdict (a tainted mutation is
+        flagged first by `_mutated_with_taint`)."""
+        literals: List[ast.expr] = []
+        for n in body:
+            if isinstance(n, (ast.Global, ast.Nonlocal)) and name in n.names:
+                return None
+            if isinstance(n, (ast.Assign, ast.AnnAssign)):
+                targets = n.targets if isinstance(n, ast.Assign) else [n.target]
+                for t in targets:
+                    if isinstance(t, ast.Name) and t.id == name:
+                        if n.value is None:
+                            continue  # 只有註記沒有值 ／ an annotation without a value
+                        if not isinstance(n.value, (ast.List, ast.Tuple)):
+                            return None
+                        literals.append(n.value)
+                    elif name in self._target_keys(t):
+                        return None
+            elif isinstance(n, ast.AugAssign) and name in self._target_keys(n.target):
+                if not isinstance(n.target, ast.Name):
+                    return None
+            elif isinstance(n, ast.Call) and self._list_mutation(n, name) and getattr(n.func, "attr", "") == "insert":
+                return None
+            elif isinstance(n, (ast.For, ast.AsyncFor, ast.comprehension, ast.With, ast.AsyncWith, ast.NamedExpr)):
+                if any(name in self._target_keys(t) for _, t in self._bindings([n])):
+                    return None
+        return literals
 
     @staticmethod
     def _bindings(body: List[ast.AST]) -> List[tuple]:
