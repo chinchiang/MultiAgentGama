@@ -104,6 +104,18 @@ def sandbox_home_env(run_dir: str) -> Dict[str, str]:
     env = {"HOME": home}
     if sys.platform == "win32":
         env["USERPROFILE"] = home
+        # Windows 的每使用者設定與憑證快取（gh、Azure CLI、git-credential、瀏覽器設定檔…）放在 APPDATA／LOCALAPPDATA
+        # 底下：也指到假家目錄裡（照 Windows 的版面）。真正的使用者 site-packages 已在下面以 PYTHONUSERBASE
+        # 保留（它是從 harness 自己真正的 APPDATA 算出來的）。PROGRAMDATA 刻意保留：那是全機共用、非個人的
+        # 設定（各使用者都能讀），有些工具鏈需要它，指走反而會讓它們壞掉
+        # Windows keeps per-user settings and credential caches (gh, Azure CLI, git-credential, browser profiles...)
+        # under APPDATA / LOCALAPPDATA: those point into the fake home too (in the Windows layout). The real user
+        # site-packages is still kept through PYTHONUSERBASE below (computed from the harness's own real APPDATA).
+        # PROGRAMDATA is deliberately kept: it is machine-wide, not personal, configuration (readable by every
+        # user) that some toolchains need, and pointing it away would only break them
+        for key, *parts in (("APPDATA", "AppData", "Roaming"), ("LOCALAPPDATA", "AppData", "Local")):
+            env[key] = os.path.join(home, *parts)
+            os.makedirs(env[key], exist_ok=True)
     try:
         import site
         if site.ENABLE_USER_SITE and os.path.isdir(site.getusersitepackages()):
@@ -123,6 +135,11 @@ def _without_real_home(env: Dict[str, str]) -> Dict[str, str]:
 # The prctl option number of PR_SET_DUMPABLE (linux/prctl.h)
 _PR_SET_DUMPABLE = 4
 _harness_hardened = False
+# 設成 1 時 harness 保持可 dump，讓 py-spy／gdb／psutil 之類的除錯工具能附加（代價是同一使用者的
+# 產生測試能讀到 /proc/<harness>/environ）；只用於除錯
+# Set to 1 to keep the harness dumpable so debuggers such as py-spy / gdb / psutil can attach (at the cost of a
+# same-uid generated test being able to read /proc/<harness>/environ); for debugging only
+KEEP_DUMPABLE_ENV = "VIBEHARNESS_KEEP_DUMPABLE"
 
 
 def harden_harness_process() -> None:
@@ -140,21 +157,36 @@ def harden_harness_process() -> None:
     the environment the process started with.
     Side effects: the harness writes no core dump and a non-root debugger cannot attach to it.
     NOT a security boundary: other same-uid processes (e.g. the shell that launched the harness) keep a
-    readable environ; use the docker sandbox for untrusted targets."""
+    readable environ; use the docker sandbox for untrusted targets.
+    只由本機沙盒的執行路徑呼叫（docker 沙盒的子行程在容器裡，讀不到 harness 的 /proc）；
+    設定 VIBEHARNESS_KEEP_DUMPABLE=1 可跳過（除錯用）。失敗時記一次 WARNING。
+    Only called from the local sandbox's run path (a docker sandbox's children live in a container and cannot
+    reach the harness's /proc); VIBEHARNESS_KEEP_DUMPABLE=1 skips it (for debugging). A failure is logged once at
+    WARNING."""
     global _harness_hardened
     if _harness_hardened:
         return
     _harness_hardened = True
     if not sys.platform.startswith("linux"):
         return
+    if os.environ.get(KEEP_DUMPABLE_ENV) == "1":
+        logger.info(bi(f"{KEEP_DUMPABLE_ENV}=1：harness 行程保持可 dump（產生的測試可讀到它的 /proc environ）",
+                       f"{KEEP_DUMPABLE_ENV}=1: the harness process stays dumpable (generated tests can read its "
+                       "/proc environ)"))
+        return
     try:
         import ctypes
         libc = ctypes.CDLL(None, use_errno=True)
-        if libc.prctl(_PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
-            logger.debug(bi(f"prctl(PR_SET_DUMPABLE, 0) 失敗：errno {ctypes.get_errno()}",
-                            f"prctl(PR_SET_DUMPABLE, 0) failed: errno {ctypes.get_errno()}"))
+        # prctl 是可變參數函式（int option, unsigned long ...）：明確給 C 型別，不靠 ctypes 預設的 int 轉換
+        # prctl is variadic (int option, unsigned long ...): pass explicit C types instead of ctypes' default int
+        zero = ctypes.c_ulong(0)
+        if libc.prctl(ctypes.c_int(_PR_SET_DUMPABLE), zero, zero, zero, zero) != 0:
+            errno = ctypes.get_errno()
+            logger.warning(bi(f"prctl(PR_SET_DUMPABLE, 0) 失敗（errno {errno}）；產生的測試可能讀到 harness 的 /proc environ",
+                              f"prctl(PR_SET_DUMPABLE, 0) failed (errno {errno}); generated tests may be able to read "
+                              "the harness's /proc environ"))
     except Exception as e:  # 沒有 libc／ctypes 的環境：維持原狀 ／ no libc / ctypes: leave things as they are
-        logger.debug(bi(f"無法讓 harness 行程變成不可 dump：{e}", f"Could not make the harness process non-dumpable: {e}"))
+        logger.warning(bi(f"無法讓 harness 行程變成不可 dump：{e}", f"Could not make the harness process non-dumpable: {e}"))
 
 
 # 每個輸出串流最多讀回多少位元組；超過時保留開頭與結尾（涵蓋率表格在結尾）
@@ -162,20 +194,51 @@ def harden_harness_process() -> None:
 # (the coverage table is at the end)
 _MAX_CAPTURE_BYTES = 16 * 1024 * 1024
 _CAPTURE_HEAD_BYTES = 1024 * 1024
+# 本機沙盒子行程能寫出的單一檔案大小上限（RLIMIT_FSIZE，POSIX）：擋住一個 print 迴圈把 GB 級的輸出寫進
+# tmpfs（等於吃掉主機記憶體）。上限是「每個檔案」的：pytest 的擷取暫存檔、junit.xml、.coverage 與測試自己
+# 寫的檔案各自受限，正常的報告（KB～MB 級）遠低於它；比讀回上限 _MAX_CAPTURE_BYTES 大，讀回時的截斷仍照常
+# 生效。超過上限的寫入得到 EFBIG（OSError errno 27；SIGXFSZ 在子行程中被忽略，所以行程不會因此被殺）。
+# docker 沙盒不套用（容器有自己的 tmpfs 大小與記憶體上限）
+# The largest single file a local sandbox child may write (RLIMIT_FSIZE, POSIX): stops a print loop from writing
+# gigabytes into tmpfs (that is, into host memory). The cap is per file: pytest's capture temp files, junit.xml,
+# .coverage and files the test writes are each bounded, and normal reports (KB to MB) are far below it; it is larger
+# than the read-back cap _MAX_CAPTURE_BYTES, so the read-back truncation still applies. A write beyond it gets EFBIG
+# (OSError errno 27; SIGXFSZ is ignored in the child, so the process is not killed by it). Not applied to the
+# docker sandbox (the container has its own tmpfs size and memory caps)
+SANDBOX_MAX_FILE_BYTES = 64 * 1024 * 1024
 
 
 def _read_capture(stream: Any) -> str:
     """讀回暫存檔裡擷取到的輸出（UTF-8、換行正規化成 \\n，與先前文字模式的管線一致）。
-    Reads back the output captured in a temp file (UTF-8, newlines normalised to \\n like the former text-mode pipes)."""
-    size = stream.seek(0, os.SEEK_END)
-    stream.seek(0)
+    POSIX 上用 os.pread：子行程（以及可能存活的孫行程）與我們共用同一個檔案描述的偏移量，seek 會把它們
+    之後的寫入挪到檔案中間，而 pread 完全不動那個偏移量。
+    Reads back the output captured in a temp file (UTF-8, newlines normalised to \\n like the former text-mode pipes).
+    On POSIX this uses os.pread: the child (and a grandchild that may survive) shares the open file description's
+    offset with us, and a seek would move their later writes into the middle of the file, while pread never
+    touches that offset."""
+    fd = stream.fileno()
+    size = os.fstat(fd).st_size
+
+    def read_at(offset: int, length: int) -> bytes:
+        if not hasattr(os, "pread"):  # Windows：沒有 pread，也沒有存活的孫行程共用偏移量 ／ Windows: no pread, no surviving grandchild sharing the offset
+            stream.seek(offset)
+            return stream.read(length)
+        chunks = []
+        while length > 0:
+            chunk = os.pread(fd, length, offset)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            offset += len(chunk)
+            length -= len(chunk)
+        return b"".join(chunks)
+
     if size > _MAX_CAPTURE_BYTES:
-        head = stream.read(_CAPTURE_HEAD_BYTES)
-        stream.seek(size - (_MAX_CAPTURE_BYTES - _CAPTURE_HEAD_BYTES))
+        tail = _MAX_CAPTURE_BYTES - _CAPTURE_HEAD_BYTES
         marker = "\n... " + bi("（輸出過長，已截斷）", "(output too long, truncated)") + " ...\n"
-        data = head + marker.encode("utf-8") + stream.read()
+        data = read_at(0, _CAPTURE_HEAD_BYTES) + marker.encode("utf-8") + read_at(size - tail, tail)
     else:
-        data = stream.read()
+        data = read_at(0, size)
     return data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
 
 
@@ -198,6 +261,12 @@ class LocalSubprocessSandbox:
     NOTE: this is NOT a security boundary. Generated code still runs as the current user with
     filesystem and network access; use DockerSandbox (sandbox_provider: docker) for untrusted targets.
     """
+
+    # 本機子行程與 harness 同一使用者，能讀 /proc/<harness>/environ：執行前先讓 harness 不可 dump
+    # （見 harden_harness_process）。容器沙盒覆寫成 False
+    # Local children share the harness's uid and could read /proc/<harness>/environ: make the harness non-dumpable
+    # before running (see harden_harness_process). Container sandboxes override this with False
+    _hardens_harness = True
 
     def __init__(self, timeout_seconds: int = 30, memory_mb: int = 0):
         self.timeout_seconds = timeout_seconds
@@ -257,6 +326,8 @@ class LocalSubprocessSandbox:
         junit_path = os.path.join(run_dir, "junit.xml")
 
         start_time = time.time()
+        if self._hardens_harness:
+            harden_harness_process()
         try:
             cmd, cwd, env = self._build_command(
                 run_dir, list(files), base_dir, collect_coverage, coverage_target, custom_env, timeout
@@ -365,14 +436,33 @@ class LocalSubprocessSandbox:
 
     @staticmethod
     def _apply_limits(limits: Dict[str, int]):
-        """在子行程（POSIX）中套用 `limits` 的 preexec_fn；不支援的限制會被跳過。
-        preexec_fn applying `limits` in the child (POSIX); unsupported limits are ignored."""
+        """在子行程（POSIX）中套用 `limits` 的 preexec_fn；不支援的限制會被跳過。單檔大小上限（RLIMIT_FSIZE）
+        一律套用：`limits["file_bytes"]`，預設 SANDBOX_MAX_FILE_BYTES；SIGXFSZ 被忽略，讓超過上限的寫入
+        只得到 EFBIG 而不是殺掉行程（Python 本來就忽略它，Node 不會）。
+        preexec_fn applying `limits` in the child (POSIX); unsupported limits are ignored. The per-file size cap
+        (RLIMIT_FSIZE) always applies: `limits["file_bytes"]`, SANDBOX_MAX_FILE_BYTES by default; SIGXFSZ is ignored
+        so a write beyond the cap only gets EFBIG instead of killing the process (Python ignores it anyway, Node
+        does not)."""
+        file_bytes = limits.get("file_bytes") or SANDBOX_MAX_FILE_BYTES
+
         def apply() -> None:
             try:
                 import resource
             except ImportError:  # pragma: no cover - 僅限 POSIX ／ POSIX only
                 return
-            for name, value in (("RLIMIT_AS", limits.get("memory_bytes")), ("RLIMIT_CPU", limits.get("cpu_seconds"))):
+            if hasattr(signal, "SIGXFSZ"):
+                try:
+                    signal.signal(signal.SIGXFSZ, signal.SIG_IGN)  # 忽略的處置會跨 exec 繼承 ／ an ignored disposition survives exec
+                except (ValueError, OSError):
+                    # 不在主執行緒（harness 從工作執行緒啟動沙盒）：改用遮罩擋住，遮罩同樣跨 exec 繼承
+                    # Not on the main thread (the harness launched the sandbox from a worker): block it instead, the
+                    # mask survives exec too
+                    try:
+                        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGXFSZ})
+                    except (ValueError, OSError, AttributeError):
+                        pass
+            for name, value in (("RLIMIT_AS", limits.get("memory_bytes")), ("RLIMIT_CPU", limits.get("cpu_seconds")),
+                                ("RLIMIT_FSIZE", file_bytes)):
                 if not value or not hasattr(resource, name):
                     continue
                 try:
@@ -399,8 +489,11 @@ class LocalSubprocessSandbox:
         communicate() block until the timeout and turned a finished (even passing) run into a timeout.
         Once the main process is gone (normally or on timeout) the rest of its process group is killed so
         stray children never outlive the run (POSIX; on Windows taskkill /T no longer finds the children
-        after the main process exited, so the whole tree is only reached on a timeout)."""
-        harden_harness_process()
+        after the main process exited, so the whole tree is only reached on a timeout).
+        主行程的結束狀態遺失時（已被別處回收，例如 SIGCHLD 被設成 SIG_IGN），回傳 EXECUTION_FAILURE_EXIT_CODE，
+        絕不偽造成 0。
+        When the main process's exit status was lost (reaped elsewhere, e.g. SIGCHLD set to SIG_IGN), returns
+        EXECUTION_FAILURE_EXIT_CODE, never a fake 0."""
         popen_kwargs: Dict[str, Any] = {}
         if sys.platform == "win32":
             popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -422,34 +515,97 @@ class LocalSubprocessSandbox:
             # 開了新 session 的孫行程可能存活並繼續寫入檔案；我們只讀回目前已有的內容
             # A grandchild that started a new session may survive and keep writing; only what is there now is read
             stdout, stderr = _read_capture(out_file), _read_capture(err_file)
+        if finished is None:
+            note = bi("沙盒無法取得測試行程的結束狀態（已被其他地方回收）；結果不可信",
+                      "The sandbox could not obtain the test process's exit status (it was reaped elsewhere); "
+                      "the outcome is unknown")
+            return EXECUTION_FAILURE_EXIT_CODE, stdout, f"{stderr}\n{note}" if stderr else note
         return (proc.returncode if finished else None), stdout, stderr
 
     @staticmethod
-    def _wait_for_exit(proc: subprocess.Popen, timeout: float) -> bool:
-        """等主行程結束（最多 timeout 秒）；結束了回傳 True。POSIX 上用 waitid(WNOWAIT) 只觀察、不回收：
-        主行程維持殭屍狀態，行程群組 ID 就不會被重用，隨後的 killpg 不可能誤殺無關的行程。
-        Waits (at most timeout seconds) for the main process to exit; True when it did. On POSIX waitid(WNOWAIT)
-        observes without reaping: the leader stays a zombie, so its process-group id cannot be reused and the
-        following killpg can never hit an unrelated process."""
-        if sys.platform != "win32" and hasattr(os, "waitid") and hasattr(os, "WNOWAIT"):
-            deadline = time.monotonic() + timeout
+    def _wait_for_exit(proc: subprocess.Popen, timeout: float) -> Optional[bool]:
+        """等主行程結束（最多 timeout 秒）：結束了回傳 True，逾時回傳 False，結束了但結束狀態已遺失
+        （已被別處回收）回傳 None——呼叫端不得把它當成結束碼 0。
+        POSIX 上優先只觀察、不回收：waitid(WNOWAIT)（Linux；macOS 自 Python 3.13 起），否則 kqueue 的
+        EVFILT_PROC/NOTE_EXIT（macOS／BSD 的舊版 Python）。主行程維持殭屍狀態，行程群組 ID 就不會被重用，
+        隨後的 killpg 不可能誤殺無關的行程。兩者都沒有時退回 waitpid(WNOHANG) 輪詢，它會回收主行程：
+        回收與 killpg 之間只剩極短的窗口——而且只有群組裡已沒有任何成員、行程 ID 又剛好繞回被重用時，
+        killpg 才可能打到無關的行程（群組還有成員時，核心不會把該 ID 配給新行程）。
+        Waits (at most timeout seconds) for the main process to exit: True when it did, False on a timeout, None
+        when it exited but its exit status was lost (reaped elsewhere) — the caller must not report that as exit 0.
+        On POSIX it prefers observing without reaping: waitid(WNOWAIT) (Linux; macOS from Python 3.13), else a
+        kqueue EVFILT_PROC/NOTE_EXIT (macOS / BSD on older Pythons). The leader stays a zombie, so its process-group
+        id cannot be reused and the following killpg can never hit an unrelated process. Without either it falls
+        back to polling waitpid(WNOHANG), which reaps the leader: only a tiny window is left between the reap and
+        the killpg — and killpg can only hit an unrelated process if the group has no member left AND the pid has
+        just wrapped around to be reused (the kernel does not hand out an id still used by a group)."""
+        if sys.platform == "win32":
+            try:
+                proc.wait(timeout=timeout)
+                return True
+            except subprocess.TimeoutExpired:
+                return False
+        deadline = time.monotonic() + timeout
+        if hasattr(os, "waitid") and hasattr(os, "WNOWAIT"):
             delay = 0.0005
             while True:
                 try:
                     if os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
                         return True
                 except ChildProcessError:
-                    return True  # 已被回收 ／ already reaped
+                    return None  # 已被別處回收：結束狀態遺失 ／ reaped elsewhere: the exit status is lost
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return False
                 delay = min(delay * 2, remaining, 0.05)
                 time.sleep(delay)
+        observed = LocalSubprocessSandbox._wait_kqueue(proc, timeout)
+        if observed is not None:
+            return observed
+        delay = 0.0005
+        while True:
+            try:
+                pid, status = os.waitpid(proc.pid, os.WNOHANG)
+            except ChildProcessError:
+                return None
+            if pid:
+                # 我們自己回收了：把結束碼交給 Popen，之後的 proc.wait() 不會再回收（也不會偽造成 0）
+                # We reaped it ourselves: hand the exit code to Popen, so a later proc.wait() neither reaps again
+                # nor fakes 0
+                proc.returncode = os.waitstatus_to_exitcode(status)
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            delay = min(delay * 2, remaining, 0.05)
+            time.sleep(delay)
+
+    @staticmethod
+    def _wait_kqueue(proc: subprocess.Popen, timeout: float) -> Optional[bool]:
+        """以 kqueue（EVFILT_PROC/NOTE_EXIT）等待主行程結束而不回收它：True 結束、False 逾時；沒有 kqueue、
+        或註冊失敗（例如行程已是殭屍，ESRCH）時回傳 None，由呼叫端退回 waitpid 輪詢（會立刻看到它）。
+        Waits for the main process to exit through kqueue (EVFILT_PROC/NOTE_EXIT) without reaping it: True when it
+        exited, False on a timeout; None without kqueue or when registering failed (e.g. the process is already a
+        zombie, ESRCH), and the caller falls back to polling waitpid (which sees it at once)."""
+        import select as select_module
+        select: Any = select_module  # kqueue 的名稱只在 macOS／BSD 上存在（型別檢查在 Linux 上跑） ／ the kqueue names exist on macOS / BSD only (type checks run on Linux)
+        if not (hasattr(select, "kqueue") and hasattr(select, "KQ_FILTER_PROC")):
+            return None
         try:
-            proc.wait(timeout=timeout)
-            return True
-        except subprocess.TimeoutExpired:
-            return False
+            kq = select.kqueue()
+        except OSError:
+            return None
+        try:
+            event = select.kevent(proc.pid, filter=select.KQ_FILTER_PROC,
+                                  flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT, fflags=select.KQ_NOTE_EXIT)
+            events = kq.control([event], 1, max(0.0, timeout))
+        except OSError:
+            return None
+        finally:
+            kq.close()
+        if any(e.flags & select.KQ_EV_ERROR for e in events):
+            return None  # 註冊失敗（ESRCH：已結束）：交給 waitpid 輪詢 ／ registration failed (ESRCH: exited): left to the waitpid poll
+        return bool(events)
 
     @staticmethod
     def _kill_tree(proc: subprocess.Popen):
@@ -558,6 +714,10 @@ class DockerSandbox(LocalSubprocessSandbox):
     The image must already contain pytest, pytest-cov and the target's dependencies, because the
     container has no network to install them (see docker/sandbox.Dockerfile).
     """
+    # 容器裡的程式碼看不到 harness 的 /proc：不需要（也不該為此犧牲除錯能力）讓 harness 不可 dump
+    # Code in the container cannot see the harness's /proc: no need to make the harness non-dumpable (and lose
+    # debuggability for it)
+    _hardens_harness = False
 
     def __init__(
         self,
