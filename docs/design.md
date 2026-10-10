@@ -2,7 +2,7 @@
 
 [English](design.en.md) ｜ 正體中文（臺灣）
 
-本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.5.1`（`CHANGELOG.md` 的 `[0.5.1]`，2026-10-10，修正版；`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出），以及 `[Unreleased]` 列出的修正。文中的 `path:line` 引用以 commit `ddd419f` 的檔案為準。
+本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.5.1`（`CHANGELOG.md` 的 `[0.5.1]`，2026-10-10，修正版；`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出），以及 `[Unreleased]` 列出的修正。文中的 `path:line` 引用以 commit `04f1441` 的檔案為準。
 
 與其他文件的分工：
 
@@ -871,7 +871,7 @@ DAST／fuzzing、hypothesis、e2b 沙盒（突變測試已實作 Python 版，�
 
 ## 18. 附錄
 
-行號對應 commit `ddd419f` 的程式碼；核對方式為 `grep -n "def 名稱" 檔案`。
+行號對應 commit `04f1441` 的程式碼；核對方式為 `grep -n "def 名稱" 檔案`。
 
 ### 18.1 關鍵常數
 

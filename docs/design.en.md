@@ -2,7 +2,7 @@
 
 English ｜ [正體中文（臺灣）](design.md)
 
-This document describes the design of VibeHarness-MAS: why it is built the way it is, how each component works, how data flows between phases, how the quality gate decides, the sandbox security model, and the known limitations. It corresponds to `vibeharness/__init__.py` version `0.5.1` (`[0.5.1]` in `CHANGELOG.md`, 2026-10-10, a fix release; `[0.5.0]` added optional mutation testing and `[0.4.0]` brought `--baseline`, `--estimate`, JS/TS dynamic test execution and bilingual zh-TW / en output), plus the fixes listed under `[Unreleased]`. Every `path:line` reference is to the files at commit `ddd419f`.
+This document describes the design of VibeHarness-MAS: why it is built the way it is, how each component works, how data flows between phases, how the quality gate decides, the sandbox security model, and the known limitations. It corresponds to `vibeharness/__init__.py` version `0.5.1` (`[0.5.1]` in `CHANGELOG.md`, 2026-10-10, a fix release; `[0.5.0]` added optional mutation testing and `[0.4.0]` brought `--baseline`, `--estimate`, JS/TS dynamic test execution and bilingual zh-TW / en output), plus the fixes listed under `[Unreleased]`. Every `path:line` reference is to the files at commit `04f1441`.
 
 How this document relates to the others:
 
@@ -871,7 +871,7 @@ DAST / fuzzing, hypothesis, the e2b sandbox (mutation testing is implemented for
 
 ## 18. Appendix
 
-Line numbers refer to the code at commit `ddd419f`; verify with `grep -n "def name" file`.
+Line numbers refer to the code at commit `04f1441`; verify with `grep -n "def name" file`.
 
 ### 18.1 Key constants
 
