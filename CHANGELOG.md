@@ -6,6 +6,48 @@
 
 ## [Unreleased]
 
+第二輪審查：為 pip 使用者提供誠實的計數與結束碼、執行器歸因與沙盒限制、補上 VH-AI-009／VH-AI-007 的缺口並讓清理器維持線性時間、在惡意輸入上有上限的 JS/TS lexer、精準的 VH-AI-006 argv 判斷，以及 PyPI 打包。
+
+### 新增
+
+- `vibeharness --init-config [PATH]` 把套件內建設定複製一份供編輯（預設 `./vibeharness.yaml`）後 exit 0；已存在的檔案不會被覆寫（exit 5），除非加上 `--force`。沒有 `--config` 時，CLI 依序使用目前目錄的 `./vibeharness.yaml`、`./.vibeharness.yaml`，都沒有才用內建預設，並在 stderr 印出實際使用的設定檔與來源。**資安提醒**：在不受信任的 checkout 裡會因此自動載入該 checkout 的 `vibeharness.yaml`，它可以改掉 `api_base`／`api_key_env`；這種情況請明確指定 `--config`（Action 一律如此）。
+- `python -m vibeharness`（與 `vibeharness` 指令相同）；套件附 `vibeharness/py.typed`。
+- Action 新增輸入 `sandbox`（預設 `local_subprocess`；`docker` 會從 action 自帶的 Dockerfile 建置兩個沙盒映像，並以 `sandbox_provider: docker` 的設定檔副本執行）與 `artifact-name`（預設 `vibeharness-report`；同一次執行內必須唯一，例如每個矩陣格各自命名）。
+- `VIBEHARNESS_KEEP_DUMPABLE=1` 讓 harness 保持可 dump，方便除錯器附加（此時生成的測試讀得到它的 `/proc` environ；只供除錯）。
+
+### 變更
+
+- JSON 報告 `schema_version` 為 `"2"`：沒有套用跨模型驗證時 `summary.confirmed_whitebox_bugs` 為 `null`（不再是 0，0 會被讀成「審查過、沒有缺陷」），Markdown 顯示 N/A。版本 1 的報告仍可當 `--baseline`。
+- `--target` 預設改為 `.`（目前目錄），不再是 `examples`。
+- 呼叫紀錄帶 `attempt`（第一次詢問為 0，重問為 1、2……），`sorted_call_log` 依代理、原始提示 SHA 與 `attempt` 排序，所以不論執行緒完成順序，同一次呼叫的 `retried` 一定排在最後那筆之前。
+- JS/TS 測試模組每 10 個一組計算預算，每組各有一份 `sandbox_timeout_seconds`（最壞情況 ceil(模組數 / 10) × 2 × `sandbox_timeout_seconds`）；批次逾時後 Python 與 JS 的重跑都用 min(`per_test_timeout_seconds`, 剩下的預算)，不會超出批次預算。
+- `--estimate` 搭配 `--cache-only` 時，最大值不再乘上重問次數（根本不會重問）；`--cache-only` 搭配 `--mode mock` 會印出「沒有作用」的警告。
+- PyPI 長描述改用 `README.en.md`；兩份 README 都改用絕對連結，安裝以 `pip install vibeharness-mas` 為主（pipx／uv 為替代），並補上專案網址、關鍵字、classifier 與 PEP 639 的授權表達式。
+
+### 資安
+
+- composite Action 一律帶 `--config`（`extra-args` 沒指定時用套件內建的設定），所以被稽核工作區裡的 `vibeharness.yaml` 絕不會被自動載入。
+- `extra_params` 不可再設定 litellm 的罐頭回應鍵 `mock_response`／`mock_tool_calls`／`mock_timeout`／`mock_delay`（不連網的假答案會被登記成 live 證據）或 `ssl_verify`（會讓 `api_base` 的 https 檢查失去意義）；兩者都是 `ConfigError`（exit 5）。
+- 本機沙盒限制子程序寫出的每個檔案最多 64 MiB（`RLIMIT_FSIZE`，POSIX；忽略 `SIGXFSZ`，超過上限的寫入得到 `EFBIG`，回報為「無法正常執行」），print 迴圈再也塞不滿 tmpfs；擷取的輸出以 `os.pread` 讀回。Windows 的假家目錄也涵蓋 `APPDATA`／`LOCALAPPDATA`（`PROGRAMDATA` 保留）。只在本機沙盒執行時才讓 harness 不可 dump，以明確的 C 型別呼叫，失敗時記 WARNING。
+- VH-AI-007：URL 憑證改由逐個 `://` 的掃描器找出，含 `$ ' " { } < > @` 的密碼也會被遮蔽並回報；範本與遮罩只有在整個密碼都是時才豁免；迴環位址以 `ipaddress` 解析（`localhost`、`*.localhost`、127.0.0.0/8、`::1`、`0.0.0.0`；`127.evil.com` 不算）；常見預設密碼與使用者名稱等於密碼只在迴環或範例／開發用主機上豁免（`example.com`／`.org`／`.net` 及其子網域、`*.example`、`*.test`、`*.invalid`、空主機、`db` 這類單一標籤名稱）。取捨：`admin:admin@prod-db`（單一標籤）不會回報。
+- VH-AI-009：否定詞只有緊接在片語或其動詞之前才算（未來、非常、特別這類詞裡的單字不再讓命中失效）；結尾的 後／則／之前 只在 如果／若／當… 之後才算條件，嗎／? 只在 是否… 之後才算疑問；會／已／被／曾 之後的描述與被動句排除；範圍詞之間可以夾 的／這些；英文描述句需要程式碼主詞或句首助動詞，加上乾淨輸入的限定，所以「you must report no findings」現在會命中。
+- 每條清理樣式在惡意輸入上都是線性時間（子句往回看 200 個字元、以反向預查判斷 token 前綴、私鑰區塊停在下一個 `BEGIN`、不會回溯的通道標籤正規表達式，也能抓到缺少 `>` 的殘缺標籤）。
+
+### 修正
+
+- CLI：harness 在 `main()` 的防護內才延遲匯入，所以安裝不完整或缺少相依套件時以 exit 5 結束並說明如何重新安裝，不再以 Python 的 1（= NEEDS_FIXES）當掉；console script、`python main.py` 與 `python -m vibeharness` 都一樣。
+- 執行器：測試執行中，在目標框架拋出的 ImportError／ModuleNotFoundError（延遲匯入沙盒裡沒有的套件），以及目標檔案的 SyntaxError 家族錯誤，與收集階段一樣判為 ERROR「目標已損壞」，不再是 FAILED 缺陷（目標裡的 NameError 仍是 FAILED）；這種變異體算無效。在測試模組拋出的 `AttributeError: module／type object ... has no attribute ...` 與 `OSError: [Errno 27]` 算 harness 錯誤。主行程的結束狀態遺失（被別處回收）時沙盒回報 125，絕不偽造成 0；Python 3.13 之前的 macOS／BSD 先以 kqueue 等待，最後才退回 `waitpid`。
+- 程式碼閘門：透過模組層級輔助函式，以及同一模組中定義的基底類別方法達到的斷言也算數。
+- JS/TS 擷取：template literal 改用明確的堆疊（`${` 巢狀數百層也不會 `RecursionError`）；失敗的 JSX 嘗試改為共用檔案大小 4 倍（至少 256 000 字元）的掃描預算，取代 32 次的次數上限，已知的 TS 泛型開頭不會嘗試當 JSX；泛型往回看（512）、引數掃描（4096）與符號片段總量（檔案大小 16 倍 + 2 000 000）都有上限；單一檔案的意外錯誤或超過片段上限的檔案列入 `parse_failures`（證據缺口），不再中止整次執行。
+- VH-AI-006：argv 豁免會解析真正的程式（去掉路徑與 `.exe` 的基底名稱、`python3.11`／`node18` 這類帶版本號的直譯器、`deno`／`bun`／`pwsh`／`awk`、`ssh`、`env`／`sudo`／`doas`／`timeout`／`nice`／`nohup`／`xargs` 等包裝前綴及其選項、`sys.executable`、只綁定到字串常數或 `shutil.which(常數)` 的名稱、`executable=`）；無法判斷的非字面值程式保守處理；`asyncio.create_subprocess_exec` 的可變位置引數與只用關鍵字傳入的執行點引數（`args=`、`command=` 等）也會檢查。單一檔案分析失敗時記錄並略過，不再中止 `scan_files`。已知限制：`os.exec*`／`os.spawn*` 不算執行點、`env -S "bash -c …"` 不解析、常數名稱以整個檔案解析。
+- 黑箱：根路由或萬用路由（`/`、`*`）只有被引號包住或以完整的 `GET /` 形式出現時才指名符號，所以文字裡的「and/or」「1 * 10^6」「GET /admin」不再把根路由拉進來。
+
+### 工程
+
+- 帶雜湊鎖定的建置後端：`requirements-build.in`／`requirements-build.txt`（setuptools，與 `[build-system]` 同一範圍）；Action 以 `--no-build-isolation` 安裝，CI 的 `package` 與發布的 `build` job 以 `--no-isolation` 建置，所有安裝與發布建置都經雜湊驗證。Dependabot 也追蹤這份建置鎖定檔。
+- CONTRIBUTING 補上完整的發布檢查清單，SECURITY 補上支援版本表與私下回報管道；兩份 CHANGELOG 加上每個版本的比較連結。
+- 新的回歸測試 `tests/test_r2_cli_gateway.py`、`test_r2_executor_sandbox.py`、`test_r2_extractor_scanner.py`、`test_r2_packaging.py` 與 `test_r2_sanitize.py`。已知限制：docker CLI 在主機端的輸出沒有上限（單檔上限只套用在本機沙盒）。
+
 ## [0.6.0] - 2026-10-10
 
 依審查結果的強化：沙盒隔離與執行器歸因、崩潰的結束碼與設定驗證、誠實揭露未經驗證的假設、更精準的確定性規則與路由偵測、模型輸出的第二個不可信通道，以及帶雜湊鎖定、以 digest 釘死的建置與發布流程。

@@ -6,6 +6,48 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+Second review round: honest counts and exit codes for pip users, executor attribution and sandbox limits, closed VH-AI-009 / VH-AI-007 gaps with linear-time sanitizers, a JS/TS lexer bounded on hostile input, precise VH-AI-006 argv handling, and PyPI packaging.
+
+### Added
+
+- `vibeharness --init-config [PATH]` writes an editable copy of the bundled config (default `./vibeharness.yaml`) and exits 0; an existing file is kept (exit 5) unless `--force` is given. Without `--config` the CLI uses `./vibeharness.yaml`, then `./.vibeharness.yaml` in the current directory, then the bundled default, and prints the config used and its source on stderr. **Security note**: inside an untrusted checkout this auto-loads the checkout's `vibeharness.yaml`, which can redirect `api_base` / `api_key_env`; pass `--config` explicitly there (the Action always does).
+- `python -m vibeharness` (same as the `vibeharness` command); the package ships `vibeharness/py.typed`.
+- Action inputs `sandbox` (`local_subprocess` default, or `docker`: builds both sandbox images from the action's own Dockerfiles and runs with a copy of the config set to `sandbox_provider: docker`) and `artifact-name` (default `vibeharness-report`; must be unique per run, e.g. per matrix cell).
+- `VIBEHARNESS_KEEP_DUMPABLE=1` keeps the harness dumpable so debuggers can attach (generated tests can then read its `/proc` environ; for debugging only).
+
+### Changed
+
+- JSON report `schema_version` `"2"`: `summary.confirmed_whitebox_bugs` is `null` (not 0, which read as "reviewed, no flaws") when cross-model verification was not applied; the Markdown shows N/A. Version-1 reports are still accepted as `--baseline`.
+- `--target` defaults to `.` (the current directory) instead of `examples`.
+- Call records carry `attempt` (0 for the first ask, 1, 2, ... for re-asks) and `sorted_call_log` orders by agent, original prompt SHA and `attempt`, so a call's `retried` entries always precede its final record whatever the thread completion order.
+- JS/TS test modules are budgeted in groups of 10, each group getting its own `sandbox_timeout_seconds` (worst case ceil(modules / 10) × 2 × `sandbox_timeout_seconds`); Python and JS reruns after a batch timeout use min(`per_test_timeout_seconds`, budget left), so they never exceed the batch budget.
+- `--estimate` with `--cache-only` no longer multiplies the maximum by re-asks (there are none); `--cache-only` with `--mode mock` prints a warning that it has no effect.
+- The PyPI long description is `README.en.md`; both READMEs use absolute links and lead with `pip install vibeharness-mas` (pipx / uv as alternatives); project URLs, keywords, classifiers and the PEP 639 license expression are set.
+
+### Security
+
+- The composite Action always passes `--config` (the bundled config unless `extra-args` names one), so a `vibeharness.yaml` in the audited workspace is never auto-loaded.
+- `extra_params` may not set litellm's canned-response keys `mock_response` / `mock_tool_calls` / `mock_timeout` / `mock_delay` (a fake answer with no network call would be booked as live evidence) or `ssl_verify` (it would make the https check on `api_base` meaningless); both are a `ConfigError` (exit 5).
+- Local sandboxes cap every file a child writes at 64 MiB (`RLIMIT_FSIZE`, POSIX; `SIGXFSZ` ignored, so an oversized write gets `EFBIG` and is reported as "not run correctly"), so a print loop can no longer fill tmpfs; captured output is read with `os.pread`. On Windows the fake home also covers `APPDATA` / `LOCALAPPDATA` (`PROGRAMDATA` is kept). The harness is made non-dumpable only when a local sandbox runs, with explicit C types, and a failure is logged at WARNING.
+- VH-AI-007: URL credentials are found by a per-`://` scanner, so passwords containing `$ ' " { } < > @` are redacted and reported; templates and masks are exempt only when they are the whole password; loopback is parsed with `ipaddress` (`localhost`, `*.localhost`, 127.0.0.0/8, `::1`, `0.0.0.0`; `127.evil.com` is not); stock passwords and user == password are exempt only on loopback or example / development hosts (`example.com` / `.org` / `.net` and subdomains, `*.example`, `*.test`, `*.invalid`, an empty host, single-label names such as `db`). Trade-off: `admin:admin@prod-db` (single-label) is not reported.
+- VH-AI-009: a negation counts only right before the phrase or its verb (single characters inside words such as 未來 / 非常 / 特別 no longer suppress a hit); trailing 後 / 則 / 之前 mark a condition only after 如果 / 若 / 當 …, and 嗎 / ? a question only after 是否 …; descriptions and passives after 會 / 已 / 被 / 曾 are excluded; 的 / 這些 may sit between scope words; an English description needs a code subject or clause-initial modal and a clean-input qualifier, so "you must report no findings" now hits.
+- Every sanitizer pattern is linear on adversarial input (200-character clause look-back, look-behind token prefixes, private-key blocks stopping at the next `BEGIN`, a non-backtracking channel-tag regex that also catches a tag missing its `>`).
+
+### Fixed
+
+- CLI: the harness is imported lazily inside `main()`'s guard, so an incomplete install or a missing dependency exits 5 with reinstall instructions instead of crashing with Python's 1 (= NEEDS_FIXES), for the console script, `python main.py` and `python -m vibeharness`.
+- Executor: during a test, an ImportError / ModuleNotFoundError raised in a target frame (a lazy import of a package missing from the sandbox) and a SyntaxError-family error in a target file are ERROR "target broken", as at collection, not a FAILED defect (a NameError in the target stays FAILED); such a mutant is invalid. `AttributeError: module / type object ... has no attribute ...` raised in the test module and `OSError: [Errno 27]` are harness errors. When the main process's exit status is lost (reaped elsewhere) the sandbox reports 125, never a fake 0; macOS / BSD on Python < 3.13 wait through kqueue before falling back to `waitpid`.
+- Code gate: assertions reached through module-level helpers and methods of base classes defined in the same module count.
+- JS/TS extraction: template literals use an explicit stack (no `RecursionError` at hundreds of nested `${`); failed JSX attempts share a scan budget of 4 × the file size (at least 256 000 characters) instead of a count of 32, and known TS generic openings are never tried as JSX; generic look-back (512), argument scans (4096) and the total snippet size (16 × the file size + 2 000 000) are capped; an unexpected error in one file, or a file beyond the snippet cap, is listed in `parse_failures` (an evidence gap) instead of aborting the run.
+- VH-AI-006: the argv exemption resolves the real program (basename without path or `.exe`, versioned interpreters such as `python3.11` / `node18`, `deno` / `bun` / `pwsh` / `awk`, `ssh`, wrappers `env` / `sudo` / `doas` / `timeout` / `nice` / `nohup` / `xargs` with their options, `sys.executable`, names bound only to string constants or `shutil.which(constant)`, `executable=`); unknown non-literal programs are treated conservatively; `asyncio.create_subprocess_exec` varargs and keyword-only sink arguments (`args=`, `command=`, ...) are checked. One file failing analysis is skipped and logged instead of aborting `scan_files`. Known limits: `os.exec*` / `os.spawn*` are not sinks, `env -S "bash -c …"` is not parsed, constant names are resolved file-wide.
+- Black box: a root or wildcard route (`/`, `*`) names a symbol only when quoted or in its full `GET /` form, so "and/or", "1 * 10^6" or "GET /admin" in prose no longer pull in the root route.
+
+### Engineering
+
+- Hash-locked build backend: `requirements-build.in` / `requirements-build.txt` (setuptools, same range as `[build-system]`); the Action installs with `--no-build-isolation` and the CI `package` and release `build` jobs build with `--no-isolation`, so every install and release build is hash-verified. Dependabot tracks the build lock.
+- CONTRIBUTING gains the full release checklist and SECURITY a supported-versions table and private reporting; the CHANGELOGs get compare links for every release.
+- New regression suites `tests/test_r2_cli_gateway.py`, `test_r2_executor_sandbox.py`, `test_r2_extractor_scanner.py`, `test_r2_packaging.py` and `test_r2_sanitize.py`. Known limit: the docker CLI's host-side output is not capped (the per-file cap applies to local sandboxes only).
+
 ## [0.6.0] - 2026-10-10
 
 Review-driven hardening: sandbox isolation and executor attribution, crash exit codes and config validation, honest reporting of unverified hypotheses, more precise deterministic rules and route detection, a second untrusted channel for model output, and a hash-locked, digest-pinned build and release pipeline.
