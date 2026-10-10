@@ -1,4 +1,5 @@
 import ast
+import math
 import re
 import os
 import time
@@ -50,6 +51,9 @@ _SIGNATURE_TYPEERROR_RE = re.compile(
     r"takes from \d+ to \d+ positional arguments)"
 )
 _RAISED_IN_TEST_MODULE_RE = re.compile(r"test_vh_\d+\.py:\d+: TypeError\s*$")
+# pytest 長回溯的最後一行指出最內層框架與例外名稱（'path.py:LINE: NameError'）
+# The last line of pytest's long traceback names the innermost frame and the exception ('path.py:LINE: NameError')
+_INNERMOST_LOCATION_RE = re.compile(r"^(\S.*?\.py):\d+: ([\w.]+)\s*$", re.MULTILINE)
 
 # --- JavaScript／TypeScript（node:test）分類 ---------------------------------------
 # --- JavaScript / TypeScript (node:test) classification ---------------------------------------
@@ -66,6 +70,11 @@ _JS_TEST_SIDE_ERRORS = ("ReferenceError", "TypeError")
 _V8_FRAME_RE = re.compile(r"^\s+at (?:.*?\()?((?:file:///|/|[A-Za-z]:[\\/])[^\s)]+?):\d+:\d+\)?\s*$", re.MULTILINE)
 _JS_CAUSE_RE = re.compile(r"^\s*cause:\s*([\w$]*Error\b.*?)\s*\{?\s*$", re.MULTILINE)  # 加了引號的 cause（'test failed'）什麼都沒說 ／ a quoted cause ('test failed') says nothing
 _JS_ERROR_LINE_RE = re.compile(r"^\s*\[?(\w*Error(?: \[\w+\])?: .+)$", re.MULTILINE)
+# Node 22 會在錯誤名稱後加上建構式標籤（'TypeError [Error]: null'）；只剝掉這種類別名標籤，
+# 有意義的錯誤碼（'Error [ERR_MODULE_NOT_FOUND]: ...'）保留，harness 標記要靠它比對
+# Node 22 tags the error name with its constructor ('TypeError [Error]: null'); only such class-name tags are stripped,
+# meaningful codes ('Error [ERR_MODULE_NOT_FOUND]: ...') are kept, the harness markers match on them
+_JS_CLASS_TAG_RE = re.compile(r"^([\w$]*Error) \[[\w$]*Error\]:")
 # 檔案層級 case 的名字就是測試檔路徑：對 basename 做完整比對，名稱只是「結尾像檔名」的 test() 不算
 # A file-level case is named after the test file path: full match on the basename, a test() whose name merely ends
 # like a file name does not count
@@ -271,30 +280,13 @@ class TestSuiteExecutor:
         not_rerun: Set[str] = set()
         parse_failed: Set[str] = set()
         batch_timeout: Optional[int] = None
+        # 實際使用的逾時（秒），供逾時原因字串使用：絕不能回報一個沒有真正生效的預算
+        # The timeout actually used (seconds), for the timeout reason: never report a budget that did not apply
+        timeout_used: Dict[str, int] = {}
         if is_js:
-            for filename, code in files.items():
-                module = os.path.splitext(filename)[0]
-                exit_code, stdout, stderr, _, _, junit_xml = sandbox.execute_pytest_files(
-                    {filename: code}, working_dir=working_dir, timeout_seconds=self.per_test_timeout_seconds
-                )
-                runs[module] = (exit_code, stdout, stderr, junit_xml)
-                if exit_code == TIMEOUT_EXIT_CODE:
-                    timed_out.add(module)
-                    continue
-                parsed = self._parse_junit(junit_xml, language, module=module)
-                if parsed is None:
-                    parse_failed.add(module)
-                elif cases is not None:
-                    for case in parsed.get(module, []):
-                        # 載入失敗的模組是單一個檔案層級的案例，其 junit 內文只說
-                        # "test failed"；實際的錯誤（ERR_MODULE_NOT_FOUND、載入時的 ReferenceError）
-                        # 在執行器的 stdout 上，分類時需要先看到它。
-                        # A module that failed to load is one file-level case whose junit body only says
-                        # "test failed"; the actual error (ERR_MODULE_NOT_FOUND, a ReferenceError at load)
-                        # is on the runner's stdout, which the classification needs to see first.
-                        if case["outcome"] == "failure" and _JS_FILE_CASE_RE.fullmatch(os.path.basename(case["name"] or "")):
-                            case["details"] = f"{stdout[:6000]}\n{case['details'] or ''}"
-                    cases.update(parsed)
+            cases, timed_out, not_rerun, parse_failed = self._run_js_modules(
+                files, working_dir, sandbox, language, runs, timeout_used
+            )
         else:
             exit_code, stdout, stderr, duration, coverage_pct, junit_xml = sandbox.execute_pytest_files(
                 files,
@@ -332,10 +324,11 @@ class TestSuiteExecutor:
                     stderr=stderr
                 )
             elif module in timed_out and (is_js or not module_cases):
+                used = timeout_used.get(module, self._per_test_budget(sandbox))
                 results[idx] = self._result(
                     t, unique_ids[idx], TestStatus.ERROR,
-                    failure_reason=bi(f"測試在 {self.per_test_timeout_seconds} 秒後逾時；未執行完畢",
-                                      f"Test timed out after {self.per_test_timeout_seconds}s; not run to completion")
+                    failure_reason=bi(f"測試在 {used} 秒後逾時；未執行完畢",
+                                      f"Test timed out after {used}s; not run to completion")
                 )
             elif junit_xml is None:
                 if exit_code == TIMEOUT_EXIT_CODE:
@@ -394,7 +387,7 @@ class TestSuiteExecutor:
                 not_rerun.add(module)
                 continue
             exit_code, _, _, _, _, junit_xml = sandbox.execute_pytest_files(
-                {filename: code}, working_dir=working_dir, timeout_seconds=self.per_test_timeout_seconds
+                {filename: code}, working_dir=working_dir, timeout_seconds=self._per_test_budget(sandbox)
             )
             if exit_code == TIMEOUT_EXIT_CODE:
                 timed_out.add(module)
@@ -404,6 +397,98 @@ class TestSuiteExecutor:
                 parse_failed.add(module)
                 continue
             cases.update(module_cases)
+        return cases, timed_out, not_rerun, parse_failed
+
+    def _per_test_budget(self, sandbox: LocalSubprocessSandbox) -> int:
+        """逐測重跑實際使用的逾時（秒）。非正數的 per_test_timeout_seconds（設定驗證交給 harness）會讓沙盒
+        退回自己的批次預算，所以這裡也回報那個值，而不是「0 秒後逾時」。
+        The timeout (seconds) a per-test rerun actually gets. A non-positive per_test_timeout_seconds (config
+        validation is the harness's job) makes the sandbox fall back to its batch budget, so that is reported here
+        too instead of "timed out after 0s"."""
+        per_test = self.per_test_timeout_seconds
+        if isinstance(per_test, int) and per_test > 0:
+            return per_test
+        return int(getattr(sandbox, "timeout_seconds", 0) or 0) or 30
+
+    def _run_js_modules(
+        self, files: Dict[str, str], working_dir: str, sandbox: LocalSubprocessSandbox, language: str,
+        runs: Dict[str, Tuple[int, str, str, Optional[str]]], timeout_used: Dict[str, int]
+    ) -> Tuple[Dict[str, List[dict]], Set[str], Set[str], Set[str]]:
+        """每個 JS/TS 模組各自一個 `node --test` 行程（Node 的 junit 報告器不會記錄最上層測試來自哪個檔案），
+        但逾時語意與 Python 批次一致（docs/configuration.md：sandbox_timeout_seconds 是一批的總預算，
+        per_test_timeout_seconds 只用於批次逾時後的逐測重跑）：
+        第一輪依序執行各模組，每個模組拿到這一批「剩下的」批次預算；某個模組逾時就代表這一批逾時，
+        尚未執行（或逾時時拿到的預算比單測預算還少）的模組進入第二輪，各用 per_test_timeout_seconds 重跑，
+        第二輪總時間同樣受批次預算限制，超出的模組標為未重跑。
+        填入 `runs` 與 `timeout_used`；回傳 (依模組分組的 junit 案例, 逾時的模組, 未重跑的模組, 報告無法解析的模組)。
+        Each JS/TS module gets its own `node --test` process (Node's junit reporter does not name the file a
+        top-level test came from), but the timeout semantics match a Python batch (docs/configuration.md:
+        sandbox_timeout_seconds is the whole batch's budget, per_test_timeout_seconds only applies to per-test
+        reruns after a batch timeout):
+        the first pass runs the modules in order, each on whatever is LEFT of the batch budget; a module timing
+        out means the batch timed out, and the modules not yet run (or that timed out on less than the per-test
+        budget) go to a second pass, each re-run on per_test_timeout_seconds, again bounded by the batch budget
+        in total; modules beyond it are marked not re-run.
+        Fills `runs` and `timeout_used`; returns (junit cases by module, timed-out modules, modules not re-run,
+        modules whose report could not be parsed)."""
+        cases: Dict[str, List[dict]] = {}
+        timed_out: Set[str] = set()
+        not_rerun: Set[str] = set()
+        parse_failed: Set[str] = set()
+        per_test = self._per_test_budget(sandbox)
+        batch_budget = float(getattr(sandbox, "timeout_seconds", 0) or 0) or float(per_test)
+
+        def run_one(filename: str, code: str, timeout: int) -> bool:
+            # 執行一個模組並記錄結果；逾時時回傳 False ／ Runs one module and records it; False on a timeout
+            module = os.path.splitext(filename)[0]
+            exit_code, stdout, stderr, _, _, junit_xml = sandbox.execute_pytest_files(
+                {filename: code}, working_dir=working_dir, timeout_seconds=timeout
+            )
+            runs[module] = (exit_code, stdout, stderr, junit_xml)
+            timeout_used[module] = timeout
+            if exit_code == TIMEOUT_EXIT_CODE:
+                return False
+            timed_out.discard(module)
+            parsed = self._parse_junit(junit_xml, language, module=module)
+            if parsed is None:
+                parse_failed.add(module)
+                return True
+            for case in parsed.get(module, []):
+                # 載入失敗的模組是單一個檔案層級的案例，其 junit 內文只說
+                # "test failed"；實際的錯誤（ERR_MODULE_NOT_FOUND、載入時的 ReferenceError）
+                # 在執行器的 stdout 上，分類時需要先看到它。
+                # A module that failed to load is one file-level case whose junit body only says
+                # "test failed"; the actual error (ERR_MODULE_NOT_FOUND, a ReferenceError at load)
+                # is on the runner's stdout, which the classification needs to see first.
+                if case["outcome"] == "failure" and _JS_FILE_CASE_RE.fullmatch(os.path.basename(case["name"] or "")):
+                    case["details"] = f"{stdout[:6000]}\n{case['details'] or ''}"
+            cases.update(parsed)
+            return True
+
+        pending: List[Tuple[str, str]] = []
+        deadline = time.monotonic() + batch_budget
+        for filename, code in files.items():
+            remaining = math.ceil(deadline - time.monotonic())
+            if remaining < 1:
+                pending.append((filename, code))
+            elif not run_one(filename, code, remaining):
+                timed_out.add(os.path.splitext(filename)[0])
+                if remaining < per_test:
+                    # 逾時時拿到的預算比單測預算少：要重跑才公平
+                    # Timed out on less than the per-test budget: only a rerun is fair
+                    pending.append((filename, code))
+        if pending:
+            logger.warning(bi("JS/TS 批次預算已用盡；以單測預算逐一重跑剩下的模組。",
+                              "JS/TS batch budget exhausted; re-running the remaining modules on the per-test budget."))
+            deadline = time.monotonic() + batch_budget
+            for filename, code in pending:
+                module = os.path.splitext(filename)[0]
+                if time.monotonic() >= deadline:
+                    not_rerun.add(module)
+                    timed_out.discard(module)
+                    runs.setdefault(module, (TIMEOUT_EXIT_CODE, "", "", None))
+                elif not run_one(filename, code, per_test):
+                    timed_out.add(module)
         return cases, timed_out, not_rerun, parse_failed
 
     @staticmethod
@@ -635,7 +720,13 @@ class TestSuiteExecutor:
         A failure caused by the generated test itself rather than by the target's behaviour."""
         message = case["message"] or ""
         if message.startswith(HARNESS_ERROR_EXCEPTIONS):
-            return True
+            # 與 TypeError 分支同樣看最內層框架：在產生的測試模組拋出才是 harness 錯誤；在目標內部拋出的
+            # NameError／ImportError 是目標真正的缺陷（FAILED，非資安利用）。沒有回溯時維持保守（歸在測試端）
+            # Same innermost-frame check as the TypeError branch: only raised in the generated test module is it a
+            # harness error; a NameError/ImportError raised inside the target is a genuine defect (FAILED, not an
+            # exploit). Without a traceback the answer stays conservative (test-side)
+            locations = _INNERMOST_LOCATION_RE.findall(case["details"] or "")
+            return not locations or os.path.basename(locations[-1][0]).startswith("test_vh_")
         return bool(_SIGNATURE_TYPEERROR_RE.match(message)
                     and _RAISED_IN_TEST_MODULE_RE.search(case["details"] or ""))
 
@@ -701,6 +792,12 @@ class TestSuiteExecutor:
 
     @staticmethod
     def _js_exception_summary(case: dict) -> str:
+        """`_js_raw_exception_summary` 去掉 Node 的類別名標籤後的結果（'TypeError [Error]: x' -> 'TypeError: x'）。
+        `_js_raw_exception_summary` without Node's class-name tag ('TypeError [Error]: x' -> 'TypeError: x')."""
+        return _JS_CLASS_TAG_RE.sub(r"\1:", TestSuiteExecutor._js_raw_exception_summary(case))
+
+    @staticmethod
+    def _js_raw_exception_summary(case: dict) -> str:
         """Node 回報的錯誤：junit 內文的 `cause:` 行，否則是第一個 `XError: ...` 行，
         否則是 junit 訊息（對斷言而言就是單純的期望文字）。
         The error Node reports: the `cause:` line of the junit body, else the first `XError: ...` line,

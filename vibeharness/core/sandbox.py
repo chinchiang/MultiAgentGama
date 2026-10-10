@@ -25,12 +25,11 @@ TIMEOUT_EXIT_CODE = 124
 # Exit code returned when the sandbox itself failed to run the tests (e.g. broken pipe, OSError)
 EXECUTION_FAILURE_EXIT_CODE = 125
 
-# 被砍掉的行程其管線排空前要等多久才放棄。已 daemon 化到新 session 的孫行程
-# 可能在砍殺後存活並持續佔住管線；沒有這個上限，
-# harness 會在 proc.communicate() 上永遠卡住。
-# How long to wait for the killed process's pipes to drain before giving up. A grandchild that
-# daemonized into a new session can survive the kill and hold the pipes open; without this cap
-# the harness would hang forever on proc.communicate().
+# 砍掉行程群組後最多等多久讓主行程被回收。輸出寫進暫存檔，所以已 daemon 化到
+# 新 session、在砍殺後存活的孫行程不會讓 harness 卡住；這只是回收主行程的上限。
+# How long to wait for the main process to be reaped after its group was killed. Output goes to temp
+# files, so a grandchild that daemonized into a new session and survives the kill cannot hang the
+# harness; this only caps reaping the main process.
 _POST_KILL_DRAIN_SECONDS = 5.0
 
 # 會轉送給產生的測試程式碼的環境變數。其他所有變數（API 金鑰、雲端
@@ -86,6 +85,98 @@ def build_safe_env(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     if extra:
         env.update(extra)
     return env
+
+
+def sandbox_home_env(run_dir: str) -> Dict[str, str]:
+    """讓本機沙盒子行程的家目錄指向每次執行專用的暫存目錄，而不是真正的家目錄，
+    以免產生的測試順手讀走 ~/.aws/credentials、~/.netrc、~/.config/... 之類的憑證。
+    XDG_* 本來就不在允許清單內，所以會退回這個假家目錄。若真正的使用者 site-packages 存在，
+    以 PYTHONUSERBASE 保留它（pytest／pytest-cov 可能是 `pip install --user` 裝的）。
+    盡力而為、不是資安邊界：產生的程式碼仍以同一個使用者執行，知道路徑就能讀取真正的家目錄。
+    Points the local sandbox child's home at the per-run temp directory instead of the real home, so a
+    generated test cannot casually read ~/.aws/credentials, ~/.netrc, ~/.config/... and similar credentials.
+    XDG_* are not on the allowlist, so they fall back to this fake home. The real user site-packages is kept
+    through PYTHONUSERBASE when it exists (pytest / pytest-cov may have been installed with `pip install --user`).
+    Best effort, NOT a security boundary: generated code still runs as the same user and can read the real
+    home if it knows the path."""
+    home = os.path.join(run_dir, "home")
+    os.makedirs(home, exist_ok=True)
+    env = {"HOME": home}
+    if sys.platform == "win32":
+        env["USERPROFILE"] = home
+    try:
+        import site
+        if site.ENABLE_USER_SITE and os.path.isdir(site.getusersitepackages()):
+            env["PYTHONUSERBASE"] = os.environ.get("PYTHONUSERBASE") or site.getuserbase()
+    except Exception:
+        pass  # site 在嵌入式直譯器中可能不完整；沒有使用者 site 也能執行 ／ site may be incomplete in embedded interpreters; running without a user site is fine
+    return env
+
+
+def _without_real_home(env: Dict[str, str]) -> Dict[str, str]:
+    """移除仍指向真正家目錄的 Windows 變數（HOMEDRIVE／HOMEPATH 會拼出真正的家目錄）。
+    Drops the Windows variables that still spell the real home (HOMEDRIVE / HOMEPATH)."""
+    return {k: v for k, v in env.items() if k.upper() not in ("HOMEDRIVE", "HOMEPATH")}
+
+
+# PR_SET_DUMPABLE 的 prctl 選項編號（linux/prctl.h）
+# The prctl option number of PR_SET_DUMPABLE (linux/prctl.h)
+_PR_SET_DUMPABLE = 4
+_harness_hardened = False
+
+
+def harden_harness_process() -> None:
+    """在啟動本機沙盒子行程之前（只做一次、盡力而為），讓 harness 行程在 Linux 上變成不可 dump
+    （prctl(PR_SET_DUMPABLE, 0)）。這會讓 /proc/<harness>/environ、/proc/<harness>/mem 變成 root 擁有，
+    同一使用者的產生測試就不能透過 /proc/{os.getppid()}/environ 讀走 harness 啟動時的 API 金鑰——
+    清理 os.environ 不會改變 /proc/<pid>/environ，它反映的是行程啟動時的環境。
+    副作用：harness 不會產生 core dump，也不能被非 root 的除錯器附加。
+    這不是資安邊界：同一使用者的其他行程（例如啟動 harness 的 shell）的 environ 仍然可讀；
+    不受信任的目標請用 docker 沙盒。
+    Makes the harness process non-dumpable on Linux (prctl(PR_SET_DUMPABLE, 0)), once and best effort,
+    before local sandbox children are launched. That makes /proc/<harness>/environ and /proc/<harness>/mem
+    root-owned, so a same-uid generated test cannot read the harness's start-up API keys through
+    /proc/{os.getppid()}/environ — scrubbing os.environ does not change /proc/<pid>/environ, which reflects
+    the environment the process started with.
+    Side effects: the harness writes no core dump and a non-root debugger cannot attach to it.
+    NOT a security boundary: other same-uid processes (e.g. the shell that launched the harness) keep a
+    readable environ; use the docker sandbox for untrusted targets."""
+    global _harness_hardened
+    if _harness_hardened:
+        return
+    _harness_hardened = True
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        import ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(_PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
+            logger.debug(bi(f"prctl(PR_SET_DUMPABLE, 0) 失敗：errno {ctypes.get_errno()}",
+                            f"prctl(PR_SET_DUMPABLE, 0) failed: errno {ctypes.get_errno()}"))
+    except Exception as e:  # 沒有 libc／ctypes 的環境：維持原狀 ／ no libc / ctypes: leave things as they are
+        logger.debug(bi(f"無法讓 harness 行程變成不可 dump：{e}", f"Could not make the harness process non-dumpable: {e}"))
+
+
+# 每個輸出串流最多讀回多少位元組；超過時保留開頭與結尾（涵蓋率表格在結尾）
+# How many bytes of each output stream are read back at most; beyond that the head and the tail are kept
+# (the coverage table is at the end)
+_MAX_CAPTURE_BYTES = 16 * 1024 * 1024
+_CAPTURE_HEAD_BYTES = 1024 * 1024
+
+
+def _read_capture(stream: Any) -> str:
+    """讀回暫存檔裡擷取到的輸出（UTF-8、換行正規化成 \\n，與先前文字模式的管線一致）。
+    Reads back the output captured in a temp file (UTF-8, newlines normalised to \\n like the former text-mode pipes)."""
+    size = stream.seek(0, os.SEEK_END)
+    stream.seek(0)
+    if size > _MAX_CAPTURE_BYTES:
+        head = stream.read(_CAPTURE_HEAD_BYTES)
+        stream.seek(size - (_MAX_CAPTURE_BYTES - _CAPTURE_HEAD_BYTES))
+        marker = "\n... " + bi("（輸出過長，已截斷）", "(output too long, truncated)") + " ...\n"
+        data = head + marker.encode("utf-8") + stream.read()
+    else:
+        data = stream.read()
+    return data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
 
 
 class LocalSubprocessSandbox:
@@ -156,7 +247,7 @@ class LocalSubprocessSandbox:
         A collection error in one module does not abort the others.
         Returns: (exit_code, stdout, stderr, duration_seconds, line_coverage_percent, junit_xml_text)
         """
-        timeout = timeout_seconds or self.timeout_seconds
+        timeout = self._effective_timeout(timeout_seconds)
         base_dir = os.path.abspath(working_dir or os.getcwd())
 
         run_dir = tempfile.mkdtemp(prefix="vibe_sandbox_")
@@ -190,6 +281,15 @@ class LocalSubprocessSandbox:
         finally:
             shutil.rmtree(run_dir, ignore_errors=True)
 
+    def _effective_timeout(self, timeout_seconds: Optional[int]) -> int:
+        """這次執行實際的逾時（秒）：沒給或非正數（設定驗證交給 harness）時退回沙盒自己的批次預算，
+        所以逾時訊息不會出現「0 秒後逾時」。
+        This run's actual timeout (seconds): missing or non-positive (config validation is the harness's job)
+        falls back to the sandbox's own batch budget, so a timeout message never says "after 0 seconds"."""
+        if isinstance(timeout_seconds, (int, float)) and timeout_seconds > 0:
+            return max(1, int(timeout_seconds))
+        return self.timeout_seconds
+
     # --- 由容器沙盒覆寫的掛鉤 ---------------------------------------------------
     # --- Hooks overridden by container sandboxes ------------------------------------
 
@@ -222,7 +322,11 @@ class LocalSubprocessSandbox:
             # 匯入目標時不能在裡面留下 __pycache__
             # Importing the target must not leave __pycache__ behind in it
             "PYTHONDONTWRITEBYTECODE": "1",
+            # 假家目錄：不讓產生的測試順手讀到真正家目錄裡的憑證（見 sandbox_home_env）
+            # Fake home: keeps the real home's credentials out of casual reach (see sandbox_home_env)
+            **sandbox_home_env(run_dir),
         })
+        env = _without_real_home(env)
         if custom_env:
             env.update(filter_custom_env(custom_env))
         cmd = [sys.executable, "-m", "pytest", *[os.path.join(run_dir, f) for f in filenames]]
@@ -284,7 +388,19 @@ class LocalSubprocessSandbox:
         cmd: List[str], cwd: str, env: Dict[str, str], timeout: int, limits: Optional[Dict[str, int]] = None
     ) -> Tuple[Optional[int], str, str]:
         """在自己的行程群組中執行 cmd；逾時時砍掉整棵行程樹並回傳 returncode None。
-        Runs cmd in its own process group; on timeout kills the whole tree and returns returncode None."""
+        輸出寫進暫存檔而不是管線：只等主行程結束，絕不等管線 EOF。測試留下的子行程
+        （例如繼承了 stdout 的 Popen 伺服器）若佔住管線，communicate() 會一直卡到逾時，
+        把一次其實已結束（甚至通過）的執行誤判成逾時。主行程結束後（無論正常或逾時），
+        剩下的行程群組一律砍掉，讓殘留的子行程活不過這次執行（POSIX；Windows 上主行程
+        結束後 taskkill /T 已找不到子行程，只有逾時時才砍得到整棵樹）。
+        Runs cmd in its own process group; on timeout kills the whole tree and returns returncode None.
+        Output goes to temp files instead of pipes: only the main process's exit is awaited, never pipe EOF.
+        A child left behind by a test (e.g. a Popen server inheriting stdout) holding the pipes made
+        communicate() block until the timeout and turned a finished (even passing) run into a timeout.
+        Once the main process is gone (normally or on timeout) the rest of its process group is killed so
+        stray children never outlive the run (POSIX; on Windows taskkill /T no longer finds the children
+        after the main process exited, so the whole tree is only reached on a timeout)."""
+        harden_harness_process()
         popen_kwargs: Dict[str, Any] = {}
         if sys.platform == "win32":
             popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -292,33 +408,48 @@ class LocalSubprocessSandbox:
             popen_kwargs["start_new_session"] = True
             if limits:
                 popen_kwargs["preexec_fn"] = LocalSubprocessSandbox._apply_limits(limits)
-        proc = subprocess.Popen(
-            cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", errors="replace", **popen_kwargs
-        )
-        try:
-            stdout, stderr = proc.communicate(timeout=timeout)
-            return proc.returncode, stdout, stderr
-        except subprocess.TimeoutExpired:
-            LocalSubprocessSandbox._kill_tree(proc)
+        with tempfile.TemporaryFile() as out_file, tempfile.TemporaryFile() as err_file:
+            proc = subprocess.Popen(
+                cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=out_file, stderr=err_file, **popen_kwargs
+            )
+            finished = LocalSubprocessSandbox._wait_for_exit(proc, timeout)
+            if not finished or sys.platform != "win32":
+                LocalSubprocessSandbox._kill_tree(proc)
             try:
-                stdout, stderr = proc.communicate(timeout=_POST_KILL_DRAIN_SECONDS)
-            except subprocess.TimeoutExpired as e:
-                # 砍殺只會到達行程群組；開了新 session 的孫行程
-                # 可能存活並持續佔住管線。關閉我們這一端，
-                # 放棄後續輸出，而不是永遠卡住。
-                # The kill only reaches the process group; a grandchild that started a new
-                # session can survive and keep the pipes open. Close our ends and give up
-                # on further output instead of hanging forever.
-                for stream in (proc.stdout, proc.stderr):
-                    if stream is None:
-                        continue
-                    try:
-                        stream.close()
-                    except Exception:
-                        pass
-                stdout, stderr = e.stdout or "", e.stderr or ""
-            return None, stdout or "", stderr or ""
+                proc.wait(timeout=_POST_KILL_DRAIN_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass  # SIGKILL 之後主行程仍未結束（例如卡在不可中斷的 I/O）：不再等它 ／ still alive after SIGKILL (e.g. uninterruptible I/O): stop waiting
+            # 開了新 session 的孫行程可能存活並繼續寫入檔案；我們只讀回目前已有的內容
+            # A grandchild that started a new session may survive and keep writing; only what is there now is read
+            stdout, stderr = _read_capture(out_file), _read_capture(err_file)
+        return (proc.returncode if finished else None), stdout, stderr
+
+    @staticmethod
+    def _wait_for_exit(proc: subprocess.Popen, timeout: float) -> bool:
+        """等主行程結束（最多 timeout 秒）；結束了回傳 True。POSIX 上用 waitid(WNOWAIT) 只觀察、不回收：
+        主行程維持殭屍狀態，行程群組 ID 就不會被重用，隨後的 killpg 不可能誤殺無關的行程。
+        Waits (at most timeout seconds) for the main process to exit; True when it did. On POSIX waitid(WNOWAIT)
+        observes without reaping: the leader stays a zombie, so its process-group id cannot be reused and the
+        following killpg can never hit an unrelated process."""
+        if sys.platform != "win32" and hasattr(os, "waitid") and hasattr(os, "WNOWAIT"):
+            deadline = time.monotonic() + timeout
+            delay = 0.0005
+            while True:
+                try:
+                    if os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+                        return True
+                except ChildProcessError:
+                    return True  # 已被回收 ／ already reaped
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                delay = min(delay * 2, remaining, 0.05)
+                time.sleep(delay)
+        try:
+            proc.wait(timeout=timeout)
+            return True
+        except subprocess.TimeoutExpired:
+            return False
 
     @staticmethod
     def _kill_tree(proc: subprocess.Popen):
@@ -532,7 +663,7 @@ class DockerSandbox(LocalSubprocessSandbox):
         if custom_env:
             env.update(filter_custom_env(custom_env))
         cmd = self._docker_run_prefix(run_dir, base_dir, env)
-        cmd += [self.image, "timeout", "--kill-after=5", str(timeout_seconds or self.timeout_seconds),
+        cmd += [self.image, "timeout", "--kill-after=5", str(self._effective_timeout(timeout_seconds)),
                 "python", "-m", "pytest", *[f"{CONTAINER_RUN_DIR}/{f}" for f in filenames]]
         cmd += self._pytest_options(CONTAINER_RUN_DIR, f"{CONTAINER_RUN_DIR}/junit.xml")
         if collect_coverage:
@@ -711,7 +842,8 @@ class NodeSubprocessSandbox(LocalSubprocessSandbox):
         extra: Dict[str, str] = {"NODE_ENV": "test"}
         if link_node_modules(run_dir, base_dir) is None and os.path.isdir(os.path.join(base_dir, "node_modules")):
             extra["NODE_PATH"] = os.path.join(base_dir, "node_modules")
-        env = build_safe_env(extra)
+        extra.update(sandbox_home_env(run_dir))  # 假家目錄，見 sandbox_home_env ／ fake home, see sandbox_home_env
+        env = _without_real_home(build_safe_env(extra))
         if custom_env:
             env.update(filter_custom_env(custom_env))
         cmd = node_test_command(self.node, [os.path.join(run_dir, f) for f in filenames],
@@ -767,7 +899,7 @@ class NodeDockerSandbox(DockerSandbox):
         if custom_env:
             env.update(filter_custom_env(custom_env))
         cmd = self._docker_run_prefix(run_dir, base_dir, env)
-        cmd += [self.image, "timeout", "--kill-after=5", str(timeout_seconds or self.timeout_seconds)]
+        cmd += [self.image, "timeout", "--kill-after=5", str(self._effective_timeout(timeout_seconds))]
         cmd += node_test_command("node", [f"{CONTAINER_RUN_DIR}/{f}" for f in filenames],
                                  f"{CONTAINER_RUN_DIR}/junit.xml", self.strip_types, False, 0)
         return cmd, run_dir, self._cli_env()
