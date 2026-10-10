@@ -54,6 +54,38 @@ _RAISED_IN_TEST_MODULE_RE = re.compile(r"test_vh_\d+\.py:\d+: TypeError\s*$")
 # pytest 長回溯的最後一行指出最內層框架與例外名稱（'path.py:LINE: NameError'）
 # The last line of pytest's long traceback names the innermost frame and the exception ('path.py:LINE: NameError')
 _INNERMOST_LOCATION_RE = re.compile(r"^(\S.*?\.py):\d+: ([\w.]+)\s*$", re.MULTILINE)
+# 代表目標（或其相依套件）根本載入不了的環境類例外：在目標框架裡拋出的匯入失敗（延遲匯入沙盒中沒有的套件），
+# 或指向某個真實原始檔的語法錯誤（測試裡匯入的目標子模組壞掉）。邊界從未被測到，所以是 REASON_TARGET_BROKEN
+# 的 ERROR，絕不是缺陷（FAILED）；NameError 不在此列——目標裡拋出的 NameError 是真正的缺陷
+# Environment-type exceptions meaning the target (or a dependency) could not even load: an import failure raised in
+# a target frame (a lazy import of a package missing from the sandbox), or a syntax error pointing at a real source
+# file (a broken target submodule imported inside the test). The boundary was never exercised, so this is an ERROR
+# with REASON_TARGET_BROKEN, never a defect (FAILED); NameError is deliberately absent — a NameError raised inside
+# the target is a genuine defect
+_TARGET_IMPORT_EXCEPTIONS = ("ImportError", "ModuleNotFoundError")
+_TARGET_SYNTAX_EXCEPTIONS = ("SyntaxError", "IndentationError", "TabError")
+# SyntaxError 回溯中指出壞掉原始檔的那一行（'E     File "/srv/app/sub.py", line 3'）；'<unknown>'／'<string>'
+# 代表目標在執行期解析輸入（ast.parse、compile），那是目標行為，不是載入失敗
+# The line of a SyntaxError traceback naming the broken source file ('E     File "/srv/app/sub.py", line 3');
+# '<unknown>' / '<string>' means the target parsed input at run time (ast.parse, compile), which is target behaviour,
+# not a load failure
+_SYNTAX_ERROR_FILE_RE = re.compile(r'^E?\s*File "([^"]+)", line \d+', re.MULTILINE)
+# 在產生的測試模組（最內層框架）拋出時，代表測試呼叫了目標上不存在的函式／屬性（測試端的錯誤）；
+# 在目標內部拋出的同樣訊息仍是目標的缺陷
+# Raised in the generated test module (innermost frame) this means the test called a function / attribute the target
+# does not have (a test-side mistake); the same message raised inside the target stays a defect in the target
+_MISSING_ATTRIBUTE_RE = re.compile(r"^AttributeError: (?:module|type object) '[^']+' has no attribute '[^']+'")
+# 沙盒的單檔大小上限（RLIMIT_FSIZE，見 sandbox.SANDBOX_MAX_FILE_BYTES）讓寫入失敗時的 OSError：是沙盒的限制，
+# 不是目標的缺陷
+# The OSError a write gets once it hits the sandbox's per-file size cap (RLIMIT_FSIZE, see
+# sandbox.SANDBOX_MAX_FILE_BYTES): a sandbox limit, not a defect in the target
+_FILE_TOO_LARGE_RE = re.compile(r"^OSError: \[Errno 27\]")
+# JS/TS 模組每 _JS_MODULES_PER_BATCH 個一組，每組各自當作一個批次、拿一份 sandbox_timeout_seconds 預算（見
+# _run_js_modules）：Python 的整批只付一次直譯器啟動成本，而每個 JS 模組都要付一次 `node --test` 啟動成本
+# JS/TS modules are grouped _JS_MODULES_PER_BATCH at a time, each group being one batch with its own
+# sandbox_timeout_seconds budget (see _run_js_modules): a Python batch pays the interpreter start-up once, every JS
+# module pays a `node --test` start-up of its own
+_JS_MODULES_PER_BATCH = 10
 
 # --- JavaScript／TypeScript（node:test）分類 ---------------------------------------
 # --- JavaScript / TypeScript (node:test) classification ---------------------------------------
@@ -301,7 +333,9 @@ class TestSuiteExecutor:
                 logger.warning(bi("批次執行逾時；逐一重新執行每個測試模組以找出卡住的測試。",
                                   "Batch run timed out; re-running each test module individually to isolate the hang."))
                 coverage_pct = None
-                cases, timed_out, not_rerun, parse_failed = self._run_individually(files, working_dir, sandbox, language)
+                cases, timed_out, not_rerun, parse_failed = self._run_individually(
+                    files, working_dir, sandbox, language, timeout_used
+                )
                 junit_xml = ""  # 逐模組的結果現在在 `cases`／`timed_out` 裡 ／ per-module outcomes are now in `cases` / `timed_out`
             elif exit_code == TIMEOUT_EXIT_CODE:
                 batch_timeout = getattr(sandbox, "timeout_seconds", None)
@@ -363,14 +397,18 @@ class TestSuiteExecutor:
 
     def _run_individually(
         self, files: Dict[str, str], working_dir: str, sandbox: Optional[LocalSubprocessSandbox] = None,
-        language: str = "python"
+        language: str = "python", timeout_used: Optional[Dict[str, int]] = None
     ) -> Tuple[Dict[str, List[dict]], Set[str], Set[str], Set[str]]:
-        """在各自的行程中執行每個模組。
+        """在各自的行程中執行每個模組。每次重跑的逾時是 min(單測預算, 剩下的重跑預算)，所以重跑的總時間
+        不會超出沙盒的批次預算（只差無條件進位的不到 1 秒），而不是在最後一個模組多出整整一份單測預算。
+        實際使用的逾時填入 `timeout_used`（若有給）。
+        Runs each module in its own process. Each rerun's timeout is min(per-test budget, rerun budget left), so the
+        reruns never exceed the sandbox's batch budget in total (up to sub-second rounding up), instead of
+        overshooting by a whole per-test budget on the last module. The timeout actually used goes into
+        `timeout_used` (when given).
 
         回傳 (依模組分組的 junit 案例, 逾時的模組, 因重跑預算（沙盒自己的批次預算）
         用盡而跳過的模組, JUnit 報告無法解析的模組)。
-        Runs each module in its own process.
-
         Returns (junit cases by module, modules that timed out, modules skipped because the
         rerun budget (the sandbox's own batch budget) was exhausted, modules whose JUnit
         report could not be parsed).
@@ -380,14 +418,19 @@ class TestSuiteExecutor:
         not_rerun: Set[str] = set()
         parse_failed: Set[str] = set()
         sandbox = sandbox or self.sandbox
+        per_test = self._per_test_budget(sandbox)
         deadline = time.monotonic() + float(getattr(sandbox, "timeout_seconds", 0) or 0)
         for filename, code in files.items():
             module = os.path.splitext(filename)[0]
-            if time.monotonic() >= deadline:
+            remaining = math.ceil(deadline - time.monotonic())
+            if remaining < 1:
                 not_rerun.add(module)
                 continue
+            timeout = min(per_test, remaining)
+            if timeout_used is not None:
+                timeout_used[module] = timeout
             exit_code, _, _, _, _, junit_xml = sandbox.execute_pytest_files(
-                {filename: code}, working_dir=working_dir, timeout_seconds=self._per_test_budget(sandbox)
+                {filename: code}, working_dir=working_dir, timeout_seconds=timeout
             )
             if exit_code == TIMEOUT_EXIT_CODE:
                 timed_out.add(module)
@@ -416,19 +459,32 @@ class TestSuiteExecutor:
     ) -> Tuple[Dict[str, List[dict]], Set[str], Set[str], Set[str]]:
         """每個 JS/TS 模組各自一個 `node --test` 行程（Node 的 junit 報告器不會記錄最上層測試來自哪個檔案），
         但逾時語意與 Python 批次一致（docs/configuration.md：sandbox_timeout_seconds 是一批的總預算，
-        per_test_timeout_seconds 只用於批次逾時後的逐測重跑）：
-        第一輪依序執行各模組，每個模組拿到這一批「剩下的」批次預算；某個模組逾時就代表這一批逾時，
-        尚未執行（或逾時時拿到的預算比單測預算還少）的模組進入第二輪，各用 per_test_timeout_seconds 重跑，
-        第二輪總時間同樣受批次預算限制，超出的模組標為未重跑。
+        per_test_timeout_seconds 只用於批次逾時後的逐測重跑）。
+        批次大小規則：模組依序每 _JS_MODULES_PER_BATCH 個分成一批，每批各自拿一份 sandbox_timeout_seconds。
+        Python 的一批只付一次直譯器啟動成本，JS 卻每個模組都要付一次 Node 啟動成本；所有模組共用一份預算時，
+        許多「慢但會通過」的模組光是啟動成本就會把預算吃光，最後被標成未重跑（INCONCLUSIVE）。分批讓預算
+        隨模組數成長，同時每個模組第一輪拿到的逾時仍不超過一份批次預算（卡住的模組吃不到別批的預算）。
+        最壞情況總時間 = ceil(模組數 / _JS_MODULES_PER_BATCH) × 2 × sandbox_timeout_seconds（第一輪＋重跑）。
+        每一批之內：第一輪依序執行各模組，每個模組拿到這一批「剩下的」預算；某個模組逾時就代表這一批逾時，
+        尚未執行（或逾時時拿到的預算比單測預算還少）的模組進入第二輪，各用 min(單測預算, 剩下的重跑預算) 重跑，
+        所以第二輪總時間不會超出這一批的預算（只差無條件進位的不到 1 秒），超出的模組標為未重跑。
         填入 `runs` 與 `timeout_used`；回傳 (依模組分組的 junit 案例, 逾時的模組, 未重跑的模組, 報告無法解析的模組)。
         Each JS/TS module gets its own `node --test` process (Node's junit reporter does not name the file a
         top-level test came from), but the timeout semantics match a Python batch (docs/configuration.md:
         sandbox_timeout_seconds is the whole batch's budget, per_test_timeout_seconds only applies to per-test
-        reruns after a batch timeout):
-        the first pass runs the modules in order, each on whatever is LEFT of the batch budget; a module timing
-        out means the batch timed out, and the modules not yet run (or that timed out on less than the per-test
-        budget) go to a second pass, each re-run on per_test_timeout_seconds, again bounded by the batch budget
-        in total; modules beyond it are marked not re-run.
+        reruns after a batch timeout).
+        Batch sizing rule: the modules are split, in order, into batches of _JS_MODULES_PER_BATCH, each with its
+        own sandbox_timeout_seconds. A Python batch pays the interpreter start-up once, but every JS module pays a
+        Node start-up; with one budget shared by all modules, the start-up cost alone of many slow-but-passing
+        modules used it up and left them marked not re-run (INCONCLUSIVE). Batching makes the budget grow with the
+        module count while a module's first-pass timeout still never exceeds one batch budget (a hanging module
+        cannot eat another batch's budget). Worst-case total = ceil(modules / _JS_MODULES_PER_BATCH) x 2 x
+        sandbox_timeout_seconds (first pass + reruns).
+        Within one batch: the first pass runs the modules in order, each on whatever is LEFT of the batch budget;
+        a module timing out means the batch timed out, and the modules not yet run (or that timed out on less than
+        the per-test budget) go to a second pass, each re-run on min(per-test budget, rerun budget left), so the
+        second pass never exceeds the batch budget (up to sub-second rounding up); modules beyond it are marked
+        not re-run.
         Fills `runs` and `timeout_used`; returns (junit cases by module, timed-out modules, modules not re-run,
         modules whose report could not be parsed)."""
         cases: Dict[str, List[dict]] = {}
@@ -465,29 +521,34 @@ class TestSuiteExecutor:
             cases.update(parsed)
             return True
 
-        pending: List[Tuple[str, str]] = []
-        deadline = time.monotonic() + batch_budget
-        for filename, code in files.items():
-            remaining = math.ceil(deadline - time.monotonic())
-            if remaining < 1:
-                pending.append((filename, code))
-            elif not run_one(filename, code, remaining):
-                timed_out.add(os.path.splitext(filename)[0])
-                if remaining < per_test:
-                    # 逾時時拿到的預算比單測預算少：要重跑才公平
-                    # Timed out on less than the per-test budget: only a rerun is fair
+        items = list(files.items())
+        for first in range(0, len(items), _JS_MODULES_PER_BATCH):
+            pending: List[Tuple[str, str]] = []
+            deadline = time.monotonic() + batch_budget
+            for filename, code in items[first:first + _JS_MODULES_PER_BATCH]:
+                remaining = math.ceil(deadline - time.monotonic())
+                if remaining < 1:
                     pending.append((filename, code))
-        if pending:
-            logger.warning(bi("JS/TS 批次預算已用盡；以單測預算逐一重跑剩下的模組。",
-                              "JS/TS batch budget exhausted; re-running the remaining modules on the per-test budget."))
+                elif not run_one(filename, code, remaining):
+                    timed_out.add(os.path.splitext(filename)[0])
+                    if remaining < per_test:
+                        # 逾時時拿到的預算比單測預算少：要重跑才公平
+                        # Timed out on less than the per-test budget: only a rerun is fair
+                        pending.append((filename, code))
+            if not pending:
+                continue
+            logger.warning(bi("JS/TS 批次預算已用盡；以單測預算逐一重跑這一批剩下的模組。",
+                              "JS/TS batch budget exhausted; re-running the batch's remaining modules on the "
+                              "per-test budget."))
             deadline = time.monotonic() + batch_budget
             for filename, code in pending:
                 module = os.path.splitext(filename)[0]
-                if time.monotonic() >= deadline:
+                remaining = math.ceil(deadline - time.monotonic())
+                if remaining < 1:
                     not_rerun.add(module)
                     timed_out.discard(module)
                     runs.setdefault(module, (TIMEOUT_EXIT_CODE, "", "", None))
-                elif not run_one(filename, code, per_test):
+                elif not run_one(filename, code, min(per_test, remaining)):
                     timed_out.add(module)
         return cases, timed_out, not_rerun, parse_failed
 
@@ -672,22 +733,24 @@ class TestSuiteExecutor:
                     failure_reason=f"{REASON_NOT_RUN_CORRECTLY}: {summary or REASON_UNKNOWN_FAILURE}",
                     traceback=case["details"], duration=duration, stdout=stdout, stderr=stderr
                 )
-            if case["outcome"] == "error" and self._raised_in_target_code(case):
-                summary = self._exception_summary(case)
-                if summary.startswith(HARNESS_ERROR_EXCEPTIONS):
-                    # 匯入／語法失敗發生在目標（或其相依套件）裡，
-                    # 而不是產生的測試裡：邊界從未被測到，
-                    # 報告不可因目標壞掉而怪罪測試。
-                    # The import/syntax failure happened in the target (or its dependencies),
-                    # not in the generated test: the boundary was never exercised and the
-                    # report must not blame the test for the target being broken.
-                    return self._result(
-                        test, test_id, TestStatus.ERROR,
-                        failure_reason=(f"{REASON_TARGET_BROKEN}: "
-                                        f"{summary} (raised outside the generated test module)"),
-                        traceback=case["details"], duration=duration, stdout=stdout, stderr=stderr
-                    )
-            reason = (self._exception_summary(case) or self._first_line(case["message"])
+            summary = self._exception_summary(case)
+            collection_broken = case["outcome"] == "error" and self._raised_in_target_code(case) \
+                and summary.startswith(HARNESS_ERROR_EXCEPTIONS)
+            if collection_broken or (case["outcome"] == "failure" and self._target_failed_to_load(case)):
+                # 匯入／語法失敗發生在目標（或其相依套件）裡，
+                # 而不是產生的測試裡：邊界從未被測到，
+                # 報告不可因目標壞掉而怪罪測試。收集階段與測試執行中（延遲匯入）同樣處理。
+                # The import/syntax failure happened in the target (or its dependencies),
+                # not in the generated test: the boundary was never exercised and the
+                # report must not blame the test for the target being broken. Collection time and
+                # test run time (a lazy import) are treated alike.
+                return self._result(
+                    test, test_id, TestStatus.ERROR,
+                    failure_reason=(f"{REASON_TARGET_BROKEN}: "
+                                    f"{summary} (raised outside the generated test module)"),
+                    traceback=case["details"], duration=duration, stdout=stdout, stderr=stderr
+                )
+            reason = (summary or self._first_line(case["message"])
                       or self._first_line(case["details"]) or REASON_UNKNOWN_FAILURE)
             return self._result(
                 test, test_id, TestStatus.ERROR,
@@ -716,19 +779,64 @@ class TestSuiteExecutor:
 
     @staticmethod
     def _is_harness_failure(case: dict) -> bool:
-        """由產生的測試本身、而非目標行為所造成的失敗。
-        A failure caused by the generated test itself rather than by the target's behaviour."""
+        """由產生的測試本身、沙盒限制或目標根本載入不了（而非目標行為）所造成的失敗。
+        A failure caused by the generated test itself, a sandbox limit, or the target failing to load at all,
+        rather than by the target's behaviour."""
         message = case["message"] or ""
+        if TestSuiteExecutor._target_failed_to_load(case):
+            return True  # 由 _aggregate 回報成 REASON_TARGET_BROKEN ／ reported as REASON_TARGET_BROKEN by _aggregate
         if message.startswith(HARNESS_ERROR_EXCEPTIONS):
             # 與 TypeError 分支同樣看最內層框架：在產生的測試模組拋出才是 harness 錯誤；在目標內部拋出的
-            # NameError／ImportError 是目標真正的缺陷（FAILED，非資安利用）。沒有回溯時維持保守（歸在測試端）
+            # NameError 是目標真正的缺陷（FAILED，非資安利用）。沒有回溯時維持保守（歸在測試端）
             # Same innermost-frame check as the TypeError branch: only raised in the generated test module is it a
-            # harness error; a NameError/ImportError raised inside the target is a genuine defect (FAILED, not an
-            # exploit). Without a traceback the answer stays conservative (test-side)
-            locations = _INNERMOST_LOCATION_RE.findall(case["details"] or "")
-            return not locations or os.path.basename(locations[-1][0]).startswith("test_vh_")
+            # harness error; a NameError raised inside the target is a genuine defect (FAILED, not an exploit).
+            # Without a traceback the answer stays conservative (test-side)
+            return TestSuiteExecutor._innermost_location(case) is None or TestSuiteExecutor._raised_in_test_module(case)
+        if _FILE_TOO_LARGE_RE.match(message):
+            return True
+        if _MISSING_ATTRIBUTE_RE.match(message):
+            # 測試呼叫了目標上不存在的函式（mod.nonexist()）：只有在測試模組拋出時才是測試端的錯誤
+            # The test called a function the target does not have (mod.nonexist()): test-side only when raised in
+            # the test module
+            return TestSuiteExecutor._raised_in_test_module(case)
         return bool(_SIGNATURE_TYPEERROR_RE.match(message)
                     and _RAISED_IN_TEST_MODULE_RE.search(case["details"] or ""))
+
+    @staticmethod
+    def _innermost_location(case: dict) -> Optional[Tuple[str, str]]:
+        """pytest 長回溯的最內層框架 (路徑, 例外名稱)；沒有可用的回溯時為 None。
+        The innermost frame (path, exception name) of pytest's long traceback; None without a usable traceback."""
+        locations = _INNERMOST_LOCATION_RE.findall(case["details"] or "")
+        return locations[-1] if locations else None
+
+    @staticmethod
+    def _raised_in_test_module(case: dict) -> bool:
+        """最內層框架是產生的測試模組（test_vh_NNN.py）時為 True；沒有回溯時為 False。
+        True when the innermost frame is the generated test module (test_vh_NNN.py); False without a traceback."""
+        location = TestSuiteExecutor._innermost_location(case)
+        return location is not None and os.path.basename(location[0]).startswith("test_vh_")
+
+    @staticmethod
+    def _target_failed_to_load(case: dict) -> bool:
+        """測試執行中（非收集階段）目標根本載入不了時為 True：在目標框架裡拋出的 ImportError／ModuleNotFoundError
+        （延遲匯入沙盒中沒有的套件），或指向某個真實原始檔（非產生的測試模組、非 '<string>' 之類）的
+        SyntaxError 家族（測試裡匯入的目標子模組壞掉）。與收集錯誤路徑一樣歸為 REASON_TARGET_BROKEN 的 ERROR。
+        True when the target could not even load during a test (not at collection): an ImportError /
+        ModuleNotFoundError raised in a target frame (a lazy import of a package missing from the sandbox), or a
+        SyntaxError-family error pointing at a real source file (neither the generated test module nor '<string>'
+        and the like: a broken target submodule imported inside the test). Classified like the collection-error path,
+        as an ERROR with REASON_TARGET_BROKEN."""
+        location = TestSuiteExecutor._innermost_location(case)
+        if location is None:
+            return False
+        exception = location[1].rsplit(".", 1)[-1]
+        if exception in _TARGET_IMPORT_EXCEPTIONS:
+            return not os.path.basename(location[0]).startswith("test_vh_")
+        if exception in _TARGET_SYNTAX_EXCEPTIONS:
+            files = _SYNTAX_ERROR_FILE_RE.findall(case["details"] or "")
+            return bool(files) and not files[-1].startswith("<") \
+                and not os.path.basename(files[-1]).startswith("test_vh_")
+        return False
 
     @staticmethod
     def _exception_summary(case: dict) -> str:
