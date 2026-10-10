@@ -366,6 +366,7 @@ class VibeHarnessCommander:
             runtime = f"docker {cfg['image']}" + (f" (node v{'.'.join(map(str, version))})" if version else "")
             supports_ts = version is not None and version >= MIN_NODE_VERSION_TS
             docker_sandbox.supports_typescript = supports_ts
+            docker_sandbox.node_version = version  # 決定 JS/TS 涵蓋率旗標；未知時不收集 ／ decides the JS/TS coverage flags; unknown means none
             docker_sandbox.strip_types = has_ts and supports_ts
             sandbox = docker_sandbox
         else:
@@ -377,7 +378,7 @@ class VibeHarnessCommander:
             supports_ts = version >= MIN_NODE_VERSION_TS
             sandbox = NodeSubprocessSandbox(
                 timeout_seconds=cfg["timeout"], memory_mb=cfg["memory_mb"], node_bin=self.node_bin,
-                strip_types=has_ts and supports_ts, supports_typescript=supports_ts,
+                strip_types=has_ts and supports_ts, supports_typescript=supports_ts, node_version=version,
             )
         if has_ts and not supports_ts:
             min_ts = '.'.join(map(str, MIN_NODE_VERSION_TS))
@@ -586,15 +587,23 @@ class VibeHarnessCommander:
                 working_dir=work_dir,
                 collect_coverage=True
             )
+            # JS/TS 的行涵蓋率另外存放（cov_pct 維持只代表 Python）；收集不到時執行器已記錄原因，不算證據缺口（與 Python 一致）
+            # JS/TS line coverage is kept separately (cov_pct keeps meaning Python); when it could not be collected the
+            # executor has logged why, and it is not an evidence gap (same as Python)
+            js_cov_pct = getattr(self.executor, "last_js_line_coverage_pct", None)
             wb_passed = sum(1 for r in wb_results if r.status == TestStatus.PASSED)
             progress.update(phase=3, whitebox_tests=wb_tests, whitebox_results=wb_results)
             wb_failed = sum(1 for r in wb_results if r.status == TestStatus.FAILED)
             wb_errored = sum(1 for r in wb_results if r.status in (TestStatus.ERROR, TestStatus.SKIPPED))
             cov_display = f"{cov_pct:.1f}%" if cov_pct is not None else "N/A"
+            js_cov_display = ""
+            if any(t.language != "python" for t in wb_tests):
+                js_cov_display = (f" | {bi('行涵蓋率（JS/TS）', 'Line Coverage (JS/TS)')}: [bold cyan]"
+                                  f"{f'{js_cov_pct:.1f}%' if js_cov_pct is not None else 'N/A'}[/bold cyan]")
             self.console.print(
                 f"[+] {bi('白箱執行結果', 'White-Box Execution Outcome')}: [green]{wb_passed} {bi('通過', 'Passed')}[/green] | "
                 f"[red]{wb_failed} {bi('失敗／已暴露', 'Failed/Exposed')}[/red] | [yellow]{wb_errored} {bi('錯誤／未執行', 'Error/Not Run')}[/yellow] | "
-                f"{bi('行涵蓋率（Python）', 'Line Coverage (Python)')}: [bold cyan]{cov_display}[/bold cyan]"
+                f"{bi('行涵蓋率（Python）', 'Line Coverage (Python)')}: [bold cyan]{cov_display}[/bold cyan]{js_cov_display}"
             )
 
             # -------------------------------------------------------------
@@ -933,6 +942,7 @@ class VibeHarnessCommander:
                 agent_calls=sorted_call_log(self.gateway.call_log),
                 inconclusive_reasons=inconclusive_reasons,
                 line_coverage_pct=cov_pct,
+                js_line_coverage_pct=js_cov_pct,
                 mutation=mutation_report,
                 detected_language=lang_str,
                 key_recommendations=recommendations,

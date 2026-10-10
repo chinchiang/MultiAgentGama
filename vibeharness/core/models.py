@@ -293,7 +293,12 @@ class VibeHarnessSummary(BaseModel):
     untested_threat_ids: List[str] = Field(default_factory=list)
     agent_calls: List[AgentCallRecord] = Field(default_factory=list)
     inconclusive_reasons: List[str] = Field(default_factory=list)
+    # 白箱測試的行涵蓋率：line_coverage_pct 只代表 Python（pytest-cov），js_line_coverage_pct 是 JS/TS（Node 內建涵蓋率，
+    # 只計入載入過的目標檔案，見 jscoverage）；沒有收集或收集不到時為 None
+    # White-box line coverage: line_coverage_pct means Python only (pytest-cov), js_line_coverage_pct is JS/TS (Node's
+    # built-in coverage, loaded target files only, see jscoverage); None when not collected or not collectable
     line_coverage_pct: Optional[float] = None
+    js_line_coverage_pct: Optional[float] = None
     # 突變測試（--mutation）的結果；沒有啟用時為 None ／ the --mutation result; None when it is off
     mutation: Optional[MutationReport] = None
     detected_language: str = "Python"
