@@ -101,7 +101,7 @@ def check_test_code(code: str) -> Tuple[bool, Optional[str]]:
     tests = _top_level_test_nodes(tree)
     if not tests:
         return False, "no top-level test_ function defined"
-    vacuous = [t.name for t in tests if not _test_has_assertion(t)]
+    vacuous = [name for t in tests for name in _vacuous_tests(t)]
     if vacuous:
         return False, f"test function(s) without any assertion: {', '.join(vacuous)}"
     return True, None
@@ -133,15 +133,35 @@ def _package_install_call(tree: ast.Module) -> Optional[str]:
     return None
 
 
-def _test_has_assertion(test_node: _TestNode) -> bool:
-    """單一最上層測試節點的斷言閘門；若是類別，任一含斷言的測試方法即算數。
-    Assertion gate for one top-level test node; for a class, any test method with an assertion counts."""
-    if isinstance(test_node, ast.ClassDef):
-        return any(
-            _has_assertion(m) for m in test_node.body
-            if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
-        )
-    return _has_assertion(test_node)
+def _vacuous_tests(test_node: _TestNode) -> List[str]:
+    """單一最上層測試節點中沒有任何斷言的測試名稱。類別的每個 `test_` 方法都必須各自含斷言
+    （或透過 `self.<輔助方法>()` 呼叫到含斷言的類別方法）：一個有斷言的方法不能替同類別裡
+    空洞的方法背書，否則空洞的方法會被算成已防禦的邊界。
+    Names of the tests in one top-level test node that contain no assertion. Every `test_` method of a class
+    must assert on its own (or through a `self.<helper>()` call to a class method that asserts): one asserting
+    method must not vouch for a vacuous sibling, which would otherwise count as a defended boundary."""
+    if not isinstance(test_node, ast.ClassDef):
+        return [] if _has_assertion(test_node) else [test_node.name]
+    methods = {m.name: m for m in test_node.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    return [
+        f"{test_node.name}.{name}" for name, method in methods.items()
+        if name.startswith("test_") and not _method_asserts(method, methods, set())
+    ]
+
+
+def _method_asserts(method: ast.AST, methods: dict, seen: set) -> bool:
+    """方法本身含斷言，或它呼叫的 `self.<名稱>()` 類別方法（遞移地）含斷言時為 True。
+    True when the method asserts itself, or a class method it calls as `self.<name>()` does (transitively)."""
+    if _has_assertion(method):
+        return True
+    for node in ast.walk(method):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name) and node.func.value.id == "self"
+                and node.func.attr in methods and node.func.attr not in seen):
+            seen.add(node.func.attr)
+            if _method_asserts(methods[node.func.attr], methods, seen):
+                return True
+    return False
 
 
 # --- JavaScript／TypeScript（node:test 模組）-----------------------------------------------
