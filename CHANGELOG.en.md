@@ -270,3 +270,14 @@ Initial release.
 - ruff static checks with pre-commit integration
 - CI matrix: ubuntu / windows × Python 3.10 / 3.13, with lint and coverage reporting
 - MIT license
+
+[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.5.1...v0.6.0
+[0.5.1]: https://github.com/chinchiang/MultiAgentGama/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.1.2...v0.2.0
+[0.1.2]: https://github.com/chinchiang/MultiAgentGama/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/chinchiang/MultiAgentGama/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/chinchiang/MultiAgentGama/releases/tag/v0.1.0

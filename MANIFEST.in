@@ -7,7 +7,7 @@
 # tests/test_review_build.py and the package job in tests.yml check the sdist contents.
 include README.md README.en.md CHANGELOG.md CHANGELOG.en.md CONTRIBUTING.md SECURITY.md LICENSE
 include main.py action.yml
-include requirements.txt requirements-dev.txt requirements.lock
+include requirements.txt requirements-dev.txt requirements.lock requirements-build.in requirements-build.txt
 include docker/*.Dockerfile docker/sandbox-requirements.in docker/sandbox-requirements.txt
 recursive-include docs *.md
 recursive-include examples *.py

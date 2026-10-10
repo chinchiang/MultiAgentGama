@@ -1,8 +1,8 @@
 # 🛡️ VibeHarness-MAS: Multi-Agent Testing Harness for Vibe Coding
 
-[正體中文（臺灣）](README.md) | English (US)
+[正體中文（臺灣）](https://github.com/chinchiang/MultiAgentGama/blob/master/README.md) | English (US)
 
-[![tests](https://github.com/chinchiang/MultiAgentGama/actions/workflows/tests.yml/badge.svg)](https://github.com/chinchiang/MultiAgentGama/actions/workflows/tests.yml)
+[![tests](https://github.com/chinchiang/MultiAgentGama/actions/workflows/tests.yml/badge.svg)](https://github.com/chinchiang/MultiAgentGama/actions/workflows/tests.yml) [![PyPI](https://img.shields.io/pypi/v/vibeharness-mas)](https://pypi.org/project/vibeharness-mas/) [![Python](https://img.shields.io/pypi/pyversions/vibeharness-mas)](https://pypi.org/project/vibeharness-mas/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/chinchiang/MultiAgentGama/blob/master/LICENSE)
 
 > **An AI software quality-assurance toolkit that runs white-box first (heterogeneous model cross-review + executable test verification), then black-box (STRIDE/OWASP threat-model-driven attack testing).**
 
@@ -74,7 +74,7 @@ flowchart TD
 
 ### 🤖 Agent Responsibilities
 
-Every agent's model and prompt live in [`vibeharness/config/agents_config.yaml`](vibeharness/config/agents_config.yaml) and can be reassigned freely. The reviewer roster is config-driven: every `whitebox_reviewer_*` entry is used with its own `name`, `model_alias`, `temperature`, and `focus` (the focus text goes into its prompt), so adding or removing an entry changes the ensemble (field details in [docs/configuration.en.md](docs/configuration.en.md)):
+Every agent's model and prompt live in [`vibeharness/config/agents_config.yaml`](https://github.com/chinchiang/MultiAgentGama/blob/master/vibeharness/config/agents_config.yaml) and can be reassigned freely. The reviewer roster is config-driven: every `whitebox_reviewer_*` entry is used with its own `name`, `model_alias`, `temperature`, and `focus` (the focus text goes into its prompt), so adding or removing an entry changes the ensemble (field details in [docs/configuration.en.md](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/configuration.en.md)):
 
 | Sub-agent (agent_id) | Default model | Responsibility | temperature |
 | :--- | :--- | :--- | :--- |
@@ -162,7 +162,7 @@ MultiAgentGama/
 │   ├── PULL_REQUEST_TEMPLATE.md
 │   └── workflows/
 │       ├── tests.yml            # CI: lint (ruff / mypy), audit (pip-audit), package (sdist + wheel: wheel smoke test, suite run from the sdist), test (Ubuntu / Windows × Python 3.10–3.14 plus macOS × 3.12, 93% coverage floor)
-│       ├── publish.yml          # Release: on tag push, run tests.yml first, verify the version matches, build sdist / wheel, smoke-test the wheel in a clean venv, upload to the GitHub Release (PyPI needs ENABLE_PYPI_PUBLISH)
+│       ├── publish.yml          # Release: on tag push, run tests.yml first, verify the version matches, build sdist / wheel, smoke-test the wheel in a clean venv, upload to the GitHub Release and publish to PyPI via Trusted Publishing
 │       └── live-smoke.yml       # Manual: one live / hybrid run of examples with the repo's provider secrets, reports uploaded
 ├── docker/
 │   ├── sandbox.Dockerfile       # Base image for the docker sandbox (digest-pinned python:3.12-slim, USER 65534; pytest / pytest-cov / requests)
@@ -267,28 +267,33 @@ MultiAgentGama/
 
 ## 🛠️ Getting Started
 
-### 1. Install dependencies
+### 1. Install
+
+From [PyPI](https://pypi.org/project/vibeharness-mas/) (registers the `vibeharness` command; Python 3.10+):
 
 ```bash
-pip install -r requirements.txt
+pip install vibeharness-mas
+vibeharness --version
+```
+
+As an isolated command-line tool: `pipx install vibeharness-mas` or `uv tool install vibeharness-mas`. For reproducible CI, pin the version: `pip install vibeharness-mas==0.6.0`.
+
+From source (for development; `python main.py` works from the checkout as well):
+
+```bash
+git clone https://github.com/chinchiang/MultiAgentGama.git && cd MultiAgentGama
+pip install -e .
 ```
 
 For exactly the dependency set CI tests with (hash-verified): `pip install --require-hashes -r requirements.lock`.
-
-Or install as a package (this also registers the `vibeharness` command):
-
-```bash
-pip install .
-vibeharness --version
-```
 
 ### 2. Configure API keys (optional)
 
 The toolkit supports real API calls and an offline simulation mode (Hybrid Mode):
 
-> For a complete reference to every field in `vibeharness/config/agents_config.yaml` — defaults, model reassignment, and Docker sandbox examples — see **[docs/configuration.en.md](docs/configuration.en.md)** ([正體中文](docs/configuration.md)).
+> For a complete reference to every field in `vibeharness/config/agents_config.yaml` — defaults, model reassignment, and Docker sandbox examples — see **[docs/configuration.en.md](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/configuration.en.md)** ([正體中文](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/configuration.md)).
 >
-> For why each component is designed the way it is, how data flows between phases, and how the gate and evidence gaps are decided, see **[docs/design.en.md](docs/design.en.md)** (design document; [正體中文](docs/design.md)).
+> For why each component is designed the way it is, how data flows between phases, and how the gate and evidence gaps are decided, see **[docs/design.en.md](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/design.en.md)** (design document; [正體中文](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/design.md)).
 
 ```bash
 # To use live models:
@@ -344,9 +349,9 @@ Set `sandbox_provider: "docker"` in `vibeharness/config/agents_config.yaml`. Tun
 python main.py --target examples --output vibe_harness_report.md
 ```
 
-`--target` (`-t`, default `examples`) accepts a directory or a single file; `--output` (`-o`) defaults to `vibe_harness_report.md`. `--desc` (`-d`) gives the threat modeler a high-level description of the system; `--config` (`-c`) points at another config file; `--verbose` (`-v`) enables debug logging. Black-box tests import the target in-process by default; they send real HTTP requests only when you pass `--base-url` (`-u`, e.g. `--base-url http://localhost:8000`; only `http://`/`https://` URLs with a host name are accepted, any other scheme is a usage error) explicitly and a service answers there. No default address is ever probed, so attack scripts cannot hit an unrelated local service, and in live HTTP mode attack code aimed at any host other than `--base-url`, or at another port of that host, is rejected statically. See [`docs/sample_report.md`](docs/sample_report.md) for example output.
+`--target` (`-t`, default `examples`) accepts a directory or a single file; `--output` (`-o`) defaults to `vibe_harness_report.md`. `--desc` (`-d`) gives the threat modeler a high-level description of the system; `--config` (`-c`) points at another config file; `--verbose` (`-v`) enables debug logging. Black-box tests import the target in-process by default; they send real HTTP requests only when you pass `--base-url` (`-u`, e.g. `--base-url http://localhost:8000`; only `http://`/`https://` URLs with a host name are accepted, any other scheme is a usage error) explicitly and a service answers there. No default address is ever probed, so attack scripts cannot hit an unrelated local service, and in live HTTP mode attack code aimed at any host other than `--base-url`, or at another port of that host, is rejected statically. See [`docs/sample_report.md`](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/sample_report.md) for example output.
 
-Before a run, `--estimate` shows its size: it runs Phase 1 only (symbol extraction and the deterministic rules, no model call) and prints the expected calls per agent and per model (reviewer and threat-modeling counts are exact; verification, test generation and attack synthesis are scenario figures from stated assumptions such as findings per batch, with a maximum that includes re-asks and heals), the estimated prompt / output tokens and, for models with `price_per_million_*` configured, the estimated cost; with `--format json` it is written to `--output`; the exit code is 0 (5 when a `--changed-since` ref cannot be resolved or `--output` cannot be written). Scale and cost limits can be overridden from the CLI: `--max-files` (number of source files analyzed per run, default 50, must be ≥ 1; the rest are reported as skipped and listed as an evidence gap) and `--max-model-calls` (cap on model invocations per run, unlimited by default; `0` also means unlimited and a negative value is a usage error; retries and the fallback are not counted separately; when exhausted, hybrid falls back to simulation and lists an evidence gap, live fails). File selection: `--include GLOB` / `--exclude GLOB` (repeatable; matched against the path relative to `--target` or the file name, e.g. `--exclude 'tests/*' --exclude '*.min.js'`; they replace the config's `include` / `exclude`), and `--changed-since <git ref>` (only files that changed relative to that ref, including unstaged and untracked ones; made for PR checks: `--changed-since origin/main`). Files above `max_file_bytes` (default 1 MB) are not analyzed and are listed as an evidence gap. An unusable model answer is re-asked once (`retry_invalid_output`) before it is booked `invalid`. An unwritable `--output` / `--sarif` location exits 5 before any model call; when a run crashes or is interrupted, the completed phases (call log, findings, test results, threats) are written to `<output>.partial.json`. `--cache-dir DIR` enables the response cache: usable live answers are stored in DIR and an identical prompt later is served from it without a provider call or budget spend (handy for re-runs or switching the report format); an answer that only became usable after a re-ask is also stored under the original prompt's key, so a re-run hits on the first attempt. `--cache-only` serves every call from the response cache only (needs `--cache-dir` or `global.cache_dir`, else exit 5): no provider call, no budget spend and no re-ask; a call the cache cannot answer is an evidence gap, simulated in hybrid (the verdict cannot be `READY_TO_SHIP`) and exit 4 in live. `--estimate` with `--cache-only` still lists the calls and notes that no provider is called and nothing is spent. See [`docs/configuration.en.md`](docs/configuration.en.md).
+Before a run, `--estimate` shows its size: it runs Phase 1 only (symbol extraction and the deterministic rules, no model call) and prints the expected calls per agent and per model (reviewer and threat-modeling counts are exact; verification, test generation and attack synthesis are scenario figures from stated assumptions such as findings per batch, with a maximum that includes re-asks and heals), the estimated prompt / output tokens and, for models with `price_per_million_*` configured, the estimated cost; with `--format json` it is written to `--output`; the exit code is 0 (5 when a `--changed-since` ref cannot be resolved or `--output` cannot be written). Scale and cost limits can be overridden from the CLI: `--max-files` (number of source files analyzed per run, default 50, must be ≥ 1; the rest are reported as skipped and listed as an evidence gap) and `--max-model-calls` (cap on model invocations per run, unlimited by default; `0` also means unlimited and a negative value is a usage error; retries and the fallback are not counted separately; when exhausted, hybrid falls back to simulation and lists an evidence gap, live fails). File selection: `--include GLOB` / `--exclude GLOB` (repeatable; matched against the path relative to `--target` or the file name, e.g. `--exclude 'tests/*' --exclude '*.min.js'`; they replace the config's `include` / `exclude`), and `--changed-since <git ref>` (only files that changed relative to that ref, including unstaged and untracked ones; made for PR checks: `--changed-since origin/main`). Files above `max_file_bytes` (default 1 MB) are not analyzed and are listed as an evidence gap. An unusable model answer is re-asked once (`retry_invalid_output`) before it is booked `invalid`. An unwritable `--output` / `--sarif` location exits 5 before any model call; when a run crashes or is interrupted, the completed phases (call log, findings, test results, threats) are written to `<output>.partial.json`. `--cache-dir DIR` enables the response cache: usable live answers are stored in DIR and an identical prompt later is served from it without a provider call or budget spend (handy for re-runs or switching the report format); an answer that only became usable after a re-ask is also stored under the original prompt's key, so a re-run hits on the first attempt. `--cache-only` serves every call from the response cache only (needs `--cache-dir` or `global.cache_dir`, else exit 5): no provider call, no budget spend and no re-ask; a call the cache cannot answer is an evidence gap, simulated in hybrid (the verdict cannot be `READY_TO_SHIP`) and exit 4 in live. `--estimate` with `--cache-only` still lists the calls and notes that no provider is called and nothing is spent. See [`docs/configuration.en.md`](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/configuration.en.md).
 
 Report formats: `--format md` (default) or `--format json` (machine-readable, with the complete findings, threat model, and test results — suited to CI/CD). Both keep every generated test's code: the Markdown appendix "產生的測試程式碼（稽核軌跡） ／ Generated Test Code (audit trail)" lists each test's code next to its outcome in collapsible blocks (control characters removed), and the JSON `generated_tests` / `blackbox_generated_tests` keep it verbatim for audits or re-runs. Model-written tests are hypotheses too — a "passing" test may be asserting the defect itself (e.g. `pytest.raises(KeyError)`), so check that the assertions describe the correct behaviour:
 
@@ -358,6 +363,10 @@ You can also pass `--sarif <path>` to emit a [SARIF 2.1.0](https://docs.oasis-op
 
 ```yaml
 # Example .github/workflows/security.yml for the target project: this repo ships a composite GitHub Action (action.yml)
+- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+  with:
+    fetch-depth: 0                             # changed-since needs the history to diff against the ref
+    persist-credentials: false
 - uses: chinchiang/MultiAgentGama@v0.6.0      # installs the package from the action's own checkout (hash-verified dependencies) and runs the audit
   with:
     target: src
@@ -366,6 +375,8 @@ You can also pass `--sarif <path>` to emit a [SARIF 2.1.0](https://docs.oasis-op
     changed-since: origin/main                 # PR checks: only files that changed (optional)
     baseline: .vibeharness/baseline.json       # optional: only problems that are new fail the job
     mutation: "true"                            # optional: true / false switches mutation testing for this run, empty follows the config
+    sandbox: docker                            # optional: local_subprocess (default) | docker (builds the sandbox images; needs a Docker runner)
+    artifact-name: vibeharness-report          # optional: must be unique per run, so give each matrix cell its own
     fail-on: needs-fixes                       # blocked | needs-fixes | inconclusive | never
   env:
     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -378,9 +389,9 @@ You can also pass `--sarif <path>` to emit a [SARIF 2.1.0](https://docs.oasis-op
     sarif_file: vibeharness.sarif
 ```
 
-The action's outputs are `verdict` (`READY_TO_SHIP` / `NEEDS_FIXES` / `BLOCKED_CRITICAL_RISK` / `INCONCLUSIVE`, or `ERROR` when the harness itself failed) and `exit-code`; the report, the SARIF and a crash's `.partial.json` are uploaded as the `vibeharness-report` artifact. Without the action, `pip install "git+https://github.com/chinchiang/MultiAgentGama@v0.6.0"` and call `vibeharness` directly.
+The action's outputs are `verdict` (`READY_TO_SHIP` / `NEEDS_FIXES` / `BLOCKED_CRITICAL_RISK` / `INCONCLUSIVE`, or `ERROR` when the harness itself failed) and `exit-code`; the report, the SARIF and a crash's `.partial.json` are uploaded as an artifact named by `artifact-name` (default `vibeharness-report`; artifact names must be unique within a workflow run, so matrix jobs or repeated uses of the action need distinct names). `changed-since` diffs against a git ref, so check out with `fetch-depth: 0` (the default shallow clone has no history to compare). `sandbox: docker` builds the sandbox images from the action's own `docker/*.Dockerfile` and runs with a copy of the config (the bundled one, or the `--config` passed in `extra-args`) set to `sandbox_provider: docker`; it needs a runner with Docker such as `ubuntu-latest`. Without the action, `pip install vibeharness-mas==0.6.0` and call `vibeharness` directly.
 
-**Mutation testing switch**: `--mutation` turns it on, `--no-mutation` off; precedence is CLI flag > config `global.mutation_testing` > off, so a config that enables it can be switched off for one run with `--no-mutation`, and a config that disables it can be switched on with `--mutation`. `--mutation-max-mutants N` (≥ 1) overrides the mutant cap (default 20); each mutant costs one sandbox batch and no model call, and `--estimate` lists the ceiling when it is on. The report has a Mutation Score row in the metrics table and lists surviving mutants; the other keys are in [`docs/configuration.md`](docs/configuration.md).
+**Mutation testing switch**: `--mutation` turns it on, `--no-mutation` off; precedence is CLI flag > config `global.mutation_testing` > off, so a config that enables it can be switched off for one run with `--no-mutation`, and a config that disables it can be switched on with `--mutation`. `--mutation-max-mutants N` (≥ 1) overrides the mutant cap (default 20); each mutant costs one sandbox batch and no model call, and `--estimate` lists the ceiling when it is on. The report has a Mutation Score row in the metrics table and lists surviving mutants; the other keys are in [`docs/configuration.en.md`](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/configuration.en.md).
 
 **Gating on new problems only (`--baseline`)**: keep one `--format json` report (for example committed as `.vibeharness/baseline.json`) and pass it with `--baseline`: failed white-box tests (keyed by their source finding), probe failures, black-box breaches and HIGH+ rule hits it already contains are still listed in the report's "基準中的已知問題（不計入） ／ Known from baseline (not counted)" section and in the recommendations, but no longer count toward the verdict or the exit code, so CI fails only on problems that are new. The keys do not depend on run numbering (a finding is keyed by target-relative path + symbol + normalized title, a breach by the threat's STRIDE category + title + attack vector, a rule hit by rule + file + evidence without the line number, a probe by its symbol), so re-numbered model output or unrelated line shifts never turn an old problem into a new one. Every item in the JSON report carries a `fingerprint` field; reports from before 0.3.0 without it are recomputed. A crash's `.partial.json` cannot serve as a baseline.
 
@@ -420,7 +431,7 @@ pip install "$(grep '^pip-audit==' requirements-dev.txt)"
 python -m pip_audit -r requirements.lock --disable-pip --require-hashes
 ```
 
-Optional: install [pre-commit](https://pre-commit.com/) to run ruff and mypy automatically before every `git commit` (see [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and [SECURITY.md](SECURITY.md) for vulnerability reporting):
+Optional: install [pre-commit](https://pre-commit.com/) to run ruff and mypy automatically before every `git commit` (see [CONTRIBUTING.md](https://github.com/chinchiang/MultiAgentGama/blob/master/CONTRIBUTING.md) for the contribution workflow and [SECURITY.md](https://github.com/chinchiang/MultiAgentGama/blob/master/SECURITY.md) for vulnerability reporting):
 
 ```bash
 pip install pre-commit

@@ -1,0 +1,7 @@
+# 建置後端（與 pyproject.toml 的 [build-system] requires 同一範圍）。action.yml 以 --no-build-isolation 安裝套件，
+# 建置後端改從帶雜湊的 requirements-build.txt 安裝，整個安裝過程都經雜湊驗證。重新產生：
+# The build backend (same range as [build-system] requires in pyproject.toml). action.yml installs the package with
+# --no-build-isolation and the backend from the hashed requirements-build.txt instead, so the whole install is
+# hash-verified. Regenerate with:
+#   uv pip compile --universal --generate-hashes --python-version 3.10 requirements-build.in -o requirements-build.txt
+setuptools>=77,<85
