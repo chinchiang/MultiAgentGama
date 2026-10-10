@@ -4,7 +4,7 @@
 **整體狀態 ／ Overall Status**: `NEEDS_FIXES`  
 **產生時間 ／ Generated**: 2026-10-09T00:00:00+00:00 由 VibeHarness-MAS 0.5.1 產生 ／ by VibeHarness-MAS 0.5.1 (mode `mock`, sandbox `local_subprocess`)  
 **目標修訂 ／ Target revision**: `5a10af0f2e4c0b7d9e8a1c3b6d4f2a8e7c9b1d0e`  
-**設定檔 ／ Config**: `config/agents_config.yaml`  
+**設定檔 ／ Config**: `vibeharness/config/agents_config.yaml`  
 
 ---
 
@@ -24,7 +24,7 @@
 | **跨模型一致度 ／ Cross-Model Agreement** | `N/A（未套用驗證） ／ N/A (verification not applied)` `[SIMULATED]` | 一致度 ≥ 70% ／ ≥ 70% Agreement |
 | **程式碼行涵蓋率 ／ Code Line Coverage** | `63.0%` | 基準 ≥ 80% ／ ≥ 80% Baseline |
 | **審查者發現（原始 → 去重後） ／ Reviewer Findings (raw → distinct)** | `4 → 4` | - |
-| **已確認的白箱邏輯缺陷 ／ Confirmed White-Box Logic Flaws** | `4` | 0 個關鍵 ／ 0 Critical |
+| **已確認的白箱邏輯缺陷 ／ Confirmed White-Box Logic Flaws** | `N/A` (4 個未經驗證的假設；未套用驗證 ／ 4 unverified hypotheses; verification not applied) | 0 個關鍵 ／ 0 Critical |
 | **白箱測試通過 ／ White-Box Tests Passed** | `1 / 3` (0 個錯誤或未執行 ／ 0 errored / not run) | 通過率 100% ／ 100% Pass Rate |
 | **已建模的 STRIDE 威脅情境 ／ STRIDE Threat Scenarios Modeled** | `3` | 完整資產涵蓋 ／ Full Asset Coverage |
 | **沒有可執行測試的威脅 ／ Threats Without Executable Test** | `3` | 0 個未測試 ／ 0 Untested |
@@ -41,17 +41,17 @@
 ### 執行來源 ／ Execution Provenance
 | 代理 ／ Agent | 模型 ／ Model | 模式 ／ Mode | 呼叫數 ／ Calls | 原因 ／ Reason |
 | :--- | :--- | :--- | :--- | :--- |
+| `blackbox_test_synthesizer` | `deepseek/deepseek-v4-pro` | 🟡 模擬 ／ simulated | 3 | execution_mode 為 'mock' ／ execution_mode is 'mock' |
+| `blackbox_threat_modeler` | `claude-sonnet-5-5` | 🟡 模擬 ／ simulated | 1 | execution_mode 為 'mock' ／ execution_mode is 'mock' |
 | `whitebox_reviewer_claude` | `claude-sonnet-5-5` | 🟡 模擬 ／ simulated | 1 | execution_mode 為 'mock' ／ execution_mode is 'mock' |
-| `whitebox_reviewer_glm` | `zai/glm-5.3` | 🟡 模擬 ／ simulated | 1 | execution_mode 為 'mock' ／ execution_mode is 'mock' |
 | `whitebox_reviewer_deepseek` | `deepseek/deepseek-v4-pro` | 🟡 模擬 ／ simulated | 1 | execution_mode 為 'mock' ／ execution_mode is 'mock' |
 | `whitebox_reviewer_gemini` | `gemini/gemini-3.8-flash` | 🟡 模擬 ／ simulated | 1 | execution_mode 為 'mock' ／ execution_mode is 'mock' |
+| `whitebox_reviewer_glm` | `zai/glm-5.3` | 🟡 模擬 ／ simulated | 1 | execution_mode 為 'mock' ／ execution_mode is 'mock' |
+| `whitebox_test_generator` | `deepseek/deepseek-v4-pro` | 🟡 模擬 ／ simulated | 4 | execution_mode 為 'mock' ／ execution_mode is 'mock' |
 | `whitebox_verifier_claude` | `claude-sonnet-5-5` | 🟡 模擬 ／ simulated | 1 | execution_mode 為 'mock' ／ execution_mode is 'mock' |
-| `whitebox_verifier_glm` | `zai/glm-5.3` | 🟡 模擬 ／ simulated | 1 | execution_mode 為 'mock' ／ execution_mode is 'mock' |
 | `whitebox_verifier_deepseek` | `deepseek/deepseek-v4-pro` | 🟡 模擬 ／ simulated | 1 | execution_mode 為 'mock' ／ execution_mode is 'mock' |
 | `whitebox_verifier_gemini` | `gemini/gemini-3.8-flash` | 🟡 模擬 ／ simulated | 1 | execution_mode 為 'mock' ／ execution_mode is 'mock' |
-| `whitebox_test_generator` | `deepseek/deepseek-v4-pro` | 🟡 模擬 ／ simulated | 4 | execution_mode 為 'mock' ／ execution_mode is 'mock' |
-| `blackbox_threat_modeler` | `claude-sonnet-5-5` | 🟡 模擬 ／ simulated | 1 | execution_mode 為 'mock' ／ execution_mode is 'mock' |
-| `blackbox_test_synthesizer` | `deepseek/deepseek-v4-pro` | 🟡 模擬 ／ simulated | 3 | execution_mode 為 'mock' ／ execution_mode is 'mock' |
+| `whitebox_verifier_glm` | `zai/glm-5.3` | 🟡 模擬 ／ simulated | 1 | execution_mode 為 'mock' ／ execution_mode is 'mock' |
 
 
 ## 2. 🔬 第 2–3 階段：異質白箱程式碼審查、驗證與測試 ／ Phases 2–3: Heterogeneous White-Box Code Review, Verification & Tests
@@ -59,7 +59,7 @@
 
 **辯論共識摘要 ／ Debate Consensus Summary** `[SIMULATED]`: 未套用跨模型驗證（simulated）；發現為未經篩選的審查者假設。 ／ Cross-model verification not applied (simulated); findings are unfiltered reviewer hypotheses.
 
-### 已確認的邏輯與防禦盲點 ／ Confirmed Logic & Defensive Blindspots:
+### 未經驗證的缺陷假設（未套用跨模型驗證） ／ Unverified Defect Hypotheses (cross-model verification not applied):
 - **[HIGH] 處理函式中未檢查的空值／隱含的狀態假設 ／ Unchecked Null / Implicit State Assumption in Handler** `[SIMULATED]` (發現者 ／ Identified by Logic & State Reviewer (Claude))
   - **根本原因 ／ Root Cause**: 存取屬性前缺少防禦性的空值檢查。 ／ Absence of defensive null-check before property traversal.
   - **Vibe-Coding 缺陷 ／ Vibe-Coding Flaw**: Vibe coding 常假設一定找得到紀錄的「理想路徑」。 ／ Vibe coding commonly assumes the 'happy path' where records are always found.
