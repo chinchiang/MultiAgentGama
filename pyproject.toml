@@ -1,5 +1,7 @@
 [build-system]
-requires = ["setuptools>=77"]
+# 77 起支援 PEP 639 的 license／license-files；設上限讓發布建置不會在沒驗證過的主版本上悄悄改變
+# 77+ supports PEP 639 license / license-files; capped so release builds do not silently change on an unvalidated major
+requires = ["setuptools>=77,<85"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -17,6 +19,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Operating System :: OS Independent",
 ]
 # pytest／pytest-cov 是執行期相依：沙盒用它們執行生成的測試 ／ pytest / pytest-cov are runtime dependencies: the sandbox executes generated tests with them

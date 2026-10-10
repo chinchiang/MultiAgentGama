@@ -1,6 +1,6 @@
-# 讓釘 SHA 的 Actions 與鎖定的 Python 相依套件集保持最新。CI 的 `audit` job（對 requirements.lock 跑 pip-audit）
+# 讓釘 SHA 的 Actions、鎖定的 Python 相依套件集與沙盒基底映像保持最新。CI 的 `audit` job（對 requirements.lock 跑 pip-audit）
 # 會在某個鎖定版本出現已知 CVE 時讓每個 PR 失敗，沒有這個設定就只能手動更新鎖定檔。
-# Keeps the SHA-pinned Actions and the locked Python dependency set current. The CI `audit` job
+# Keeps the SHA-pinned Actions, the locked Python dependency set and the sandbox base images current. The CI `audit` job
 # (pip-audit over requirements.lock) fails every PR once a locked version gains a known CVE, so
 # without this the lock could only be refreshed by hand.
 version: 2
@@ -13,13 +13,19 @@ updates:
       actions:
         patterns: ["*"]
   - package-ecosystem: pip
-    directory: /
+    # 根目錄：requirements.txt、requirements-dev.txt 與 requirements.lock；/docker：沙盒映像的
+    # docker/sandbox-requirements.in／.txt。兩者在同一個分組 PR 裡升版，讓版本保持一致
+    # （tests/test_review_build.py 會檢查沙盒鎖定檔與 requirements.lock 的版本相同）。
+    # 兩份鎖定檔都是 uv 編譯、帶雜湊的通用鎖定檔；Dependabot 無法重新產生時，照各自檔頭的
+    # uv pip compile 指令手動重建。
+    # Root: requirements.txt, requirements-dev.txt and requirements.lock; /docker: the sandbox image's
+    # docker/sandbox-requirements.in / .txt. Both are bumped in the same grouped PR so their versions stay
+    # aligned (tests/test_review_build.py checks the sandbox lock matches requirements.lock). Both locks are
+    # uv-compiled, hashed universal locks; when Dependabot cannot regenerate one, rebuild it by hand with
+    # the uv pip compile command in its header.
+    directories: ["/", "/docker"]
     schedule:
       interval: weekly
-    # requirements.lock 是 uv 編譯的通用鎖定檔：Dependabot 把它當釘版的 requirements 檔升版，
-    # `docker/sandbox.Dockerfile` 的釘版要手動跟著改。
-    # requirements.lock is a uv-compiled universal lock: Dependabot bumps it like a pinned
-    # requirements file, and `docker/sandbox.Dockerfile` pins must be updated to match by hand.
     groups:
       python-minor-and-patch:
         update-types: ["minor", "patch"]
@@ -30,3 +36,19 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: pydantic
         update-types: ["version-update:semver-major"]
+  # 沙盒映像的基底映像（以 tag＋index digest 釘死）／ Base images of the sandbox images (pinned by tag + index digest)
+  - package-ecosystem: docker
+    directory: /docker
+    schedule:
+      interval: weekly
+    groups:
+      sandbox-base-images:
+        patterns: ["*"]
+    ignore:
+      # Python／Node 的主次版本是刻意的選擇（3.12 與 CI 的發布直譯器一致，Node 22 是 TS 型別剝除的驗證版本）；只跟 digest 與 patch
+      # The Python / Node major.minor is a deliberate choice (3.12 matches CI's release interpreter, Node 22 is the
+      # version TS type stripping is validated on); follow digests and patches only
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: node
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]

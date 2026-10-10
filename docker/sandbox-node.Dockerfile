@@ -10,7 +10,15 @@
 # specifiers resolve by walking up from the imported target file). Nothing is installed at run time.
 # Node >= 22.6 provides type stripping for TypeScript targets (types only: no enums, namespaces,
 # parameter properties or decorators).
-FROM node:22-slim
+#
+# 基底映像以多架構 index digest 釘死（供應鏈強化）；升版時 tag 與 digest 一起改（Dependabot 的 docker 生態系會提議）：
+# Base image pinned by its multi-arch index digest (supply-chain hardening); bump tag and digest together
+# (Dependabot's docker ecosystem proposes bumps):
+#   docker buildx imagetools inspect node:22-slim
+FROM node:22-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392
 
 ENV NODE_ENV=test \
     NODE_OPTIONS=
+
+# 預設非 root（nobody）；harness 執行時也會傳 --user ／ Non-root (nobody) by default; the harness also passes --user at run time
+USER 65534:65534

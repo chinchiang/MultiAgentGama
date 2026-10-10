@@ -1,8 +1,7 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    # 與 requirements-dev.txt 的 ruff 釘版保持一致（鏡像 tag 可能落後一個 patch）
-    # Keep in sync with the ruff pin in requirements-dev.txt (the mirror tag may lag by a patch)
-    rev: v0.16.9
+    # 與 requirements-dev.txt 的 ruff 釘版保持一致 ／ Keep in sync with the ruff pin in requirements-dev.txt
+    rev: v0.16.10
     hooks:
       - id: ruff
   # mypy 在專案環境執行（與 CI lint job 相同的釘版 mypy 與真實相依套件），
