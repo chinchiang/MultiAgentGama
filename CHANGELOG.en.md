@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-11
+
 ### Added
 
 - JS/TS line coverage: white-box JS/TS tests collect line coverage with Node's built-in coverage (`--experimental-test-coverage`) plus an `lcov` reporter writing into the run directory (the existing spec / junit reporters are unchanged); only the target's own source files count (the generated `test_vh_*` modules, `node_modules` and files outside the target directory are dropped; `/work/<name>` paths inside Docker map back to target-relative paths), and the modules are united (a line any module ran is covered). The result goes into the new `summary.js_line_coverage_pct`, while `line_coverage_pct` still means Python only; an additive field, so the JSON `schema_version` stays `"2"`. The Markdown metric table shows "Python X% / JS/TS Y%" when JS/TS white-box tests exist, and the console adds "行涵蓋率（JS/TS） ／ Line Coverage (JS/TS)". Only files loaded by at least one module count (V8 knows nothing about unloaded files; unlike pytest-cov, which counts never-imported `.py` files as 0%). Needs Node >= 20.11 or >= 21.3 (the lcov reporter); Node >= 22.5 also gets `--test-coverage-include` / `--test-coverage-exclude`; an older or unknown version, every module timing out, or no target file in the reports gives N/A with the reason logged, not an evidence gap. Black-box runs and mock mode collect nothing.
@@ -326,7 +328,8 @@ Initial release.
 - CI matrix: ubuntu / windows × Python 3.10 / 3.13, with lint and coverage reporting
 - MIT license
 
-[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/chinchiang/MultiAgentGama/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.5.1...v0.6.0

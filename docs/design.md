@@ -2,7 +2,7 @@
 
 [English](design.en.md) ｜ 正體中文（臺灣）
 
-本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.7.1`（`CHANGELOG.md` 的 `[0.7.1]`，2026-10-11，修正版：剩餘逾時預算不再多出一秒、`--init-config` 的提示；`[0.7.0]` 為第二輪審查修正、PyPI 打包、`--init-config` 與設定檔自動尋找；`[0.6.0]` 為依審查結果的強化並新增 `--cache-only`，`[0.5.1]` 為修正版，`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。另含 `[Unreleased]` 的 JS/TS 行涵蓋率。文中的 `path:line` 引用以 commit `e4d51f1` 的檔案為準。
+本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.8.0`（`CHANGELOG.md` 的 `[0.8.0]`，2026-10-11，新增 JS/TS 行涵蓋率；`[0.7.1]` 為修正版：剩餘逾時預算不再多出一秒、`--init-config` 的提示；`[0.7.0]` 為第二輪審查修正、PyPI 打包、`--init-config` 與設定檔自動尋找；`[0.6.0]` 為依審查結果的強化並新增 `--cache-only`，`[0.5.1]` 為修正版，`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。文中的 `path:line` 引用以 commit `e4d51f1` 的檔案為準。
 
 與其他文件的分工：
 
@@ -886,7 +886,7 @@ DAST／fuzzing、hypothesis、e2b 沙盒（突變測試已實作 Python 版，�
 | 測試執行中目標載入失敗判為 ERROR「目標已損壞」；單檔 `RLIMIT_FSIZE`；JS 模組每 10 個一份預算；重跑上限為剩下的預算；只在本機沙盒強化 harness | 延遲匯入缺少的套件被讀成缺陷；print 迴圈可能塞滿 tmpfs；許多慢但會通過的 JS 模組用光同一份預算 | docker CLI 在主機端的輸出仍沒有上限 | 0.7.0 |
 | VH-AI-009 的否定詞只看緊鄰動詞的位置，條件與疑問需要引導詞；URL 憑證改用掃描而不是正規表達式比對；常見預設密碼只在迴環或範例／開發用主機上豁免；所有清理樣式都是線性時間 | 句子前段的否定詞或條件會讓真正的指令失效；含 `$ ' " { } < > @` 的密碼逃過遮蔽；`postgres:postgres@prod.internal` 從不回報；部分正規表達式在特製輸入上是平方時間 | `admin:admin@prod-db`（單一標籤主機）仍不回報 | 0.7.0 |
 | JS/TS 詞法分析改用明確的 template 堆疊、JSX 掃描預算、往回看／引數／片段上限與逐檔例外防護；VH-AI-006 解析真正的 argv 程式 | 惡意檔案可能觸發 `RecursionError` 或跑出平方時間而中止整次執行；`/usr/bin/env bash -c`、`python3.11`、`sudo sh` 被當成安全的 argv | `os.exec*`／`os.spawn*` 不算執行點、`env -S` 不解析、常數以整個檔案解析 | 0.7.0 |
-| JS/TS 行涵蓋率用 Node 內建涵蓋率加 `lcov` 報告器、自己篩選並跨模組取聯集；只計入載入過的檔案；依版本加旗標；另開 `js_line_coverage_pct` 欄位 | JS/TS 的白箱測試沒有任何涵蓋率數字；Node 的 lcov 含測試模組與相依套件，且路徑相對於 cwd；舊版 Node 看到不認得的報告器會讓整次執行失敗；`line_coverage_pct` 改意義會破壞既有消費端 | 與 pytest-cov 不同，沒載入的檔案不算 0%，數字偏高；沒有分支涵蓋率；Node < 20.11 收不到 | Unreleased |
+| JS/TS 行涵蓋率用 Node 內建涵蓋率加 `lcov` 報告器、自己篩選並跨模組取聯集；只計入載入過的檔案；依版本加旗標；另開 `js_line_coverage_pct` 欄位 | JS/TS 的白箱測試沒有任何涵蓋率數字；Node 的 lcov 含測試模組與相依套件，且路徑相對於 cwd；舊版 Node 看到不認得的報告器會讓整次執行失敗；`line_coverage_pct` 改意義會破壞既有消費端 | 與 pytest-cov 不同，沒載入的檔案不算 0%，數字偏高；沒有分支涵蓋率；Node < 20.11 收不到 | 0.8.0 |
 
 ---
 
