@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-11
+
 ### 修正
 
 - 執行器：剩餘逾時預算改以 `_remaining_seconds` 計算——先扣一點容差再進位，且不超過預算本身。`monotonic()` 的值很大時，`(t0 + 30.0) - t0` 的浮點誤差曾讓預算多出一秒（Windows 上出現「31 秒後逾時」）。
@@ -320,7 +322,8 @@ CI 整合（`--baseline`、GitHub Action）、`--estimate`、JS/TS 動態測試�
 - CI 矩陣：ubuntu / windows × Python 3.10 / 3.13，含 lint 與覆蓋率報告
 - MIT 授權
 
-[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/chinchiang/MultiAgentGama/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/chinchiang/MultiAgentGama/compare/v0.5.0...v0.5.1
