@@ -183,8 +183,30 @@ _EXEC_SINKS = {"eval": "CWE-94", "exec": "CWE-94", "compile": "CWE-94", "os.syst
 # Sinks that take an argument list: a list without a shell is only dangerous when the program itself (argv[0])
 # is tainted, or argv[0] is an interpreter / shell
 _ARGV_SINKS = {"subprocess.run", "subprocess.call", "subprocess.Popen", "subprocess.check_output", "subprocess.check_call"}
-_SHELL_PROGRAMS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "cmd", "cmd.exe", "powershell", "pwsh",
-                   "python", "python3", "node", "perl", "ruby"}
+# 以可變位置引數接收 argv 的執行點（`create_subprocess_exec("bash", "-c", cmd)`）：位置引數本身就是引數清單
+# Sinks that take argv as variadic positionals (`create_subprocess_exec("bash", "-c", cmd)`): the positionals are the argument list
+_VARARGS_ARGV_SINKS = {"asyncio.create_subprocess_exec"}
+# 沒有位置引數時，執行點的命令／程式碼可能以這些關鍵字傳入（`subprocess.run(args=cmd, shell=True)`）
+# Without positionals, a sink's command / code may come in through these keywords (`subprocess.run(args=cmd, shell=True)`)
+_SINK_ARG_KEYWORDS = ("args", "cmd", "command", "source", "sql", "statement", "query", "operation")
+# 會把後面引數當成程式碼或命令執行的程式（比對 argv[0] 的基底檔名，去掉 `.exe`，大小寫不分）：shell、直譯器
+# （含版本號，如 `python3.11`、`node18`）、遠端 shell（`ssh host cmd`）與 `su -c`
+# Programs that run a later argument as code or a command (matched against argv[0]'s basename, `.exe` removed,
+# case-insensitive): shells, interpreters (versioned too, e.g. `python3.11`, `node18`), remote shells
+# (`ssh host cmd`) and `su -c`
+_SHELL_PROGRAM_RE = re.compile(
+    r"(?:sh|bash|zsh|dash|ash|ksh|mksh|csh|tcsh|fish|busybox|cmd|powershell|pwsh|"
+    r"python[\d.]*w?|py|pypy[\d.]*|ipython[\d.]*|node(?:js)?[\d.]*|deno|bun|perl[\d.]*|ruby[\d.]*|irb|"
+    r"php[\d.]*(?:-cli)?|lua(?:jit)?[\d.]*|tclsh[\d.]*|wish[\d.]*|rscript|osascript|[gmn]?awk|jshell|"
+    r"ssh|rsh|plink|su)"
+)
+# 只是包住另一個程式的前綴（真正的程式在後面的元素）：`/usr/bin/env python3`、`sudo bash`、`timeout 5 sh`
+# Prefixes that only wrap another program (the real program is a later element): `/usr/bin/env python3`, `sudo bash`, `timeout 5 sh`
+_WRAPPER_PROGRAMS = {"env", "sudo", "doas", "nohup", "xargs", "timeout", "nice", "ionice", "stdbuf", "time",
+                     "command", "exec", "setsid", "chrt", "taskset", "runuser", "unbuffer", "caffeinate"}
+# 包裝程式的選項與選項值：`-n`、`--user=x`、`10`／`5s`（時限）、`VAR=value`（env 指派）
+# Options and option values of a wrapper: `-n`, `--user=x`, `10` / `5s` (time limits), `VAR=value` (env assignments)
+_WRAPPER_OPTION_RE = re.compile(r"-.*|\d+(?:\.\d+)?[smhd]?|[A-Za-z_][A-Za-z0-9_]*=.*", re.S)
 _SQL_SINK_ATTRS = {"execute": "CWE-89", "executemany": "CWE-89", "executescript": "CWE-89"}
 
 
@@ -200,6 +222,9 @@ class AISecurityStaticScanner:
         # 綁定到匯入的非 AI 建構子／工廠結果的名稱（`tw = twilio.rest.Client(...)`、`lam = boto3.client(...)`）
         # Names bound to the result of an imported non-AI constructor/factory (`tw = twilio.rest.Client(...)`, `lam = boto3.client(...)`)
         self._non_ai_bound: Set[str] = set()
+        # 被掃描檔案中只綁定到字串常數（或 `shutil.which(常數)`）的名稱 -> 那些字串（`SHELL = "bash"`）
+        # Names the scanned file only ever binds to string constants (or `shutil.which(constant)`) -> those strings (`SHELL = "bash"`)
+        self._str_consts: Dict[str, Set[str]] = {}
 
     def scan_files(self, files: Iterable[str]) -> List[StaticFinding]:
         findings: List[StaticFinding] = []
@@ -212,7 +237,14 @@ class AISecurityStaticScanner:
                 continue  # 擷取器已把無法讀取的檔案回報為解析失敗 ／ the extractor already reports unreadable files as parse failures
             findings.extend(self._scan_text_rules(path, text))
             if path.endswith(".py"):
-                found, file_components = self._scan_python(path, text)
+                try:
+                    found, file_components = self._scan_python(path, text)
+                except Exception as e:  # noqa: BLE001
+                    # 單一檔案的意外錯誤（例如病態的巢狀深度）不中止整次掃描
+                    # An unexpected error in one file (e.g. pathological nesting depth) does not abort the whole scan
+                    logger.warning(bi(f"AI 安全規則無法分析 {path}（{type(e).__name__}），已略過",
+                                      f"The AI-security rules could not analyze {path} ({type(e).__name__}), skipped"))
+                    continue
                 findings.extend(found)
                 components |= file_components
             else:
@@ -259,6 +291,7 @@ class AISecurityStaticScanner:
         imports_ai = bool(components)
         self._ai_clients = self._find_ai_clients(tree, aliases) if imports_ai else set()
         self._non_ai_bound = self._find_non_ai_bound(tree, aliases) if imports_ai else set()
+        self._str_consts = self._find_str_consts(tree, aliases) if imports_ai else {}
         findings: List[StaticFinding] = []
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
@@ -353,6 +386,36 @@ class AISecurityStaticScanner:
             if dotted and base in aliases and not self._is_ai_dotted(dotted):
                 bound |= self._target_keys(target)
         return bound - self._ai_clients
+
+    def _find_str_consts(self, tree: ast.Module, aliases: Dict[str, str]) -> Dict[str, Set[str]]:
+        """整個檔案中只被綁定到字串常數（或 `shutil.which(常數)`）的名稱與那些字串；任何其他綁定方式都讓名稱出局。
+        Names the whole file only ever binds to string constants (or `shutil.which(constant)`), with those
+        strings; any other kind of binding rules the name out."""
+        consts: Dict[str, Set[str]] = {}
+        other: Set[str] = set()
+        for value, target in self._bindings(list(ast.walk(tree))):
+            if not isinstance(target, ast.Name):
+                other |= self._target_keys(target)
+                continue
+            text = self._const_str(value)
+            if text is None and isinstance(value, ast.Call) and self._dotted(value.func, aliases) == "shutil.which" \
+                    and value.args:
+                text = self._const_str(value.args[0])
+            if text is None:
+                other.add(target.id)
+            else:
+                consts.setdefault(target.id, set()).add(text)
+        for n in ast.walk(tree):
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                # 參數也是綁定 ／ parameters are bindings too
+                args = n.args
+                other |= {a.arg for a in args.posonlyargs + args.args + args.kwonlyargs}
+                other |= {a.arg for a in (args.vararg, args.kwarg) if a is not None}
+        return {k: v for k, v in consts.items() if k not in other}
+
+    @staticmethod
+    def _const_str(node: Optional[ast.AST]) -> Optional[str]:
+        return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
 
     @staticmethod
     def _ai_named(name: str) -> bool:
@@ -554,7 +617,7 @@ class AISecurityStaticScanner:
             if cwe is None and isinstance(node.func, ast.Attribute):
                 sink = sink or node.func.attr
                 cwe = _SQL_SINK_ATTRS.get(node.func.attr)
-            if cwe is None or not node.args:
+            if cwe is None or self._sink_first_arg(node) is None:
                 continue
             if self._sink_arg_tainted(node, dotted, tainted, aliases, body):
                 out.append(self._finding("VH-AI-006", path, node.lineno, f"model output reaches {sink}()", cwe=cwe))
@@ -569,19 +632,41 @@ class AISecurityStaticScanner:
         recommended safe form `subprocess.run(["git", "checkout", "--", branch])`) only counts when argv[0] is
         tainted or argv[0] is a shell / interpreter; a name the same scope only ever binds to a literal list
         (`cmd = ["git", "checkout", branch]; subprocess.run(cmd)`) gets the same rule."""
-        first = node.args[0]
-        if dotted in _ARGV_SINKS and not self._is_true(self._kw(node, "shell")):
-            if isinstance(first, (ast.List, ast.Tuple)):
-                return self._argv_tainted(first, tainted, aliases)
-            if isinstance(first, ast.Name) and body is not None:
-                # 用被污染的資料修改清單（`cmd.append(branch)`）不是綁定，一般污染追不到：保守地標記
-                # Mutating the list with tainted data (`cmd.append(branch)`) is no binding plain taint can see: flag it
-                if self._mutated_with_taint(first.id, body, tainted, aliases):
-                    return True
-                literals = self._argv_literals(first.id, body)
-                if literals:
-                    return any(self._argv_tainted(lit, tainted, aliases) for lit in literals)
+        first = self._sink_first_arg(node)
+        if first is None:
+            return False
+        executable = self._kw(node, "executable")
+        if dotted in _VARARGS_ARGV_SINKS:
+            # 位置引數就是 argv；`*cmd` 展開時改看被展開的名稱（與 `subprocess.run(cmd)` 相同的規則）
+            # The positionals are argv; with a `*cmd` spread the spread name is analyzed instead (the same rule as `subprocess.run(cmd)`)
+            if node.args and not any(isinstance(a, ast.Starred) for a in node.args):
+                return self._argv_tainted(ast.List(elts=list(node.args), ctx=ast.Load()), tainted, aliases, executable)
+            if len(node.args) == 1 and isinstance(node.args[0], ast.Starred):
+                first = node.args[0].value
+            else:
+                return any(self._expr_tainted(a, tainted, aliases) for a in node.args)
+        elif dotted not in _ARGV_SINKS or self._is_true(self._kw(node, "shell")):
+            return self._expr_tainted(first, tainted, aliases)
+        if isinstance(first, (ast.List, ast.Tuple)):
+            return self._argv_tainted(first, tainted, aliases, executable)
+        if isinstance(first, ast.Name) and body is not None:
+            # 用被污染的資料修改清單（`cmd.append(branch)`）不是綁定，一般污染追不到：保守地標記
+            # Mutating the list with tainted data (`cmd.append(branch)`) is no binding plain taint can see: flag it
+            if self._mutated_with_taint(first.id, body, tainted, aliases):
+                return True
+            literals = self._argv_literals(first.id, body)
+            if literals:
+                return any(self._argv_tainted(lit, tainted, aliases, executable) for lit in literals)
         return self._expr_tainted(first, tainted, aliases)
+
+    @staticmethod
+    def _sink_first_arg(node: ast.Call) -> Optional[ast.expr]:
+        """執行點的命令／程式碼引數：第一個位置引數，沒有位置引數時是 `args=`／`command=`／`sql=` 等關鍵字。
+        The sink's command / code argument: the first positional, or without positionals an `args=` /
+        `command=` / `sql=`-style keyword."""
+        if node.args:
+            return node.args[0]
+        return next((k.value for name in _SINK_ARG_KEYWORDS for k in node.keywords if k.arg == name), None)
 
     def _mutated_with_taint(self, name: str, body: List[ast.AST], tainted: Set[str], aliases: Dict[str, str]) -> bool:
         """範疇中是否以被污染的資料 `append`／`extend`／`insert`／`+=` 修改 `name`。
@@ -600,19 +685,84 @@ class AISecurityStaticScanner:
         return isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) \
             and node.func.value.id == name and node.func.attr in ("append", "extend", "insert")
 
-    def _argv_tainted(self, argv: ast.expr, tainted: Set[str], aliases: Dict[str, str]) -> bool:
-        """字面值引數清單是否危險：argv[0] 被污染，或 argv[0] 是 shell／直譯器且後面有被污染的元素。
-        Whether a literal argument list is dangerous: argv[0] is tainted, or argv[0] is a shell / interpreter
-        and a later element is tainted."""
-        elts = argv.elts if isinstance(argv, (ast.List, ast.Tuple)) else []
-        if not elts:
-            return False
-        program = elts[0]
-        if self._expr_tainted(program, tainted, aliases):
-            return True
-        is_shell = isinstance(program, ast.Constant) and isinstance(program.value, str) \
-            and os.path.basename(program.value).lower() in _SHELL_PROGRAMS
-        return is_shell and any(self._expr_tainted(e, tainted, aliases) for e in elts[1:])
+    def _argv_tainted(self, argv: ast.expr, tainted: Set[str], aliases: Dict[str, str],
+                      executable: Optional[ast.expr] = None) -> bool:
+        """字面值引數清單是否危險：程式被污染，或程式是 shell／直譯器（或無法確定）且後面有被污染的元素。
+
+        程式的解析：包裝前綴（`env`、`/usr/bin/env`、`sudo`、`timeout 5`…，連同其選項）被跳過，改看被包住的程式；
+        基底檔名比對去掉路徑與 `.exe`（`/usr/bin/python3.11`、`C:\\...\\pwsh.exe`）；`sys.executable` 是直譯器；
+        只綁定到字串常數的名稱（`SHELL = "bash"`、`GIT = shutil.which("git")`）以該字串判斷；其他非字面值的程式
+        （參數、屬性、呼叫結果）無法確定，保守地視同直譯器。`executable=` 會取代 argv[0] 成為真正執行的程式。
+        Whether a literal argument list is dangerous: the program is tainted, or the program is a shell /
+        interpreter (or cannot be determined) and a later element is tainted.
+
+        Resolving the program: wrapper prefixes (`env`, `/usr/bin/env`, `sudo`, `timeout 5`, ... with their
+        options) are skipped in favor of the wrapped program; basenames are matched without the path and `.exe`
+        (`/usr/bin/python3.11`, `C:\\...\\pwsh.exe`); `sys.executable` is an interpreter; a name only ever bound to a
+        string constant (`SHELL = "bash"`, `GIT = shutil.which("git")`) is judged by that string; any other
+        non-literal program (a parameter, an attribute, a call result) cannot be determined and is conservatively
+        treated like an interpreter. `executable=` replaces argv[0] as the program actually run."""
+        elts = list(argv.elts) if isinstance(argv, (ast.List, ast.Tuple)) else []
+        if executable is not None and not (isinstance(executable, ast.Constant) and executable.value is None):
+            elts = [executable] + elts[1:]
+        i = 0
+        while i < len(elts):
+            program = elts[i]
+            if self._expr_tainted(program, tainted, aliases):
+                return True
+            kind = self._program_kind(program, aliases)
+            if kind == "safe":
+                return False
+            if kind in ("shell", "unknown"):
+                return any(self._expr_tainted(e, tainted, aliases) for e in elts[i + 1:])
+            # 包裝程式：跳過它的選項，找出被包住的程式 ／ a wrapper: skip its options to find the wrapped program
+            j = i + 1
+            while j < len(elts):
+                e = elts[j]
+                if self._expr_tainted(e, tainted, aliases):
+                    return True  # 被污染的元素可能就是被包住的程式 ／ a tainted element may be the wrapped program itself
+                text = self._const_str(e)
+                if text is not None and _WRAPPER_OPTION_RE.fullmatch(text):
+                    j += 1
+                    continue
+                # 選項旗標後的普通字串可能是選項值（`sudo -u bob bash`）：下一個元素若不是普通程式就以它為準
+                # A plain string after an option flag may be the option's value (`sudo -u bob bash`): when the next
+                # element is not a plain program, it is the one that counts
+                flag_before = (self._const_str(elts[j - 1]) or "").startswith("-")
+                if self._program_kind(e, aliases) == "safe" and flag_before and j + 1 < len(elts) \
+                        and self._program_kind(elts[j + 1], aliases) != "safe":
+                    j += 1
+                    continue
+                break
+            i = j
+        return False
+
+    def _program_kind(self, program: ast.expr, aliases: Dict[str, str]) -> str:
+        """argv 中程式元素的種類："shell"（shell／直譯器）、"wrapper"（包裝前綴）、"safe"（其他已知程式）或
+        "unknown"（無法確定的非字面值）。
+        The kind of an argv program element: "shell" (a shell / interpreter), "wrapper" (a wrapper prefix),
+        "safe" (any other known program) or "unknown" (a non-literal that cannot be determined)."""
+        text = self._const_str(program)
+        if text is not None:
+            return self._program_name_kind(text)
+        if isinstance(program, ast.Name) and program.id in self._str_consts:
+            kinds = {self._program_name_kind(v) for v in self._str_consts[program.id]}
+            for kind in ("shell", "wrapper"):
+                if kind in kinds:
+                    return kind
+            return "safe"
+        if isinstance(program, (ast.Name, ast.Attribute)) and self._dotted(program, aliases) == "sys.executable":
+            return "shell"
+        return "unknown"
+
+    @staticmethod
+    def _program_name_kind(text: str) -> str:
+        base = re.split(r"[\\/]", text.strip())[-1].lower()
+        if base.endswith(".exe"):
+            base = base[:-4]
+        if _SHELL_PROGRAM_RE.fullmatch(base):
+            return "shell"
+        return "wrapper" if base in _WRAPPER_PROGRAMS else "safe"
 
     def _argv_literals(self, name: str, body: List[ast.AST]) -> Optional[List[ast.expr]]:
         """範疇中 `name` 的所有字面值清單／tuple 指派；若它也有別的綁定方式就回傳 None（保守：照一般污染判斷）。
