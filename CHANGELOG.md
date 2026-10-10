@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+### 新增
+
+- JS/TS 行涵蓋率：白箱 JS/TS 測試以 Node 內建的涵蓋率（`--experimental-test-coverage`）加上寫到執行目錄的 `lcov` 報告器收集行涵蓋率（原本的 spec／junit 報告器不變），只計入目標自己的原始檔（排除生成的 `test_vh_*` 模組、`node_modules` 與目標目錄以外的檔案；Docker 內的 `/work/<name>` 路徑對應回目標相對路徑），各模組取聯集（任一模組跑過的行就算涵蓋）。結果寫進新欄位 `summary.js_line_coverage_pct`，`line_coverage_pct` 仍只代表 Python；新增欄位，JSON `schema_version` 維持 `"2"`。Markdown 指標表在有 JS/TS 白箱測試時顯示「Python X% / JS/TS Y%」，console 另加「行涵蓋率（JS/TS） ／ Line Coverage (JS/TS)」。只計入至少被一個模組載入過的檔案（V8 不知道沒載入的檔案；與 pytest-cov 把沒匯入的 `.py` 算成 0% 不同）。需要 Node ≥ 20.11 或 ≥ 21.3（lcov 報告器），Node ≥ 22.5 另加 `--test-coverage-include`／`--test-coverage-exclude`；更舊或版本不明、全部模組逾時、報告裡沒有目標檔案時為 N/A 並記錄原因，不算證據缺口。黑箱執行與 mock 模式不收集。
+
 ## [0.7.1] - 2026-10-11
 
 ### 修正
