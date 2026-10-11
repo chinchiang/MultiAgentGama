@@ -22,7 +22,9 @@ if TYPE_CHECKING:
     # 型別檢查器看得到這些名稱；執行時由 _load_dependencies() 放進模組命名空間
     # Type checkers see these names; at run time _load_dependencies() puts them into the module namespace
     from vibeharness.core.harness import VibeHarnessCommander, force_utf8_stdio
-    from vibeharness.core.llm_gateway import LLMGatewayError, ConfigError, DEFAULT_CONFIG_PATH
+    from vibeharness.core.llm_gateway import (
+        LLMGatewayError, ConfigError, check_discovered_config, load_config_file, relative_executable_warnings,
+    )
     from vibeharness.core.sandbox import SandboxUnavailableError
     from vibeharness.agents.blackbox.scenario_builder import validate_base_url
     from vibeharness.core.baseline import load_baseline
@@ -35,7 +37,9 @@ _LAZY_IMPORTS = {
     "force_utf8_stdio": ("vibeharness.core.harness", "force_utf8_stdio"),
     "LLMGatewayError": ("vibeharness.core.llm_gateway", "LLMGatewayError"),
     "ConfigError": ("vibeharness.core.llm_gateway", "ConfigError"),
-    "DEFAULT_CONFIG_PATH": ("vibeharness.core.llm_gateway", "DEFAULT_CONFIG_PATH"),
+    "check_discovered_config": ("vibeharness.core.llm_gateway", "check_discovered_config"),
+    "load_config_file": ("vibeharness.core.llm_gateway", "load_config_file"),
+    "relative_executable_warnings": ("vibeharness.core.llm_gateway", "relative_executable_warnings"),
     "SandboxUnavailableError": ("vibeharness.core.sandbox", "SandboxUnavailableError"),
     "validate_base_url": ("vibeharness.agents.blackbox.scenario_builder", "validate_base_url"),
     "load_baseline": ("vibeharness.core.baseline", "load_baseline"),
@@ -43,6 +47,10 @@ _LAZY_IMPORTS = {
     "estimate_run": ("vibeharness.core.estimate", "estimate_run"),
 }
 
+# 套件內的預設設定（與 llm_gateway.DEFAULT_CONFIG_PATH 相同）；在這裡計算，--init-config 不需要載入 harness 的相依套件
+# The bundled default config (the same as llm_gateway.DEFAULT_CONFIG_PATH); computed here so --init-config needs none
+# of the harness's dependencies
+DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "agents_config.yaml")
 # 沒有 --config 時，依序在目前目錄尋找這些檔名；都沒有就用套件內的預設設定
 # Without --config these file names are looked for in the current directory, in order; if none exists the bundled default is used
 DISCOVERED_CONFIG_NAMES = ("vibeharness.yaml", ".vibeharness.yaml")
@@ -206,15 +214,26 @@ def main():
     The CLI entry point. Any exception not handled by the stages below exits 5 (Ctrl-C 130), never with
     Python's default 1: that code belongs to the NEEDS_FIXES verdict, and a crash must never read as a verdict.
     安裝不完整（缺少相依套件、損壞的模組）也在這裡處理：harness 是在防護內才匯入的。
-    A broken install (a missing dependency, a corrupt module) is handled here too: the harness is imported inside the guard."""
+    A broken install (a missing dependency, a corrupt module) is handled here too: the harness is imported inside the guard.
+    參數先解析：--help、--version 與 --init-config 不載入任何 harness 相依套件，所以又快、在安裝不完整時也能用；
+    真正的稽核才在載入失敗時以 exit 5 結束。
+    Arguments are parsed first: --help, --version and --init-config load none of the harness's dependencies, so
+    they are fast and work even on a broken install; only a real audit exits 5 when loading fails."""
+    _force_utf8_stdio()
+    parser = _build_parser()
+    args = parser.parse_args()
+    if args.init_config is not None:
+        sys.exit(_init_config(args.init_config, args.force))
+    if args.force:
+        parser.error(bi("--force 只能與 --init-config 一起使用", "--force is only valid with --init-config"))
     try:
         _load_dependencies()
     except KeyboardInterrupt:
         _print_error(bi("已中斷。", "Interrupted."))
         sys.exit(INTERRUPTED_EXIT_CODE)
     except Exception as e:
-        # 不印 traceback：使用者需要的是重新安裝的指示（--verbose 此時還沒解析）
-        # No traceback: the user needs reinstall instructions (--verbose is not parsed yet)
+        # 不印 traceback：使用者需要的是重新安裝的指示，不是 harness 內部的堆疊
+        # No traceback: the user needs reinstall instructions, not the harness's internal stack
         missing = getattr(e, "name", None)
         zh_missing = f"（缺少的模組：{missing}）" if missing else ""
         en_missing = f" (missing module: {missing})" if missing else ""
@@ -227,7 +246,7 @@ def main():
         sys.exit(USAGE_ERROR_EXIT_CODE)
     try:
         force_utf8_stdio()
-        _main()
+        _main(parser, args)
     except KeyboardInterrupt:
         print(bi("已中斷。", "Interrupted."), file=sys.stderr)
         sys.exit(INTERRUPTED_EXIT_CODE)
@@ -235,7 +254,26 @@ def main():
         _crash_exit("harness 意外崩潰", "harness crashed unexpectedly", e)
 
 
-def _main():
+def _force_utf8_stdio() -> None:
+    """只用標準函式庫的 harness.force_utf8_stdio：Windows 上在解析參數（--help 的中文說明）之前就把 stdout／stderr
+    設為 UTF-8，不必先載入 harness。
+    A standard-library-only harness.force_utf8_stdio: on Windows, stdout / stderr become UTF-8 before the arguments
+    are parsed (--help's Chinese text), without loading the harness first."""
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    """CLI 的參數解析器；只用標準函式庫，建立時不載入任何 harness 相依套件。
+    The CLI's argument parser; standard library only, building it loads none of the harness's dependencies."""
     # 固定程式名稱：Python 3.14 的 argparse 在 `python -m` 下會改用模組路徑當 prog
     # Fixed program name: Python 3.14's argparse derives prog from the module path under `python -m`
     parser = _UsageErrorParser(
@@ -407,20 +445,61 @@ def _main():
         help="另外把 SARIF 2.1.0 報告寫到 PATH，供 GitHub Code Scanning（以 github/codeql-action 上傳）／ Also write a SARIF 2.1.0 report to PATH for GitHub Code Scanning (upload via github/codeql-action)"
     )
     parser.add_argument(
+        "--summary-json",
+        metavar="PATH",
+        default=None,
+        help="稽核結束後把機器可讀的簡短摘要（判定、exit code、執行模式、各模式的模型呼叫數、是否全部模擬）寫到 PATH，"
+             "與 --format 無關；GitHub Action 用它發出警告 ／ After the audit, write a short machine-readable summary "
+             "(verdict, exit code, execution mode, model calls per mode, whether every call was simulated) to PATH, "
+             "whatever --format is; the GitHub Action uses it for its warnings"
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {__version__}"
     )
+    return parser
 
-    args = parser.parse_args()
+
+def _summary_json(summary: Any, execution_mode: str) -> str:
+    """--summary-json 的內容：判定、exit code、執行模式與每種模式的模型呼叫數（"retried" 是同一次呼叫的中間詢問，不計入 total）。
+    all_simulated 為 True 表示有模型呼叫、而且每一次都是模擬的（例如 hybrid 模式下沒有任何供應商金鑰）。
+    The --summary-json content: verdict, exit code, execution mode and the model calls per mode ("retried" entries
+    are intermediate asks of one call and are not counted in total). all_simulated is True when there were model
+    calls and every one was simulated (e.g. hybrid mode without any provider key)."""
+    import json
+    calls = [c for c in summary.agent_calls if c.mode != "retried"]
+    counts = {mode: sum(1 for c in calls if c.mode == mode) for mode in ("live", "simulated", "invalid")}
+    payload = {
+        "tool": "vibeharness",
+        "version": __version__,
+        "verdict": summary.overall_status,
+        "exit_code": verdict_exit_code(summary.overall_status),
+        "execution_mode": execution_mode,
+        "model_calls": {"total": len(calls), **counts, "cached": sum(1 for c in calls if c.cached)},
+        "all_simulated": bool(calls) and counts["simulated"] == len(calls),
+        "inconclusive_reasons": list(summary.inconclusive_reasons),
+    }
+    return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
+def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     setup_logging(args.verbose)
-
-    if args.init_config is not None:
-        sys.exit(_init_config(args.init_config, args.force))
-    if args.force:
-        parser.error(bi("--force 只能與 --init-config 一起使用", "--force is only valid with --init-config"))
+    explicit_config = args.config is not None
     args.config, config_source = resolve_config_path(args.config)
     print(f"{bi('設定檔', 'Config')}: {args.config} ({config_source})", file=sys.stderr)
+    try:
+        if not explicit_config and os.path.abspath(args.config) != os.path.abspath(DEFAULT_CONFIG_PATH):
+            # 自動發現的設定檔可能來自不可信的 checkout：在 harness 執行任何東西之前拒絕安全敏感的鍵
+            # A discovered config may come from an untrusted checkout: refuse security-sensitive keys before the
+            # harness runs anything
+            check_discovered_config(args.config, DEFAULT_CONFIG_PATH)
+        if os.path.isfile(args.config):
+            for warning in relative_executable_warnings(load_config_file(args.config)):
+                print(f"{bi('警告', 'Warning')}: {warning}", file=sys.stderr)
+    except ConfigError as e:
+        print(f"{bi('錯誤', 'Error')}: {bi('harness 設定問題', 'harness configuration problem')}: {e}", file=sys.stderr)
+        sys.exit(USAGE_ERROR_EXIT_CODE)
 
     target_path = os.path.abspath(args.target)
     if not os.path.exists(target_path):
@@ -440,7 +519,7 @@ def _main():
             parser.error(f"--base-url: {e}")
     # 在為任何模型呼叫付費之前就失敗，而不是等整個流程跑完之後
     # Fail before any model call is paid for, not after the whole pipeline ran
-    for flag, path in (("--output", args.output), ("--sarif", args.sarif)):
+    for flag, path in (("--output", args.output), ("--sarif", args.sarif), ("--summary-json", args.summary_json)):
         if path is not None and not _writable_location(path):
             parser.error(f"{flag}: " + bi(f"無法寫入 '{path}'（目錄不存在或不可寫入）",
                                            f"cannot write to '{path}' (directory missing or not writable)"))
@@ -530,6 +609,15 @@ def _main():
         # A crashed run must never fall through to exit code 1, which CI reads as NEEDS_FIXES
         _crash_exit("harness 意外崩潰", "harness crashed unexpectedly", e)
 
+    if args.summary_json:
+        try:
+            with open(args.summary_json, "w", encoding="utf-8") as f:
+                f.write(_summary_json(summary, commander.gateway.execution_mode))
+        except OSError as e:
+            # 報告已經寫好：摘要寫不出來只是警告，不改變判定的 exit code
+            # The report is already written: a summary that cannot be written is only a warning and keeps the verdict's exit code
+            print(f"{bi('警告', 'Warning')}: " + bi(f"無法寫入 --summary-json '{args.summary_json}'",
+                                                   f"cannot write --summary-json '{args.summary_json}'") + f": {e}", file=sys.stderr)
     # 依品質閘門回傳結束碼
     # Return exit code based on Quality Gate
     if summary.overall_status not in _VERDICT_STATUSES:

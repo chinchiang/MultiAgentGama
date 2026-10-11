@@ -11,6 +11,10 @@ branding:
   color: purple
 
 # 用法（在目標 repo 中）／ Usage (in the target repository):
+#   permissions:                                    # job 層級；upload-sarif 需要 security-events: write ／ job level; upload-sarif needs security-events: write
+#     contents: read
+#     security-events: write
+#   steps:
 #   - uses: chinchiang/MultiAgentGama@v0.8.0
 #     with:
 #       target: src
@@ -22,12 +26,16 @@ branding:
 #       ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
 #       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
 #       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-#   - uses: github/codeql-action/upload-sarif@9f759ee644a3e7c15c1390abf49868036c00067b # v3.38.3
+#   - uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+#     if: always()
 #     with:
 #       sarif_file: vibeharness.sarif
 # 供應商金鑰從環境變數讀取，action 不會印出。受稽核的程式碼會送到每一家設定的供應商（寫死的密鑰會先遮蔽）。
 # The provider keys are read from the environment; the action never prints them. The audited code
 # is sent to every configured provider (hard-coded secrets are redacted first).
+# 來自 fork 的 PR 拿不到 secrets：hybrid 模式下每次模型呼叫都會是模擬的，判定最多是 INCONCLUSIVE，action 會發出 ::warning::。
+# Pull requests from forks get no secrets: in hybrid mode every model call is then simulated, the verdict is at
+# best INCONCLUSIVE, and the action emits a ::warning::.
 
 inputs:
   target:
@@ -142,10 +150,13 @@ runs:
         # pyproject.toml 的 readme 指向 README.en.md，建置時必須存在 ／ pyproject.toml's readme points at README.en.md, which the build needs
         cp -R "$GITHUB_ACTION_PATH/pyproject.toml" "$GITHUB_ACTION_PATH/README.md" "$GITHUB_ACTION_PATH/README.en.md" \
           "$GITHUB_ACTION_PATH/LICENSE" "$GITHUB_ACTION_PATH/MANIFEST.in" "$GITHUB_ACTION_PATH/vibeharness" "$src/"
-        python -m pip install --quiet --require-hashes -r "$GITHUB_ACTION_PATH/requirements.lock" \
+        # python -I：工作目錄（受稽核、可能不可信的 checkout）不會進 sys.path，裡面放的 pip/ 或 vibeharness/ 不會被匯入
+        # python -I: the working directory (the audited, possibly untrusted checkout) never enters sys.path, so a
+        # pip/ or vibeharness/ planted there is never imported
+        python -I -m pip install --quiet --require-hashes -r "$GITHUB_ACTION_PATH/requirements.lock" \
           -r "$GITHUB_ACTION_PATH/requirements-build.txt"
-        python -m pip install --quiet --no-deps --no-build-isolation "$src"
-        python -m pip check
+        python -I -m pip install --quiet --no-deps --no-build-isolation "$src"
+        python -I -m pip check
 
     - name: Build the Docker sandbox images ／ 建置 Docker 沙盒映像
       if: inputs.sandbox == 'docker'
@@ -179,10 +190,21 @@ runs:
         VH_FAIL_ON: ${{ inputs.fail-on }}
         VH_SANDBOX: ${{ inputs.sandbox }}
       run: |
+        # fail-on 在稽核之前就驗證（與 sandbox／mutation 一樣），不會跑完整個稽核才因為打錯字失敗
+        # fail-on is validated before the audit (like sandbox / mutation), so a typo never fails only after a whole audit
+        case "$VH_FAIL_ON" in
+          blocked|needs-fixes|inconclusive|never) ;;
+          *) echo "::error::unknown fail-on value '$VH_FAIL_ON' (use blocked, needs-fixes, inconclusive or never)"; exit 5 ;;
+        esac
+        # 以下的 python 片段都以 -I 執行，或先把工作目錄從 sys.path 移除：-c 與 stdin 腳本會把工作目錄（受稽核的 checkout）放在最前面，
+        # 那裡放的 shlex.py、yaml.py 或 vibeharness/ 就會在持有金鑰的 step 裡被匯入
+        # Every python snippet below runs with -I or drops the working directory from sys.path first: -c and stdin scripts put the working directory (the
+        # audited checkout) first, so a shlex.py, yaml.py or vibeharness/ planted there would be imported in a step
+        # that holds the keys
         # extra-args 以 shlex 規則切字（引號有效；不執行任何 shell、不展開 glob）；切不開就以 exit 5 失敗
         # extra-args is split by shlex rules (quotes work; no shell execution, no glob expansion); unparsable input exits 5
         # extra-args-split-begin
-        python -c 'import shlex, sys; sys.stdout.write("".join(a + "\0" for a in shlex.split(sys.argv[1])))' "$VH_EXTRA" > "$RUNNER_TEMP/vh_extra_args" \
+        python -c 'import os, sys; sys.path[:] = [p for p in sys.path if p and os.path.abspath(p) != os.getcwd()]; import shlex; sys.stdout.write("".join(a + "\0" for a in shlex.split(sys.argv[1])))' "$VH_EXTRA" > "$RUNNER_TEMP/vh_extra_args" \
           || { echo "::error::extra-args could not be parsed: $VH_EXTRA"; exit 5; }
         extra=()
         while IFS= read -r -d '' arg; do extra+=("$arg"); done < "$RUNNER_TEMP/vh_extra_args"
@@ -204,14 +226,15 @@ runs:
         case "$VH_SANDBOX" in
           local_subprocess)
             if [ "$has_config" = 0 ]; then
-              bundled=$(python -c 'from vibeharness.core.llm_gateway import DEFAULT_CONFIG_PATH; print(DEFAULT_CONFIG_PATH)') \
+              bundled=$(python -I -c 'from vibeharness.core.llm_gateway import DEFAULT_CONFIG_PATH; print(DEFAULT_CONFIG_PATH)') \
                 || { echo "::error::could not locate the bundled config"; exit 5; }
               config_override=(--config "$bundled")
             fi ;;
           docker)
             cfg="$RUNNER_TEMP/vibeharness-sandbox-config.yaml"
             python - "$RUNNER_TEMP/vh_extra_args" "$cfg" <<'PY' || { echo "::error::could not write the docker sandbox config"; exit 5; }
-        import sys
+        import os, sys
+        sys.path[:] = [p for p in sys.path if p and os.path.abspath(p) != os.getcwd()]
         import yaml
         from vibeharness.core.llm_gateway import DEFAULT_CONFIG_PATH
         with open(sys.argv[1], encoding="utf-8") as f:
@@ -234,7 +257,6 @@ runs:
             config_override=(--config "$cfg") ;;
           *) echo "::error::unknown sandbox value '$VH_SANDBOX' (use local_subprocess or docker)"; exit 5 ;;
         esac
-        set +e
         args=(--target "$VH_TARGET" --mode "$VH_MODE" --max-model-calls "$VH_MAX_CALLS" --max-files "$VH_MAX_FILES"
               --output "$VH_OUTPUT" --format "$VH_FORMAT")
         [ -n "$VH_CHANGED_SINCE" ] && args+=(--changed-since "$VH_CHANGED_SINCE")
@@ -247,29 +269,14 @@ runs:
           "") ;;
           *) echo "::error::unknown mutation value '$VH_MUTATION' (use true, false or leave empty)"; exit 5 ;;
         esac
-        vibeharness "${args[@]}" "${extra[@]}" "${config_override[@]}"
-        rc=$?
-        set -e
-        case "$rc" in
-          0) verdict=READY_TO_SHIP ;;
-          1) verdict=NEEDS_FIXES ;;
-          2) verdict=BLOCKED_CRITICAL_RISK ;;
-          3) verdict=INCONCLUSIVE ;;
-          *) verdict=ERROR ;;
-        esac
-        echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
-        echo "exit-code=$rc" >> "$GITHUB_OUTPUT"
-        echo "## VibeHarness-MAS: $verdict (exit $rc)" >> "$GITHUB_STEP_SUMMARY"
-        echo "Report: \`$VH_OUTPUT\`$( [ -n "$VH_SARIF" ] && echo ", SARIF: \`$VH_SARIF\`" )" >> "$GITHUB_STEP_SUMMARY"
-        if [ "$rc" -ge 4 ]; then echo "::error::VibeHarness-MAS could not complete the audit (exit $rc)"; exit "$rc"; fi
-        case "$VH_FAIL_ON" in
-          never) exit 0 ;;
-          blocked) [ "$rc" -eq 2 ] && exit 1 ;;
-          needs-fixes) [ "$rc" -eq 1 ] || [ "$rc" -eq 2 ] && exit 1 ;;
-          inconclusive) [ "$rc" -ne 0 ] && exit 1 ;;
-          *) echo "::error::unknown fail-on value '$VH_FAIL_ON'"; exit 5 ;;
-        esac
-        exit 0
+        # exec：bash（初始環境裡有供應商金鑰）被稽核行程取代，不再是 harness 的父行程，產生的測試讀不到它的
+        # /proc/<pid>/environ；harness 本身在啟動本機沙盒前變成不可 dump。outputs、step summary、警告與 fail-on
+        # 由 vibeharness.action_runner 在同一個行程內處理（-I：不從工作目錄匯入）
+        # exec: bash (whose initial environment holds the provider keys) is replaced by the audit process, so it is no
+        # longer the harness's parent and a generated test cannot read its /proc/<pid>/environ; the harness itself turns
+        # non-dumpable before it starts local sandboxes. vibeharness.action_runner handles the outputs, step summary,
+        # warnings and fail-on in the same process (-I: nothing is imported from the working directory)
+        exec python -I -m vibeharness.action_runner "${args[@]}" "${extra[@]}" "${config_override[@]}"
 
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       if: always()
