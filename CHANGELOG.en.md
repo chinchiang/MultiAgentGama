@@ -6,15 +6,43 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+Fourth review round: the Action no longer overrides the config's cost guard, discovered configs can no longer rewire model strings, aliases or key variables, and `null` keeps the default for the remaining settings.
+
+### Changed
+
+- **Breaking**: a discovered `./vibeharness.yaml` / `./.vibeharness.yaml` (no `--config`) may no longer change `models.<alias>.model` / `fallback_model`, add a model alias the bundled config lacks, or use an `api_key_env` other than the bundled value of the same alias (any key variable of the bundled config used to be accepted for any alias, so `ANTHROPIC_API_KEY` could be wired to another provider); such a config exits 5 with a pointer to `--config`. Agents may still be reassigned among the bundled aliases.
+- **Breaking**: every `models.<alias>` needs a non-empty `model` string, a `fallback_model` must be a non-empty string or null, and `base_url` (never read; the endpoint is `api_base`) is refused; each exits 5 at start-up instead of an agent silently simulating (hybrid) or failing mid-run (live).
+- **Breaking**: the Action's `output` input defaults to empty and is derived from `format` (`vibeharness-report.md`, or `vibeharness-report.json` with `format: json`; it used to be `vibeharness-report.md` whatever the format); the `report` output and the uploaded artifact use the derived name.
+- Action: `mode`, `max-model-calls` and `max-files` default to empty and reach the CLI only when set, so a `--config`'s `execution_mode`, `max_model_calls` and `max_files` are no longer silently overridden (the old default `max-model-calls: "0"` switched the config's cost guard off).
+- Action: a new first `prep` step validates `fail-on`, `mutation`, `sandbox`, `mode`, `format` and the numeric inputs (`max-model-calls` a non-negative integer, `max-files` ≥ 1) in plain bash before the install and the Docker image build; the `exit-code` output's description lists 130.
+- CLI: long flags can no longer be abbreviated (`allow_abbrev=False`), so `--conf x` cannot slip past the Action's `--config` detection; an abbreviation is a usage error (exit 5). The `--output` and `--max-files` help texts describe the JSON / estimate output and the ≥ 1 rule.
+- `null` keeps the default: `agents.<id>.temperature: null` means 0.2 (`DEFAULT_TEMPERATURE`; `None` used to reach litellm and the cache key), `mutation_max_mutants: null` / `mutation_min_score: null` keep 20 / 70 (they were `ConfigError`s), and `sandbox_provider: null` means `local_subprocess` (it failed as an unknown provider) while `sandbox_node_provider: null` follows it. The bundled config's `mutation_timeout_seconds` is now `null` (it follows `per_test_timeout_seconds`), and the min-score error names `global.mutation_min_score`.
+- Mutation testing: `ELIGIBLE_TEST_TYPES` is `whitebox_unit` only; the `whitebox_property` type it also listed is never produced.
+
+### Fixed
+
+- Action: the Docker sandbox config copy tolerates an empty `global:` section.
+
+### Engineering
+
+- New regression suite `tests/test_r4_behaviour.py`; the JS coverage tests honour `VIBEHARNESS_REQUIRE_NODE=1` like the JS execution tests (a missing Node fails instead of skipping; a Node too old for a feature still skips).
+- Comment fixes in `agents_config.yaml` (one verifier per model alias, batch budgets, `sandbox_memory_mb: 0` disabling the memory cap only, the generator writing `node:test` modules for JS/TS) and `threat_rules.yaml` (`atlas_techniques` is a functional field).
+
+### Documentation
+
+- The architecture diagrams show the optional Phase 3.5 (mutation testing), the baseline comparison, the response cache, re-asks and `prompt_sha256` in the gateway, both untrusted channels, JS/TS coverage and every evidence-gap source of the gate; "six linear phases" now reads "six phases plus the optional Phase 3.5".
+- README: the Action's full inputs and outputs tables, the `prep` validation and the job's exit semantics, the `--summary-json` fields, every INCONCLUSIVE condition of exit 3, and the remaining limits (other languages ignored silently, non-source files not secret-scanned, no Hypothesis in the sandbox image); corrected: `--estimate` runs symbol extraction only, the single-reviewer check counts distinct model aliases, and a fully simulated fork-PR run can still be `NEEDS_FIXES` through `WB-PROBE` probes.
+- Configuration reference: `docker_bin`, the validation of `max_concurrent_calls`, the `docker_*` keys and `include` / `exclude`, `aws_region_name` only together with `aws_profile_name`, `sandbox_memory_mb: 0`, `temperature` and `drop_params`, the reserved `extra_params` hooks and name parts; the design document is re-cited against the current code and documents the new data-model fields, and `CONTRIBUTING.md` the Docker / Node test switches, where config validation lives and the PyPI gating.
+
 ## [0.9.0] - 2026-10-11
 
 Third review round: discovered configs can no longer set security-sensitive keys, the Action `exec`s the audit so no key-holding parent stays readable, simulated items stay out of SARIF, VH-AI-006 is rewritten for precision and linear time, the deterministic rules disclose files they could not fully scan, VH-AI-009 / VH-AI-007 gaps are closed, and the repository's CI and settings are hardened.
 
 ### Added
 
-- `--summary-json PATH` writes a short machine-readable summary after the audit, whatever `--format` is: verdict, exit code, execution mode, model calls per mode (`live` / `simulated` / `invalid` / `cached`), `all_simulated` and the inconclusive reasons; its location is checked before any model call.
+- `--summary-json PATH` writes a short machine-readable summary after the audit, whatever `--format` is: `tool`, `version`, verdict, exit code, execution mode, model calls (`total`, `live`, `simulated`, `invalid`, `cached`; the `retried` asks of a call are not counted), `all_simulated` and the inconclusive reasons; its location is checked before any model call.
 - `vibeharness/action_runner.py`: the Action's audit step `exec`s into `python -I -m vibeharness.action_runner`, which runs the CLI in-process and then writes the `verdict` / `exit-code` outputs and the step summary and applies `fail-on`; it emits a `::warning::` when the verdict is `INCONCLUSIVE` but `fail-on` does not fail the job, and when every model call of a hybrid / live run was simulated (e.g. a pull request from a fork, which gets no secrets).
-- Evidence gap "The deterministic AI security rules could not fully scan N source file(s)": the AST rules of a Python file have a 30 s cap (`_MAX_SCAN_SECONDS_PER_FILE`); a file that exceeds it or fails unexpectedly keeps the hits already found and is listed in `AISecurityStaticScanner.incomplete_files`.
+- Evidence gap "The deterministic AI security rules could not fully scan N source file(s) (time cap or error)": the AST rules of a Python file have a 30 s cap (`_MAX_SCAN_SECONDS_PER_FILE`); a file that exceeds it or fails unexpectedly keeps the hits already found and is listed in `AISecurityStaticScanner.incomplete_files`.
 - VH-AI-006 sinks `os.exec*`, `os.spawn*`, `os.posix_spawn[p]`, `pty.spawn` and `loop.subprocess_shell` / `loop.subprocess_exec`, and sink aliases (`r = subprocess.run`, `getattr(subprocess, 'run')`, `functools.partial(subprocess.run, ...)`).
 
 ### Changed
@@ -53,7 +81,7 @@ Third review round: discovered configs can no longer set security-sensitive keys
 
 ### Documentation
 
-- `SECURITY.md` lists 0.8.x as supported and the repository's security features; `CONTRIBUTING.md` documents the required checks, the merge policy and the extended release checklist; README, configuration and design documents describe the discovered-config guard, the `exec` launcher, fork-PR behaviour and the new limits, and the design document's citations refer to the current code.
+- `SECURITY.md` lists 0.9.x as supported and the repository's security features; `CONTRIBUTING.md` documents the required checks, the merge policy and the extended release checklist; README, configuration and design documents describe the discovered-config guard, the `exec` launcher, fork-PR behaviour and the new limits, and the design document's citations refer to the current code.
 
 ## [0.8.0] - 2026-10-11
 
@@ -313,18 +341,18 @@ Packaging, model-output robustness, execution correctness and SARIF fixes from a
 - **Non-Python targets disclosed and guided**: detected JS/TS is listed as an evidence gap (the sandbox only executes Python, so there is no dynamic verification); `import_instructions` for non-.py files state that the file cannot be imported or executed instead of handing out an importlib recipe that cannot work
 - **Misc**: the detected-language list in reports is sorted (deterministic); test-generator self-heal logs identify the finding id instead of an unrelated integer index; the evidence-gap message for clean targets is clearer about which boundaries remain unverified
 
-### Infrastructure
+### Engineering
 - New CI `package` job, and the `publish` smoke test now builds the wheel, installs it outside the checkout and runs a real mock-mode audit
 - `pyproject.toml` dependency caps match `requirements.txt` (`pydantic<3`, `litellm<2`)
 - New `tests/test_quality_fixes.py` (a regression test per fix, each verified to fail before the fix)
 
-### Infrastructure (verification round 2)
+### Engineering (verification round 2)
 - **Pinned lint tools**: the CI lint job installs from `requirements-dev.txt` (ruff==0.16.10, mypy==2.4.0); the pre-commit ruff hook was aligned and upgraded (v0.6.9 → v0.16.9)
 - **requirements-dev.txt completed**: adds `build` and `pytest-cov` (matching CI)
 - **threat_rules.yaml comments**: documents which fields are functional (fed into prompts) and which are documentation only
 - The CI test job enforces a total coverage floor (`--cov-fail-under`)
 
-### Infrastructure (hardening round 3)
+### Engineering (hardening round 3)
 - **Stricter mypy**: `check_untyped_defs = true` (type-checks bodies of unannotated functions); `core/sandbox.py` now branches on `sys.platform` so mypy can narrow types — full suite reports 0 errors
 - **CI Actions pinned to commit SHAs**: checkout / setup-python / pypa publish actions all pin the full SHA (tag kept as a comment), so rewritten tags can no longer tamper with CI
 - **Dependency vulnerability audit**: new `audit` job runs pip-audit against the fully resolved `requirements.lock` (on every PR; a dependency bump with a known CVE fails before merge)
