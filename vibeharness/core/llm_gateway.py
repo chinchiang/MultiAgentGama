@@ -7,12 +7,19 @@ import logging
 import re
 import threading
 import urllib.parse
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, FrozenSet, Optional, List
 import yaml
 
 from vibeharness.core.models import AgentCallRecord
 from vibeharness.core.i18n import bi, en_only, zh_only
 from vibeharness.core.sanitize import clean_model_text, redact_secrets
+
+# litellm 在匯入時就會以 HTTPS 從 GitHub 抓取模型價格表（失敗還會重試、拖慢啟動），即使是 mock 或 --estimate
+# 這種完全不呼叫模型的執行也一樣。改用 litellm 套件內附的本機價格表；使用者自己設定的環境變數優先（setdefault）
+# litellm fetches its model cost map from GitHub over HTTPS at import time (and retries on failure, slowing start-up),
+# even for a mock or --estimate run that never calls a model. Use the cost map bundled with litellm instead; a value
+# the user set in the environment wins (setdefault)
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
 try:
     import litellm
@@ -111,24 +118,62 @@ RESERVED_EXTRA_PARAMS = frozenset({
     "aws_bedrock_client", "sagemaker_base_url", "custom_endpoint", "deployment_url", "oci_endpoint_id", "oci_region",
     "oci_key", "oci_key_file", "zen_api_key", "gemini_api_key", "_litellm_internal_model_credentials",
     "litellm_logging_obj", "logger_fn", "proxy_server_request",
+    # litellm 的記錄／callback 參數（litellm 1.103 的 StandardCallbackDynamicParams、
+    # initialize_dynamic_callback_params 與 Logging 讀取的 kwargs）：它們會把完整的提示與回答（也就是受稽核的原始碼）
+    # 轉送給第三方的觀測服務（Langfuse、LangSmith、Datadog、GCS／S3 bucket、Slack webhook……）。
+    # metadata／litellm_metadata 也在內：litellm 會從其中讀取同一組 callback 參數（例如 metadata.langfuse_host）
+    # litellm's logging / callback parameters (the kwargs litellm 1.103 reads through StandardCallbackDynamicParams,
+    # initialize_dynamic_callback_params and Logging): they forward the full prompt and answer (that is, the audited
+    # source code) to third-party observability services (Langfuse, LangSmith, Datadog, GCS / S3 buckets, a Slack
+    # webhook, ...). metadata / litellm_metadata are included: litellm reads the same callback parameters from them
+    # (e.g. metadata.langfuse_host)
+    "callbacks", "success_callback", "failure_callback", "_async_success_callback", "_async_failure_callback",
+    "litellm_disabled_callbacks", "litellm_trusted_callback_vars", "metadata", "litellm_metadata", "litellm_params",
+    "lunary_public_key", "litellm_request_debug", "verbose",
+    # 會改寫請求內容或改送到別的模型的參數：litellm 的提示管理（從第三方服務取回提示）、系統提示注入、
+    # 模型別名對應、context window 的備援模型、路由與重試策略，以及其他逾時控制
+    # Parameters that rewrite the request or reroute it to another model: litellm's prompt management (fetches the
+    # prompt from a third-party service), system-prompt injection, model alias mapping, the context-window fallback
+    # model, routing and retry policies, and other timeout controls
+    "prompt_id", "prompt_variables", "prompt_version", "prompt_environment", "litellm_system_prompt",
+    "model_alias_map", "custom_prompt_dict", "context_window_fallback_dict", "routing_strategy", "_router_weights",
+    "retry_policy", "retry_strategy", "force_timeout", "client_side_timeout", "azure", "data_residency",
 })
-# 名單之外的同類鍵（litellm 新版本或少見的 provider）以名稱樣式保留：雲端憑證前綴，以及含有金鑰、
-# token、密碼、憑證、端點、URL、代理或標頭字樣的名稱
+# 名單之外的同類鍵（litellm 新版本或少見的 provider）以名稱樣式保留：雲端憑證與觀測服務整合的前綴，以及含有金鑰、
+# 密碼、憑證、端點、URL、代理、標頭、callback、webhook、主機或 bucket 字樣的名稱
 # Keys of the same kind outside the list (newer litellm versions or rare providers) are reserved by name
-# pattern: cloud credential prefixes, and names containing key, token, secret, password, credential, endpoint,
-# URL, proxy or header parts
+# pattern: cloud credential and observability-integration prefixes, and names containing key, secret, password,
+# credential, endpoint, URL, proxy, header, callback, webhook, host or bucket parts
 _RESERVED_EXTRA_PARAM_RE = re.compile(
-    r"^(?:aws|azure|vertex|oci|watsonx|gigachat)_"
-    r"|(?:^|_)(?:api_?key|access_token|token|secret|password|credentials?|endpoint|url|api_base|base_url|proxy|headers?)(?:$|_)",
+    r"^(?:aws|azure|vertex|oci|watsonx|gigachat"
+    r"|langfuse|langsmith|gcs|s3|dd|datadog|helicone|lunary|humanloop|arize|posthog|braintrust|slack|newrelic"
+    r"|wandb|weave|otel|opik|mlflow|logfire|sentry|phoenix|galileo|athina|literalai|openmeter|greenscale|traceloop)_"
+    r"|callback"
+    r"|(?:^|_)(?:api_?key|secret|password|credentials?|endpoint|url|api_base|base_url|proxy|headers?|webhook|host|bucket)(?:$|_)",
     re.IGNORECASE,
 )
+# 名稱含有 token 的部分另外判斷：access_token、api_token、id_token、token 等都是憑證而保留；只改價格的成本覆寫
+# （input_cost_per_token、cache_read_input_token_cost……）不改變目的地，允許
+# A `token` name part is judged separately: access_token, api_token, id_token, token and the like are credentials and
+# reserved; cost overrides (input_cost_per_token, cache_read_input_token_cost, ...) only change the price, not the
+# destination, so they are allowed
+_TOKEN_NAME_PART_RE = re.compile(r"(?:^|_)token(?:$|_)", re.IGNORECASE)
+_COST_NAME_PART_RE = re.compile(r"(?:^|_)cost(?:$|_)", re.IGNORECASE)
+
+
+def _is_reserved_param_name(name: str) -> bool:
+    """名稱符合端點／憑證／callback 樣式（不看 RESERVED_EXTRA_PARAMS 名單）。
+    The name matches an endpoint / credential / callback pattern (without consulting RESERVED_EXTRA_PARAMS)."""
+    if _RESERVED_EXTRA_PARAM_RE.search(name):
+        return True
+    return bool(_TOKEN_NAME_PART_RE.search(name)) and not _COST_NAME_PART_RE.search(name)
 
 
 def is_reserved_extra_param(name: str) -> bool:
-    """`extra_params` 不得設定的 litellm 參數：在 RESERVED_EXTRA_PARAMS 裡，或名稱符合端點／憑證樣式。
-    A litellm parameter `extra_params` must not set: listed in RESERVED_EXTRA_PARAMS, or named like an endpoint
-    or a credential."""
-    return name in RESERVED_EXTRA_PARAMS or bool(_RESERVED_EXTRA_PARAM_RE.search(name))
+    """`extra_params` 不得設定的 litellm 參數：在 RESERVED_EXTRA_PARAMS 裡，或名稱符合端點／憑證／callback 樣式。
+    A litellm parameter `extra_params` must not set: listed in RESERVED_EXTRA_PARAMS, or named like an endpoint,
+    a credential or a callback."""
+    return name in RESERVED_EXTRA_PARAMS or _is_reserved_param_name(name)
 # 上面屬於輸出 token 上限的保留鍵；錯誤訊息會指向 max_output_tokens
 # The reserved keys above that are the output-token cap; the error message points at max_output_tokens
 _TOKEN_CAP_PARAMS = frozenset({"max_tokens", "max_completion_tokens", "max_output_tokens"})
@@ -228,6 +273,67 @@ _DISCOVERED_SENSITIVE_MODEL_KEYS = frozenset({"api_base", "base_url", "api_key_e
 # (e.g. openai/...), so swapping it could send a bundled key to another provider; a discovered config may only keep
 # the bundled value of the same alias
 _DISCOVERED_PINNED_MODEL_KEYS = frozenset({"model", "fallback_model"})
+# 先前版本內建設定曾經使用過、但目前版本已換掉的 models.<alias> 值（依每個 v* tag 的
+# vibeharness/config/agents_config.yaml 與舊路徑 config/agents_config.yaml 整理；tests/test_r5_gateway_harness.py 會
+# 逐一比對每個 tag）。自動發現的設定檔若是舊版 --init-config 寫出的覆本，同一別名的這些值也接受：它們都曾是內建值，
+# 不會把金鑰送到別家供應商；新版本換掉內建模型字串時，請把舊值加進這裡
+# models.<alias> values a previous release's bundled config used and the current one has replaced (collected from
+# vibeharness/config/agents_config.yaml, and the old path config/agents_config.yaml, at every v* tag;
+# tests/test_r5_gateway_harness.py checks each tag). A discovered config that is a copy written by an older
+# --init-config may keep these values for the same alias: each was a bundled value, so none sends a key to another
+# provider. When a release replaces a bundled model string, add the old value here
+_PREVIOUS_BUNDLED_MODELS: Dict[str, Dict[str, FrozenSet[str]]] = {
+    "claude": {"model": frozenset({"claude-sonnet-5"})},  # v0.1.0 至 v0.2.0 的內建值 ／ bundled in v0.1.0 to v0.2.0
+}
+# 會增加花費的 global 數值上限：自動發現的設定檔只能把它們調低（或保持內建值），不能調高。值為 null 或省略時
+# 採用 harness 的預設值；這些鍵的 0 也代表預設值（max_model_calls 的 0／null 是不限制）
+# Global numeric limits that raise spend: a discovered config may only lower them (or keep the bundled value), never
+# raise them. null or omitted means the harness default; for these keys 0 means the default too (0 / null is
+# unlimited for max_model_calls)
+_DISCOVERED_COST_LIMIT_KEYS = ("max_model_calls", "max_concurrent_calls", "max_output_tokens", "retry_invalid_output",
+                               "max_retries", "max_files", "max_file_bytes")
+_ZERO_MEANS_DEFAULT_KEYS = frozenset({"max_model_calls", "max_concurrent_calls", "max_files", "max_file_bytes"})
+# 每個 whitebox_reviewer_* 代理都會審查每個符號，新增一個就多一整輪付費呼叫；驗證者則依模型別名去重，數量有上限
+# Every whitebox_reviewer_* agent reviews every symbol, so a new one adds a whole round of paid calls; verifiers are
+# de-duplicated per model alias, so their number is bounded
+_DISCOVERED_REVIEWER_PREFIX = "whitebox_reviewer_"
+
+
+def _builtin_cost_default(key: str) -> Optional[int]:
+    """`_DISCOVERED_COST_LIMIT_KEYS` 的 harness 內建預設值；None 表示不限制。
+    The harness's built-in default for a `_DISCOVERED_COST_LIMIT_KEYS` key; None means unlimited."""
+    # 延遲匯入：ast_extractor 只依賴 models 與 i18n，但閘道不需要在匯入時就載入它
+    # Lazy import: ast_extractor depends only on models and i18n, but the gateway need not load it at import time
+    from vibeharness.agents.whitebox.ast_extractor import DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_FILES
+    defaults: Dict[str, Optional[int]] = {
+        "max_model_calls": None, "max_concurrent_calls": DEFAULT_MAX_CONCURRENT_CALLS,
+        "max_output_tokens": DEFAULT_MAX_OUTPUT_TOKENS, "retry_invalid_output": DEFAULT_RETRY_INVALID_OUTPUT,
+        "max_retries": DEFAULT_MAX_RETRIES, "max_files": DEFAULT_MAX_FILES, "max_file_bytes": DEFAULT_MAX_FILE_BYTES,
+    }
+    return defaults[key]
+
+
+def _effective_cost_limit(key: str, value: Any) -> Any:
+    """設定值實際代表的上限：null（以及 _ZERO_MEANS_DEFAULT_KEYS 的 0）換成內建預設值；None 表示不限制。
+    非數值原樣回傳，由啟動時的驗證回報。
+    The limit a setting actually means: null (and 0 for _ZERO_MEANS_DEFAULT_KEYS) becomes the built-in default;
+    None means unlimited. A non-number is returned as is, for the start-up validation to report."""
+    if value is None or (value == 0 and not isinstance(value, bool) and key in _ZERO_MEANS_DEFAULT_KEYS):
+        return _builtin_cost_default(key)
+    return value
+
+
+def _raises_limit(value: Any, reference: Any) -> bool:
+    """`value` 比 `reference` 寬鬆（None 表示不限制）；非數值不在這裡判斷，交給啟動時的驗證。
+    `value` is looser than `reference` (None means unlimited); non-numbers are left to the start-up validation."""
+    if reference is None:
+        return False
+    if value is None:
+        return True
+    numeric = (int, float)
+    if isinstance(value, bool) or not isinstance(value, numeric) or isinstance(reference, bool) or not isinstance(reference, numeric):
+        return False
+    return value > reference
 
 
 def _is_sensitive_global_key(key: str) -> bool:
@@ -237,63 +343,105 @@ def _is_sensitive_global_key(key: str) -> bool:
 
 def _is_sensitive_model_key(key: str) -> bool:
     """自動發現的設定檔不得自訂的 models.<alias> 鍵 ／ A models.<alias> key a discovered config must not customize."""
-    return key in _DISCOVERED_SENSITIVE_MODEL_KEYS or bool(_RESERVED_EXTRA_PARAM_RE.search(key))
+    return key in _DISCOVERED_SENSITIVE_MODEL_KEYS or _is_reserved_param_name(key)
 
 
 def discovered_config_violations(config: Dict[str, Any], reference: Dict[str, Any]) -> List[str]:
     """自動發現的 `config` 中設定了安全敏感鍵的位置（例如 "global.docker_bin"），依序排列；空清單表示可以採用。
     與 `reference`（套件內的預設設定）相同的值、null 以及省略都允許，所以 --init-config 寫出的覆本照樣可用。
     models 區段只能使用預設設定裡已有的別名（新別名記為 "models.<alias>"）；每個別名的 model、fallback_model、
-    api_key_env 與端點鍵都必須與預設設定中「同一個別名」的值相同（不能把 ANTHROPIC_API_KEY 接到別的供應商）。
-    agent 仍可在內建別名之間重新指派。
+    api_key_env 與端點鍵都必須與預設設定中「同一個別名」的值相同，或是先前版本內建設定的同一別名值
+    （_PREVIOUS_BUNDLED_MODELS；不能把 ANTHROPIC_API_KEY 接到別的供應商）。agent 仍可在內建別名之間重新指派，
+    但不能新增 whitebox_reviewer_* 代理。花費相關的設定只能調低：execution_mode 不能是 live，
+    _DISCOVERED_COST_LIMIT_KEYS 與 models.<alias>.max_output_tokens 的實際值（省略或 null 即 harness 預設值）不能高於預設設定。
     The places where the discovered `config` sets a security-sensitive key (e.g. "global.docker_bin"), sorted;
     an empty list means the config may be used. A value equal to `reference` (the bundled default), null and
     omission are allowed, so a copy written by --init-config still works. The models section may only use aliases
     the default config has (a new alias is reported as "models.<alias>"); each alias's model, fallback_model,
-    api_key_env and endpoint keys must equal the default config's value for the same alias (so ANTHROPIC_API_KEY
-    cannot be wired to another provider). Agents may still be reassigned among the bundled aliases."""
+    api_key_env and endpoint keys must equal the default config's value for the same alias, or a previous release's
+    bundled value for that alias (_PREVIOUS_BUNDLED_MODELS; so ANTHROPIC_API_KEY cannot be wired to another
+    provider). Agents may still be reassigned among the bundled aliases, but no whitebox_reviewer_* agent may be
+    added. Cost-related settings may only be lowered: execution_mode must not be live, and neither the
+    _DISCOVERED_COST_LIMIT_KEYS nor models.<alias>.max_output_tokens may exceed the default config in effect (omitted or
+    null means the harness default)."""
     problems: List[str] = []
     ref_global = reference.get("global") or {}
-    for key, value in (config.get("global") or {}).items():
+    cfg_global = config.get("global") or {}
+    for key, value in cfg_global.items():
         key = str(key)
+        if key == "execution_mode":
+            # 只能維持內建模式或改成 mock：live 在缺金鑰或呼叫失敗時也不會退回模擬，只會繼續付費呼叫或失敗
+            # Only the bundled mode or mock: live never falls back to simulation, it keeps making paid calls or fails
+            if value is not None and value != ref_global.get(key) and value != "mock":
+                problems.append(f"global.{key}")
+            continue
+        if key in _DISCOVERED_COST_LIMIT_KEYS:
+            continue
         if value is None or not _is_sensitive_global_key(key):
             continue
         if value != ref_global.get(key, _BUILTIN_GLOBAL_DEFAULTS.get(key)) and value not in _DISCOVERED_ALLOWED_GLOBAL_VALUES.get(key, ()):
             problems.append(f"global.{key}")
+    # 自動發現的設定檔是整份取代內建設定（不會合併），所以省略的上限代表 harness 預設值，也要比較
+    # A discovered config replaces the bundled one as a whole (no merge), so an omitted limit means the harness
+    # default and is compared too
+    for key in _DISCOVERED_COST_LIMIT_KEYS:
+        if _raises_limit(_effective_cost_limit(key, cfg_global.get(key)), _effective_cost_limit(key, ref_global.get(key))):
+            problems.append(f"global.{key}")
     ref_models = reference.get("models") or {}
+    cfg_output_cap = _effective_cost_limit("max_output_tokens", cfg_global.get("max_output_tokens"))
+    ref_output_cap = _effective_cost_limit("max_output_tokens", ref_global.get("max_output_tokens"))
     for alias, info in (config.get("models") or {}).items():
         if alias not in ref_models:
             problems.append(f"models.{alias}")
             continue
         ref_info = ref_models.get(alias) or {}
+        previous = _PREVIOUS_BUNDLED_MODELS.get(str(alias), {})
         for key, value in (info or {}).items():
             key = str(key)
+            if key == "max_output_tokens":
+                # 逐模型的上限省略時跟隨 global；與預設設定中同一別名的實際上限比較
+                # A per-model cap that is omitted follows global; compare with the same alias's actual cap in the default config
+                ref_cap = ref_output_cap if ref_info.get(key) is None else ref_info.get(key)
+                if _raises_limit(cfg_output_cap if value is None else value, ref_cap):
+                    problems.append(f"models.{alias}.{key}")
+                continue
             if value is None or not (key in _DISCOVERED_PINNED_MODEL_KEYS or _is_sensitive_model_key(key)):
                 continue
-            if value == ref_info.get(key):
+            if value == ref_info.get(key) or (isinstance(value, str) and value in previous.get(key, frozenset())):
                 continue
             problems.append(f"models.{alias}.{key}")
+    ref_agents = reference.get("agents") or {}
+    for agent_id in (config.get("agents") or {}):
+        if str(agent_id).startswith(_DISCOVERED_REVIEWER_PREFIX) and agent_id not in ref_agents:
+            problems.append(f"agents.{agent_id}")
     return sorted(problems)
 
 
 def check_discovered_config(path: str, reference_path: str = DEFAULT_CONFIG_PATH) -> None:
     """自動發現的設定檔設定了安全敏感鍵時拋出 ConfigError（CLI 以 exit 5 結束），訊息列出那些鍵並說明：
-    信任這個檔案就以 --config 明確指定。
+    信任這個檔案就以 --config 明確指定；若是其他版本寫出的覆本，就以 --init-config --force 重新產生。
     Raises ConfigError (the CLI exits 5) when a discovered config sets a security-sensitive key; the message
-    names those keys and says to pass the file explicitly with --config if it is trusted."""
+    names those keys and says to pass the file explicitly with --config if it is trusted, or to regenerate it with
+    --init-config --force if another version wrote it."""
     problems = discovered_config_violations(load_config_file(path), load_config_file(reference_path))
     if problems:
         names = ", ".join(problems)
         raise ConfigError(bi(
             f"自動發現的設定檔 {path} 設定了安全敏感的鍵：{names}。自動發現的設定檔可能來自不可信的 checkout，"
-            "不得設定可執行檔路徑、沙盒／docker／node 設定、回應快取、新的模型別名，或模型的 model／fallback_model、端點、"
-            "金鑰環境變數與 extra_params（必須與內建設定的同一別名相同）；"
-            f"如果信任這個檔案，請以 --config {path} 明確指定",
+            "不得設定可執行檔路徑、沙盒／docker／node 設定、回應快取、新的模型別名或 whitebox_reviewer_* 代理、"
+            "模型的 model／fallback_model、端點、金鑰環境變數與 extra_params（必須與內建設定的同一別名相同），"
+            "也不得調高花費（execution_mode: live，或高於內建值的 max_model_calls、max_concurrent_calls、max_output_tokens、"
+            "retry_invalid_output、max_retries、max_files、max_file_bytes）。"
+            "這個檔案是較舊或較新版本的 VibeHarness 寫出的嗎？如果信任這個檔案，請以 "
+            f"--config {path} 明確指定；否則請以 vibeharness --init-config {path} --force 重新產生",
             f"the discovered config {path} sets security-sensitive key(s): {names}. A discovered config may come "
             "from an untrusted checkout, so it must not set executable paths, sandbox / docker / node settings, the "
-            "response cache, new model aliases, or a model's model / fallback_model, endpoint, key environment variable "
-            "or extra_params (they must equal the bundled config's same alias); if you trust this file, "
-            f"pass it explicitly with --config {path}",
+            "response cache, new model aliases or whitebox_reviewer_* agents, or a model's model / fallback_model, "
+            "endpoint, key environment variable or extra_params (they must equal the bundled config's same alias), "
+            "and it must not raise spend (execution_mode: live, or max_model_calls, max_concurrent_calls, "
+            "max_output_tokens, retry_invalid_output, max_retries, max_files or max_file_bytes above the bundled "
+            "value). Was this file written by an older or newer VibeHarness version? If you trust this file, pass "
+            f"it explicitly with --config {path}; otherwise regenerate it with vibeharness --init-config {path} --force",
         ))
 
 
@@ -482,6 +630,12 @@ class LLMGateway:
             if fallback is not None and (not isinstance(fallback, str) or not fallback.strip()):
                 raise ConfigError(bi(f"models.{alias}.fallback_model 必須是非空字串或 null，目前為 {fallback!r}",
                                      f"models.{alias}.fallback_model must be a non-empty string or null, got {fallback!r}"))
+            # 檢查的是去掉前後空白的值，保存的也必須是它：否則 " claude-sonnet-5-5" 會原樣送進 litellm 與快取鍵
+            # The check is on the stripped value, so the stripped value is what is kept: otherwise " claude-sonnet-5-5"
+            # would reach litellm and the cache key as written
+            info["model"] = model.strip()
+            if fallback is not None:
+                info["fallback_model"] = fallback.strip()
             # base_url 不會被讀取（端點是 api_base）：留著它會讓使用者以為呼叫送到了自訂端點
             # base_url is never read (the endpoint is api_base): keeping it would make users think calls go to a custom endpoint
             if info.get("base_url") is not None:
@@ -490,6 +644,17 @@ class LLMGateway:
             if info.get("max_output_tokens") is not None:
                 self._number(info["max_output_tokens"], f"models.{alias}.max_output_tokens", minimum=1, integer=True)
         for agent_id, meta in self.agents_config.items():
+            # 打錯字的 model_alias 過去會悄悄解析成 unconfigured：hybrid 改用模擬，live 則在已付費的呼叫之後才中途失敗。
+            # 省略或 null 仍是刻意的 unconfigured；明確寫出的別名必須存在於 models
+            # A misspelled model_alias used to resolve silently to unconfigured: hybrid simulated it, live failed mid-run
+            # after paid calls. Omitted or null is still a deliberate unconfigured; an alias that is written must exist in models
+            alias = meta.get("model_alias") if isinstance(meta, dict) else None
+            if alias is not None and alias != UNCONFIGURED_ALIAS and (not isinstance(alias, str) or alias not in self.models_config):
+                known = ", ".join(sorted(str(a) for a in self.models_config)) or "-"
+                raise ConfigError(bi(
+                    f"agents.{agent_id}.model_alias {alias!r} 不在 models 區段中（已定義：{known}）",
+                    f"agents.{agent_id}.model_alias {alias!r} is not defined in the models section (defined: {known})",
+                ))
             if isinstance(meta, dict) and meta.get("temperature") is not None:
                 self._number(meta["temperature"], f"agents.{agent_id}.temperature", minimum=0, maximum=2)
         self._number(self.retry_invalid_output, "global.retry_invalid_output", minimum=0, maximum=5, integer=True)
