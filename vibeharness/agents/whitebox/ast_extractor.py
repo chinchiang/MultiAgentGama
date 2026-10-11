@@ -20,6 +20,33 @@ DEFAULT_MAX_FILE_BYTES = 1_000_000
 # Directory names never descended into (plus any name starting with '.')
 SKIPPED_DIRS = {"venv", "__pycache__", "node_modules", "dist", "build", "site-packages"}
 SOURCE_EXTENSIONS = (".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts")
+# 擷取器不支援的程式語言原始碼（依副檔名）：記錄為證據缺口而不是默默丟掉。刻意不含 shell 腳本、SQL、HTML/CSS
+# 這類在任何專案裡都常見的附屬檔案，也不含文件、圖片、鎖定檔與設定檔
+# Source code in languages the extractor does not support (by extension): recorded as an evidence gap instead of being
+# silently dropped. Shell scripts, SQL and HTML/CSS (incidental in almost any project) are deliberately left out, as
+# are docs, images, lockfiles and configuration files
+UNSUPPORTED_SOURCE_EXTENSIONS: Dict[str, str] = {
+    ".go": "go", ".java": "java", ".kt": "kotlin", ".kts": "kotlin", ".rs": "rust",
+    ".c": "c", ".h": "c", ".cc": "c++", ".cpp": "c++", ".cxx": "c++", ".hpp": "c++", ".hh": "c++", ".hxx": "c++",
+    ".cs": "c#", ".php": "php", ".rb": "ruby", ".swift": "swift", ".scala": "scala", ".sc": "scala",
+    ".m": "objective-c", ".mm": "objective-c", ".dart": "dart", ".lua": "lua", ".pl": "perl", ".pm": "perl",
+    ".ex": "elixir", ".exs": "elixir", ".erl": "erlang", ".hs": "haskell", ".clj": "clojure", ".fs": "f#",
+    ".fsx": "f#", ".vb": "visual-basic", ".groovy": "groovy", ".vue": "vue", ".svelte": "svelte", ".sol": "solidity",
+}
+# 不支援語言的檔案只保留這麼多個路徑當樣本（計數不設上限）
+# Only this many paths of unsupported-language files are kept as a sample (the count is unbounded)
+UNSUPPORTED_SAMPLE_SIZE = 20
+# 只在本機做確定性密鑰掃描（VH-AI-007）的設定類檔案：絕不送給模型，因為它們不是被分析的符號
+# Configuration-like files that only get the local, deterministic secret scan (VH-AI-007): never sent to a model,
+# since they are not analyzed symbols
+CONFIG_EXTENSIONS = (".yaml", ".yml", ".json", ".toml", ".ini", ".cfg", ".properties", ".tf", ".tfvars", ".env")
+CONFIG_NAMES = {"dockerfile", ".env", ".npmrc", ".pypirc", ".netrc"}
+# 自動產生的鎖定檔：內容是套件雜湊而不是設定，略過
+# Generated lockfiles: package hashes rather than configuration, skipped
+LOCKFILE_NAMES = {"package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock", "composer.lock"}
+# 一次執行最多掃描的設定類檔案數（超過的列為證據缺口）
+# The most configuration-like files one run scans (the rest are reported as an evidence gap)
+DEFAULT_MAX_CONFIG_FILES = 200
 # FastAPI/Starlette 動詞加上 Flask/Quart 的路由裝飾器
 # FastAPI/Starlette verbs plus Flask/Quart route decorators
 ROUTE_DECORATORS = {"get", "post", "put", "delete", "patch", "route", "api_route", "websocket"}
@@ -235,6 +262,18 @@ class ASTExtractor:
         # 在 max_files 上限之內的原始碼檔案（靜態 AI 安全規則掃描的正是這些）
         # Source files within the max_files cap (the static AI-security rules scan exactly these)
         self.analyzed_files: List[str] = []
+        # 因語言不支援而沒有分析的原始碼檔案：總數、各語言計數，以及最多 UNSUPPORTED_SAMPLE_SIZE 個路徑樣本
+        # Source files not analyzed because their language is unsupported: the total, per-language counts, and a
+        # sample of at most UNSUPPORTED_SAMPLE_SIZE paths
+        self.unsupported_count: int = 0
+        self.unsupported_languages: Dict[str, int] = {}
+        self.unsupported_files: List[str] = []
+        # 只做本機密鑰掃描的設定類檔案；因數量上限或 max_file_bytes 而沒有掃描的設定類檔案
+        # Configuration-like files that only get the local secret scan; those left unscanned by the count cap or by
+        # max_file_bytes
+        self.config_files: List[str] = []
+        self.skipped_config_files: List[str] = []
+        self.oversized_config_files: List[str] = []
         # 正在分析的 JS/TS 檔案的（原文, 行串列），每個檔案只切一次行；以及 _match_delim 的配對表
         # (content, lines) of the JS/TS file being analyzed, split into lines once per file; and _match_delim's pair tables
         self._content_lines: Optional[Tuple[str, List[str]]] = None
@@ -275,6 +314,7 @@ class ASTExtractor:
         exclude: Optional[List[str]] = None,
         only_files: Optional[Iterable[str]] = None,
         max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+        max_config_files: int = DEFAULT_MAX_CONFIG_FILES,
     ) -> List[CodeSymbol]:
         """解析一個目錄樹（最多 max_files 個原始碼檔案）或單一原始碼檔案。
 
@@ -288,33 +328,53 @@ class ASTExtractor:
         slashes; `**` is not special, fnmatch's `*` already crosses directories), e.g. `src/**/*.py`
         or `tests/*`. `only_files` restricts the walk to those absolute paths (e.g. the files a git diff
         touched). Files larger than max_file_bytes are listed in `oversized_files` and not parsed.
+
+        同樣的走訪規則（略過的目錄、隱藏目錄、include/exclude、only_files）也用來收集：不支援語言的原始碼檔案
+        （`unsupported_*`，證據缺口）與只做本機密鑰掃描的設定類檔案（`config_files`，最多 max_config_files 個）。
+        The same walk rules (skipped directories, hidden directories, include/exclude, only_files) also collect
+        source files in unsupported languages (`unsupported_*`, an evidence gap) and configuration-like files that
+        only get the local secret scan (`config_files`, at most max_config_files).
         """
         self.parse_failures, self.skipped_files, self.analyzed_files = [], [], []
         self.oversized_files, self.filtered_out = [], 0
+        self.unsupported_count, self.unsupported_languages, self.unsupported_files = 0, {}, []
+        self.config_files, self.skipped_config_files, self.oversized_config_files = [], [], []
         if os.path.isfile(dir_path):
-            if dir_path.lower().endswith(SOURCE_EXTENSIONS):
+            kind = self._file_kind(os.path.basename(dir_path))
+            if kind == "source":
                 if self._too_large(dir_path, max_file_bytes):
                     self.oversized_files = [dir_path]
                     return []
                 self.analyzed_files = [dir_path]
+            elif kind is not None:
+                self._collect_other(dir_path, kind, max_file_bytes, max_config_files)
             return self.parse_file(dir_path)
         source_files: List[str] = []
         wanted = {os.path.normcase(os.path.abspath(p)) for p in only_files} if only_files is not None else None
         for root, dirs, files in os.walk(dir_path):
             dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in SKIPPED_DIRS)
             for f in sorted(files):
-                if not f.lower().endswith(SOURCE_EXTENSIONS):
+                kind = self._file_kind(f)
+                if kind is None:
                     continue
                 full = os.path.join(root, f)
                 rel = os.path.relpath(full, dir_path).replace(os.sep, "/")
                 if (wanted is not None and os.path.normcase(os.path.abspath(full)) not in wanted) \
                         or not self._selected(rel, include, exclude):
-                    self.filtered_out += 1
+                    if kind == "source":
+                        self.filtered_out += 1
+                    continue
+                if kind != "source":
+                    self._collect_other(full, kind, max_file_bytes, max_config_files)
                     continue
                 if self._too_large(full, max_file_bytes):
                     self.oversized_files.append(full)
                     continue
                 source_files.append(full)
+        if self.unsupported_count:
+            langs = ", ".join(f"{lang}: {n}" for lang, n in sorted(self.unsupported_languages.items()))
+            logger.warning(bi(f"{self.unsupported_count} 個不支援語言的原始碼檔案（{langs}）未納入分析。",
+                              f"{self.unsupported_count} source file(s) in unsupported languages ({langs}) are not analyzed."))
         if self.oversized_files:
             logger.warning(bi(f"{len(self.oversized_files)} 個原始碼檔案超過 max_file_bytes（{max_file_bytes}），已略過。",
                               f"{len(self.oversized_files)} source file(s) exceed max_file_bytes ({max_file_bytes}) and were skipped."))
@@ -337,6 +397,43 @@ class ASTExtractor:
                 if full_path not in self.parse_failures:
                     self.parse_failures.append(full_path)
         return all_symbols
+
+    @staticmethod
+    def _file_kind(name: str) -> Optional[str]:
+        """檔案的類別：'source'（會分析）、'config'（只做密鑰掃描）、'unsupported:<語言>'，或 None（不相關）。
+        隱藏檔只有已知的設定檔名（.env、.env.*、.npmrc …）才算。
+        The file's category: 'source' (analyzed), 'config' (secret scan only), 'unsupported:<language>', or None
+        (irrelevant). Hidden files only count for the known configuration names (.env, .env.*, .npmrc ...)."""
+        lower = name.lower()
+        if lower.endswith(SOURCE_EXTENSIONS):
+            return "source"
+        if lower in LOCKFILE_NAMES or lower.endswith(".lock"):
+            return None
+        if lower in CONFIG_NAMES or lower.startswith((".env.", "dockerfile.")) or lower.endswith(".dockerfile"):
+            return "config"
+        if lower.startswith("."):
+            return None
+        if lower.endswith(CONFIG_EXTENSIONS):
+            return "config"
+        lang = UNSUPPORTED_SOURCE_EXTENSIONS.get(os.path.splitext(lower)[1])
+        return f"unsupported:{lang}" if lang else None
+
+    def _collect_other(self, path: str, kind: str, max_file_bytes: int, max_config_files: int) -> None:
+        """記錄一個不會被分析的檔案：不支援的語言（計數加樣本）或設定類檔案（受數量與大小上限限制）。
+        Records a file that is not analyzed: an unsupported language (count plus sample) or a configuration-like file
+        (subject to the count and size caps)."""
+        if kind.startswith("unsupported:"):
+            lang = kind.split(":", 1)[1]
+            self.unsupported_count += 1
+            self.unsupported_languages[lang] = self.unsupported_languages.get(lang, 0) + 1
+            if len(self.unsupported_files) < UNSUPPORTED_SAMPLE_SIZE:
+                self.unsupported_files.append(path)
+        elif self._too_large(path, max_file_bytes):
+            self.oversized_config_files.append(path)
+        elif len(self.config_files) < max_config_files:
+            self.config_files.append(path)
+        else:
+            self.skipped_config_files.append(path)
 
     @staticmethod
     def _selected(rel_path: str, include: Optional[List[str]], exclude: Optional[List[str]]) -> bool:

@@ -535,6 +535,9 @@ class VibeHarnessCommander:
             # 確定性規則在任何模型看到程式碼之前先執行：它們不會受到提示注入
             # Deterministic rules run before any model sees the code: they cannot be prompt-injected
             static_findings = self.static_scanner.scan_files(self.ast_extractor.analyzed_files)
+            # 設定類檔案（.env、YAML、Dockerfile …）只在本機做密鑰掃描，絕不送給模型
+            # Configuration-like files (.env, YAML, Dockerfile ...) only get the local secret scan, never a model
+            static_findings += self.static_scanner.scan_config_files(self.ast_extractor.config_files)
             progress.update(phase=1, static_findings=static_findings, symbols=len(symbols))
             ai_components = self.static_scanner.ai_components
             if ai_components:
@@ -856,12 +859,23 @@ class VibeHarnessCommander:
                         bi("已產生 TypeScript 測試但未執行", "TypeScript tests were generated but not run")
                         + f": {self.node_typescript_problem}"
                     )
-            other_langs = [lang for lang in detected_langs if lang not in ("Python", "TypeScript/JavaScript")]
-            if other_langs:
+            if self.ast_extractor.unsupported_count:
+                # 擷取器只支援 Python 與 JS/TS：其他語言的原始碼完全沒有被審查或測試，不能當成「乾淨」
+                # The extractor only supports Python and JS/TS: source in other languages was neither reviewed nor
+                # tested, so it cannot count as "clean"
+                n_uns = self.ast_extractor.unsupported_count
+                langs = ", ".join(f"{lang}: {n}" for lang, n in sorted(self.ast_extractor.unsupported_languages.items()))
                 inconclusive_reasons.append(bi(
-                    f"{', '.join(other_langs)} 程式碼只做了靜態審查：測試沙盒只執行 Python 與 JavaScript/TypeScript，因此沒有動態驗證涵蓋它",
-                    f"{', '.join(other_langs)} code was reviewed statically only: the test sandbox "
-                    "executes Python and JavaScript/TypeScript, so no dynamic verification covers it"
+                    f"{n_uns} 個不支援語言的原始碼檔案（{langs}）未納入分析",
+                    f"{n_uns} source file(s) in unsupported languages ({langs}) were not analyzed"
+                ) + f": {', '.join(os.path.basename(p) for p in self.ast_extractor.unsupported_files[:5])}")
+            n_cfg = (len(self.ast_extractor.skipped_config_files) + len(self.ast_extractor.oversized_config_files)
+                     + len(self.static_scanner.incomplete_config_files))
+            if n_cfg:
+                inconclusive_reasons.append(bi(
+                    f"{n_cfg} 個設定類檔案未完整做密鑰掃描（超過數量上限、max_file_bytes 或時間上限）",
+                    f"{n_cfg} configuration-like file(s) were not fully secret-scanned "
+                    "(file-count cap, max_file_bytes or time cap)"
                 ))
             if bb_failed_unclassified:
                 inconclusive_reasons.append(bi(
