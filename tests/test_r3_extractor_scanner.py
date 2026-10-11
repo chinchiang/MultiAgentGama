@@ -11,6 +11,7 @@ extraction gaps (object-type generics, `extends X<{...}>`, `.post<{...}>` routes
 Timing bounds are deliberately generous (tens of seconds before the fix, under a second after it); they only catch a
 regression back to quadratic time."""
 import logging
+import os
 import random
 import textwrap
 import time
@@ -395,3 +396,25 @@ def test_medium_findings_say_the_program_cannot_be_determined(tmp_path):
     path.write_text(_AI_HEAD + "    import os\n    subprocess.run([os.environ['TOOL'], a])\n", encoding="utf-8")
     [hit] = [x for x in AISecurityStaticScanner().scan_files([str(path)]) if x.rule_id == "VH-AI-006"]
     assert hit.severity.value == "MEDIUM" and "cannot be determined" in hit.evidence
+
+
+def test_incompletely_scanned_files_are_an_evidence_gap(tmp_path, monkeypatch):
+    """確定性規則沒能完整掃描的檔案（逾時或出錯）會列為證據缺口，判定不能是 READY_TO_SHIP。
+    Files the deterministic rules could not fully scan (time cap or error) are an evidence gap, so the verdict
+    cannot be READY_TO_SHIP."""
+    from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
+    from vibeharness.core.harness import VibeHarnessCommander
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "app.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    original = AISecurityStaticScanner.scan_files
+
+    def scan_files(self, files):
+        findings = original(self, files)
+        self.incomplete_files = [str(target / "app.py")]
+        return findings
+    monkeypatch.setattr(AISecurityStaticScanner, "scan_files", scan_files)
+    commander = VibeHarnessCommander(os.path.join("vibeharness", "config", "agents_config.yaml"), execution_mode="mock")
+    summary = commander.run_full_pipeline(str(target), output_report_path=str(tmp_path / "r.md"))
+    assert summary.overall_status != "READY_TO_SHIP"
+    assert any("could not fully scan 1 source file" in r for r in summary.inconclusive_reasons)

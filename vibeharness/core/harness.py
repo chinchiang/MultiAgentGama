@@ -770,6 +770,14 @@ class VibeHarnessCommander:
                     f"{n_fail} 個原始碼檔案無法解析，未納入分析",
                     f"{n_fail} source file(s) could not be parsed and were not analyzed"
                 ))
+            if self.static_scanner.incomplete_files:
+                # 確定性規則在這些檔案上超時或出錯而提前停止：缺的命中不能當成「乾淨」
+                # The deterministic rules stopped early on these files (time cap or error): missing hits are not "clean"
+                n_inc = len(self.static_scanner.incomplete_files)
+                inconclusive_reasons.append(bi(
+                    f"{n_inc} 個原始碼檔案的確定性 AI 安全規則未能完整掃描（逾時或出錯）",
+                    f"The deterministic AI security rules could not fully scan {n_inc} source file(s) (time cap or error)"
+                ))
             if self.ast_extractor.oversized_files:
                 n_big = len(self.ast_extractor.oversized_files)
                 inconclusive_reasons.append(bi(
