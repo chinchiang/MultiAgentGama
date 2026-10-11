@@ -1146,10 +1146,10 @@ class NodeSubprocessSandbox(_NodeCoverageMixin, LocalSubprocessSandbox):
             # V8's raw coverage data is pinned inside the run directory too (even when the caller's custom_env points
             # elsewhere), so it is removed along with it after a kill on a timeout
             env["NODE_V8_COVERAGE"] = os.path.join(run_dir, "v8-coverage")
-        # include 模式只用在 POSIX（Windows 路徑的 glob 比對不可靠）；實體路徑，與 Node 回報的一致
-        # The include pattern is POSIX-only (glob matching of Windows paths is unreliable); the physical path, matching
-        # what Node reports
-        include_root = os.path.realpath(coverage_target or base_dir) if sys.platform != "win32" else None
+        # 實體路徑，與 Node 回報的一致；Windows 路徑改成正斜線後當 glob（見 node_coverage_args）
+        # The physical path, matching what Node reports; a Windows path becomes a forward-slash glob
+        # (see node_coverage_args)
+        include_root = os.path.realpath(coverage_target or base_dir)
         cmd = node_test_command(self.node, [os.path.join(run_dir, f) for f in filenames],
                                 os.path.join(run_dir, "junit.xml"), self.strip_types, coverage, self.memory_mb,
                                 lcov_path=os.path.join(run_dir, LCOV_REPORT_NAME) if coverage else None,

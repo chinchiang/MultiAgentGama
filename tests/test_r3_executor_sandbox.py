@@ -271,18 +271,19 @@ def test_node_modules_exclusion_is_relative_to_the_target_root():
     assert filters == ["--test-coverage-include=/x/node_modules/pkg/**",
                        "--test-coverage-exclude=/x/node_modules/pkg/**/node_modules/**",
                        "--test-coverage-exclude=**/test_vh_*"]
-    # 沒有 include（Windows 路徑）時排除任何 node_modules ／ without an include (a Windows path) any node_modules is excluded
-    assert "--test-coverage-exclude=**/node_modules/**" in node_coverage_args((22, 14, 0), r"C:\x\app")[1]
+    # Windows 路徑改成正斜線後同樣只排除目標底下的 node_modules；含 glob 特殊字元時才退回排除任何 node_modules
+    # A Windows path, rewritten to forward slashes, likewise excludes only node_modules under the target; a path
+    # with glob metacharacters falls back to excluding every node_modules
+    _, win = node_coverage_args((22, 14, 0), r"C:\x\node_modules\pkg")
+    assert win[0] == "--test-coverage-include=C:/x/node_modules/pkg/**"
+    assert "--test-coverage-exclude=C:/x/node_modules/pkg/**/node_modules/**" in win
+    assert "--test-coverage-exclude=**/node_modules/**" in node_coverage_args((22, 14, 0), r"C:\x\app (1)")[1]
     roots = ["/x/node_modules/pkg"]
     assert target_relative_path("/x/node_modules/pkg/m.mjs", roots, windows=False) == "m.mjs"
     assert target_relative_path("/x/node_modules/pkg/node_modules/dep/d.mjs", roots, windows=False) is None
 
 
 @node_globs_only
-@pytest.mark.skipif(sys.platform == "win32",
-                    reason="Windows 路徑不加 --test-coverage-include（glob 比對不可靠），Node 預設排除 node_modules ／ "
-                           "no --test-coverage-include for Windows paths (unreliable glob matching), so Node's default "
-                           "node_modules exclusion applies")
 def test_real_node_target_under_node_modules_is_covered(tmp_path):
     target = tmp_path / "node_modules" / "pkg"
     (target / "node_modules" / "dep").mkdir(parents=True)

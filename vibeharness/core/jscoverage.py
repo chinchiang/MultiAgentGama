@@ -104,22 +104,22 @@ def node_coverage_problem(version: Optional[Tuple[int, int, int]]) -> Optional[s
 
 def node_coverage_args(version: Tuple[int, int, int], include_root: Optional[str]) -> Tuple[List[str], List[str]]:
     """(放在 --test 之前的 Node 選項, 涵蓋率篩選旗標)。篩選旗標只在 Node >= 22.5 時給：include 限制在目標目錄
-    （include_root 為 POSIX 絕對路徑且不含 glob 特殊字元時；Windows 路徑的 glob 比對不可靠，交給自己的篩選），
+    （絕對路徑且不含 glob 特殊字元；Windows 路徑先改成正斜線，見 _glob_include_root），
     exclude 去掉目標根目錄以下的 node_modules（沒有 include 時是任何 node_modules）與產生的測試模組。明確的 include
     會取代 Node 預設「路徑含 /node_modules/ 就排除」的規則，所以本身位於某個 node_modules 底下的目標
-    （/x/node_modules/pkg）也收得到涵蓋率。不論有沒有這些旗標，解析 lcov 時都會再篩一次。
+    （/x/node_modules/pkg 或 C:/x/node_modules/pkg）也收得到涵蓋率。不論有沒有這些旗標，解析 lcov 時都會再篩一次。
     (Node options placed before --test, coverage filter flags). The filter flags are only given on Node >= 22.5: the
-    include limits the report to the target directory (when include_root is an absolute POSIX path without glob
-    metacharacters; glob matching of Windows paths is unreliable and left to our own filtering), the excludes drop
+    include limits the report to the target directory (an absolute path without glob metacharacters; a Windows path
+    is rewritten to forward slashes, see _glob_include_root), the excludes drop
     node_modules below the target root (any node_modules without an include) and the generated test modules. An
     explicit include replaces Node's default rule of dropping every path containing /node_modules/, so a target that
-    itself lives under a node_modules (/x/node_modules/pkg) still gets coverage. The lcov is filtered again when
-    parsed, with or without them."""
+    itself lives under a node_modules (/x/node_modules/pkg or C:/x/node_modules/pkg) still gets coverage. The lcov
+    is filtered again when parsed, with or without them."""
     options = ["--experimental-test-coverage", _DISABLE_LISTENER_WARNING]
     filters: List[str] = []
     if version >= MIN_NODE_VERSION_COVERAGE_GLOBS:
-        if include_root and include_root.startswith("/") and not _GLOB_META_RE.search(include_root):
-            root = include_root.rstrip("/")
+        root = _glob_include_root(include_root)
+        if root:
             filters += [f"--test-coverage-include={root}/**", f"--test-coverage-exclude={root}/**/node_modules/**"]
         else:
             filters.append("--test-coverage-exclude=**/node_modules/**")
@@ -269,3 +269,25 @@ def read_lcov_file(path: str) -> Optional[str]:
             return f.read()
     except OSError:
         return None
+
+
+def _glob_include_root(include_root: Optional[str]) -> Optional[str]:
+    """可當成 --test-coverage-include 的絕對路徑；不行時為 None。
+    Windows 路徑（磁碟機代號或反斜線）先改成正斜線：Node 的 path.win32.matchesGlob 用 minimatch 的
+    windowsPathsNoEscape，把 `/` 與 `\\` 都當分隔符，所以 `C:/proj/pkg/**` 比對得到 `C:\\proj\\pkg\\m.mjs`。
+    含 glob 特殊字元（含 POSIX 路徑裡的反斜線）時不加 include，避免模式被當成跳脫或字元集合。
+    An absolute path usable as --test-coverage-include, or None. A Windows path (a drive prefix or
+    backslashes) is rewritten to forward slashes: Node's path.win32.matchesGlob uses minimatch with
+    windowsPathsNoEscape, so `/` and `\\` are both separators and `C:/proj/pkg/**` matches
+    `C:\\proj\\pkg\\m.mjs`. A path with glob metacharacters (including a backslash in a POSIX path) gets
+    no include, so the pattern is not read as an escape or a character class."""
+    if not include_root:
+        return None
+    looks_windows = "\\" in include_root or (len(include_root) >= 2 and include_root[1] == ":")
+    normalized = include_root.replace("\\", "/") if looks_windows else include_root
+    if _GLOB_META_RE.search(normalized):
+        return None
+    drive = len(normalized) >= 3 and normalized[1] == ":" and normalized[2] == "/"
+    if not (normalized.startswith("/") or drive):
+        return None
+    return normalized.rstrip("/")

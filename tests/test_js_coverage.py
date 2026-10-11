@@ -163,10 +163,13 @@ def test_node_coverage_args_only_use_globs_where_supported():
     assert filters == ["--test-coverage-include=/srv/app/**", "--test-coverage-exclude=/srv/app/**/node_modules/**",
                        "--test-coverage-exclude=**/test_vh_*"]
     assert node_coverage_args((20, 11, 0), "/srv/app")[1] == []  # 22.5 之前沒有 glob 篩選 ／ no glob filters before 22.5
-    # Windows 路徑與含 glob 特殊字元的根目錄不加 include（只剩排除模式，靠自己的篩選）
-    # A Windows path or a root with glob metacharacters gets no include (only the excludes, our own filtering does the rest)
-    for root in (r"C:\proj\app", "/srv/app[1]", None):
+    # 含 glob 特殊字元的根目錄不加 include（只剩排除模式，靠自己的篩選）。Windows 絕對路徑改成正斜線後可以
+    # A root with glob metacharacters gets no include (only the excludes, our own filtering does the rest). A Windows
+    # absolute path can, once rewritten to forward slashes
+    for root in ("/srv/app[1]", None, r"C:\proj\app[1]"):
         assert not any(f.startswith("--test-coverage-include") for f in node_coverage_args((22, 14, 0), root)[1])
+    _, win = node_coverage_args((22, 14, 0), r"C:\proj\app")
+    assert win[0] == "--test-coverage-include=C:/proj/app/**"
 
 
 def test_node_test_command_keeps_spec_and_junit_and_adds_lcov():
@@ -191,8 +194,10 @@ def test_node_subprocess_sandbox_adds_coverage_only_for_a_capable_node(tmp_path)
     modern = NodeSubprocessSandbox(node_bin="node-binary-that-does-not-exist", node_version=(22, 14, 0))
     cmd, _, _ = modern._build_command(str(run_dir), ["test_vh_000.mjs"], str(target), True, str(target), None)
     assert f"--test-reporter-destination={run_dir / LCOV_REPORT_NAME}" in cmd
-    if os.name != "nt":
-        assert f"--test-coverage-include={os.path.realpath(target)}/**" in cmd
+    root = os.path.realpath(target)
+    if os.name == "nt":
+        root = root.replace("\\", "/").rstrip("/")
+    assert f"--test-coverage-include={root}/**" in cmd
     cmd, _, _ = modern._build_command(str(run_dir), ["test_vh_000.mjs"], str(target), False, None, None)
     assert "--experimental-test-coverage" not in cmd  # 黑箱執行不收集 ／ black-box runs do not collect
     old = NodeSubprocessSandbox(node_bin="node-binary-that-does-not-exist", node_version=(20, 5, 0))
