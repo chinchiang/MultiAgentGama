@@ -6,7 +6,7 @@
 
 設定檔分三大區段：**`global`**（執行與沙盒參數）、**`models`**（模型提供者定義）、**`agents`**（各 Agent 的模型路由）。找不到設定檔或 YAML 損壞會直接報錯（`ConfigError`，CLI 以 exit code 5 中止）；`--config` 指向目錄、無法讀取或二進位檔，最上層不是 mapping，`global`／`models`／`agents` 區段不是 mapping，或 `models.<alias>`／`agents.<id>` 項目不是 mapping，也一樣，不會用讀錯的設定執行。空檔案或空的 `global:` 區段代表使用預設值。
 
-要用哪個設定檔的優先序：`--config <路徑>` ＞ 目前目錄的 `./vibeharness.yaml` ＞ `./.vibeharness.yaml` ＞ 套件內的 `vibeharness/config/agents_config.yaml`；CLI 啟動時會在 stderr 印出採用的設定檔與來源（報告的 Config 欄位也記錄路徑）。探索到的檔案與 `--config` 一樣受驗證，損壞即 exit 5。`vibeharness --init-config [PATH]` 把套件內的預設設定複製到 PATH（預設 `./vibeharness.yaml`）後以 exit 0 結束，已存在的檔案不覆寫（exit 5），除非加上 `--force`。**資安**：在不受信任的 checkout 裡執行時，該 checkout 的 `vibeharness.yaml` 會被自動載入，所以自動發現的檔案（不是以 `--config` 指定的）不得設定安全敏感的鍵；設定了就以 exit 5 拒絕，並說明信任該檔案時請以 `--config` 指定。除非與套件內建預設相同（或為 null），以下都會被拒絕：`global` 的可執行檔路徑（`docker_bin`、`node_bin` 等任何 `*_bin`）、`docker_*`、`node_*`、`sandbox_provider`／`sandbox_node_provider`（允許 `local_subprocess` 與 `docker`）與 `cache_dir`（預先放好的快取會被當成 live 回答）；每個模型的 `api_base`、`base_url`、`api_key_env`（只允許內建設定用到的金鑰變數）、`aws_*`、`extra_params`，以及任何像端點或憑證的鍵。範圍、預算與 agent 設定仍可由自動發現的檔案改變，所以不受信任的 checkout 請明確指定 `--config`。相對路徑的 `*_bin`（例如 `./node`）即使以 `--config` 指定也會印出警告：它相對於目前目錄解析，請用絕對路徑或 PATH 上的名稱。GitHub Action 一律會帶 `--config`（`extra-args` 沒指定時用套件內建的設定）。
+要用哪個設定檔的優先序：`--config <路徑>` ＞ 目前目錄的 `./vibeharness.yaml` ＞ `./.vibeharness.yaml` ＞ 套件內的 `vibeharness/config/agents_config.yaml`；CLI 啟動時會在 stderr 印出採用的設定檔與來源（報告的 Config 欄位也記錄路徑）。探索到的檔案與 `--config` 一樣受驗證，損壞即 exit 5。`vibeharness --init-config [PATH]` 把套件內的預設設定複製到 PATH（預設 `./vibeharness.yaml`）後以 exit 0 結束，已存在的檔案不覆寫（exit 5），除非加上 `--force`。**資安**：在不受信任的 checkout 裡執行時，該 checkout 的 `vibeharness.yaml` 會被自動載入，所以自動發現的檔案（不是以 `--config` 指定的）不得設定安全敏感的鍵；設定了就以 exit 5 拒絕，並說明信任該檔案時請以 `--config` 指定。除非與套件內建預設相同（或為 null），以下都會被拒絕：`global` 的可執行檔路徑（`docker_bin`、`node_bin` 等任何 `*_bin`）、`docker_*`、`node_*`、`sandbox_provider`／`sandbox_node_provider`（允許 `local_subprocess` 與 `docker`）與 `cache_dir`（預先放好的快取會被當成 live 回答）；每個模型的 `api_base`、`base_url`、`model`、`fallback_model`、`api_key_env`（都必須與內建設定的同一別名相同；內建設定沒有的新別名也會被拒絕，agent 仍可改指到其他內建別名）、`aws_*`、`extra_params`，以及任何像端點或憑證的鍵。範圍、預算與 agent 設定仍可由自動發現的檔案改變，所以不受信任的 checkout 請明確指定 `--config`。相對路徑的 `*_bin`（例如 `./node`）即使以 `--config` 指定也會印出警告：它相對於目前目錄解析，請用絕對路徑或 PATH 上的名稱。GitHub Action 一律會帶 `--config`（`extra-args` 沒指定時用套件內建的設定）。
 
 CLI 啟動時可用 `--config <路徑>` 改用其他設定檔、`--mode` 覆蓋 `execution_mode`（優先序：CLI `--mode` ＞ `global.execution_mode` ＞ 預設 `hybrid`）；`--max-files`、`--max-model-calls` 同樣覆蓋對應的 `global` 欄位。
 
@@ -28,7 +28,7 @@ CLI 啟動時可用 `--config <路徑>` 改用其他設定檔、`--mode` 覆蓋 
 | `cache_dir` | `null`（關閉） | 回應快取目錄（不存在會建立）：可用的 live 回應以模型、設定（含端點：`api_base`、`aws_region_name`、`aws_profile_name`、`api_key_env`）與提示為 key 存成 JSON，之後相同的提示直接取用，不呼叫供應商、不扣 `max_model_calls`；報告「執行來源 ／ Execution Provenance」標為「真實（回應快取） ／ live (response cache)」。CLI `--cache-dir` 會覆蓋。CLI `--cache-only` 只從此快取（或 `--cache-dir`）取用、絕不呼叫供應商，也不重問；快取沒有的呼叫列為證據缺口（`hybrid` 改走模擬，`live` 以 exit 4 中止），沒有快取目錄時 `--cache-only` 是 exit 5；`mock` 模式不讀快取，`--cache-only` 沒有作用，CLI 會印出警告後照常執行。`--estimate` 搭配 `--cache-only` 時最大呼叫數不乘重問次數（不會重問）。目錄內是模型原始回應（可能引用待審程式碼），請比照報告保管 |
 | `retry_invalid_output` | `1` | 模型回應無法使用（非 JSON、缺欄位、空回應）時再問幾次（提示會說明上次的問題）才記為 `invalid`；每次重問都是真實呼叫、計入 `max_model_calls`，報告「執行來源 ／ Execution Provenance」以「無法使用，已重問 ／ unusable, re-asked」列出。`null` 等同未設定（用預設值），`0` 關閉；須為 0–5 的整數 |
 | `max_files` | `50` | 每次分析的原始碼檔案上限，超出的檔案列入證據缺口（判定不會是 `READY_TO_SHIP`）。須為非負整數，`0`／`null` 等同預設；負數或非整數啟動即報 `ConfigError`（exit 5） |
-| `sandbox_provider` | `"local_subprocess"` | `local_subprocess`（本機子程序，**非安全邊界**）或 `docker`（一次性隔離容器）；其他值啟動即報錯 |
+| `sandbox_provider` | `"local_subprocess"` | `local_subprocess`（本機子程序，**非安全邊界**）或 `docker`（一次性隔離容器）；`null` 同省略（`local_subprocess`）；其他值啟動即報錯 |
 | `docker_image` | `"vibeharness-sandbox:latest"` | docker 沙盒映像，需預裝 `pytest`、`pytest-cov` 與目標的相依套件 |
 | `docker_network` | `"none"` | 容器網路模式；`none` 全斷網。黑箱測試要打執行中的服務時需放行（例如 Linux 上的 `host`），但會降低隔離程度 |
 | `docker_memory` | `"1g"` | 容器記憶體上限 |
@@ -41,10 +41,10 @@ CLI 啟動時可用 `--config <路徑>` 改用其他設定檔、`--mode` 覆蓋 
 | `sandbox_timeout_seconds` | `120` | 單批 pytest 的總逾時（秒），逾時會終止整個程序樹／移除容器。JS/TS 模組依序每 10 個一批，每批各有一份這個預算（每個模組在各自的 `node --test` 程序中，用這一批剩下的預算執行；Node 每個模組都要付一次啟動成本，所以預算隨模組數成長）。`null`／`0` 維持 120；負數或非整數是 `ConfigError`（exit 5） |
 | `per_test_timeout_seconds` | `30` | 批次（Python 或 JS/TS）逾時後改為逐測重跑時，單一測試的逾時（秒），總時間仍受批次預算限制；也是 `mutation_timeout_seconds` 的預設值。`null`／`0` 維持 30；負數或非整數是 `ConfigError`（exit 5） |
 | `mutation_testing` | `false` | 突變測試總開關（預設關閉）；CLI `--mutation`／`--no-mutation` 優先於此值。只支援 Python，完全離線、不呼叫模型 |
-| `mutation_max_mutants` | `20` | 單次執行的變異體上限（≥ 1）；超過時截斷並列為證據缺口。CLI `--mutation-max-mutants` 可覆蓋 |
-| `mutation_timeout_seconds` | 同 `per_test_timeout_seconds` | 每個變異體那一批沙盒的逾時（秒）；逾時視為殺死 |
-| `mutation_min_score` | `70` | 分數（百分比，0–100）低於此值就列為證據缺口，不會造成 `NEEDS_FIXES` |
-| `mutation_max_copy_mb` | `200` | 暫存複本的大小上限（MB，≥ 1）。複本略過與符號擷取相同的目錄（`SKIPPED_DIRS`、點開頭）、位元組碼與指向目錄的符號連結；超過上限就不執行並列為證據缺口。單一檔案目標會以所在目錄為工作目錄，特別容易碰到 |
+| `mutation_max_mutants` | `20` | 單次執行的變異體上限（≥ 1；`null` 維持 20）；超過的略過並列為證據缺口。CLI `--mutation-max-mutants` 可覆蓋 |
+| `mutation_timeout_seconds` | 同 `per_test_timeout_seconds` | 每個變異體那一批沙盒的逾時（秒）；逾時視為殺死。`null`／`0` 跟隨 `per_test_timeout_seconds`（內建設定檔為 `null`）；負數或非整數是 `ConfigError`（exit 5） |
+| `mutation_min_score` | `70` | 分數（百分比，0–100）低於此值就列為證據缺口，不會造成 `NEEDS_FIXES`；`null` 維持 70，範圍外是 `ConfigError`（exit 5） |
+| `mutation_max_copy_mb` | `200` | 暫存複本的大小上限（MB，≥ 1；`null`／`0` 維持 200，負數是 `ConfigError`）。複本略過與符號擷取相同的目錄（`SKIPPED_DIRS`、點開頭）、位元組碼與指向目錄的符號連結；超過上限就不執行並列為證據缺口。單一檔案目標會以所在目錄為工作目錄，特別容易碰到 |
 
 ### `execution_mode` 行為
 
@@ -62,10 +62,10 @@ CLI 啟動時可用 `--config <路徑>` 改用其他設定檔、`--mode` 覆蓋 
 
 | 欄位 | 必要 | 說明 |
 | :--- | :--- | :--- |
-| `model` | ✅ | [litellm model string](https://docs.litellm.ai/docs/providers)，例如 `"claude-sonnet-5-5"`、`"zai/glm-5.3"`、`"gemini/gemini-3.8-flash"`。建議用帶版本的 id 而非會漂移的別名（例如用 `deepseek/deepseek-v4-pro` 而非 `deepseek-chat`），供應商端換模型時才會反映在報告上 |
+| `model` | ✅ | [litellm model string](https://docs.litellm.ai/docs/providers)，例如 `"claude-sonnet-5-5"`、`"zai/glm-5.3"`、`"gemini/gemini-3.8-flash"`。建議用帶版本的 id 而非會漂移的別名（例如用 `deepseek/deepseek-v4-pro` 而非 `deepseek-chat`），供應商端換模型時才會反映在報告上。缺少或為空字串時啟動即 `ConfigError`（exit 5） |
 | `api_key_env` | live 模式必填 | 存放 API 金鑰的環境變數名稱；金鑰會明確傳給 litellm，因此即使 litellm 預設的環境變數名與 `api_key_env` 不同也能驗證。缺此欄位時 live 呼叫會擲出 `LLMGatewayError` |
 | `fallback_model` | 選填 | 主模型在 `max_retries` 次重試後仍失敗時，改試這個 litellm model string **一次**；報告會記錄實際使用的模型 |
-| `api_base` | 選填 | 自訂 API 端點（例如自架的 OpenAI 相容閘道 `https://llm-gateway.example.com/v1`，或本機 Ollama 的 `http://localhost:11434`）。**必須是 `https://`**；`http://` 只允許迴路位址（`localhost`／`127.0.0.1`／`::1`），其他一律在啟動時報 `ConfigError`（exit 5）。目標原始碼會送往這些端點，因此只接受明確允許的端點（OWASP LLM04:2026 供應鏈） |
+| `api_base` | 選填 | 自訂 API 端點（例如自架的 OpenAI 相容閘道 `https://llm-gateway.example.com/v1`，或本機 Ollama 的 `http://localhost:11434`）。**必須是 `https://`**（`base_url` 不會被讀取，寫了啟動即 `ConfigError`，請改用 `api_base`）；`http://` 只允許迴路位址（`localhost`／`127.0.0.1`／`::1`），其他一律在啟動時報 `ConfigError`（exit 5）。目標原始碼會送往這些端點，因此只接受明確允許的端點（OWASP LLM04:2026 供應鏈） |
 | `aws_profile_name`／`aws_region_name` | 選填 | 以 AWS 憑證鏈驗證的模型（例如 `bedrock/...`）改用這兩欄取代 `api_key_env`：使用指定的 AWS profile（含 SSO）與區域；設定 profile 即視為具備 live 憑證 |
 | `price_per_million_input`／`price_per_million_output` | 選填 | 每百萬 token 的價格（美元，非負數）；兩者都設定時 `--estimate` 會算出該模型的估計花費，否則只列 token 數。程式本身不會用它控管成本（請用 `max_model_calls`） |
 | `extra_params` | 選填 | 原封不動傳給 litellm 的額外參數（mapping），例如 `{thinking: {type: disabled}}`、`{reasoning_effort: low}`，用來讓推理模型不要把輸出額度全花在思考；非 mapping 啟動即 `ConfigError`。保留鍵不可放進來（啟動即 `ConfigError`，exit 5）：端點與憑證 `api_base`、`base_url`、`api_key`、`api_version`、`custom_llm_provider`、`aws_*`（`aws_profile_name`、`aws_region_name`、`aws_access_key_id`、`aws_secret_access_key`、`aws_session_token`、`aws_bedrock_runtime_endpoint`、`aws_role_name`、`aws_web_identity_token`），以及 harness 自己設定的 `model`、`messages`、`timeout`、`request_timeout`、`num_retries`、`max_retries`、`fallbacks`、`stream`；否則就能繞過 `api_base` 的 https 檢查，把待審程式碼送到任意主機。輸出 token 上限 `max_tokens`、`max_completion_tokens`、`max_output_tokens` 也不行（會覆蓋 `max_output_tokens`，讓 `--estimate` 與快取 key 看錯上限）。litellm 的罐頭回應鍵 `mock_response`、`mock_tool_calls`、`mock_timeout`、`mock_delay` 也不行（完全不連網就回傳假答案，模擬的輸出會被記成 live 證據），`ssl_verify` 也不行（關掉 TLS 驗證會讓 https 檢查失去意義）。其他會改變目的地或憑證的 litellm 參數同樣保留：別名寫法（`apikey`、`token`）、路由（`model_list`、`deployment_id`、`engine`、`organization`、`use_litellm_proxy`、`custom_endpoint`、`sagemaker_base_url`、`deployment_url`）、可能覆寫 Authorization 的標頭（`extra_headers`、`headers`、`provider_specific_header`）、自備的用戶端（`client`、`shared_session`），以及雲端憑證與專案（`azure_ad_token`、`azure_ad_token_provider`、`azure_*`、`tenant_id`、`client_id`、`client_secret`、`vertex_project`、`vertex_location`、`vertex_credentials`、`vertex_ai_*`、`watsonx_*`、`project_id`、`account_id`、`oci_*`、`gigachat_*`、其餘的 `aws_*`）；任何以 `aws_`、`azure_`、`vertex_`、`oci_`、`watsonx_`、`gigachat_` 開頭，或名稱片段含 `api_key`、`token`、`secret`、`password`、`credential(s)`、`endpoint`、`url`、`base_url`、`proxy`、`header(s)` 的鍵也一律拒絕。端點請用 `api_base`，逾時與重試用 `global.timeout_seconds`／`max_retries`，輸出上限用 `max_output_tokens` |
@@ -94,7 +94,7 @@ CLI 啟動時可用 `--config <路徑>` 改用其他設定檔、`--mode` 覆蓋 
 | 欄位 | 預設值 | 說明 |
 | :--- | :--- | :--- |
 | `model_alias` | 無（解析為 `unconfigured`） | 指向 `models` 區段的別名；**這是實際生效的模型路由欄位**。缺少或指向不存在的別名時沒有模型也沒有金鑰：`hybrid` 以模擬引擎執行該 agent，`live` 擲出 `LLMGatewayError` |
-| `temperature` | `0.2` | 取樣溫度（驗證投票類的 agent 建議 `0.0`）；須為 0–2 的數字（啟動時驗證） |
+| `temperature` | `0.2` | 取樣溫度（驗證投票類的 agent 建議 `0.0`）；須為 0–2 的數字（啟動時驗證）；`null` 同省略（`0.2`） |
 | `name` | — | `whitebox_reviewer_*`：審查者名稱，用於其提示詞與報告（「Identified by ...」）；其他 agent 僅供說明 |
 | `focus` | — | `whitebox_reviewer_*`：審查焦點，**會放進該審查者的提示詞**（預設為「General correctness and security defects」） |
 | `role` | — | 說明性欄位，程式不讀取 |

@@ -278,6 +278,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # Fixed program name: Python 3.14's argparse derives prog from the module path under `python -m`
     parser = _UsageErrorParser(
         prog="vibeharness",
+        # 不接受縮寫的長旗標：`--conf x` 不能繞過 GitHub Action 對 --config 的偵測
+        # No abbreviated long flags: `--conf x` cannot slip past the GitHub Action's --config detection
+        allow_abbrev=False,
         description="[VibeHarness-MAS] 針對 vibe coding 的多代理白箱與黑箱測試 harness ／ "
                     "Multi-Agent White-Box & Black-Box Testing Harness for Vibe Coding"
     )
@@ -297,7 +300,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output", "-o",
         default="vibe_harness_report.md",
-        help="稽核報告的輸出路徑（預設 'vibe_harness_report.md'）／ Output path for the generated Markdown audit report (default: 'vibe_harness_report.md')"
+        help="稽核報告的輸出路徑：依 --format 寫 Markdown 或 JSON（--estimate --format json 時寫估算）；"
+             "預設 'vibe_harness_report.md' ／ Output path of the audit report, Markdown or JSON per --format (with "
+             "--estimate --format json, the estimate); default 'vibe_harness_report.md'"
     )
     parser.add_argument(
         "--desc", "-d",
@@ -338,7 +343,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--max-files",
         type=int,
         default=None,
-        help="覆蓋 global.max_files：分析的原始碼檔案數（其餘列為 skipped）／ Override global.max_files: number of source files analyzed (the rest are reported as skipped)"
+        help="覆蓋 global.max_files：分析的原始碼檔案數（≥ 1；其餘列為 skipped）／ Override global.max_files: number of source files analyzed (≥ 1; the rest are reported as skipped)"
     )
     parser.add_argument(
         "--max-model-calls",

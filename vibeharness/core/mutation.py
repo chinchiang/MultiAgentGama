@@ -27,9 +27,10 @@ from vibeharness.core.sandbox import rewrite_host_paths
 
 logger = logging.getLogger("VibeHarness.Mutation")
 
-# 變異體只用這幾類測試的結果：探針會吞掉例外，幾乎必過，沒有訊號
-# Only these test types are used: probes swallow exceptions, pass almost always and carry no signal
-ELIGIBLE_TEST_TYPES = ("whitebox_unit", "whitebox_property")
+# 變異體只用白箱單元測試的結果：探針（whitebox_probe）會吞掉例外，幾乎必過，沒有訊號；黑箱測試不對應單一函式
+# Only white-box unit tests are used: probes (whitebox_probe) swallow exceptions, pass almost always and carry no
+# signal; black-box tests do not map to a single function
+ELIGIBLE_TEST_TYPES = ("whitebox_unit",)
 # 複本大小上限（MB）：單一檔案目標會以所在目錄為工作目錄，可能很大；超過就略過並記原因
 # Size cap (MB) of the scratch copy: a single-file target uses its whole directory, which may be large;
 # above it the step is skipped with a reason

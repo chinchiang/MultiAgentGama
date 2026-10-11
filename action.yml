@@ -42,14 +42,22 @@ inputs:
     description: "要稽核的目錄或檔案（相對於 workspace）／ Directory or file to audit, relative to the workspace"
     default: "."
   mode:
-    description: "live（只用真實模型，缺金鑰即失敗）、hybrid（缺金鑰的 agent 改用模擬）或 mock ／ live (real models only, fail without a key), hybrid (simulate agents without a key) or mock"
-    default: "hybrid"
+    description: >-
+      live（只用真實模型，缺金鑰即失敗）、hybrid（缺金鑰的 agent 改用模擬）或 mock；留空沿用設定檔的 global.execution_mode
+      （內建設定檔為 hybrid）／ live (real models only, fail without a key), hybrid (simulate agents without a key) or mock;
+      empty follows global.execution_mode in the config (hybrid in the bundled config)
+    default: ""
   max-model-calls:
-    description: "成本防護：每次執行的真實模型呼叫數（0 = 不限）／ Cost guard: real model calls per run (0 = unlimited)"
-    default: "0"
+    description: >-
+      成本防護：每次執行的真實模型呼叫數（0 = 不限）；留空沿用設定檔的 global.max_model_calls（內建設定檔為 null = 不限），
+      有填才會以 --max-model-calls 覆蓋 ／ Cost guard: real model calls per run (0 = unlimited); empty follows
+      global.max_model_calls in the config (null = unlimited in the bundled config), only a set value overrides it via --max-model-calls
+    default: ""
   max-files:
-    description: "每次執行分析的原始碼檔案數 ／ Source files analyzed per run"
-    default: "50"
+    description: >-
+      每次執行分析的原始碼檔案數（≥ 1）；留空沿用設定檔的 global.max_files（內建設定檔為 50）／ Source files analyzed per run
+      (≥ 1); empty follows global.max_files in the config (50 in the bundled config)
+    default: ""
   changed-since:
     description: "只分析自此 git ref 以來有變更的檔案（例如 origin/main）；留空 = 全部 ／ Only analyze files changed since this git ref (e.g. origin/main); empty = all files"
     default: ""
@@ -57,8 +65,10 @@ inputs:
     description: "先前 JSON 報告的路徑；其中已有的問題會列出但不會讓 job 失敗 ／ Path to a previous JSON report; problems it contains are reported but do not fail the job"
     default: ""
   output:
-    description: "報告路徑（format 不是 json 時為 Markdown）／ Report path (Markdown unless format is json)"
-    default: "vibeharness-report.md"
+    description: >-
+      報告路徑（format 不是 json 時為 Markdown）；留空時依 format 取 vibeharness-report.md 或 vibeharness-report.json ／
+      Report path (Markdown unless format is json); empty derives vibeharness-report.md or vibeharness-report.json from format
+    default: ""
   format:
     description: "報告格式：md 或 json ／ Report format: md or json"
     default: "md"
@@ -106,11 +116,11 @@ outputs:
     description: "READY_TO_SHIP | NEEDS_FIXES | BLOCKED_CRITICAL_RISK | INCONCLUSIVE（harness 本身失敗時為 ERROR）／ (or ERROR when the harness itself failed)"
     value: ${{ steps.audit.outputs.verdict }}
   exit-code:
-    description: "CLI 的 exit code（0-3 判定、4 live 失敗、5 harness 錯誤）／ The CLI exit code (0-3 verdicts, 4 live failure, 5 harness error)"
+    description: "CLI 的 exit code（0-3 判定、4 live 失敗、5 harness 錯誤、130 中斷）／ The CLI exit code (0-3 verdicts, 4 live failure, 5 harness error, 130 interrupted)"
     value: ${{ steps.audit.outputs.exit-code }}
   report:
-    description: "寫出的報告路徑 ／ Path of the written report"
-    value: ${{ inputs.output }}
+    description: "寫出的報告路徑（output 留空時為依 format 推導的名稱）／ Path of the written report (the name derived from format when output is empty)"
+    value: ${{ steps.prep.outputs.output }}
   sarif:
     description: "寫出的 SARIF 路徑（未啟用時為空）／ Path of the written SARIF file (empty when disabled)"
     value: ${{ inputs.sarif }}
@@ -118,6 +128,58 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Validate the inputs ／ 驗證 inputs
+      id: prep
+      shell: bash
+      env:
+        VH_MODE: ${{ inputs.mode }}
+        VH_MAX_CALLS: ${{ inputs.max-model-calls }}
+        VH_MAX_FILES: ${{ inputs.max-files }}
+        VH_OUTPUT: ${{ inputs.output }}
+        VH_FORMAT: ${{ inputs.format }}
+        VH_MUTATION: ${{ inputs.mutation }}
+        VH_FAIL_ON: ${{ inputs.fail-on }}
+        VH_SANDBOX: ${{ inputs.sandbox }}
+      run: |
+        # 在安裝與建置 Docker 映像之前就驗證（純 bash），打錯字不會等到建置或整個稽核之後才失敗
+        # Validated before the install and the Docker image build (plain bash), so a typo never fails only after a build or a whole audit
+        case "$VH_FAIL_ON" in
+          blocked|needs-fixes|inconclusive|never) ;;
+          *) echo "::error::unknown fail-on value '$VH_FAIL_ON' (use blocked, needs-fixes, inconclusive or never)"; exit 5 ;;
+        esac
+        case "$VH_MUTATION" in
+          true|false|"") ;;
+          *) echo "::error::unknown mutation value '$VH_MUTATION' (use true, false or leave empty)"; exit 5 ;;
+        esac
+        case "$VH_SANDBOX" in
+          local_subprocess|docker) ;;
+          *) echo "::error::unknown sandbox value '$VH_SANDBOX' (use local_subprocess or docker)"; exit 5 ;;
+        esac
+        case "$VH_MODE" in
+          live|hybrid|mock|"") ;;
+          *) echo "::error::unknown mode value '$VH_MODE' (use live, hybrid, mock or leave empty)"; exit 5 ;;
+        esac
+        case "$VH_FORMAT" in
+          md|json) ;;
+          *) echo "::error::unknown format value '$VH_FORMAT' (use md or json)"; exit 5 ;;
+        esac
+        # 數值 input 留空 = 不傳旗標（設定檔決定）；有填就必須是整數 ／ an empty numeric input passes no flag (the config decides); a set one must be an integer
+        if [ -n "$VH_MAX_CALLS" ] && ! [[ "$VH_MAX_CALLS" =~ ^[0-9]+$ ]]; then
+          echo "::error::max-model-calls must be a non-negative integer or empty, got '$VH_MAX_CALLS'"; exit 5
+        fi
+        if [ -n "$VH_MAX_FILES" ] && ! [[ "$VH_MAX_FILES" =~ ^[1-9][0-9]*$ ]]; then
+          echo "::error::max-files must be an integer >= 1 or empty, got '$VH_MAX_FILES'"; exit 5
+        fi
+        # output 留空：依 format 推導報告名稱 ／ empty output: derive the report name from format
+        output="$VH_OUTPUT"
+        if [ -z "$output" ]; then
+          if [ "$VH_FORMAT" = json ]; then output=vibeharness-report.json; else output=vibeharness-report.md; fi
+        fi
+        case "$output" in
+          *$'\n'*|*$'\r'*) echo "::error::output must not contain a line break"; exit 5 ;;
+        esac
+        printf 'output=%s\n' "$output" >> "$GITHUB_OUTPUT"
+
     - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
         python-version: ${{ inputs.python-version }}
@@ -182,7 +244,7 @@ runs:
         VH_MAX_FILES: ${{ inputs.max-files }}
         VH_CHANGED_SINCE: ${{ inputs.changed-since }}
         VH_BASELINE: ${{ inputs.baseline }}
-        VH_OUTPUT: ${{ inputs.output }}
+        VH_OUTPUT: ${{ steps.prep.outputs.output }}
         VH_FORMAT: ${{ inputs.format }}
         VH_SARIF: ${{ inputs.sarif }}
         VH_EXTRA: ${{ inputs.extra-args }}
@@ -190,12 +252,8 @@ runs:
         VH_FAIL_ON: ${{ inputs.fail-on }}
         VH_SANDBOX: ${{ inputs.sandbox }}
       run: |
-        # fail-on 在稽核之前就驗證（與 sandbox／mutation 一樣），不會跑完整個稽核才因為打錯字失敗
-        # fail-on is validated before the audit (like sandbox / mutation), so a typo never fails only after a whole audit
-        case "$VH_FAIL_ON" in
-          blocked|needs-fixes|inconclusive|never) ;;
-          *) echo "::error::unknown fail-on value '$VH_FAIL_ON' (use blocked, needs-fixes, inconclusive or never)"; exit 5 ;;
-        esac
+        # fail-on、mutation、sandbox、mode、format 與數值 input 已在 prep step（安裝與建置之前）驗證過
+        # fail-on, mutation, sandbox, mode, format and the numeric inputs were validated by the prep step (before the install and build)
         # 以下的 python 片段都以 -I 執行，或先把工作目錄從 sys.path 移除：-c 與 stdin 腳本會把工作目錄（受稽核的 checkout）放在最前面，
         # 那裡放的 shlex.py、yaml.py 或 vibeharness/ 就會在持有金鑰的 step 裡被匯入
         # Every python snippet below runs with -I or drops the working directory from sys.path first: -c and stdin scripts put the working directory (the
@@ -249,16 +307,22 @@ runs:
                 base = arg[2:]
         with open(base, encoding="utf-8") as f:
             config = yaml.safe_load(f) or {}
-        config.setdefault("global", {})["sandbox_provider"] = "docker"
+        config["global"] = {**(config.get("global") or {}), "sandbox_provider": "docker"}
         with open(sys.argv[2], "w", encoding="utf-8") as f:
             yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False)
         print(f"sandbox: docker (config based on {base})")
         PY
             config_override=(--config "$cfg") ;;
-          *) echo "::error::unknown sandbox value '$VH_SANDBOX' (use local_subprocess or docker)"; exit 5 ;;
+          *) echo "::error::unknown sandbox value '$VH_SANDBOX'"; exit 5 ;;
         esac
-        args=(--target "$VH_TARGET" --mode "$VH_MODE" --max-model-calls "$VH_MAX_CALLS" --max-files "$VH_MAX_FILES"
-              --output "$VH_OUTPUT" --format "$VH_FORMAT")
+        args=(--target "$VH_TARGET" --output "$VH_OUTPUT" --format "$VH_FORMAT")
+        # mode／max-model-calls／max-files 只在有填時才傳：留空時由 --config（或內建設定檔）決定，
+        # 不會悄悄蓋掉設定檔的 execution_mode、max_model_calls 成本防護或 max_files
+        # mode / max-model-calls / max-files are passed only when set: empty leaves them to the --config (or the
+        # bundled config), so the config's execution_mode, max_model_calls cost guard and max_files are never silently overridden
+        [ -n "$VH_MODE" ] && args+=(--mode "$VH_MODE")
+        [ -n "$VH_MAX_CALLS" ] && args+=(--max-model-calls "$VH_MAX_CALLS")
+        [ -n "$VH_MAX_FILES" ] && args+=(--max-files "$VH_MAX_FILES")
         [ -n "$VH_CHANGED_SINCE" ] && args+=(--changed-since "$VH_CHANGED_SINCE")
         [ -n "$VH_BASELINE" ] && args+=(--baseline "$VH_BASELINE")
         [ -n "$VH_SARIF" ] && args+=(--sarif "$VH_SARIF")
@@ -266,8 +330,7 @@ runs:
         case "$VH_MUTATION" in
           true) args+=(--mutation) ;;
           false) args+=(--no-mutation) ;;
-          "") ;;
-          *) echo "::error::unknown mutation value '$VH_MUTATION' (use true, false or leave empty)"; exit 5 ;;
+          *) ;;
         esac
         # exec：bash（初始環境裡有供應商金鑰）被稽核行程取代，不再是 harness 的父行程，產生的測試讀不到它的
         # /proc/<pid>/environ；harness 本身在啟動本機沙盒前變成不可 dump。outputs、step summary、警告與 fail-on
@@ -283,7 +346,7 @@ runs:
       with:
         name: ${{ inputs.artifact-name }}
         path: |
-          ${{ inputs.output }}
-          ${{ inputs.output }}.partial.json
+          ${{ steps.prep.outputs.output }}
+          ${{ steps.prep.outputs.output }}.partial.json
           ${{ inputs.sarif }}
         if-no-files-found: ignore

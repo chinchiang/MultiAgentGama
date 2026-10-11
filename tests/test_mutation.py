@@ -169,14 +169,15 @@ def test_site_selection_is_deterministic_and_spreads_across_groups():
     assert len(everything) == 5
 
 
-def test_eligible_tests_are_passed_python_unit_or_property_tests_only():
-    """只有已通過的 Python 單元／性質測試可用：失敗、錯誤、JS、探針與黑箱都被排除。
-    Only PASSED Python unit / property tests are usable: failed, errored, JS, probe and black-box tests are excluded."""
+def test_eligible_tests_are_passed_python_unit_tests_only():
+    """只有已通過的 Python 白箱單元測試可用：失敗、錯誤、JS、探針、黑箱與從未產生的 whitebox_property 都被排除。
+    Only PASSED Python white-box unit tests are usable: failed, errored, JS, probe, black-box and the never-produced
+    whitebox_property tests are excluded."""
     tests = [_test("a", "x", "F1"), _test("b", "x", "F1", "whitebox_property"), _test("c", "x", "F1", "whitebox_probe"),
              _test("d", "x", "F1", "blackbox_security"), _test("e", "x", "F1", language="javascript"), _test("f", "x", "F1")]
     statuses = [TestStatus.PASSED, TestStatus.PASSED, TestStatus.PASSED, TestStatus.PASSED, TestStatus.PASSED, TestStatus.FAILED]
     results = [TestExecutionResult(test_id=t.test_id, test_type=t.test_type, status=s) for t, s in zip(tests, statuses, strict=True)]
-    assert [t.test_id for t in mut.eligible_tests(tests, results)] == ["a", "b"]
+    assert [t.test_id for t in mut.eligible_tests(tests, results)] == ["a"]
 
 
 # --- 端對端（真的本機沙盒） ------------------------------------------------------------------
@@ -599,17 +600,30 @@ def test_report_json_and_partial_report_carry_the_mutation_result(tmp_path, monk
     ("true", ["--mutation"], 0), ("false", ["--no-mutation"], 0), ("", [], 0), ("maybe", [], 5),
 ])
 def test_action_mutation_input_becomes_the_matching_flag(tmp_path, value, expected_args, code):
-    """action.yml 的 `mutation` input：true／false 轉成對應旗標，留空不加（沿用設定檔），其他值 exit 5。
-    action.yml's `mutation` input: true / false become the matching flag, empty adds none (the config decides), anything else exits 5."""
-    lines = open(os.path.join(REPO_ROOT, "action.yml"), encoding="utf-8").read().splitlines()
+    """action.yml 的 `mutation` input：true／false 轉成對應旗標，留空不加（沿用設定檔）；其他值在 prep step（安裝與建置之前）就 exit 5。
+    action.yml's `mutation` input: true / false become the matching flag, empty adds none (the config decides); anything
+    else exits 5 in the prep step (before the install and build)."""
+    with open(os.path.join(REPO_ROOT, "action.yml"), encoding="utf-8") as f:
+        steps = yaml.safe_load(f)["runs"]["steps"]
+    prep = next(s for s in steps if s.get("id") == "prep")["run"]
+    env = {**os.environ, "VH_MUTATION": value, "VH_FAIL_ON": "needs-fixes", "VH_SANDBOX": "local_subprocess",
+           "VH_FORMAT": "md", "VH_MODE": "", "VH_MAX_CALLS": "", "VH_MAX_FILES": "", "VH_OUTPUT": "",
+           "GITHUB_OUTPUT": str(tmp_path / "out")}
+    checked = subprocess.run([shutil.which("bash"), "-e", "-c", prep], cwd=tmp_path, capture_output=True, text=True,
+                             encoding="utf-8", env=env)
+    assert checked.returncode == code
+    if code:
+        assert "unknown mutation value" in checked.stdout
+        return
+    lines = next(s for s in steps if s.get("id") == "audit")["run"].splitlines()
     begin = next(i for i, line in enumerate(lines) if 'case "$VH_MUTATION" in' in line)
     end = next(i for i in range(begin, len(lines)) if lines[i].strip() == "esac")
     block = "\n".join(line.strip() for line in lines[begin:end + 1])
     script = f'args=()\n{block}\nprintf "%s\\n" "${{args[@]}}"'
     out = subprocess.run([shutil.which("bash"), "-c", script], cwd=tmp_path, capture_output=True, text=True, encoding="utf-8",
-                         env={**os.environ, "VH_MUTATION": value})
-    assert out.returncode == code
-    assert [x for x in out.stdout.splitlines() if x and not x.startswith("::error::")] == expected_args
+                         env=env)
+    assert out.returncode == 0
+    assert [x for x in out.stdout.splitlines() if x] == expected_args
 
 
 # --- Docker（有映像檔時才跑） -----------------------------------------------------------------

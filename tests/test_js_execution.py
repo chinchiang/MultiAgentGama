@@ -36,7 +36,8 @@ if _NODE_REQUIRED and _NODE_PATH is None:
     raise RuntimeError(f"VIBEHARNESS_REQUIRE_NODE=1 but no usable Node runtime: {_NODE_PROBLEM}")
 node_only = pytest.mark.skipif(_NODE_PATH is None, reason=f"Node >= {MIN_NODE_VERSION} unavailable: {_NODE_PROBLEM}")
 _TS_OK = _NODE_VERSION is not None and _NODE_VERSION >= (22, 6, 0)
-node_ts_only = pytest.mark.skipif(not _TS_OK, reason="Node >= 22.6 (type stripping) unavailable")
+_FOUND = "v" + ".".join(map(str, _NODE_VERSION)) if _NODE_VERSION else "none"
+node_ts_only = pytest.mark.skipif(not _TS_OK, reason=f"Node >= 22.6 (type stripping) unavailable (found {_FOUND})")
 
 
 def _js_test(test_id, code, language="javascript", test_type="whitebox_unit"):
