@@ -6,6 +6,52 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+Fifth review round: the Action takes its verdict only from the audit's own summary and checks `extra-args` with the CLI's parser, discovered configs may only lower spend, litellm's logging / callback parameters are reserved, source in unsupported languages and secrets in config files no longer pass unnoticed, and the sandbox's report read-back, run-directory permissions, coverage includes and Docker output caps are hardened.
+
+### Added
+
+- Source files in languages the extractor does not support (`UNSUPPORTED_SOURCE_EXTENSIONS`: Go, Java, Kotlin, Rust, C / C++, C#, PHP, Ruby, Swift, Scala, Objective-C, Dart, Lua, Perl, Elixir, Erlang, Haskell, Clojure, F#, Visual Basic, Groovy, Vue, Svelte, Solidity; shell scripts, SQL and HTML / CSS are deliberately left out) are counted per language under the same walk rules as source (skipped and hidden directories, `include` / `exclude`, `--changed-since`) and disclosed as an evidence gap ("N source file(s) in unsupported languages (go: 3, …) were not analyzed"), so such a target can no longer be `READY_TO_SHIP`; this replaces the unreachable "… reviewed statically only" gap.
+- Config-like files (`.env`, `.env.*`, `*.env`, YAML, JSON, TOML, INI, CFG, `.properties`, Terraform `.tf` / `.tfvars`, `Dockerfile`, `Dockerfile.*`, `*.dockerfile`, `.npmrc`, `.pypirc`, `.netrc`; lockfiles skipped) are secret-scanned locally by VH-AI-007 (`AISecurityStaticScanner.scan_config_files`) and never sent to a model: at most 200 files per run (`DEFAULT_MAX_CONFIG_FILES`), each within `max_file_bytes`, scanned in 64 KB chunks under the 30 s per-file cap (a private-key block is never split). Files left out by the count cap, `max_file_bytes` or the time cap are a new evidence gap. VH-AI-007's title now reads "Hard-coded credential in source or configuration".
+- `vibeharness.cli.parse_args_for_inspection`: the CLI's own argument parser without side effects (`--help` / `--version` neither print nor exit, only the arguments actually given, usage errors raise `ValueError`); the Action checks `extra-args` with it.
+- The Docker sandbox image ships `hypothesis` (with its dependency `sortedcontainers`), hash-locked in `docker/sandbox-requirements.txt` (they are not in `requirements.lock`), so generated property-based tests run in the container.
+
+### Changed
+
+- **Breaking**: the Action takes its verdict only from this audit's `--summary-json` (`tool` `vibeharness` and an `exit_code` equal to the CLI's); a CLI exit 0–3 without such a summary is `ERROR` with exit 5, so a run that never audited can no longer pass as `READY_TO_SHIP`.
+- **Breaking**: the Action checks `extra-args` with the CLI's own parser: flags that run no audit (`--estimate`, `--help` / `-h`, `--version`, `--init-config`, `--force`, `--summary-json`), flags that have an input of their own (`--output` / `-o`, `--format` / `-f`, `--sarif`) and arguments the CLI cannot parse exit 5 before anything runs. A `--config` is found in any spelling the CLI accepts (`--config=x`, `-c x`, combined short flags such as `-vc x` / `-vcx`; the last one wins, as in the CLI).
+- **Breaking**: `extra_params` reserves litellm's logging / callback parameters, which forward the full prompt and answer (the audited code) to third-party observability services: `callbacks`, `success_callback`, `failure_callback` and any key containing `callback`, `metadata` / `litellm_metadata` / `litellm_params`, `litellm_trusted_callback_vars`, `verbose`, `litellm_request_debug`, integration prefixes such as `langfuse_`, `langsmith_`, `gcs_`, `s3_`, `dd_`, `datadog_`, `helicone_`, `lunary_`, and the name parts `webhook`, `host` and `bucket`; and the request-rewriting `prompt_id` / `prompt_variables` / `prompt_version` / `prompt_environment`, `litellm_system_prompt`, `model_alias_map`, `custom_prompt_dict`, `context_window_fallback_dict`, `routing_strategy`, `retry_policy` / `retry_strategy`, `force_timeout`, `client_side_timeout`, `azure` and `data_residency`. Cost overrides with a `cost` name part (`input_cost_per_token`, `output_cost_per_token`, `cache_read_input_token_cost`) are now allowed; other `token` name parts stay reserved.
+- **Breaking**: an `agents.<id>.model_alias` naming an alias missing from `models` (a typo) is a `ConfigError` at start-up (exit 5); it used to resolve silently to `unconfigured` (simulated in hybrid, failing mid-run after paid calls in live). Omitted, `null` or `unconfigured` still mean no model.
+- **Breaking**: a discovered config may only lower spend: `execution_mode` may only be `hybrid` (the bundled value) or `mock`; the effective `max_model_calls`, `max_concurrent_calls`, `max_output_tokens` (global and per model), `retry_invalid_output`, `max_retries`, `max_files` and `max_file_bytes` may not exceed the bundled config (a discovered file replaces the bundled one as a whole, so omitted or `null` means the harness default); and it may not add a `whitebox_reviewer_*` agent.
+- A discovered config may keep a previous release's bundled model string for the same alias (`_PREVIOUS_BUNDLED_MODELS`: `claude-sonnet-5` for `claude`, bundled in v0.1.0–v0.2.0), so a copy from an older `--init-config` still loads; the refusal message now also suggests regenerating the file with `vibeharness --init-config <PATH> --force`.
+- `LITELLM_LOCAL_MODEL_COST_MAP=True` is set before litellm is imported (only when the variable is not set), so the cost map bundled with litellm is used and `mock` / `--estimate` make no network call; set it to `False` to let litellm fetch the latest map.
+- `null` keeps the default for every `docker_*` key; `docker_node_image` is validated only when the Node sandbox uses docker and `docker_image` only when `sandbox_provider` is docker, so a stale value in a local-only config no longer blocks start-up. `models.<alias>.model` / `fallback_model` are stored stripped, so a leading or trailing space never reaches litellm or the cache key.
+- Action: `sandbox: docker` also sets `sandbox_node_provider: docker` in the config copy, so JS / TS tests run in containers too even when the base config keeps them local; the `report` / `sarif` outputs are set by the runner and are empty unless this audit wrote the file (an old file of the same name does not count, and both are empty on `ERROR`), the step summary then says "No report was written", and `prep` refuses a `sarif` path with a line break.
+- Docker sandbox: under a root harness the run directory is handed to `nobody` (`chown 65534:65534`, mode 0700) instead of `chmod 0777`, so other host users cannot drop files into it or swap the reports (CodeQL `py/overly-permissive-file`); a daemon with userns-remap then needs it disabled for the sandbox, or a non-root harness.
+- Docker sandbox: the docker CLI runs under `RLIMIT_FSIZE` 64 MiB (SIGXFSZ ignored), so the host-side capture files are bounded; when its output reaches the cap the container is removed (`docker rm -f`) and the batch is `EXECUTION_FAILURE` with a bilingual note at the end of stderr (`OUTPUT_CAP_NOTE`). The container gets `--ulimit fsize=64 MiB` for the writable bind and `--log-driver none` (no uncapped daemon-side json log).
+
+### Security
+
+- The reports the code under test can rewrite (`junit.xml`, the lcov report) are read back through `jscoverage.read_untrusted_file`: `O_NOFOLLOW` plus `O_NONBLOCK` on POSIX (an `lstat` reparse-point check and an `fstat` identity check on Windows), a regular file only, the same inode as checked, a single hard link and at most 64 MiB (`MAX_REPORT_BYTES`); a symlink to a host file, a FIFO, a hard link or an oversized file is "no report", with a bilingual reason at the front of stderr (junit) or in a WARNING (lcov).
+- `--init-config` refuses a symlink (dangling or not) or a non-regular target even with `--force` and opens the file with `O_NOFOLLOW` plus `O_EXCL` (`O_TRUNC` with `--force`), so a planted symlink in an untrusted checkout cannot make it create or overwrite a file elsewhere.
+
+### Fixed
+
+- JS/TS coverage on POSIX: a target path with a backslash gets no `--test-coverage-include` again (0.10.1 rewrote `/home/u/a\b` into `/home/u/a/b`, which points elsewhere); backslashes are separators only under the Windows rules (Windows or a drive prefix). One include is passed per distinct spelling of the target (abspath and realpath; Node ORs them); on Windows an include is passed only when the two spellings differ at most in the drive letter's case (a mapped drive against UNC, directory case or a junction fall back to the excludes and our own lcov filtering). UNC paths work; `\\?\` / `\\.\` device paths, `C:foo` and `/` get no include.
+- CLI: a stream that cannot encode the bilingual text (e.g. `PYTHONIOENCODING=ascii`, `LANG=C`) switches to `backslashreplace` on every platform instead of crashing with `UnicodeEncodeError`; argument parsing, `--help` / `--version` and `--init-config` run inside the guard, so an unexpected error exits 5 (Ctrl-C 130) instead of Python's 1.
+
+### Tests
+
+- New regression suites `tests/test_r5_action_cli.py`, `tests/test_r5_gateway_harness.py` (which also checks `_PREVIOUS_BUNDLED_MODELS` against the bundled config at every `v*` tag), `tests/test_r5_languages_secrets.py`, `tests/test_r5_sandbox_coverage.py`, and `tests/test_r5_coverage_gaps.py` (covers `baseline.py` fully and the stable `sandbox.py` helpers through public functions).
+- Timing bounds of the time-sensitive tests are widened and scaled when coverage is measured; the Stripe-shaped test keys are built by concatenation so secret scanning does not flag the repository.
+
+### Engineering
+
+- ruff 0.17.0 (`requirements-dev.txt` and the pre-commit hook's frozen SHA `44b5042…`).
+
+### Documentation
+
+- README, design document and configuration reference describe the changes above; the "not yet implemented" table drops the rows for other languages, non-source secrets and the uncapped Docker output and adds the userns-remap caveat; the architecture diagrams show every gate input (reviewer configuration, findings without a model test, VH-AI-008 / 009 integrity hits, test outcomes, `--base-url`, unsupported-language and config-scan gaps); the exit-code tables list every exit-5 cause and the non-audit exits 0; the design document is re-cited against the current code.
+
 ## [0.10.1] - 2026-10-11
 
 A fix release: JS/TS coverage on Windows now also covers a target that lives under `node_modules`, and the hook that shortens test ids gets a regression test.
