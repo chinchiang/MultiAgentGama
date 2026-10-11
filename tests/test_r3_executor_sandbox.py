@@ -279,6 +279,10 @@ def test_node_modules_exclusion_is_relative_to_the_target_root():
 
 
 @node_globs_only
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="Windows 路徑不加 --test-coverage-include（glob 比對不可靠），Node 預設排除 node_modules ／ "
+                           "no --test-coverage-include for Windows paths (unreliable glob matching), so Node's default "
+                           "node_modules exclusion applies")
 def test_real_node_target_under_node_modules_is_covered(tmp_path):
     target = tmp_path / "node_modules" / "pkg"
     (target / "node_modules" / "dep").mkdir(parents=True)

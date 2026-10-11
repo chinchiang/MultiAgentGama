@@ -120,8 +120,10 @@ def test_every_launcher_exits_5_when_a_dependency_is_missing(launcher):
     """`python -m vibeharness`、`python main.py` 與 console script 在缺少相依套件（yaml 被封鎖）時都以 5 結束。
     `python -m vibeharness`, `python main.py` and the console script all exit 5 when a dependency (blocked yaml) is missing."""
     code = f"import sys; sys.modules['yaml'] = None; sys.argv = ['vibeharness', '-m', 'mock']; {launcher}"
+    # CLI 把輸出切成 UTF-8（雙語訊息）；Windows 上 text=True 預設用 cp1252 解碼會失敗，要明確指定
+    # The CLI switches its output to UTF-8 (bilingual messages); on Windows text=True would decode with cp1252 and fail
     proc = subprocess.run([sys.executable, "-c", code], cwd=REPO_ROOT, capture_output=True, text=True,
-                          env=dict(os.environ, PYTHONPATH=REPO_ROOT))
+                          encoding="utf-8", errors="replace", env=dict(os.environ, PYTHONPATH=REPO_ROOT))
     assert proc.returncode == 5, proc.stderr
     assert "vibeharness-mas" in proc.stderr and "Traceback" not in proc.stderr
 
