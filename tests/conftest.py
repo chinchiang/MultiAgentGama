@@ -38,3 +38,15 @@ def fake_live(monkeypatch):
         monkeypatch.setattr("vibeharness.core.llm_gateway.litellm", fake)
         return fake
     return install
+
+
+def pytest_make_parametrize_id(config, val, argname):
+    """長字串參數改用「名稱-長度-雜湊」當測試 ID：pytest 會把測試 ID 寫進 PYTEST_CURRENT_TEST，
+    而 Windows 的環境變數上限是 32767 個字元，數十 KB 的惡意輸入會讓整個測試在 setup 就失敗。
+    Long string parameters get a "name-length-hash" test id: pytest writes the test id into PYTEST_CURRENT_TEST,
+    and Windows caps an environment variable at 32767 characters, so tens of KB of adversarial input would fail
+    the test at setup."""
+    if isinstance(val, str) and len(val) > 80:
+        import hashlib
+        return f"{argname}-{len(val)}chars-{hashlib.sha1(val.encode('utf-8', 'surrogatepass')).hexdigest()[:8]}"
+    return None
