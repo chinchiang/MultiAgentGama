@@ -1045,6 +1045,9 @@ def test_local_sandbox_memory_cap_stops_a_runaway_allocation(tmp_path):
 
 
 def test_docker_sandbox_never_limits_the_docker_cli():
-    from vibeharness.core.sandbox import DockerSandbox
+    """docker CLI 不受記憶體／CPU 上限約束（容器自帶）；只有單檔大小上限，讓它寫進擷取暫存檔的輸出有上限。
+    The docker CLI gets no memory / CPU cap (the container carries its own); only the per-file size cap, so the output it
+    writes into the capture temp files is bounded."""
+    from vibeharness.core.sandbox import DockerSandbox, SANDBOX_MAX_FILE_BYTES
     sandbox = DockerSandbox(verify=False)
-    assert sandbox.memory_mb == 0 and sandbox._limits(60) == {}
+    assert sandbox.memory_mb == 0 and sandbox._limits(60) == {"file_bytes": SANDBOX_MAX_FILE_BYTES}
