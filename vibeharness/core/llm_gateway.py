@@ -91,7 +91,42 @@ RESERVED_EXTRA_PARAMS = frozenset({
     # TLS 驗證只能維持開啟：關掉後 api_base 的 https 檢查就失去意義
     # TLS verification stays on: turning it off would make the https check on api_base meaningless
     "ssl_verify",
+    # litellm 其他會改變目的地或憑證的參數（依 litellm 的 completion() 與各 provider 讀取的鍵整理）：
+    # 別名式的金鑰與端點、Azure／Vertex／watsonx／OCI／GigaChat 等雲端憑證與專案、代理與部署路由、
+    # 可覆寫 Authorization 的標頭，以及自備的 HTTP 用戶端
+    # Other litellm parameters that change the destination or the credentials (collected from litellm's
+    # completion() and the keys its providers read): alias spellings of the key and the endpoint, Azure / Vertex /
+    # watsonx / OCI / GigaChat cloud credentials and projects, proxy and deployment routing, headers that could
+    # override Authorization, and a caller-supplied HTTP client
+    "apikey", "token", "model_list", "deployment_id", "engine", "organization", "extra_headers", "headers",
+    "provider_specific_header", "client", "shared_session", "use_litellm_proxy", "use_xai_oauth",
+    "use_psc_endpoint_format", "use_bearer_for_custom_base", "tenant_id", "client_id", "client_secret",
+    "azure_ad_token", "azure_ad_token_provider", "azure_username", "azure_password", "azure_scope",
+    "vertex_project", "vertex_location", "vertex_credentials", "vertex_ai_project", "vertex_ai_location",
+    "vertex_ai_credentials", "vertex_count_tokens_location", "watsonx_project", "watsonx_credentials", "project_id",
+    "account_id", "predibase_tenant_id", "gigachat_access_token", "gigachat_auth_url", "gigachat_scope",
+    "aws_external_id", "aws_session_name", "aws_session_tags", "aws_sts_endpoint", "aws_bedrock_project_id",
+    "aws_bedrock_client", "sagemaker_base_url", "custom_endpoint", "deployment_url", "oci_endpoint_id", "oci_region",
+    "oci_key", "oci_key_file", "zen_api_key", "gemini_api_key", "_litellm_internal_model_credentials",
+    "litellm_logging_obj", "logger_fn", "proxy_server_request",
 })
+# 名單之外的同類鍵（litellm 新版本或少見的 provider）以名稱樣式保留：雲端憑證前綴，以及含有金鑰、
+# token、密碼、憑證、端點、URL、代理或標頭字樣的名稱
+# Keys of the same kind outside the list (newer litellm versions or rare providers) are reserved by name
+# pattern: cloud credential prefixes, and names containing key, token, secret, password, credential, endpoint,
+# URL, proxy or header parts
+_RESERVED_EXTRA_PARAM_RE = re.compile(
+    r"^(?:aws|azure|vertex|oci|watsonx|gigachat)_"
+    r"|(?:^|_)(?:api_?key|access_token|token|secret|password|credentials?|endpoint|url|api_base|base_url|proxy|headers?)(?:$|_)",
+    re.IGNORECASE,
+)
+
+
+def is_reserved_extra_param(name: str) -> bool:
+    """`extra_params` 不得設定的 litellm 參數：在 RESERVED_EXTRA_PARAMS 裡，或名稱符合端點／憑證樣式。
+    A litellm parameter `extra_params` must not set: listed in RESERVED_EXTRA_PARAMS, or named like an endpoint
+    or a credential."""
+    return name in RESERVED_EXTRA_PARAMS or bool(_RESERVED_EXTRA_PARAM_RE.search(name))
 # 上面屬於輸出 token 上限的保留鍵；錯誤訊息會指向 max_output_tokens
 # The reserved keys above that are the output-token cap; the error message points at max_output_tokens
 _TOKEN_CAP_PARAMS = frozenset({"max_tokens", "max_completion_tokens", "max_output_tokens"})
@@ -119,6 +154,153 @@ class ConfigError(ValueError):
     vibeharness/cli.py maps this to a dedicated 'harness misconfigured' exit code so it can never be
     mistaken for a NEEDS_FIXES verdict about the audited target.
     """
+
+
+def load_config_file(path: str) -> Dict[str, Any]:
+    """讀取並檢查代理設定檔的結構；缺少、無法解析或結構錯誤時拋出 ConfigError。
+    Reads an agent config file and checks its structure; raises ConfigError when it is missing, unparseable or malformed."""
+    # 缺少或無法解析的設定檔會悄悄地丟掉所有模型／代理對應，因此
+    # 以 ConfigError 明確失敗，而不是外洩原始的 FileNotFoundError/YAMLError
+    # A missing or unparseable config would silently drop every model/agent mapping, so
+    # fail loudly with ConfigError instead of leaking raw FileNotFoundError/YAMLError
+    if not os.path.exists(path):
+        raise ConfigError(bi(f"找不到代理設定檔：{path}", f"Agent config not found: {path}"))
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        raise ConfigError(bi(f"代理設定檔不是有效的 YAML（{path}）：{e}",
+                             f"Agent config is not valid YAML ({path}): {e}")) from e
+    except (OSError, UnicodeDecodeError) as e:
+        # 例如把目錄、無法讀取的檔案或二進位檔當成 --config 傳入
+        # e.g. a directory, an unreadable file or a binary file passed as --config
+        raise ConfigError(bi(f"無法讀取代理設定檔（{path}）：{e}",
+                             f"Agent config cannot be read ({path}): {e}")) from e
+    if config is None:
+        return {}
+    if not isinstance(config, dict):
+        raise ConfigError(bi(f"代理設定檔的最上層必須是 YAML 對應表，目前為 {type(config).__name__}（{path}）",
+                             f"Agent config must be a YAML mapping at the top level, got {type(config).__name__} ({path})"))
+    for section in ("global", "models", "agents"):
+        value = config.get(section)
+        if value is not None and not isinstance(value, dict):
+            raise ConfigError(bi(f"代理設定檔的 '{section}' 區段必須是對應表，目前為 {type(value).__name__}（{path}）",
+                                 f"Agent config section '{section}' must be a mapping, got {type(value).__name__} ({path})"))
+    # 每個模型與代理項目本身也必須是對應表（或留空）：否則之後的 .get() 會在執行中途當掉
+    # Every model and agent entry must itself be a mapping (or empty): otherwise a later .get() crashes mid-run
+    for section in ("models", "agents"):
+        for name, entry in (config.get(section) or {}).items():
+            if entry is not None and not isinstance(entry, dict):
+                raise ConfigError(bi(f"{section}.{name} 必須是對應表，目前為 {type(entry).__name__}（{path}）",
+                                     f"{section}.{name} must be a mapping, got {type(entry).__name__} ({path})"))
+    return config
+
+
+# 自動發現的設定檔（目前目錄的 ./vibeharness.yaml、./.vibeharness.yaml，沒有以 --config 明確指定）可能來自
+# 不可信的 checkout（例如 PR）。它不得設定下列安全敏感的 global 鍵：可執行檔路徑（*_bin，啟動時就會被執行）、
+# 沙盒的選擇與 docker／node 設定，以及回應快取（預先放好的快取項目會被當成 live 回答）。除非值與套件內的預設相同
+# A discovered config (./vibeharness.yaml or ./.vibeharness.yaml in the current directory, not passed with --config)
+# may come from an untrusted checkout (e.g. a PR). It must not set these security-sensitive global keys: executable
+# paths (*_bin, run at start-up), the sandbox choice and its docker / node settings, and the response cache
+# (pre-planted cache entries would be served as live answers). Unless the value equals the bundled default
+_DISCOVERED_SENSITIVE_GLOBAL_KEYS = frozenset({
+    "sandbox_provider", "sandbox_node_provider", "cache_dir",
+})
+_DISCOVERED_SENSITIVE_GLOBAL_PREFIXES = ("docker_", "node_")
+# 套件內的預設設定沒寫、但 harness 有內建預設值的鍵 ／ keys the bundled config omits but the harness defaults
+_BUILTIN_GLOBAL_DEFAULTS: Dict[str, Any] = {"docker_bin": "docker", "node_bin": "node", "sandbox_provider": "local_subprocess"}
+# 除了預設值以外也允許的值：改用 docker 沙盒只會更嚴格（映像與 docker_bin 仍必須是預設值）
+# Values allowed besides the default: switching to the docker sandbox only makes it stricter (the image and
+# docker_bin must still be the defaults)
+_DISCOVERED_ALLOWED_GLOBAL_VALUES: Dict[str, Any] = {
+    "sandbox_provider": ("local_subprocess", "docker"), "sandbox_node_provider": ("local_subprocess", "docker"),
+}
+# models.<alias> 裡決定目的地或憑證的鍵：端點、金鑰環境變數、AWS 設定檔／區域，以及原樣傳給 litellm 的 extra_params
+# Keys of models.<alias> that decide the destination or the credentials: the endpoint, the key's environment
+# variable, the AWS profile / region, and extra_params, which is passed straight to litellm
+_DISCOVERED_SENSITIVE_MODEL_KEYS = frozenset({"api_base", "base_url", "api_key_env", "aws_profile_name", "aws_region_name",
+                                              "extra_params"})
+
+
+def _is_sensitive_global_key(key: str) -> bool:
+    """自動發現的設定檔不得自訂的 global 鍵 ／ A global key a discovered config must not customize."""
+    return key in _DISCOVERED_SENSITIVE_GLOBAL_KEYS or key.endswith("_bin") or key.startswith(_DISCOVERED_SENSITIVE_GLOBAL_PREFIXES)
+
+
+def _is_sensitive_model_key(key: str) -> bool:
+    """自動發現的設定檔不得自訂的 models.<alias> 鍵 ／ A models.<alias> key a discovered config must not customize."""
+    return key in _DISCOVERED_SENSITIVE_MODEL_KEYS or bool(_RESERVED_EXTRA_PARAM_RE.search(key))
+
+
+def discovered_config_violations(config: Dict[str, Any], reference: Dict[str, Any]) -> List[str]:
+    """自動發現的 `config` 中設定了安全敏感鍵的位置（例如 "global.docker_bin"），依序排列；空清單表示可以採用。
+    與 `reference`（套件內的預設設定）相同的值、null 以及省略都允許，所以 --init-config 寫出的覆本照樣可用；
+    api_key_env 只能是預設設定裡出現過的金鑰環境變數之一。
+    The places where the discovered `config` sets a security-sensitive key (e.g. "global.docker_bin"), sorted;
+    an empty list means the config may be used. A value equal to `reference` (the bundled default), null and
+    omission are allowed, so a copy written by --init-config still works; api_key_env may only be one of the key
+    environment variables the default config uses."""
+    problems: List[str] = []
+    ref_global = reference.get("global") or {}
+    for key, value in (config.get("global") or {}).items():
+        key = str(key)
+        if value is None or not _is_sensitive_global_key(key):
+            continue
+        if value != ref_global.get(key, _BUILTIN_GLOBAL_DEFAULTS.get(key)) and value not in _DISCOVERED_ALLOWED_GLOBAL_VALUES.get(key, ()):
+            problems.append(f"global.{key}")
+    ref_models = reference.get("models") or {}
+    known_key_envs = {info.get("api_key_env") for info in ref_models.values() if isinstance(info, dict)} - {None}
+    for alias, info in (config.get("models") or {}).items():
+        for key, value in (info or {}).items():
+            key = str(key)
+            if value is None or not _is_sensitive_model_key(key):
+                continue
+            if key == "api_key_env":
+                if value in known_key_envs:
+                    continue
+            elif value == (ref_models.get(alias) or {}).get(key):
+                continue
+            problems.append(f"models.{alias}.{key}")
+    return sorted(problems)
+
+
+def check_discovered_config(path: str, reference_path: str = DEFAULT_CONFIG_PATH) -> None:
+    """自動發現的設定檔設定了安全敏感鍵時拋出 ConfigError（CLI 以 exit 5 結束），訊息列出那些鍵並說明：
+    信任這個檔案就以 --config 明確指定。
+    Raises ConfigError (the CLI exits 5) when a discovered config sets a security-sensitive key; the message
+    names those keys and says to pass the file explicitly with --config if it is trusted."""
+    problems = discovered_config_violations(load_config_file(path), load_config_file(reference_path))
+    if problems:
+        names = ", ".join(problems)
+        raise ConfigError(bi(
+            f"自動發現的設定檔 {path} 設定了安全敏感的鍵：{names}。自動發現的設定檔可能來自不可信的 checkout，"
+            "不得設定可執行檔路徑、沙盒／docker／node 設定、回應快取，或模型的端點、金鑰環境變數與 extra_params；"
+            f"如果信任這個檔案，請以 --config {path} 明確指定",
+            f"the discovered config {path} sets security-sensitive key(s): {names}. A discovered config may come "
+            "from an untrusted checkout, so it must not set executable paths, sandbox / docker / node settings, the "
+            "response cache, or a model's endpoint, key environment variable or extra_params; if you trust this file, "
+            f"pass it explicitly with --config {path}",
+        ))
+
+
+def relative_executable_warnings(config: Dict[str, Any]) -> List[str]:
+    """global.*_bin 是相對路徑（含目錄分隔字元但不是絕對路徑，例如 ./node）時的警告：它會相對於目前目錄
+    （通常是受稽核的 checkout）解析並在啟動時執行。請用絕對路徑，或在 PATH 上解析的裸名稱。
+    Warnings for a global.*_bin that is a relative path (has a directory separator but is not absolute, e.g.
+    ./node): it resolves against the current directory (usually the audited checkout) and runs at start-up.
+    Use an absolute path, or a bare name resolved on PATH."""
+    warnings: List[str] = []
+    for key, value in sorted((config.get("global") or {}).items(), key=lambda kv: str(kv[0])):
+        if not str(key).endswith("_bin") or not isinstance(value, str):
+            continue
+        has_sep = "/" in value or (os.sep in value) or bool(os.altsep and os.altsep in value)
+        if has_sep and not os.path.isabs(value):
+            warnings.append(bi(
+                f"global.{key} 是相對路徑 {value!r}：它相對於目前目錄解析並會被執行；請改用絕對路徑或 PATH 上的名稱",
+                f"global.{key} is a relative path {value!r}: it resolves against the current directory and is "
+                "executed; use an absolute path or a name on PATH",
+            ))
+    return warnings
 
 
 class LLMGateway:
@@ -288,7 +470,7 @@ class LLMGateway:
             if extra is not None and (not isinstance(extra, dict) or not all(isinstance(k, str) for k in extra)):
                 raise ConfigError(bi(f"models.{alias}.extra_params 必須是 litellm 參數名稱的對應表，目前為 {extra!r}",
                                      f"models.{alias}.extra_params must be a mapping of litellm parameter names, got {extra!r}"))
-            reserved = sorted(set(extra or {}) & RESERVED_EXTRA_PARAMS)
+            reserved = sorted(k for k in (extra or {}) if is_reserved_extra_param(k))
             if reserved and set(reserved) <= _TOKEN_CAP_PARAMS:
                 names = ", ".join(reserved)
                 raise ConfigError(bi(
@@ -387,41 +569,8 @@ class LLMGateway:
         return resp.get(PROVENANCE_KEY, {}).get("mode") != "invalid"
 
     def _load_config(self, path: str) -> Dict[str, Any]:
-        # 缺少或無法解析的設定檔會悄悄地丟掉所有模型／代理對應，因此
-        # 以 ConfigError 明確失敗，而不是外洩原始的 FileNotFoundError/YAMLError
-        # A missing or unparseable config would silently drop every model/agent mapping, so
-        # fail loudly with ConfigError instead of leaking raw FileNotFoundError/YAMLError
-        if not os.path.exists(path):
-            raise ConfigError(bi(f"找不到代理設定檔：{path}", f"Agent config not found: {path}"))
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                config = yaml.safe_load(f)
-        except yaml.YAMLError as e:
-            raise ConfigError(bi(f"代理設定檔不是有效的 YAML（{path}）：{e}",
-                                 f"Agent config is not valid YAML ({path}): {e}")) from e
-        except (OSError, UnicodeDecodeError) as e:
-            # 例如把目錄、無法讀取的檔案或二進位檔當成 --config 傳入
-            # e.g. a directory, an unreadable file or a binary file passed as --config
-            raise ConfigError(bi(f"無法讀取代理設定檔（{path}）：{e}",
-                                 f"Agent config cannot be read ({path}): {e}")) from e
-        if config is None:
-            return {}
-        if not isinstance(config, dict):
-            raise ConfigError(bi(f"代理設定檔的最上層必須是 YAML 對應表，目前為 {type(config).__name__}（{path}）",
-                                 f"Agent config must be a YAML mapping at the top level, got {type(config).__name__} ({path})"))
-        for section in ("global", "models", "agents"):
-            value = config.get(section)
-            if value is not None and not isinstance(value, dict):
-                raise ConfigError(bi(f"代理設定檔的 '{section}' 區段必須是對應表，目前為 {type(value).__name__}（{path}）",
-                                     f"Agent config section '{section}' must be a mapping, got {type(value).__name__} ({path})"))
-        # 每個模型與代理項目本身也必須是對應表（或留空）：否則之後的 .get() 會在執行中途當掉
-        # Every model and agent entry must itself be a mapping (or empty): otherwise a later .get() crashes mid-run
-        for section in ("models", "agents"):
-            for name, entry in (config.get(section) or {}).items():
-                if entry is not None and not isinstance(entry, dict):
-                    raise ConfigError(bi(f"{section}.{name} 必須是對應表，目前為 {type(entry).__name__}（{path}）",
-                                         f"{section}.{name} must be a mapping, got {type(entry).__name__} ({path})"))
-        return config
+        """見 load_config_file ／ See load_config_file."""
+        return load_config_file(path)
 
     def is_live_configured(self, model_alias: str) -> bool:
         """檢查所要求的模型是否具備憑證：其 API 金鑰，或 AWS 設定檔
@@ -651,7 +800,7 @@ class LLMGateway:
         # 保留參數（端點、憑證、逾時、重試、請求內容）已在啟動時拒絕；這裡再過濾一次作為縱深防禦
         # Reserved parameters (endpoint, credentials, timeout, retries, request content) are rejected at
         # start-up; they are filtered again here as defense in depth
-        kwargs.update({k: v for k, v in (model_info.get("extra_params") or {}).items() if k not in RESERVED_EXTRA_PARAMS})
+        kwargs.update({k: v for k, v in (model_info.get("extra_params") or {}).items() if not is_reserved_extra_param(k)})
 
         candidates = [model_name] + ([model_info["fallback_model"]] if model_info.get("fallback_model") else [])
         last_error: Optional[Exception] = None

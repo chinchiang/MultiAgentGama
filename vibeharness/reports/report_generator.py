@@ -443,6 +443,11 @@ class ReportGenerator:
         best-effort file/line locations, plus confirmed black-box breaches (located at the
         symbol their threat's attack vector names, when one can be resolved).
         URIs are relative to the enclosing git repository (%SRCROOT%), else to the target.
+        模擬引擎產生的白箱發現，以及衍生自模擬威脅的突破，都是範本而非證據：它們不會成為 SARIF 結果
+        （在 Code Scanning 裡看起來會和真的一樣），只在 run 的 properties 計數（simulated_*_omitted）。
+        White-box findings from the simulation engine and breaches derived from a simulated threat are
+        templates, not evidence: they never become SARIF results (in Code Scanning they would look real) and
+        are only counted in the run properties (simulated_*_omitted).
         """
         from vibeharness import __version__
         root = self._sarif_root(target_path)
@@ -508,7 +513,11 @@ class ReportGenerator:
         )
         # 1. 已確認的白箱發現（檔案位置由 line_number 或符號表解析）
         # 1. Confirmed white-box findings (file locations resolved from line_number or the symbol table)
+        omitted_findings = 0
         for f in debate_result.confirmed_findings:
+            if f.is_simulated:
+                omitted_findings += 1
+                continue
             level = self._sarif_level(f.severity)
             desc = f.title
             if f.description:
@@ -551,8 +560,16 @@ class ReportGenerator:
         # 2. 已確認的黑箱資安突破，若已知則定位在威脅所針對的符號
         # 2. Confirmed black-box security breaches, located at the symbol the threat targets if known
         threats_by_id = {t.threat_id: t for t in threat_model.threats}
+        omitted_breaches = 0
         for r in blackbox_results:
             if not r.is_security_exploit_confirmed:
+                continue
+            threat = threats_by_id.get(r.source_ref or "")
+            # 衍生自模擬威脅（或找不到威脅、而威脅模型是模擬的）的突破：攻擊腳本是範本，不列為結果
+            # A breach derived from a simulated threat (or with no known threat in a simulated threat model): the
+            # attack script is a template, so it is not a result
+            if threat.is_simulated if threat else threat_model.is_simulated:
+                omitted_breaches += 1
                 continue
             if SARIF_RULE_BLACKBOX not in rule_index:
                 add_rule(
@@ -568,7 +585,6 @@ class ReportGenerator:
                                "(`properties.testId`), then add the missing authorization, validation or limit the threat "
                                "(`properties.threatId`) describes and keep the test as a regression guard."),
                 )
-            threat = threats_by_id.get(r.source_ref or "")
             derived = f" ({bi('衍生自', 'derived from')} {r.source_ref}{': ' + threat.title if threat else ''})" if r.source_ref else ""
             text = (f"{bi('已確認的資安突破', 'Confirmed security breach')} {r.test_id}{derived}: "
                     f"{r.failure_reason or bi('攻擊測試成功', 'the attack test succeeded')}")
@@ -608,6 +624,10 @@ class ReportGenerator:
                 "properties": {
                     "overall_status": summary.overall_status,
                     "target": os.path.abspath(target_path),
+                    # 被略過的模擬項目：Code Scanning 看不到它們，但數量仍可稽核
+                    # Omitted simulated items: Code Scanning does not see them, but their number stays auditable
+                    "simulated_whitebox_findings_omitted": omitted_findings,
+                    "simulated_breaches_omitted": omitted_breaches,
                     **({"generated_at": summary.run.generated_at, "execution_mode": summary.run.execution_mode,
                         "target_git_commit": summary.run.target_git_commit or ""} if summary.run else {}),
                 },

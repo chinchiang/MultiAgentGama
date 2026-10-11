@@ -362,7 +362,9 @@ python main.py --target examples --output vibe_harness_report.md
 
 `--target`（`-t`，預設 `.`，即目前目錄）可為目錄或單一檔案；`--output`（`-o`）預設 `vibe_harness_report.md`。`--desc`（`-d`）可提供系統的高階描述供威脅建模參考；`--config`（`-c`）指定其他設定檔（沒指定時依序使用目前目錄的 `./vibeharness.yaml`、`./.vibeharness.yaml`，都沒有才用套件內建的預設設定；實際使用的檔案會印在 stderr），`vibeharness --init-config [PATH]` 則把內建預設設定複製一份供編輯（預設 `./vibeharness.yaml`；已存在的檔案不會被覆寫，除非加 `--force`）；`--verbose`（`-v`）開啟除錯日誌。黑箱測試預設以 in-process 方式直接 import 目標呼叫；只有明確指定 `--base-url`（`-u`，例如 `--base-url http://localhost:8000`；只接受含主機名的 `http://`／`https://`，其他 scheme 為用法錯誤）且該位址有服務回應時，才會改發真實 HTTP 請求。不會自動探測任何預設位址，以免攻擊腳本打到本機上無關的服務；live HTTP 模式下，攻擊程式碼若指向 `--base-url` 以外的主機，或同一主機的其他連接埠，會被靜態拒絕。範例輸出見 [`docs/sample_report.md`](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/sample_report.md)。
 
-> ⚠️ **稽核不受信任的 checkout 時，請明確指定 `--config`。** 沒指定時會自動載入目前目錄的 `vibeharness.yaml`／`.vibeharness.yaml`，惡意的 repo 可以藉此改掉 `api_base`／`api_key_env`（把它的程式碼或你的金鑰送到別的端點）。GitHub Action 一律會帶 `--config`（`extra-args` 沒指定時用套件內建的設定），所以在 Action 裡工作區的設定檔絕不會被自動載入。
+> ⚠️ **稽核不受信任的 checkout 時，請明確指定 `--config`。** 沒指定時會自動載入目前目錄的 `vibeharness.yaml`／`.vibeharness.yaml`，而它可能來自 PR。自動發現的設定檔不得設定安全敏感的鍵，否則以 exit 5 拒絕並提示改用 `--config`：可執行檔路徑（`docker_bin`、`node_bin` 等任何 `*_bin`，啟動時就會執行）、`docker_*`／`node_*` 與 `sandbox_provider`／`sandbox_node_provider`（只允許 `local_subprocess` 或 `docker`）、`cache_dir`（預先放好的快取會被當成 live 回答），以及模型的 `api_base`／`base_url`／`api_key_env`（只允許預設設定用到的金鑰變數）／`aws_*`／`extra_params`；與套件內建預設相同的值不算，所以 `--init-config` 的覆本照樣可用。範圍、預算與 agent 指派仍可由自動發現的設定檔改變，所以不受信任的 checkout 一律帶 `--config`。即使以 `--config` 指定，相對路徑的 `*_bin`（例如 `./node`）也會印出警告：請用絕對路徑或 PATH 上的名稱。GitHub Action 一律會帶 `--config`（`extra-args` 沒指定時用套件內建的設定），所以在 Action 裡工作區的設定檔絕不會被自動載入。
+>
+> `local_subprocess` 沙盒不是安全邊界：harness 在啟動本機沙盒前會把自己設成不可 dump，生成的測試讀不到它的 `/proc/<pid>/environ`，但從持有金鑰的 shell 啟動時，那個 shell（harness 的父行程）的 environ 仍然可讀。在這種 shell 裡請用 `exec vibeharness ...`（讓 harness 取代 shell），不受信任的目標請用 Docker 沙盒；GitHub Action 已經以 `exec` 啟動稽核。
 
 執行前可先用 `--estimate` 看規模：它只跑第 1 階段（符號擷取與靜態規則，不呼叫模型），印出每個 agent 與每個模型的預期呼叫數（審查者與威脅建模的次數是精確值，驗證、測試生成與攻擊合成依「每批發現數」等假設列為情境值，另給含重問與自癒修復的最大值）、估計的 prompt／輸出 token，以及設定了 `price_per_million_*` 的模型的估計花費；`--format json` 時寫到 `--output`，exit code 為 0（`--changed-since` 的 ref 無法解析或 `--output` 寫不進去時為 5）。規模與成本上限可從 CLI 直接覆蓋設定檔：`--max-files`（單次分析的檔案數上限，預設 50，須 ≥ 1；其餘檔案列為 skipped 並記為證據缺口）與 `--max-model-calls`（單次執行的模型呼叫數上限，預設不限制，`0` 亦表示不限制，負數為用法錯誤；重試與 fallback 不另計次；用完時 hybrid 退回模擬並列為證據缺口、live 直接失敗）。檔案篩選：`--include GLOB`／`--exclude GLOB`（可重複，比對相對於 `--target` 的路徑或檔名，例如 `--exclude 'tests/*' --exclude '*.min.js'`；會覆蓋設定檔的 `include`／`exclude`），以及 `--changed-since <git ref>`（只分析相對該 ref 有變更的檔案，含未暫存與未追蹤，適合 PR 檢查：`--changed-since origin/main`）。超過 `max_file_bytes`（預設 1 MB）的檔案不分析並列為證據缺口。模型回應無法使用時會先重問一次（`retry_invalid_output`）再記為 `invalid`。`--output`／`--sarif` 的目錄不可寫時在任何模型呼叫前就以 exit 5 結束；執行中途崩潰或被 Ctrl-C 中斷時，已完成的階段（模型呼叫紀錄、發現、測試結果、威脅）會寫到 `<output>.partial.json`。`--cache-dir DIR` 開啟回應快取：可用的 live 回應存在 DIR，之後相同提示直接取用、不呼叫供應商也不扣預算（適合重跑或切換報告格式）；重問後才可用的回答也會存在原始提示的 key 下，重跑時第一次嘗試就能命中。`--cache-only` 只從回應快取取用（需要 `--cache-dir` 或 `global.cache_dir`，否則 exit 5）：絕不呼叫供應商、不扣預算、不重問；快取沒有的呼叫列為證據缺口，hybrid 改用模擬（判定不會是 `READY_TO_SHIP`），live 以 exit 4 中止。`--estimate` 加上 `--cache-only` 時照樣列出呼叫數，並註明不會呼叫供應商、沒有花費。詳見 [`docs/configuration.md`](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/configuration.md)。
 
@@ -376,6 +378,11 @@ python main.py --target examples --output report.json --format json
 
 ```yaml
 # 目標專案的 .github/workflows/security.yml 範例：本 repo 提供 composite GitHub Action（action.yml）
+# job 層級的權限：upload-sarif 需要 security-events: write
+permissions:
+  contents: read
+  security-events: write
+steps:
 - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
   with:
     fetch-depth: 0                             # changed-since 需要完整歷史才能與該 ref 比對
@@ -396,13 +403,15 @@ python main.py --target examples --output report.json --format json
     ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
     DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
     GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-- uses: github/codeql-action/upload-sarif@9f759ee644a3e7c15c1390abf49868036c00067b # v3.38.3
+- uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3   # 與本 repo 的 CodeQL workflow 同一個 commit
   if: always()
   with:
     sarif_file: vibeharness.sarif
 ```
 
 Action 的 outputs 有 `verdict`（`READY_TO_SHIP`／`NEEDS_FIXES`／`BLOCKED_CRITICAL_RISK`／`INCONCLUSIVE`，harness 本身失敗時為 `ERROR`）與 `exit-code`；報告、SARIF 與崩潰時的 `.partial.json` 會以 `artifact-name` 指定的 artifact 上傳（預設 `vibeharness-report`；同一次 workflow 執行內 artifact 名稱不可重複，矩陣或多次使用本 action 時要各自命名）。`changed-since` 要與 git ref 比對，checkout 時請設 `fetch-depth: 0`（預設的淺層 clone 沒有可比對的歷史）。`sandbox: docker` 會從 action 自帶的 `docker/*.Dockerfile` 建置沙盒映像，並以設成 `sandbox_provider: docker` 的設定檔覆本執行（底稿為內建設定檔，或 `extra-args` 裡 `--config` 指定的檔案）；需要有 Docker 的 runner，例如 `ubuntu-latest`。不用 Action 的話，`pip install vibeharness-mas==0.8.0` 後直接呼叫 `vibeharness` 即可。
+
+`fail-on`、`sandbox` 與 `mutation` 的值在稽核開始前就驗證，打錯字直接 exit 5。稽核 step 以 `exec` 把持有金鑰的 bash 換成稽核行程本身（`python -I -m vibeharness.action_runner`，在同一個行程內執行 CLI 再寫出 outputs），生成的測試因此讀不到父行程 environ 裡的金鑰；action 裡的 Python 片段一律不從工作區匯入模組。判定為 `INCONCLUSIVE` 而 `fail-on` 不會因此讓 job 失敗時，action 會發出 `::warning::`。**來自 fork 的 PR**：GitHub 不會把 secrets 交給 fork 的 PR，hybrid 模式下每次模型呼叫都會是模擬的，判定最多是 `INCONCLUSIVE`，action 另外發出「every model call was simulated」的 `::warning::`；要有真正的模型證據，請在有金鑰的事件（例如推送到預設分支或維護者觸發的 workflow）上執行，不要為了 fork PR 改用 `pull_request_target` 把 secrets 交給不受信任的程式碼。CLI 的 `--summary-json PATH` 會寫出 action 用來判斷這些情況的機器可讀摘要（判定、exit code、執行模式、各模式的模型呼叫數、`all_simulated`）。
 
 **突變測試開關**：`--mutation` 開啟、`--no-mutation` 關閉；優先順序為 CLI 旗標 > 設定檔 `global.mutation_testing` > 預設關閉，因此設定檔開啟時可用 `--no-mutation` 單次關掉，設定檔關閉時可用 `--mutation` 單次打開。`--mutation-max-mutants N`（≥ 1）覆蓋變異體上限（預設 20）；每個變異體跑一批沙盒、不呼叫模型，`--estimate` 在開啟時會列出上限。報告的指標表有 Mutation Score 一列並列出存活的變異體；其餘鍵見 [`docs/configuration.md`](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/configuration.md)。
 
