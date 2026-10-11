@@ -2,7 +2,7 @@
 **目標系統路徑 ／ Target System Path**: `examples`  
 **協調者 ／ Orchestrator**: Commander Harness 代理 ／ Commander Harness Agent  
 **整體狀態 ／ Overall Status**: `NEEDS_FIXES`  
-**產生時間 ／ Generated**: 2026-10-09T00:00:00+00:00 由 VibeHarness-MAS 0.8.0 產生 ／ by VibeHarness-MAS 0.8.0 (mode `mock`, sandbox `local_subprocess`)  
+**產生時間 ／ Generated**: 2026-10-09T00:00:00+00:00 由 VibeHarness-MAS 0.9.0 產生 ／ by VibeHarness-MAS 0.9.0 (mode `mock`, sandbox `local_subprocess`)  
 **目標修訂 ／ Target revision**: `5a10af0f2e4c0b7d9e8a1c3b6d4f2a8e7c9b1d0e`  
 **設定檔 ／ Config**: `vibeharness/config/agents_config.yaml`  
 

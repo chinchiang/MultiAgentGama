@@ -2,7 +2,7 @@
 
 [English](design.en.md) ｜ 正體中文（臺灣）
 
-本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.8.0`（`CHANGELOG.md` 的 `[0.8.0]`，2026-10-11，新增 JS/TS 行涵蓋率；`[0.7.1]` 為修正版：剩餘逾時預算不再多出一秒、`--init-config` 的提示；`[0.7.0]` 為第二輪審查修正、PyPI 打包、`--init-config` 與設定檔自動尋找；`[0.6.0]` 為依審查結果的強化並新增 `--cache-only`，`[0.5.1]` 為修正版，`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出），並已納入 `CHANGELOG.md` 的 `[Unreleased]`（第三輪審查修正：自動發現設定檔的防護、Action 以 `exec` 執行稽核、SARIF 不收模擬項目、VH-AI-006 改寫、確定性規則的單檔時間上限）。文中的 `path:line` 引用以 commit `9722aad` 的檔案為準。
+本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.9.0`（`CHANGELOG.md` 的 `[0.9.0]`，2026-10-11，第三輪審查修正：自動發現設定檔的防護、Action 以 `exec` 執行稽核、SARIF 不收模擬項目、VH-AI-006 改寫、確定性規則的單檔時間上限；`[0.8.0]` 新增 JS/TS 行涵蓋率；`[0.7.1]` 為修正版：剩餘逾時預算不再多出一秒、`--init-config` 的提示；`[0.7.0]` 為第二輪審查修正、PyPI 打包、`--init-config` 與設定檔自動尋找；`[0.6.0]` 為依審查結果的強化並新增 `--cache-only`，`[0.5.1]` 為修正版，`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。文中的 `path:line` 引用以 commit `9722aad` 的檔案為準。
 
 與其他文件的分工：
 
@@ -827,7 +827,7 @@ DAST／fuzzing、hypothesis、e2b 沙盒（突變測試已實作 Python 版，�
 - `--baseline` 以 finding 的 key 判斷白箱失敗是否已知：模型測試對不回 confirmed finding（`source_ref` 不在其中）時永遠算新；探針只以符號名為 key，同名函式搬到另一個檔案仍視為同一筆。
 - 跨模型一致度的顯示集中在 `agreement_display`（`vibeharness/reports/report_generator.py:55`，報告與 console 共用）。其中「N/A（沒有決定性投票） ／ N/A (no decisive votes)」分支由 `MultiModelDebater` 產生的結果走不到（`arbitration_applied=True` 蘊含 `decisive > 0`），刻意保留作為防護：結果模型也可能由讀回的 JSON 等其他路徑建立。
 
-`[Unreleased]` 修正了先前列在這裡與 README 的三點：`os.exec*`／`os.spawn*` 已是執行點、`env -S "bash -c …"` 會拆解、`admin:admin@prod-db` 會回報。`[0.6.0]` 修正了先前列在這裡的六點：威脅建模與攻擊合成的批次崩潰現在經 `record_failure` 記入 `call_log`（evidence gap #3）；Next.js 處理函式改為只送審一次（改標為 route）；Flask 工廠裡的巢狀路由處理函式只送審一次（第 6.1 節）；hapi 的陣列形式與 regex 路徑會成為 route；JSX 文字裡的 `/*` 或單獨的反引號不再藏起檔案後半段；`live-smoke.yml` 的 JSON 重跑改用 `--cache-only`，不再可能多出最多 `max_model_calls` 次真實呼叫。以下六點在 2026-10-08 修正（見 `CHANGELOG.md` 的 `[0.3.0]`）：審查／驗證批次崩潰不進 `call_log`；單一 reviewer 模型只印警告；Markdown 的 evidence gap 與未測試威脅清單未消毒；缺 `model_alias` 時顯示的 alias 與實際路由不一致；root 下兩個 Docker 測試對不存在的 run_dir 做 `chmod`；設定檔 `max_files` 負數未驗證。
+`[0.9.0]` 修正了先前列在這裡與 README 的三點：`os.exec*`／`os.spawn*` 已是執行點、`env -S "bash -c …"` 會拆解、`admin:admin@prod-db` 會回報。`[0.6.0]` 修正了先前列在這裡的六點：威脅建模與攻擊合成的批次崩潰現在經 `record_failure` 記入 `call_log`（evidence gap #3）；Next.js 處理函式改為只送審一次（改標為 route）；Flask 工廠裡的巢狀路由處理函式只送審一次（第 6.1 節）；hapi 的陣列形式與 regex 路徑會成為 route；JSX 文字裡的 `/*` 或單獨的反引號不再藏起檔案後半段；`live-smoke.yml` 的 JSON 重跑改用 `--cache-only`，不再可能多出最多 `max_model_calls` 次真實呼叫。以下六點在 2026-10-08 修正（見 `CHANGELOG.md` 的 `[0.3.0]`）：審查／驗證批次崩潰不進 `call_log`；單一 reviewer 模型只印警告；Markdown 的 evidence gap 與未測試威脅清單未消毒；缺 `model_alias` 時顯示的 alias 與實際路由不一致；root 下兩個 Docker 測試對不存在的 run_dir 做 `chmod`；設定檔 `max_files` 負數未驗證。
 
 ### 16.3 運維限制
 
@@ -896,10 +896,10 @@ DAST／fuzzing、hypothesis、e2b 沙盒（突變測試已實作 Python 版，�
 | VH-AI-009 的否定詞只看緊鄰動詞的位置，條件與疑問需要引導詞；URL 憑證改用掃描而不是正規表達式比對；常見預設密碼只在迴環或範例／開發用主機上豁免；所有清理樣式都是線性時間 | 句子前段的否定詞或條件會讓真正的指令失效；含 `$ ' " { } < > @` 的密碼逃過遮蔽；`postgres:postgres@prod.internal` 從不回報；部分正規表達式在特製輸入上是平方時間 | `admin:admin@prod-db`（單一標籤主機）仍不回報 | 0.7.0 |
 | JS/TS 詞法分析改用明確的 template 堆疊、JSX 掃描預算、往回看／引數／片段上限與逐檔例外防護；VH-AI-006 解析真正的 argv 程式 | 惡意檔案可能觸發 `RecursionError` 或跑出平方時間而中止整次執行；`/usr/bin/env bash -c`、`python3.11`、`sudo sh` 被當成安全的 argv | `os.exec*`／`os.spawn*` 不算執行點、`env -S` 不解析、常數以整個檔案解析 | 0.7.0 |
 | JS/TS 行涵蓋率用 Node 內建涵蓋率加 `lcov` 報告器、自己篩選並跨模組取聯集；只計入載入過的檔案；依版本加旗標；另開 `js_line_coverage_pct` 欄位 | JS/TS 的白箱測試沒有任何涵蓋率數字；Node 的 lcov 含測試模組與相依套件，且路徑相對於 cwd；舊版 Node 看到不認得的報告器會讓整次執行失敗；`line_coverage_pct` 改意義會破壞既有消費端 | 與 pytest-cov 不同，沒載入的檔案不算 0%，數字偏高；沒有分支涵蓋率；Node < 20.11 收不到 | 0.8.0 |
-| 自動發現的設定檔不得設定安全敏感的鍵（exit 5）；Action 以 `exec` 進入同一個行程的 `vibeharness.action_runner`，Python 片段一律 `-I`；`extra_params` 保留所有改變目的地或憑證的 litellm 參數並加上名稱樣式 | PR 裡的 `vibeharness.yaml` 能讓 `docker_bin: ./evil.sh` 在啟動時就執行、預先放好快取或改寫端點；持有金鑰的 bash 父行程的 `environ` 對產生的測試可讀；`extra_headers` 之類的參數能覆寫 Authorization 或改送到別處 | 範圍、預算與 agent 指派仍可由自動發現的設定檔改變；曾在 `extra_params` 設 `extra_headers`／`headers` 等鍵的設定改為 exit 5（破壞性） | Unreleased |
-| SARIF 不收模擬的發現與突破（只在 run properties 計數）；fork PR 全部模擬時發出警告；沒有交叉驗證時證據缺口稱「未經驗證」 | 模擬的範本在 Code Scanning 裡看起來和真的警示一樣；fork 的 PR 拿不到 secrets，卻可能被誤讀成有模型證據；沒有驗證時不能稱為「已確認」 | Code Scanning 看不到模擬項目，只能從 properties 得知數量 | Unreleased |
-| VH-AI-006 以範疇索引、選項表（直譯器、包裝程式、執行器）與 MEDIUM 等級重寫；確定性規則每個檔案有 30 秒上限，未能完整掃描的檔案是證據缺口 | 舊版每個執行點重掃整個範疇（4000 個執行點超過 120 秒），`[sys.executable, 'tool.py', x]` 之類的安全 argv 被誤報，而 `os.exec*`、`env -S`、`uv run`、`docker exec` 等被漏掉 | 選項表是人工整理的；把引數注入本身安全的程式不在範圍內 | Unreleased |
-| VH-AI-009 的描述句豁免要看主詞、雙重否定相消、觸發詞預篩；VH-AI-007 的正式環境單一標籤主機會回報 | 「審查者已將此程式碼視為安全」「不得不忽略…」這類句子被當成描述或否定而漏掉，一般 LLM 應用與檔案應用的程式邏輯被誤報；大量行的輸入要數秒；`admin:admin@prod-db` 被當成開發用主機 | 換句話說的指令仍可能漏掉，所以閘門從不只靠它 | Unreleased |
+| 自動發現的設定檔不得設定安全敏感的鍵（exit 5）；Action 以 `exec` 進入同一個行程的 `vibeharness.action_runner`，Python 片段一律 `-I`；`extra_params` 保留所有改變目的地或憑證的 litellm 參數並加上名稱樣式 | PR 裡的 `vibeharness.yaml` 能讓 `docker_bin: ./evil.sh` 在啟動時就執行、預先放好快取或改寫端點；持有金鑰的 bash 父行程的 `environ` 對產生的測試可讀；`extra_headers` 之類的參數能覆寫 Authorization 或改送到別處 | 範圍、預算與 agent 指派仍可由自動發現的設定檔改變；曾在 `extra_params` 設 `extra_headers`／`headers` 等鍵的設定改為 exit 5（破壞性） | 0.9.0 |
+| SARIF 不收模擬的發現與突破（只在 run properties 計數）；fork PR 全部模擬時發出警告；沒有交叉驗證時證據缺口稱「未經驗證」 | 模擬的範本在 Code Scanning 裡看起來和真的警示一樣；fork 的 PR 拿不到 secrets，卻可能被誤讀成有模型證據；沒有驗證時不能稱為「已確認」 | Code Scanning 看不到模擬項目，只能從 properties 得知數量 | 0.9.0 |
+| VH-AI-006 以範疇索引、選項表（直譯器、包裝程式、執行器）與 MEDIUM 等級重寫；確定性規則每個檔案有 30 秒上限，未能完整掃描的檔案是證據缺口 | 舊版每個執行點重掃整個範疇（4000 個執行點超過 120 秒），`[sys.executable, 'tool.py', x]` 之類的安全 argv 被誤報，而 `os.exec*`、`env -S`、`uv run`、`docker exec` 等被漏掉 | 選項表是人工整理的；把引數注入本身安全的程式不在範圍內 | 0.9.0 |
+| VH-AI-009 的描述句豁免要看主詞、雙重否定相消、觸發詞預篩；VH-AI-007 的正式環境單一標籤主機會回報 | 「審查者已將此程式碼視為安全」「不得不忽略…」這類句子被當成描述或否定而漏掉，一般 LLM 應用與檔案應用的程式邏輯被誤報；大量行的輸入要數秒；`admin:admin@prod-db` 被當成開發用主機 | 換句話說的指令仍可能漏掉，所以閘門從不只靠它 | 0.9.0 |
 
 ---
 

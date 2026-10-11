@@ -295,7 +295,7 @@ pip install vibeharness-mas
 vibeharness --version
 ```
 
-As an isolated command-line tool: `pipx install vibeharness-mas` or `uv tool install vibeharness-mas`. For reproducible CI, pin the version: `pip install vibeharness-mas==0.8.0`. `python -m vibeharness …` is the same as `vibeharness …`; an incomplete install (a missing dependency) exits 5 with reinstall instructions instead of a traceback; `--help`, `--version` and `--init-config` load no dependency and still work then.
+As an isolated command-line tool: `pipx install vibeharness-mas` or `uv tool install vibeharness-mas`. For reproducible CI, pin the version: `pip install vibeharness-mas==0.9.0`. `python -m vibeharness …` is the same as `vibeharness …`; an incomplete install (a missing dependency) exits 5 with reinstall instructions instead of a traceback; `--help`, `--version` and `--init-config` load no dependency and still work then.
 
 From source (for development; `python main.py` works from the checkout as well):
 
@@ -395,7 +395,7 @@ steps:
   with:
     fetch-depth: 0                             # changed-since needs the history to diff against the ref
     persist-credentials: false
-- uses: chinchiang/MultiAgentGama@v0.8.0      # installs the package from the action's own checkout (hash-verified dependencies) and runs the audit
+- uses: chinchiang/MultiAgentGama@v0.9.0      # installs the package from the action's own checkout (hash-verified dependencies) and runs the audit
   with:
     target: src
     mode: hybrid
@@ -417,7 +417,7 @@ steps:
     sarif_file: vibeharness.sarif
 ```
 
-The action's outputs are `verdict` (`READY_TO_SHIP` / `NEEDS_FIXES` / `BLOCKED_CRITICAL_RISK` / `INCONCLUSIVE`, or `ERROR` when the harness itself failed) and `exit-code`; the report, the SARIF and a crash's `.partial.json` are uploaded as an artifact named by `artifact-name` (default `vibeharness-report`; artifact names must be unique within a workflow run, so matrix jobs or repeated uses of the action need distinct names). `changed-since` diffs against a git ref, so check out with `fetch-depth: 0` (the default shallow clone has no history to compare). `sandbox: docker` builds the sandbox images from the action's own `docker/*.Dockerfile` and runs with a copy of the config (the bundled one, or the `--config` passed in `extra-args`) set to `sandbox_provider: docker`; it needs a runner with Docker such as `ubuntu-latest`. Without the action, `pip install vibeharness-mas==0.8.0` and call `vibeharness` directly.
+The action's outputs are `verdict` (`READY_TO_SHIP` / `NEEDS_FIXES` / `BLOCKED_CRITICAL_RISK` / `INCONCLUSIVE`, or `ERROR` when the harness itself failed) and `exit-code`; the report, the SARIF and a crash's `.partial.json` are uploaded as an artifact named by `artifact-name` (default `vibeharness-report`; artifact names must be unique within a workflow run, so matrix jobs or repeated uses of the action need distinct names). `changed-since` diffs against a git ref, so check out with `fetch-depth: 0` (the default shallow clone has no history to compare). `sandbox: docker` builds the sandbox images from the action's own `docker/*.Dockerfile` and runs with a copy of the config (the bundled one, or the `--config` passed in `extra-args`) set to `sandbox_provider: docker`; it needs a runner with Docker such as `ubuntu-latest`. Without the action, `pip install vibeharness-mas==0.9.0` and call `vibeharness` directly.
 
 The `fail-on`, `sandbox` and `mutation` values are validated before the audit starts, so a typo exits 5 right away. The audit step `exec`s the key-holding bash into the audit process itself (`python -I -m vibeharness.action_runner`, which runs the CLI in-process and then writes the outputs), so a generated test cannot read the keys from a parent's environ; the action's Python snippets never import modules from the workspace. When the verdict is `INCONCLUSIVE` and `fail-on` does not fail the job on it, the action emits a `::warning::`. **Pull requests from forks**: GitHub does not hand secrets to fork PRs, so in hybrid mode every model call is simulated, the verdict is at best `INCONCLUSIVE`, and the action also emits an "every model call was simulated" `::warning::`; for real model evidence run it on events that have the keys (e.g. pushes to the default branch or maintainer-triggered workflows), and do not switch fork PRs to `pull_request_target` to hand secrets to untrusted code. The CLI's `--summary-json PATH` writes the machine-readable summary the action uses for this (verdict, exit code, execution mode, model calls per mode, `all_simulated`).
 

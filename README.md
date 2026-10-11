@@ -295,7 +295,7 @@ pip install vibeharness-mas
 vibeharness --version
 ```
 
-當作獨立的命令列工具安裝：`pipx install vibeharness-mas` 或 `uv tool install vibeharness-mas`。CI 要可重現時請釘版本：`pip install vibeharness-mas==0.8.0`。`python -m vibeharness …` 與 `vibeharness …` 相同；安裝不完整（缺少相依套件）時以 exit 5 結束並說明如何重新安裝，不會丟出 traceback；`--help`、`--version` 與 `--init-config` 不載入相依套件，這時照樣可用。
+當作獨立的命令列工具安裝：`pipx install vibeharness-mas` 或 `uv tool install vibeharness-mas`。CI 要可重現時請釘版本：`pip install vibeharness-mas==0.9.0`。`python -m vibeharness …` 與 `vibeharness …` 相同；安裝不完整（缺少相依套件）時以 exit 5 結束並說明如何重新安裝，不會丟出 traceback；`--help`、`--version` 與 `--init-config` 不載入相依套件，這時照樣可用。
 
 從原始碼安裝（開發用；在 checkout 裡也可以直接 `python main.py`）：
 
@@ -395,7 +395,7 @@ steps:
   with:
     fetch-depth: 0                             # changed-since 需要完整歷史才能與該 ref 比對
     persist-credentials: false
-- uses: chinchiang/MultiAgentGama@v0.8.0      # 從 action 本身的 checkout 安裝套件（相依套件帶雜湊驗證）並執行稽核
+- uses: chinchiang/MultiAgentGama@v0.9.0      # 從 action 本身的 checkout 安裝套件（相依套件帶雜湊驗證）並執行稽核
   with:
     target: src
     mode: hybrid
@@ -417,7 +417,7 @@ steps:
     sarif_file: vibeharness.sarif
 ```
 
-Action 的 outputs 有 `verdict`（`READY_TO_SHIP`／`NEEDS_FIXES`／`BLOCKED_CRITICAL_RISK`／`INCONCLUSIVE`，harness 本身失敗時為 `ERROR`）與 `exit-code`；報告、SARIF 與崩潰時的 `.partial.json` 會以 `artifact-name` 指定的 artifact 上傳（預設 `vibeharness-report`；同一次 workflow 執行內 artifact 名稱不可重複，矩陣或多次使用本 action 時要各自命名）。`changed-since` 要與 git ref 比對，checkout 時請設 `fetch-depth: 0`（預設的淺層 clone 沒有可比對的歷史）。`sandbox: docker` 會從 action 自帶的 `docker/*.Dockerfile` 建置沙盒映像，並以設成 `sandbox_provider: docker` 的設定檔覆本執行（底稿為內建設定檔，或 `extra-args` 裡 `--config` 指定的檔案）；需要有 Docker 的 runner，例如 `ubuntu-latest`。不用 Action 的話，`pip install vibeharness-mas==0.8.0` 後直接呼叫 `vibeharness` 即可。
+Action 的 outputs 有 `verdict`（`READY_TO_SHIP`／`NEEDS_FIXES`／`BLOCKED_CRITICAL_RISK`／`INCONCLUSIVE`，harness 本身失敗時為 `ERROR`）與 `exit-code`；報告、SARIF 與崩潰時的 `.partial.json` 會以 `artifact-name` 指定的 artifact 上傳（預設 `vibeharness-report`；同一次 workflow 執行內 artifact 名稱不可重複，矩陣或多次使用本 action 時要各自命名）。`changed-since` 要與 git ref 比對，checkout 時請設 `fetch-depth: 0`（預設的淺層 clone 沒有可比對的歷史）。`sandbox: docker` 會從 action 自帶的 `docker/*.Dockerfile` 建置沙盒映像，並以設成 `sandbox_provider: docker` 的設定檔覆本執行（底稿為內建設定檔，或 `extra-args` 裡 `--config` 指定的檔案）；需要有 Docker 的 runner，例如 `ubuntu-latest`。不用 Action 的話，`pip install vibeharness-mas==0.9.0` 後直接呼叫 `vibeharness` 即可。
 
 `fail-on`、`sandbox` 與 `mutation` 的值在稽核開始前就驗證，打錯字直接 exit 5。稽核 step 以 `exec` 把持有金鑰的 bash 換成稽核行程本身（`python -I -m vibeharness.action_runner`，在同一個行程內執行 CLI 再寫出 outputs），生成的測試因此讀不到父行程 environ 裡的金鑰；action 裡的 Python 片段一律不從工作區匯入模組。判定為 `INCONCLUSIVE` 而 `fail-on` 不會因此讓 job 失敗時，action 會發出 `::warning::`。**來自 fork 的 PR**：GitHub 不會把 secrets 交給 fork 的 PR，hybrid 模式下每次模型呼叫都會是模擬的，判定最多是 `INCONCLUSIVE`，action 另外發出「every model call was simulated」的 `::warning::`；要有真正的模型證據，請在有金鑰的事件（例如推送到預設分支或維護者觸發的 workflow）上執行，不要為了 fork PR 改用 `pull_request_target` 把 secrets 交給不受信任的程式碼。CLI 的 `--summary-json PATH` 會寫出 action 用來判斷這些情況的機器可讀摘要（判定、exit code、執行模式、各模式的模型呼叫數、`all_simulated`）。
 

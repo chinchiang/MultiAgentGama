@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-11
+
 Third review round: discovered configs can no longer set security-sensitive keys, the Action `exec`s the audit so no key-holding parent stays readable, simulated items stay out of SARIF, VH-AI-006 is rewritten for precision and linear time, the deterministic rules disclose files they could not fully scan, VH-AI-009 / VH-AI-007 gaps are closed, and the repository's CI and settings are hardened.
 
 ### Added
@@ -375,7 +377,8 @@ Initial release.
 - CI matrix: ubuntu / windows × Python 3.10 / 3.13, with lint and coverage reporting
 - MIT license
 
-[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/chinchiang/MultiAgentGama/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.6.0...v0.7.0
