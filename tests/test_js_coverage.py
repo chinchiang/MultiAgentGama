@@ -29,9 +29,18 @@ from vibeharness.runners.test_executor import (
 )
 
 _NODE_PATH, _NODE_VERSION, _NODE_PROBLEM = detect_node("node")
-_COVERAGE_OK = _NODE_PATH is not None and node_coverage_problem(_NODE_VERSION) is None
-node_coverage_only = pytest.mark.skipif(not _COVERAGE_OK, reason=f"Node with the lcov reporter unavailable: {_NODE_PROBLEM}")
+# 與 test_js_execution.py 相同：VIBEHARNESS_REQUIRE_NODE=1（CI）時缺少 Node 是失敗而不是略過；Node 存在但對某個功能
+# 太舊時仍以說明原因的方式略過
+# As in test_js_execution.py: with VIBEHARNESS_REQUIRE_NODE=1 (CI) a missing Node is a failure, not a skip; a Node that
+# exists but is too old for one feature is still skipped with the reason
+_NODE_REQUIRED = os.environ.get("VIBEHARNESS_REQUIRE_NODE") == "1"
+if _NODE_REQUIRED and _NODE_PATH is None:
+    raise RuntimeError(f"VIBEHARNESS_REQUIRE_NODE=1 but no usable Node runtime: {_NODE_PROBLEM}")
+_COVERAGE_PROBLEM = _NODE_PROBLEM if _NODE_PATH is None else node_coverage_problem(_NODE_VERSION)
+_COVERAGE_OK = _NODE_PATH is not None and _COVERAGE_PROBLEM is None
+node_coverage_only = pytest.mark.skipif(not _COVERAGE_OK, reason=f"Node with the lcov reporter unavailable: {_COVERAGE_PROBLEM}")
 _TS_OK = _COVERAGE_OK and _NODE_VERSION is not None and _NODE_VERSION >= (22, 6, 0)
+_FOUND = "v" + ".".join(map(str, _NODE_VERSION)) if _NODE_VERSION else "none"
 
 
 def _js_test(test_id, code, language="javascript", test_type="whitebox_unit"):
@@ -445,7 +454,7 @@ def test_real_node_cjs_target_union_across_two_modules(tmp_path):
     _assert_union(singles, executor)
 
 
-@pytest.mark.skipif(not _TS_OK, reason="Node >= 22.6 (type stripping) with the lcov reporter unavailable")
+@pytest.mark.skipif(not _TS_OK, reason=f"Node >= 22.6 (type stripping) with the lcov reporter unavailable (found {_FOUND})")
 def test_real_node_typescript_target_coverage(tmp_path):
     target = tmp_path / "svc"
     target.mkdir()

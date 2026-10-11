@@ -112,16 +112,16 @@ def test_the_bundled_default_and_its_init_config_copy_are_accepted(monkeypatch, 
 
 
 def test_safe_customizations_of_a_discovered_config_are_accepted():
-    """可接受的自訂：改用 docker 沙盒（映像不變）、在預設的金鑰變數之間切換、範圍與預算設定。
-    Acceptable customizations: switching to the docker sandbox (same image), switching between the default key
-    variables, scope and budget settings."""
+    """可接受的自訂：改用 docker 沙盒（映像不變）、沿用內建值的模型項目、把 agent 改指到另一個內建別名、範圍與預算設定。
+    Acceptable customizations: switching to the docker sandbox (same image), model entries that keep the bundled
+    values, reassigning an agent to another bundled alias, scope and budget settings."""
     reference = load_config_file(DEFAULT_CONFIG_PATH)
     config = {
         "global": {"sandbox_provider": "docker", "sandbox_node_provider": "docker", "max_files": 5, "exclude": ["tests/*"],
                    "docker_image": reference["global"]["docker_image"], "node_bin": "node", "docker_bin": "docker",
                    "cache_dir": None},
-        "models": {"claude": {"model": "gemini/gemini-3.8-flash", "api_key_env": "GEMINI_API_KEY"}},
-        "agents": {"whitebox_reviewer_claude": {"model_alias": "claude"}},
+        "models": {"claude": dict(reference["models"]["claude"], api_base=None)},
+        "agents": {"whitebox_reviewer_claude": {"model_alias": "gemini"}},
     }
     assert discovered_config_violations(config, reference) == []
 
@@ -330,13 +330,17 @@ def test_the_audit_step_execs_the_in_process_runner():
 @pytest.mark.parametrize("value,code", [("blocked", 0), ("needs-fixes", 0), ("inconclusive", 0), ("never", 0),
                                         ("needs_fixes", 5), ("", 5)])
 def test_fail_on_is_validated_before_the_audit(tmp_path, value, code):
-    """fail-on 在 extra-args 切字與稽核之前就驗證，錯字 exit 5 ／ fail-on is validated before extra-args splitting and the
-    audit; a typo exits 5."""
-    script = _audit_script()
-    head = script.split("# extra-args-split-begin", 1)[0]
-    assert 'case "$VH_FAIL_ON" in' in head
-    out = subprocess.run([shutil.which("bash"), "-e", "-c", head], cwd=tmp_path, capture_output=True, text=True,
-                         encoding="utf-8", env={**os.environ, "VH_FAIL_ON": value})
+    """fail-on 在 prep step（安裝、Docker 映像建置與稽核之前）就驗證，錯字 exit 5 ／ fail-on is validated by the prep step
+    (before the install, the Docker image build and the audit); a typo exits 5."""
+    with open(os.path.join(REPO_ROOT, "action.yml"), encoding="utf-8") as f:
+        steps = yaml.safe_load(f)["runs"]["steps"]
+    ids = [s.get("id") or s.get("name", "") for s in steps]
+    assert ids[0] == "prep" and ids.index("prep") < ids.index("audit")
+    assert 'case "$VH_FAIL_ON" in' in steps[0]["run"]
+    env = {**os.environ, "VH_FAIL_ON": value, "VH_MUTATION": "", "VH_SANDBOX": "local_subprocess", "VH_FORMAT": "md",
+           "VH_MODE": "", "VH_MAX_CALLS": "", "VH_MAX_FILES": "", "VH_OUTPUT": "", "GITHUB_OUTPUT": str(tmp_path / "out")}
+    out = subprocess.run([shutil.which("bash"), "-e", "-c", steps[0]["run"]], cwd=tmp_path, capture_output=True, text=True,
+                         encoding="utf-8", env=env)
     assert out.returncode == code
     assert ("unknown fail-on value" in out.stdout) == (code == 5)
 

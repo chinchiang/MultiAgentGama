@@ -51,6 +51,8 @@ REASON_CALL_CRASHED = bi("代理呼叫在產生輸出前就當掉", "agent call 
 # How many times an unusable live answer (not JSON, missing keys, empty) is re-asked before it is
 # booked as `invalid`; each re-ask is a real call that counts against max_model_calls
 DEFAULT_RETRY_INVALID_OUTPUT = 1
+# agents.<id>.temperature 省略或為 null 時的取樣溫度 ／ sampling temperature when agents.<id>.temperature is omitted or null
+DEFAULT_TEMPERATURE = 0.2
 # 附加到重新詢問的使用者提示之後，讓模型知道第一次回答哪裡有問題
 # （模型提示：維持英文；雙語原因會先經過 en_only）
 # Appended to the user prompt of a re-ask so the model knows what was wrong with its first answer
@@ -220,6 +222,12 @@ _DISCOVERED_ALLOWED_GLOBAL_VALUES: Dict[str, Any] = {
 # variable, the AWS profile / region, and extra_params, which is passed straight to litellm
 _DISCOVERED_SENSITIVE_MODEL_KEYS = frozenset({"api_base", "base_url", "api_key_env", "aws_profile_name", "aws_region_name",
                                               "extra_params"})
+# models.<alias> 裡決定「送到哪個模型」的鍵：litellm 的模型字串本身就帶供應商路由（例如 openai/...），換掉它就能把
+# 套件內設定的金鑰送到另一家供應商，所以自動發現的設定檔只能沿用同一別名的內建值
+# Keys of models.<alias> that decide which model is called: a litellm model string carries the provider routing itself
+# (e.g. openai/...), so swapping it could send a bundled key to another provider; a discovered config may only keep
+# the bundled value of the same alias
+_DISCOVERED_PINNED_MODEL_KEYS = frozenset({"model", "fallback_model"})
 
 
 def _is_sensitive_global_key(key: str) -> bool:
@@ -234,12 +242,16 @@ def _is_sensitive_model_key(key: str) -> bool:
 
 def discovered_config_violations(config: Dict[str, Any], reference: Dict[str, Any]) -> List[str]:
     """自動發現的 `config` 中設定了安全敏感鍵的位置（例如 "global.docker_bin"），依序排列；空清單表示可以採用。
-    與 `reference`（套件內的預設設定）相同的值、null 以及省略都允許，所以 --init-config 寫出的覆本照樣可用；
-    api_key_env 只能是預設設定裡出現過的金鑰環境變數之一。
+    與 `reference`（套件內的預設設定）相同的值、null 以及省略都允許，所以 --init-config 寫出的覆本照樣可用。
+    models 區段只能使用預設設定裡已有的別名（新別名記為 "models.<alias>"）；每個別名的 model、fallback_model、
+    api_key_env 與端點鍵都必須與預設設定中「同一個別名」的值相同（不能把 ANTHROPIC_API_KEY 接到別的供應商）。
+    agent 仍可在內建別名之間重新指派。
     The places where the discovered `config` sets a security-sensitive key (e.g. "global.docker_bin"), sorted;
     an empty list means the config may be used. A value equal to `reference` (the bundled default), null and
-    omission are allowed, so a copy written by --init-config still works; api_key_env may only be one of the key
-    environment variables the default config uses."""
+    omission are allowed, so a copy written by --init-config still works. The models section may only use aliases
+    the default config has (a new alias is reported as "models.<alias>"); each alias's model, fallback_model,
+    api_key_env and endpoint keys must equal the default config's value for the same alias (so ANTHROPIC_API_KEY
+    cannot be wired to another provider). Agents may still be reassigned among the bundled aliases."""
     problems: List[str] = []
     ref_global = reference.get("global") or {}
     for key, value in (config.get("global") or {}).items():
@@ -249,16 +261,16 @@ def discovered_config_violations(config: Dict[str, Any], reference: Dict[str, An
         if value != ref_global.get(key, _BUILTIN_GLOBAL_DEFAULTS.get(key)) and value not in _DISCOVERED_ALLOWED_GLOBAL_VALUES.get(key, ()):
             problems.append(f"global.{key}")
     ref_models = reference.get("models") or {}
-    known_key_envs = {info.get("api_key_env") for info in ref_models.values() if isinstance(info, dict)} - {None}
     for alias, info in (config.get("models") or {}).items():
+        if alias not in ref_models:
+            problems.append(f"models.{alias}")
+            continue
+        ref_info = ref_models.get(alias) or {}
         for key, value in (info or {}).items():
             key = str(key)
-            if value is None or not _is_sensitive_model_key(key):
+            if value is None or not (key in _DISCOVERED_PINNED_MODEL_KEYS or _is_sensitive_model_key(key)):
                 continue
-            if key == "api_key_env":
-                if value in known_key_envs:
-                    continue
-            elif value == (ref_models.get(alias) or {}).get(key):
+            if value == ref_info.get(key):
                 continue
             problems.append(f"models.{alias}.{key}")
     return sorted(problems)
@@ -274,11 +286,13 @@ def check_discovered_config(path: str, reference_path: str = DEFAULT_CONFIG_PATH
         names = ", ".join(problems)
         raise ConfigError(bi(
             f"自動發現的設定檔 {path} 設定了安全敏感的鍵：{names}。自動發現的設定檔可能來自不可信的 checkout，"
-            "不得設定可執行檔路徑、沙盒／docker／node 設定、回應快取，或模型的端點、金鑰環境變數與 extra_params；"
+            "不得設定可執行檔路徑、沙盒／docker／node 設定、回應快取、新的模型別名，或模型的 model／fallback_model、端點、"
+            "金鑰環境變數與 extra_params（必須與內建設定的同一別名相同）；"
             f"如果信任這個檔案，請以 --config {path} 明確指定",
             f"the discovered config {path} sets security-sensitive key(s): {names}. A discovered config may come "
             "from an untrusted checkout, so it must not set executable paths, sandbox / docker / node settings, the "
-            "response cache, or a model's endpoint, key environment variable or extra_params; if you trust this file, "
+            "response cache, new model aliases, or a model's model / fallback_model, endpoint, key environment variable "
+            "or extra_params (they must equal the bundled config's same alias); if you trust this file, "
             f"pass it explicitly with --config {path}",
         ))
 
@@ -456,7 +470,24 @@ class LLMGateway:
         self._number(self._global_setting("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS), "global.max_output_tokens",
                      minimum=1, integer=True)
         for alias, info in self.models_config.items():
-            if isinstance(info, dict) and info.get("max_output_tokens") is not None:
+            # 每個模型項目都必須有 litellm 模型字串：否則指向它的 agent 會悄悄改用模擬（hybrid）或在 live 中途失敗
+            # Every model entry needs a litellm model string: otherwise an agent pointing at it silently simulates
+            # (hybrid) or fails mid-run (live)
+            info = info if isinstance(info, dict) else {}
+            model = info.get("model")
+            if not isinstance(model, str) or not model.strip():
+                raise ConfigError(bi(f"models.{alias}.model 必須是非空的 litellm 模型字串，目前為 {model!r}",
+                                     f"models.{alias}.model must be a non-empty litellm model string, got {model!r}"))
+            fallback = info.get("fallback_model")
+            if fallback is not None and (not isinstance(fallback, str) or not fallback.strip()):
+                raise ConfigError(bi(f"models.{alias}.fallback_model 必須是非空字串或 null，目前為 {fallback!r}",
+                                     f"models.{alias}.fallback_model must be a non-empty string or null, got {fallback!r}"))
+            # base_url 不會被讀取（端點是 api_base）：留著它會讓使用者以為呼叫送到了自訂端點
+            # base_url is never read (the endpoint is api_base): keeping it would make users think calls go to a custom endpoint
+            if info.get("base_url") is not None:
+                raise ConfigError(bi(f"models.{alias}.base_url 不會被讀取；自訂端點請改用 models.{alias}.api_base",
+                                     f"models.{alias}.base_url is not read; use models.{alias}.api_base for a custom endpoint"))
+            if info.get("max_output_tokens") is not None:
                 self._number(info["max_output_tokens"], f"models.{alias}.max_output_tokens", minimum=1, integer=True)
         for agent_id, meta in self.agents_config.items():
             if isinstance(meta, dict) and meta.get("temperature") is not None:
@@ -595,18 +626,20 @@ class LLMGateway:
         """
         針對指定代理所設定的 LLM 執行提示。
         線上回應若不是有效的 JSON，或缺少 `required_keys` 中的任一鍵（全部都必須
-        存在）或 `required_keys_any`（至少要有一個存在），會以 mode "invalid" 記錄
-        （並回傳 {}），讓呼叫端與品質閘門絕不會把無法使用的回答
-        誤認為真正的空結果。
+        存在）或 `required_keys_any`（至少要有一個存在），會以 mode "invalid" 記錄，
+        回傳只含 PROVENANCE_KEY（mode "invalid"、model、reason）的 dict，讓呼叫端與品質閘門絕不會把無法使用的回答
+        誤認為真正的空結果（以 is_usable() 判斷）。
         Executes a prompt targeting the designated agent's configured LLM.
         A live response that is not valid JSON or lacks any of `required_keys` (all must be
         present) or `required_keys_any` (at least one must be present) is recorded with
-        mode "invalid" (and returned as {}), so callers and the quality gate never mistake an
-        unusable answer for a genuine empty result.
+        mode "invalid" and returned as a dict holding only PROVENANCE_KEY (mode "invalid", model, reason), so
+        callers and the quality gate never mistake an unusable answer for a genuine empty result (check is_usable()).
         """
         agent_meta = self.agents_config.get(agent_id) or {}
         model_alias = agent_meta.get("model_alias") or UNCONFIGURED_ALIAS
-        temperature = agent_meta.get("temperature", 0.2)
+        # null 與省略相同（預設值）：None 絕不會送進 litellm 或快取鍵 ／ null means omitted (the default): None never reaches litellm or the cache key
+        raw_temperature = agent_meta.get("temperature")
+        temperature = DEFAULT_TEMPERATURE if raw_temperature is None else raw_temperature
         model_info = self.models_config.get(model_alias) or {}
         model_name = model_info.get("model") or f"(no model configured for alias '{model_alias}')"
         # 重新詢問一律從主要模型開始：model_name 之後會改成實際回答的模型（可能是 fallback），
