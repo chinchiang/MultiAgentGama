@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-11
+
 第五輪審查：Action 的判定只取自這次稽核自己的摘要，`extra-args` 以 CLI 的解析器檢查；自動發現的設定檔只能調低花費；litellm 的記錄／callback 參數列為保留鍵；不支援語言的原始碼與設定檔裡的密鑰不再悄悄漏掉；沙盒的報告讀回、執行目錄權限、涵蓋率 include 與 Docker 輸出上限也一併強化。
 
 ### 新增
@@ -465,7 +467,8 @@ CI 整合（`--baseline`、GitHub Action）、`--estimate`、JS/TS 動態測試�
 - CI 矩陣：ubuntu / windows × Python 3.10 / 3.13，含 lint 與覆蓋率報告
 - MIT 授權
 
-[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.8.0...v0.9.0

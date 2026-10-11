@@ -2,7 +2,7 @@
 
 [English](design.en.md) ｜ 正體中文（臺灣）
 
-本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.10.1`，加上 `CHANGELOG.md` 中 `[Unreleased]` 列出的變更（第五輪審查：Action 的判定只取自稽核摘要、`extra-args` 以 CLI 的解析器檢查、自動發現的設定檔只能調低花費、保留 litellm 的 callback 參數、揭露不支援語言的檔案與設定檔裡的密鑰、強化報告讀回與 Docker 輸出上限；`[0.10.1]`，2026-10-11，為修正版：Windows 的 JS/TS 涵蓋率也收得到 `node_modules` 底下的目標；`[0.10.0]` 為更嚴格的自動發現設定檔、Action 不再蓋掉設定檔的成本防護、null 保留預設值；`[0.9.0]` 為第三輪審查修正：自動發現設定檔的防護、Action 以 `exec` 執行稽核、SARIF 不收模擬項目、VH-AI-006 改寫、確定性規則的單檔時間上限、`--summary-json`；`[0.8.0]` 新增 JS/TS 行涵蓋率；`[0.7.1]` 為修正版：剩餘逾時預算不再多出一秒、`--init-config` 的提示；`[0.7.0]` 為第二輪審查修正、PyPI 打包、`--init-config` 與設定檔自動尋找；`[0.6.0]` 為依審查結果的強化並新增 `--cache-only`，`[0.5.1]` 為修正版，`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。文中的 `path:line` 引用以 commit `6bf902f` 的檔案為準（發布時改為該版本的 tag）。
+本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.11.0`（`CHANGELOG.md` 的 `[0.11.0]`，2026-10-11，第五輪審查：Action 的判定只取自稽核摘要、`extra-args` 以 CLI 的解析器檢查、自動發現的設定檔只能調低花費、保留 litellm 的 callback 參數、揭露不支援語言的檔案與設定檔裡的密鑰、強化報告讀回與 Docker 輸出上限；`[0.10.1]`，2026-10-11，為修正版：Windows 的 JS/TS 涵蓋率也收得到 `node_modules` 底下的目標；`[0.10.0]` 為更嚴格的自動發現設定檔、Action 不再蓋掉設定檔的成本防護、null 保留預設值；`[0.9.0]` 為第三輪審查修正：自動發現設定檔的防護、Action 以 `exec` 執行稽核、SARIF 不收模擬項目、VH-AI-006 改寫、確定性規則的單檔時間上限、`--summary-json`；`[0.8.0]` 新增 JS/TS 行涵蓋率；`[0.7.1]` 為修正版：剩餘逾時預算不再多出一秒、`--init-config` 的提示；`[0.7.0]` 為第二輪審查修正、PyPI 打包、`--init-config` 與設定檔自動尋找；`[0.6.0]` 為依審查結果的強化並新增 `--cache-only`，`[0.5.1]` 為修正版，`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。文中的 `path:line` 引用以 tag `v0.11.0` 的檔案為準。
 
 與其他文件的分工：
 
@@ -932,13 +932,13 @@ DAST／fuzzing、以 hypothesis 為測試策略（Docker 沙盒映像已附 `hyp
 | SARIF 不收模擬的發現與突破（只在 run properties 計數）；fork PR 全部模擬時發出警告；沒有交叉驗證時證據缺口稱「未經驗證」 | 模擬的範本在 Code Scanning 裡看起來和真的警示一樣；fork 的 PR 拿不到 secrets，卻可能被誤讀成有模型證據；沒有驗證時不能稱為「已確認」 | Code Scanning 看不到模擬項目，只能從 properties 得知數量 | 0.9.0 |
 | VH-AI-006 以範疇索引、選項表（直譯器、包裝程式、執行器）與 MEDIUM 等級重寫；確定性規則每個檔案有 30 秒上限，未能完整掃描的檔案是證據缺口 | 舊版每個執行點重掃整個範疇（4000 個執行點超過 120 秒），`[sys.executable, 'tool.py', x]` 之類的安全 argv 被誤報，而 `os.exec*`、`env -S`、`uv run`、`docker exec` 等被漏掉 | 選項表是人工整理的；把引數注入本身安全的程式不在範圍內 | 0.9.0 |
 | VH-AI-009 的描述句豁免要看主詞、雙重否定相消、觸發詞預篩；VH-AI-007 的正式環境單一標籤主機會回報 | 「審查者已將此程式碼視為安全」「不得不忽略…」這類句子被當成描述或否定而漏掉，一般 LLM 應用與檔案應用的程式邏輯被誤報；大量行的輸入要數秒；`admin:admin@prod-db` 被當成開發用主機 | 換句話說的指令仍可能漏掉，所以閘門從不只靠它 | 0.9.0 |
-| Action 的判定只取自相符的稽核摘要，`extra-args` 以 CLI 自己的解析器檢查；自動發現的設定檔只能調低花費；保留 litellm 的記錄／callback 參數；揭露不支援語言的檔案與設定類檔案裡的密鑰；讀回沙盒報告時不跟隨連結；Docker 的執行目錄交給 nobody、docker CLI 的輸出有上限 | `extra-args` 裡的 `--help` 或 `--estimate` 讓 CLI 以 0 結束，job 沒有稽核就以 `READY_TO_SHIP` 通過；PR 帶來的 `vibeharness.yaml` 可以改成 `live`、調高每個上限或新增審查者；`success_callback` 或 `metadata.langfuse_host` 能把待審程式碼轉送給觀測服務；Go 或 Java 的目標、`.env` 裡的金鑰都被當成乾淨；測試可以把 `junit.xml` 換成指向主機檔案的 symlink 或 FIFO；執行目錄是 0777、docker CLI 的輸出沒有上限 | 被拒絕的 `extra-args`、未知的 `model_alias` 與調高花費的自動發現設定檔都以 exit 5 結束（破壞性）；其他語言只計數、不分析；root harness 需要停用 userns-remap | Unreleased |
+| Action 的判定只取自相符的稽核摘要，`extra-args` 以 CLI 自己的解析器檢查；自動發現的設定檔只能調低花費；保留 litellm 的記錄／callback 參數；揭露不支援語言的檔案與設定類檔案裡的密鑰；讀回沙盒報告時不跟隨連結；Docker 的執行目錄交給 nobody、docker CLI 的輸出有上限 | `extra-args` 裡的 `--help` 或 `--estimate` 讓 CLI 以 0 結束，job 沒有稽核就以 `READY_TO_SHIP` 通過；PR 帶來的 `vibeharness.yaml` 可以改成 `live`、調高每個上限或新增審查者；`success_callback` 或 `metadata.langfuse_host` 能把待審程式碼轉送給觀測服務；Go 或 Java 的目標、`.env` 裡的金鑰都被當成乾淨；測試可以把 `junit.xml` 換成指向主機檔案的 symlink 或 FIFO；執行目錄是 0777、docker CLI 的輸出沒有上限 | 被拒絕的 `extra-args`、未知的 `model_alias` 與調高花費的自動發現設定檔都以 exit 5 結束（破壞性）；其他語言只計數、不分析；root harness 需要停用 userns-remap | 0.11.0 |
 
 ---
 
 ## 18. 附錄
 
-行號對應 commit `6bf902f` 的程式碼（發布時改為該版本的 tag）；核對方式為 `grep -n "def 名稱" 檔案`。
+行號對應 tag `v0.11.0` 的程式碼；核對方式為 `grep -n "def 名稱" 檔案`。
 
 ### 18.1 關鍵常數
 

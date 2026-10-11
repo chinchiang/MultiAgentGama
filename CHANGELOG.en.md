@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-11
+
 Fifth review round: the Action takes its verdict only from the audit's own summary and checks `extra-args` with the CLI's parser, discovered configs may only lower spend, litellm's logging / callback parameters are reserved, source in unsupported languages and secrets in config files no longer pass unnoticed, and the sandbox's report read-back, run-directory permissions, coverage includes and Docker output caps are hardened.
 
 ### Added
@@ -465,7 +467,8 @@ Initial release.
 - CI matrix: ubuntu / windows × Python 3.10 / 3.13, with lint and coverage reporting
 - MIT license
 
-[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.8.0...v0.9.0
