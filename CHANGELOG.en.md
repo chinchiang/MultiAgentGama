@@ -35,11 +35,13 @@ Fifth review round: the Action takes its verdict only from the audit's own summa
 
 - The reports the code under test can rewrite (`junit.xml`, the lcov report) are read back through `jscoverage.read_untrusted_file`: `O_NOFOLLOW` plus `O_NONBLOCK` on POSIX (an `lstat` reparse-point check and an `fstat` identity check on Windows), a regular file only, the same inode as checked, a single hard link and at most 64 MiB (`MAX_REPORT_BYTES`); a symlink to a host file, a FIFO, a hard link or an oversized file is "no report", with a bilingual reason at the front of stderr (junit) or in a WARNING (lcov).
 - `--init-config` refuses a symlink (dangling or not) or a non-regular target even with `--force` and opens the file with `O_NOFOLLOW` plus `O_EXCL` (`O_TRUNC` with `--force`), so a planted symlink in an untrusted checkout cannot make it create or overwrite a file elsewhere.
+- `--init-config` creates its file with mode `0o644` instead of `0o666` (CodeQL `py/overly-permissive-file`).
 
 ### Fixed
 
 - JS/TS coverage on POSIX: a target path with a backslash gets no `--test-coverage-include` again (0.10.1 rewrote `/home/u/a\b` into `/home/u/a/b`, which points elsewhere); backslashes are separators only under the Windows rules (Windows or a drive prefix). One include is passed per distinct spelling of the target (abspath and realpath; Node ORs them); on Windows an include is passed only when the two spellings differ at most in the drive letter's case (a mapped drive against UNC, directory case or a junction fall back to the excludes and our own lcov filtering). UNC paths work; `\\?\` / `\\.\` device paths, `C:foo` and `/` get no include.
 - CLI: a stream that cannot encode the bilingual text (e.g. `PYTHONIOENCODING=ascii`, `LANG=C`) switches to `backslashreplace` on every platform instead of crashing with `UnicodeEncodeError`; argument parsing, `--help` / `--version` and `--init-config` run inside the guard, so an unexpected error exits 5 (Ctrl-C 130) instead of Python's 1.
+- The Action's runner no longer ends with `UnicodeEncodeError` (exit 1) when it prints a bilingual `::error::` on a Windows cp1252 console: like the CLI, it first makes stdio able to write the bilingual text.
 
 ### Tests
 

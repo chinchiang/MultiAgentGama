@@ -267,7 +267,7 @@ def test_real_node_coverage_run_has_no_glob_warning_on_stderr(tmp_path):
 # --- 6. A target living under node_modules still gets coverage ---------------------------------------------
 
 def test_node_modules_exclusion_is_relative_to_the_target_root():
-    _, filters = node_coverage_args((22, 14, 0), "/x/node_modules/pkg")
+    _, filters = node_coverage_args((22, 14, 0), "/x/node_modules/pkg", windows=False)
     assert filters == ["--test-coverage-include=/x/node_modules/pkg/**",
                        "--test-coverage-exclude=/x/node_modules/pkg/**/node_modules/**",
                        "--test-coverage-exclude=**/test_vh_*"]

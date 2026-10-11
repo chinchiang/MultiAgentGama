@@ -340,3 +340,13 @@ def test_cli_works_on_a_non_utf8_stdout(tmp_path, encoding, argv, code):
         assert (tmp_path / "vibeharness.yaml").is_file()
     if argv == ["--help"]:
         assert b"--init-config" in out.stdout
+
+
+def test_the_runner_survives_a_cp1252_console(tmp_path):
+    """Windows runner 的主控台是 cp1252：雙語的 ::error:: 不能讓 runner 以 UnicodeEncodeError 結束（exit 1）。
+    A Windows runner's console is cp1252: the bilingual ::error:: must not end the runner with UnicodeEncodeError (exit 1)."""
+    out = subprocess.run([sys.executable, "-m", "vibeharness.action_runner", "-t", ".", "--estimate"], cwd=tmp_path,
+                         capture_output=True, env=_env(tmp_path, VH_OUTPUT="r.md", PYTHONIOENCODING="cp1252"))
+    assert out.returncode == 5, out.stderr.decode("cp1252", "replace")
+    assert b"UnicodeEncodeError" not in out.stderr
+    assert _outputs(tmp_path)["verdict"] == "ERROR"

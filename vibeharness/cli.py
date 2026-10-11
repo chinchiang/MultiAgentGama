@@ -208,7 +208,7 @@ def _init_config(path: str, force: bool) -> int:
     try:
         with open(DEFAULT_CONFIG_PATH, "rb") as f:
             content = f.read()
-        fd = os.open(target, flags, 0o666)
+        fd = os.open(target, flags, 0o644)
         with os.fdopen(fd, "wb") as out:
             out.write(content)
     except FileExistsError:

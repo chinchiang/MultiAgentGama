@@ -167,11 +167,13 @@ def test_node_coverage_problem_by_version():
 
 
 def test_node_coverage_args_only_use_globs_where_supported():
-    options, filters = node_coverage_args((22, 14, 0), "/srv/app")
+    # POSIX 路徑明確以 POSIX 規則判斷（預設看目前平台，Windows CI 上會改用 Windows 規則）
+    # POSIX paths judged by POSIX rules explicitly (the default follows the current platform, Windows on Windows CI)
+    options, filters = node_coverage_args((22, 14, 0), "/srv/app", windows=False)
     assert options == ["--experimental-test-coverage", "--disable-warning=MaxListenersExceededWarning"]
     assert filters == ["--test-coverage-include=/srv/app/**", "--test-coverage-exclude=/srv/app/**/node_modules/**",
                        "--test-coverage-exclude=**/test_vh_*"]
-    assert node_coverage_args((20, 11, 0), "/srv/app")[1] == []  # 22.5 之前沒有 glob 篩選 ／ no glob filters before 22.5
+    assert node_coverage_args((20, 11, 0), "/srv/app", windows=False)[1] == []  # 22.5 之前沒有 glob 篩選 ／ no glob filters before 22.5
     # 含 glob 特殊字元的根目錄不加 include（只剩排除模式，靠自己的篩選）。Windows 絕對路徑改成正斜線後可以
     # A root with glob metacharacters gets no include (only the excludes, our own filtering does the rest). A Windows
     # absolute path can, once rewritten to forward slashes
@@ -183,7 +185,8 @@ def test_node_coverage_args_only_use_globs_where_supported():
 
 def test_node_test_command_keeps_spec_and_junit_and_adds_lcov():
     cmd = node_test_command("node", ["/r/test_vh_000.mjs"], "/r/junit.xml", False, True, 0,
-                            lcov_path="/r/lcov.info", node_version=(22, 14, 0), coverage_include_root="/srv/app")
+                            lcov_path="/r/lcov.info", node_version=(22, 14, 0), coverage_include_root="/srv/app",
+                            coverage_windows=False)
     test_at = cmd.index("--test")
     assert cmd[1:test_at] == ["--experimental-test-coverage", "--disable-warning=MaxListenersExceededWarning"]
     assert cmd[test_at + 1:test_at + 7] == ["--test-reporter=spec", "--test-reporter-destination=stdout",

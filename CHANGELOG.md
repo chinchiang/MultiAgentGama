@@ -35,11 +35,13 @@
 
 - 被測程式碼可以改寫的報告（`junit.xml`、lcov 報告）改經 `jscoverage.read_untrusted_file` 讀回：POSIX 上以 `O_NOFOLLOW` 加 `O_NONBLOCK` 開啟（Windows 上以 `lstat` 檢查重新剖析點、以 `fstat` 確認是同一個檔案），只接受一般檔案、與檢查時同一個 inode、只有一個硬連結、不超過 64 MiB（`MAX_REPORT_BYTES`）；指向主機檔案的 symlink、FIFO、硬連結或過大的檔案一律算「沒有報告」，雙語原因放在 stderr 最前面（junit）或記一行 WARNING（lcov）。
 - `--init-config` 即使加上 `--force` 也拒絕符號連結（不論是否懸空）與不是一般檔案的目標，並以 `O_NOFOLLOW` 加 `O_EXCL`（`--force` 時為 `O_TRUNC`）開啟，不受信任的 checkout 裡預先放好的符號連結因此無法讓它在別處建立或覆寫檔案。
+- `--init-config` 建立檔案時的權限遮罩由 `0o666` 改為 `0o644`（CodeQL `py/overly-permissive-file`）。
 
 ### 修正
 
 - POSIX 上的 JS/TS 涵蓋率：含反斜線的目標路徑再次不加 `--test-coverage-include`（0.10.1 會把 `/home/u/a\b` 改寫成指向別處的 `/home/u/a/b`）；只有在 Windows 規則下（Windows 或帶磁碟機代號）反斜線才是分隔符。目標的每種寫法（abspath 與 realpath）各給一個 include（Node 以 OR 合併）；Windows 上兩種寫法只差在磁碟機代號大小寫時才加 include（對應的網路磁碟機與 UNC、目錄名稱大小寫或 junction 不同時，退回只用排除模式與自己的 lcov 篩選）。UNC 路徑可以；`\\?\`／`\\.\` 裝置路徑、`C:foo` 與 `/` 不加 include。
 - CLI：寫不出雙語文字的串流（例如 `PYTHONIOENCODING=ascii`、`LANG=C`）在每個平台上都改用 `backslashreplace` 輸出，而不是以 `UnicodeEncodeError` 當掉；參數解析、`--help`／`--version` 與 `--init-config` 也在防護內執行，意外錯誤以 5 結束（Ctrl-C 為 130），不再是 Python 預設的 1。
+- Action 的 runner 在 Windows 的 cp1252 主控台印雙語 `::error::` 時不再以 `UnicodeEncodeError`（exit 1）結束：與 CLI 一樣先把 stdio 改成可寫出雙語文字。
 
 ### 測試
 

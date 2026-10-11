@@ -190,6 +190,11 @@ def warnings_for(rc: int, fail_on: str, summary: Optional[Dict[str, Any]]) -> Li
 def main(argv: Optional[List[str]] = None) -> int:
     """執行稽核、寫出 outputs 與 summary，回傳 step 的 exit code ／ Runs the audit, writes the outputs and summary,
     and returns the step's exit code."""
+    # 雙語的 ::error:: 與摘要在 Windows 的 cp1252 主控台會 UnicodeEncodeError；與 CLI 一樣先把 stdio 改成可寫出它們
+    # Bilingual ::error:: lines and the summary raise UnicodeEncodeError on a Windows cp1252 console; make stdio able
+    # to write them first, as the CLI does
+    from vibeharness.cli import _force_utf8_stdio
+    _force_utf8_stdio()
     argv = list(sys.argv[1:] if argv is None else argv)
     fail_on = os.environ.get("VH_FAIL_ON", "needs-fixes")
     if fail_on not in FAIL_ON_VALUES:
