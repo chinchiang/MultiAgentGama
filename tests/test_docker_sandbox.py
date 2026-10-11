@@ -136,20 +136,25 @@ def test_root_harness_runs_the_container_as_nobody(tmp_path, monkeypatch):
 
 def test_root_harness_opens_the_run_dir_for_nobody(tmp_path, monkeypatch):
     """以 root 執行時容器會以 nobody 身分執行，因此執行目錄（junit.xml、coverage）必須
-    讓它可寫；CI runner 不是 root，所以這條分支靠偽造 uid 來演練。
+    讓它可寫：目錄交給 nobody（chown 65534:65534）並設成 0700，而不是開放給所有人的 0777；
+    CI runner 不是 root，所以這條分支靠偽造 uid 與 chown 來演練。
     As root the container runs as nobody, so the run dir (junit.xml, coverage) must be writable
-    for it; CI runners are not root, so this branch is exercised by faking the uid."""
+    for it: the dir is handed to nobody (chown 65534:65534) with mode 0700, not opened to everyone with
+    0777; CI runners are not root, so this branch is exercised by faking the uid and chown."""
     if not hasattr(os, "getuid"):
         pytest.skip("POSIX only")
     monkeypatch.setattr(sandbox_mod.os, "getuid", lambda: 0, raising=False)
     monkeypatch.setattr(sandbox_mod.os, "getgid", lambda: 0, raising=False)
+    chowned = []
+    monkeypatch.setattr(sandbox_mod.os, "chown", lambda path, uid, gid: chowned.append((path, uid, gid)), raising=False)
     target = tmp_path / "app"
     target.mkdir()
     run_dir = tmp_path / "run"
-    run_dir.mkdir(mode=0o700)
+    run_dir.mkdir(mode=0o755)
     cmd, _, _ = _sandbox()._build_command(str(run_dir), ["test_vh_000.py"], str(target), False, None, None)
     assert "--user" in cmd and cmd[cmd.index("--user") + 1] == "65534:65534"
-    assert run_dir.stat().st_mode & 0o777 == 0o777
+    assert chowned == [(str(run_dir), 65534, 65534)]
+    assert run_dir.stat().st_mode & 0o777 == 0o700
 
 
 def test_bind_quotes_paths_with_commas():

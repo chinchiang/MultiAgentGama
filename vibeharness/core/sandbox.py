@@ -8,12 +8,12 @@ import shutil
 import signal
 import uuid
 import logging
-from typing import Dict, Optional, Tuple, List, Any
+from typing import Dict, Optional, Sequence, Tuple, List, Any, Union
 
 from vibeharness.core.i18n import bi
 from vibeharness.core.jscoverage import (
-    LCOV_REPORT_NAME, JsLineCoverage, node_coverage_args, node_coverage_problem, read_lcov_file,
-    strip_coverage_glob_warning,
+    LCOV_REPORT_NAME, MAX_REPORT_BYTES, JsLineCoverage, node_coverage_args, node_coverage_problem, read_lcov_file,
+    read_untrusted_file, strip_coverage_glob_warning,
 )
 
 logger = logging.getLogger("VibeHarness.Sandbox")
@@ -218,14 +218,22 @@ _CAPTURE_HEAD_BYTES = 1024 * 1024
 # tmpfs（等於吃掉主機記憶體）。上限是「每個檔案」的：pytest 的擷取暫存檔、junit.xml、.coverage 與測試自己
 # 寫的檔案各自受限，正常的報告（KB～MB 級）遠低於它；比讀回上限 _MAX_CAPTURE_BYTES 大，讀回時的截斷仍照常
 # 生效。超過上限的寫入得到 EFBIG（OSError errno 27；SIGXFSZ 在子行程中被忽略，所以行程不會因此被殺）。
-# docker 沙盒不套用（容器有自己的 tmpfs 大小與記憶體上限）
+# docker 沙盒也用同一個上限：容器以 --ulimit fsize 限制，主機上的 docker CLI 以 RLIMIT_FSIZE 限制（見 OUTPUT_CAP_NOTE）
 # The largest single file a local sandbox child may write (RLIMIT_FSIZE, POSIX): stops a print loop from writing
 # gigabytes into tmpfs (that is, into host memory). The cap is per file: pytest's capture temp files, junit.xml,
 # .coverage and files the test writes are each bounded, and normal reports (KB to MB) are far below it; it is larger
 # than the read-back cap _MAX_CAPTURE_BYTES, so the read-back truncation still applies. A write beyond it gets EFBIG
-# (OSError errno 27; SIGXFSZ is ignored in the child, so the process is not killed by it). Not applied to the
-# docker sandbox (the container has its own tmpfs size and memory caps)
+# (OSError errno 27; SIGXFSZ is ignored in the child, so the process is not killed by it). The docker sandbox uses the
+# same cap: the container through --ulimit fsize, the docker CLI on the host through RLIMIT_FSIZE (see OUTPUT_CAP_NOTE)
 SANDBOX_MAX_FILE_BYTES = 64 * 1024 * 1024
+# 擷取到的 stdout／stderr 達到單檔上限時，_run 接在 stderr 最後的說明（POSIX；子行程之後的輸出得到 EFBIG 而被丟棄）。
+# docker 沙盒的 docker CLI 也受這個上限約束：它寫不下輸出就先結束了，容器會被移除、結果記成無法正常執行
+# The note _run appends at the very end of stderr when the captured stdout / stderr reached the per-file cap (POSIX;
+# the child's later output got EFBIG and was dropped). The docker sandbox's docker CLI is bounded by the same cap: it
+# quits when it cannot write the output, so the container is removed and the outcome is recorded as not run correctly
+OUTPUT_CAP_NOTE = bi("擷取到的輸出達到單檔大小上限，之後的輸出被丟棄（結果可能不完整）",
+                     "The captured output reached the per-file size cap and anything after it was dropped "
+                     "(the outcome may be incomplete)")
 
 
 def _read_capture(stream: Any) -> str:
@@ -366,14 +374,23 @@ class LocalSubprocessSandbox:
                 return TIMEOUT_EXIT_CODE, stdout, (
                     f"Execution timed out after {timeout} seconds; module(s) attempted: {', '.join(sorted(files))}."
                 ), duration, None, None
+            if stderr.endswith(OUTPUT_CAP_NOTE) and self._after_output_cap(cmd):
+                # 輸出超過上限、結果不可信（例如 docker CLI 寫不下輸出就先結束了，容器可能還在寫報告）：不讀報告
+                # The output exceeded the cap and the outcome cannot be trusted (e.g. the docker CLI quit when it could
+                # not write the output, while the container may still be writing the reports): no report is read
+                return EXECUTION_FAILURE_EXIT_CODE, stdout, stderr, duration, None, None
 
             coverage_percent = self._collect_coverage(
                 run_dir, stdout, base_dir, coverage_target, coverage_sink
             ) if collect_coverage else None
-            junit_xml = None
-            if os.path.exists(junit_path):
-                with open(junit_path, "r", encoding="utf-8") as f:
-                    junit_xml = f.read()
+            # 被測程式碼可以把 junit.xml 換成 symlink、FIFO 或巨大的檔案：安全地讀回，拒絕時把原因放在 stderr 最前面
+            # （「沙盒沒有產生報告」的原因只顯示 stderr 的開頭）
+            # The code under test can swap junit.xml for a symlink, a FIFO or a huge file: it is read back safely, and a
+            # refusal puts its reason at the front of stderr (the "sandbox produced no report" reason only shows the
+            # start of stderr)
+            junit_xml, refusal = read_untrusted_file(junit_path, MAX_REPORT_BYTES)
+            if refusal:
+                stderr = f"{refusal}\n{stderr}" if stderr else refusal
             return returncode, stdout, stderr, duration, coverage_percent, junit_xml
         except Exception as e:
             duration = time.time() - start_time
@@ -457,6 +474,14 @@ class LocalSubprocessSandbox:
     def _after_timeout(self, cmd: List[str]):
         """在逾時指令的行程樹被砍掉之後，以該指令呼叫。
         Called with the timed-out command after its process tree has been killed."""
+
+    def _after_output_cap(self, cmd: List[str]) -> bool:
+        """擷取到的輸出達到單檔上限（stderr 以 OUTPUT_CAP_NOTE 結尾）時呼叫：回傳 True 表示這次結果不可信、不讀報告。
+        本機沙盒的測試行程只是寫不下更多輸出（EFBIG），報告照常讀回，所以回傳 False；docker 沙盒覆寫它。
+        Called when the captured output reached the per-file cap (stderr ends with OUTPUT_CAP_NOTE): True means this
+        outcome cannot be trusted and no report is read. A local sandbox's test process merely cannot write more output
+        (EFBIG) and its reports are read back as usual, so False; the docker sandbox overrides it."""
+        return False
 
     @staticmethod
     def _pytest_options(rootdir: str, junit_path: str) -> List[str]:
@@ -563,6 +588,9 @@ class LocalSubprocessSandbox:
             # 開了新 session 的孫行程可能存活並繼續寫入檔案；我們只讀回目前已有的內容
             # A grandchild that started a new session may survive and keep writing; only what is there now is read
             stdout, stderr = _read_capture(out_file), _read_capture(err_file)
+            cap = (limits.get("file_bytes") or SANDBOX_MAX_FILE_BYTES) if "preexec_fn" in popen_kwargs and limits else 0
+            if cap and max(os.fstat(out_file.fileno()).st_size, os.fstat(err_file.fileno()).st_size) >= cap:
+                stderr = f"{stderr}\n{OUTPUT_CAP_NOTE}" if stderr else OUTPUT_CAP_NOTE
         if finished is None:
             note = bi("沙盒無法取得測試行程的結束狀態（已被其他地方回收）；結果不可信",
                       "The sandbox could not obtain the test process's exit status (it was reaped elsewhere); "
@@ -689,6 +717,8 @@ CONTAINER_RUN_DIR = "/sandbox"     # 產生的測試模組、JUnit XML 與涵蓋
 # 轉送給 docker CLI 本身（絕不進入容器），讓遠端 daemon／context 能繼續運作
 # Forwarded to the docker CLI itself (never into the container) so remote daemons / contexts keep working
 _DOCKER_CLI_ENV_VARS = {"DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY"}
+# 容器在 Windows 主機與 root harness 下使用的 nobody uid／gid ／ The nobody uid / gid the container uses on Windows hosts and under a root harness
+_NOBODY_ID = 65534
 
 
 def container_target_dir(host_dir: str) -> str:
@@ -840,14 +870,14 @@ class DockerSandbox(LocalSubprocessSandbox):
     def _user() -> str:
         # POSIX 上使用主機使用者，讓寫入執行目錄的檔案仍可刪除；否則使用 nobody。
         # 以 root 執行的 harness（CI 中很常見）否則會默默跑出 root 容器，與
-        # 文件所述的非 root 隔離相牴觸；因此改用 nobody，並把執行目錄權限放寬。
+        # 文件所述的非 root 隔離相牴觸；因此改用 nobody，並把執行目錄交給它。
         # The host user on POSIX, so files written to the run directory stay removable; otherwise nobody.
         # A root harness (common in CI) would otherwise silently run a root container, contradicting
-        # the documented non-root isolation; nobody is used instead and the run dir is opened up.
+        # the documented non-root isolation; nobody is used instead and the run dir is handed to it.
         if sys.platform == "win32":
-            return "65534:65534"
+            return f"{_NOBODY_ID}:{_NOBODY_ID}"
         if os.getuid() == 0:
-            return "65534:65534"
+            return f"{_NOBODY_ID}:{_NOBODY_ID}"
         return f"{os.getuid()}:{os.getgid()}"
 
     def _build_command(
@@ -886,11 +916,22 @@ class DockerSandbox(LocalSubprocessSandbox):
         `docker run` with the hardening flags, mounts and environment, up to (not including) the image."""
         target = container_target_dir(base_dir)
         if hasattr(os, "getuid") and os.getuid() == 0:
-            # 容器會以 nobody 身分把 junit.xml／涵蓋率寫進執行目錄（見 _user）；
-            # root 擁有的 0755 目錄會讓每次執行都失敗且沒有報告。
-            # The container writes junit.xml/coverage into the run dir as nobody (see _user);
-            # a root-owned 0755 dir would make every run fail with no report.
-            os.chmod(run_dir, 0o777)
+            # 容器會以 nobody 身分把 junit.xml／涵蓋率寫進執行目錄（見 _user）；root 擁有的 0755 目錄會讓每次執行都失敗
+            # 且沒有報告。把目錄交給 nobody（0700）而不是開放給所有人（0777）：主機上的其他使用者不能在裡面放檔案或
+            # 換掉報告；root harness 本來就讀得到、也刪得掉。執行目錄裡沒有容器要寫入的子目錄（Node 的 V8 涵蓋率暫存
+            # 在容器的 /tmp tmpfs），我們寫入的測試模組維持 root 擁有、0644，nobody 讀得到。
+            # 注意：啟用 userns-remap 的 daemon 會把容器的 nobody 對應到另一個主機 uid，root harness 需要停用它
+            # （或以非 root 執行 harness，容器就以同一個 uid 執行）
+            # The container writes junit.xml/coverage into the run dir as nobody (see _user); a root-owned 0755 dir would
+            # make every run fail with no report. The dir is handed to nobody (0700) rather than opened to everyone
+            # (0777): other host users cannot drop files into it or swap the reports; the root harness can read and
+            # remove it anyway. The run dir has no sub-directory the container writes into (Node keeps its V8 coverage
+            # scratch data in the container's /tmp tmpfs), and the test modules we write stay root-owned 0644, readable
+            # by nobody.
+            # NOTE: a daemon with userns-remap maps the container's nobody to another host uid; a root harness needs it
+            # disabled (or run the harness as non-root, and the container runs as that same uid)
+            os.chown(run_dir, _NOBODY_ID, _NOBODY_ID)
+            os.chmod(run_dir, 0o700)
 
         # `timeout` 是容器內的最後防線：如果主機端的清理（docker rm -f）
         # 失敗了，pytest 仍會死掉而不是永遠跑下去。它的 124 結束碼與 TIMEOUT_EXIT_CODE 一致。
@@ -904,6 +945,14 @@ class DockerSandbox(LocalSubprocessSandbox):
             "--network", self.network,
             "--read-only", "--tmpfs", "/tmp:rw,nosuid,noexec,size=256m",
             "--memory", self.memory, "--cpus", self.cpus, "--pids-limit", str(self.pids_limit),
+            # 容器寫進可寫入 bind（即主機磁碟）的單一檔案與本機沙盒同樣以 64 MiB 為上限；不留 daemon 端的日誌
+            # （預設的 json-file 會把容器的全部輸出另外寫到主機的 /var/lib/docker，沒有上限）。附加模式的
+            # `docker run` 照樣把輸出串流給 CLI
+            # A single file the container writes into the writable bind (that is, the host disk) is capped at 64 MiB like
+            # in the local sandbox; no daemon-side log (the default json-file writes all of the container's output
+            # again into the host's /var/lib/docker, without a cap). An attached `docker run` still streams the output
+            # to the CLI
+            "--ulimit", f"fsize={SANDBOX_MAX_FILE_BYTES}", "--log-driver", "none",
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "--user", self._user(),
             "--mount", self._bind(base_dir, target, readonly=True),
@@ -923,7 +972,21 @@ class DockerSandbox(LocalSubprocessSandbox):
         return cmd
 
     def _limits(self, timeout: int) -> Dict[str, int]:
-        return {}  # 容器自帶 --memory／--cpus 與容器內的 `timeout` ／ the container carries --memory/--cpus and the in-container `timeout`
+        # 容器自帶 --memory／--cpus 與容器內的 `timeout`；主機上的 docker CLI 只受單檔大小上限約束（POSIX），讓它寫進
+        # 擷取暫存檔的 stdout／stderr 不會無限成長（見 _after_output_cap）
+        # The container carries --memory/--cpus and the in-container `timeout`; the docker CLI on the host is only bound
+        # by the per-file size cap (POSIX), so the stdout / stderr it writes into the capture temp files cannot grow
+        # without bound (see _after_output_cap)
+        return {"file_bytes": SANDBOX_MAX_FILE_BYTES}
+
+    def _after_output_cap(self, cmd: List[str]) -> bool:
+        """docker CLI 寫不下超過上限的輸出（EFBIG，SIGXFSZ 已被忽略）就以錯誤結束，容器卻還在跑、可能還在寫報告：
+        移除容器（與逾時相同），這次結果記成無法正常執行。
+        The docker CLI exits with an error once it cannot write output beyond the cap (EFBIG, SIGXFSZ is ignored), while
+        the container keeps running and may still be writing the reports: the container is removed (as on a timeout) and
+        this outcome is recorded as not run correctly."""
+        self._after_timeout(cmd)
+        return True
 
     def _after_timeout(self, cmd: List[str]):
         # 砍掉 docker CLI 不會停止容器；要明確移除它
@@ -982,23 +1045,27 @@ def detect_node(node_bin: str = "node") -> Tuple[Optional[str], Optional[Tuple[i
 def node_test_command(node: str, files: List[str], junit_path: str, strip_types: bool,
                       collect_coverage: bool, max_old_space_mb: int, lcov_path: Optional[str] = None,
                       node_version: Optional[Tuple[int, int, int]] = None,
-                      coverage_include_root: Optional[str] = None) -> List[str]:
+                      coverage_include_root: Union[str, Sequence[str], None] = None,
+                      coverage_windows: Optional[bool] = None) -> List[str]:
     """`node --test`，spec 報告器輸出到 stdout，junit 報告器寫入 junit_path。collect_coverage 加上
     --experimental-test-coverage；再給 lcov_path 與 node_version 時（呼叫端已確認版本支援涵蓋率所需的旗標，見
     jscoverage.node_coverage_problem），多一組 lcov 報告器寫到 lcov_path，Node >= 22.5 時再加上限制在
-    coverage_include_root 的涵蓋率篩選（見 jscoverage.node_coverage_args）。spec／junit 兩組報告器維持原樣。
+    coverage_include_root 的涵蓋率篩選（可以是同一目錄的幾種拼法；coverage_windows 決定路徑規則，見
+    jscoverage.node_coverage_args）。spec／junit 兩組報告器維持原樣。
     `node --test` with the spec reporter on stdout and the junit reporter into junit_path. collect_coverage adds
     --experimental-test-coverage; with lcov_path and node_version as well (the caller has checked that the version supports
     the flags coverage needs, see jscoverage.node_coverage_problem) an lcov reporter writes into lcov_path, and Node >= 22.5
-    also gets coverage filters limited to coverage_include_root (see jscoverage.node_coverage_args). The spec / junit
-    reporter pairs stay as they are."""
+    also gets coverage filters limited to coverage_include_root (possibly several spellings of one directory;
+    coverage_windows picks the path rules, see jscoverage.node_coverage_args). The spec / junit reporter pairs stay as
+    they are."""
     cmd = [node]
     if max_old_space_mb > 0:
         cmd.append(f"--max-old-space-size={max_old_space_mb}")
     if strip_types:
         cmd.append("--experimental-strip-types")
     lcov = collect_coverage and lcov_path is not None and node_version is not None
-    options, filters = node_coverage_args(node_version, coverage_include_root) if lcov and node_version else ([], [])
+    options, filters = (node_coverage_args(node_version, coverage_include_root, coverage_windows)
+                        if lcov and node_version else ([], []))
     cmd += options
     cmd += ["--test", "--test-reporter=spec", "--test-reporter-destination=stdout",
             "--test-reporter=junit", f"--test-reporter-destination={junit_path}"]
@@ -1146,14 +1213,20 @@ class NodeSubprocessSandbox(_NodeCoverageMixin, LocalSubprocessSandbox):
             # V8's raw coverage data is pinned inside the run directory too (even when the caller's custom_env points
             # elsewhere), so it is removed along with it after a kill on a timeout
             env["NODE_V8_COVERAGE"] = os.path.join(run_dir, "v8-coverage")
-        # 實體路徑，與 Node 回報的一致；Windows 路徑改成正斜線後當 glob（見 node_coverage_args）
-        # The physical path, matching what Node reports; a Windows path becomes a forward-slash glob
-        # (see node_coverage_args)
-        include_root = os.path.realpath(coverage_target or base_dir)
+        # 兩種拼法（abspath 與 realpath，與 _coverage_paths 的篩選相同）各給一個 include：Node 在 POSIX 上回報實體路徑，
+        # 但匯入時的拼法也可能是 abspath。Windows 上兩者不同（對應的網路磁碟機、目錄名稱大小寫、junction）時不加
+        # include，只靠排除模式與自己的篩選（見 jscoverage._glob_include_roots）
+        # One include per spelling (abspath and realpath, the same as the filtering in _coverage_paths): Node reports the
+        # physical path on POSIX, but the module may be imported through the abspath spelling. On Windows, when the two
+        # differ (a mapped network drive, directory-name case, a junction), no include is given and only the excludes
+        # and our own filtering apply (see jscoverage._glob_include_roots)
+        include_root = os.path.abspath(coverage_target or base_dir)
+        include_roots = [include_root, os.path.realpath(include_root)]
         cmd = node_test_command(self.node, [os.path.join(run_dir, f) for f in filenames],
                                 os.path.join(run_dir, "junit.xml"), self.strip_types, coverage, self.memory_mb,
                                 lcov_path=os.path.join(run_dir, LCOV_REPORT_NAME) if coverage else None,
-                                node_version=self.node_version, coverage_include_root=include_root)
+                                node_version=self.node_version, coverage_include_root=include_roots,
+                                coverage_windows=sys.platform == "win32")
         return cmd, base_dir, env
 
     def _limits(self, timeout: int) -> Dict[str, int]:
@@ -1216,7 +1289,8 @@ class NodeDockerSandbox(_NodeCoverageMixin, DockerSandbox):
                                  f"{CONTAINER_RUN_DIR}/junit.xml", self.strip_types, coverage, 0,
                                  lcov_path=f"{CONTAINER_RUN_DIR}/{LCOV_REPORT_NAME}" if coverage else None,
                                  node_version=self.node_version,
-                                 coverage_include_root=self._container_coverage_root(base_dir, coverage_target))
+                                 coverage_include_root=self._container_coverage_root(base_dir, coverage_target),
+                                 coverage_windows=False)  # 容器內一律 POSIX ／ always POSIX inside the container
         return cmd, run_dir, self._cli_env()
 
     def _container_coverage_root(self, base_dir: str, coverage_target: Optional[str]) -> str:

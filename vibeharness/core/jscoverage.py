@@ -16,15 +16,20 @@ counting unloaded files as 0% would mean guessing their executable lines, which 
 from pytest-cov: `--cov=<dir>` counts never-imported .py files in that directory (and its package sub-directories) as
 0%, so the JS/TS figure is the coverage of the loaded files and usually reads higher than the Python figure would in
 the same situation."""
+import errno
+import logging
 import ntpath
 import os
 import posixpath
 import re
+import stat
 import sys
 import urllib.parse
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from vibeharness.core.i18n import bi
+
+logger = logging.getLogger("VibeHarness.JsCoverage")
 
 # lcov 報告在執行目錄裡的檔名 ／ The lcov report's file name inside the run directory
 LCOV_REPORT_NAME = "lcov.info"
@@ -102,15 +107,19 @@ def node_coverage_problem(version: Optional[Tuple[int, int, int]]) -> Optional[s
               ">= 21.3), so JS/TS line coverage is not collected")
 
 
-def node_coverage_args(version: Tuple[int, int, int], include_root: Optional[str]) -> Tuple[List[str], List[str]]:
+def node_coverage_args(version: Tuple[int, int, int], include_root: Union[str, Sequence[str], None],
+                       windows: Optional[bool] = None) -> Tuple[List[str], List[str]]:
     """(放在 --test 之前的 Node 選項, 涵蓋率篩選旗標)。篩選旗標只在 Node >= 22.5 時給：include 限制在目標目錄
-    （絕對路徑且不含 glob 特殊字元；Windows 路徑先改成正斜線，見 _glob_include_root），
+    （絕對路徑且不含 glob 特殊字元；Windows 路徑先改成正斜線，見 _glob_include_root；include_root 可以是同一個目錄的
+    幾種拼法，各給一個 include，見 _glob_include_roots；`windows` 決定路徑規則，預設看目前平台），
     exclude 去掉目標根目錄以下的 node_modules（沒有 include 時是任何 node_modules）與產生的測試模組。明確的 include
     會取代 Node 預設「路徑含 /node_modules/ 就排除」的規則，所以本身位於某個 node_modules 底下的目標
     （/x/node_modules/pkg 或 C:/x/node_modules/pkg）也收得到涵蓋率。不論有沒有這些旗標，解析 lcov 時都會再篩一次。
     (Node options placed before --test, coverage filter flags). The filter flags are only given on Node >= 22.5: the
     include limits the report to the target directory (an absolute path without glob metacharacters; a Windows path
-    is rewritten to forward slashes, see _glob_include_root), the excludes drop
+    is rewritten to forward slashes, see _glob_include_root; include_root may be several spellings of the same
+    directory, each getting its own include, see _glob_include_roots; `windows` picks the path rules, the current
+    platform by default), the excludes drop
     node_modules below the target root (any node_modules without an include) and the generated test modules. An
     explicit include replaces Node's default rule of dropping every path containing /node_modules/, so a target that
     itself lives under a node_modules (/x/node_modules/pkg or C:/x/node_modules/pkg) still gets coverage. The lcov
@@ -118,9 +127,10 @@ def node_coverage_args(version: Tuple[int, int, int], include_root: Optional[str
     options = ["--experimental-test-coverage", _DISABLE_LISTENER_WARNING]
     filters: List[str] = []
     if version >= MIN_NODE_VERSION_COVERAGE_GLOBS:
-        root = _glob_include_root(include_root)
-        if root:
-            filters += [f"--test-coverage-include={root}/**", f"--test-coverage-exclude={root}/**/node_modules/**"]
+        roots = _glob_include_roots(include_root, windows)
+        if roots:
+            filters += [f"--test-coverage-include={root}/**" for root in roots]
+            filters += [f"--test-coverage-exclude={root}/**/node_modules/**" for root in roots]
         else:
             filters.append("--test-coverage-exclude=**/node_modules/**")
         filters.append("--test-coverage-exclude=**/test_vh_*")
@@ -260,34 +270,171 @@ class JsLineCoverage:
         return round(100.0 * self.covered_lines / total, 1)
 
 
-def read_lcov_file(path: str) -> Optional[str]:
-    """讀回 lcov 報告；檔案不存在或讀不了時為 None ／ Reads the lcov report back; None when it is missing or unreadable."""
-    if not os.path.isfile(path):
-        return None
+def _reparse_point(st: os.stat_result) -> bool:
+    """Windows 的重新剖析點（symlink、junction 等）；其他平台一律 False。
+    A Windows reparse point (symlink, junction and so on); always False elsewhere."""
+    return bool(getattr(st, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def read_untrusted_file(path: str, max_bytes: int) -> Tuple[Optional[str], Optional[str]]:
+    """讀回沙盒裡不受信任的程式碼可以改寫的檔案（junit.xml、lcov 報告）：(文字, None)；檔案不存在時 (None, None)；
+    拒絕或讀不了時 (None, 雙語原因)。被測程式碼（容器裡的 nobody，或本機沙盒的同一使用者）可以把報告換成指向
+    主機檔案的 symlink、FIFO 或裝置，所以：POSIX 上以 O_NOFOLLOW 開啟（最後一段是 symlink 就失敗）並加上
+    O_NONBLOCK（FIFO 不會讓 harness 卡住）；Windows 沒有 O_NOFOLLOW，改為開啟前以 lstat 拒絕 symlink／重新剖析點，
+    開啟後再比對 fstat 與 lstat 是同一個檔案。開啟後只接受一般檔案（S_ISREG）、只有一個硬連結（不能是主機檔案的
+    硬連結），且不超過 max_bytes（最多讀 max_bytes + 1 位元組，讀的過程中變大也會被拒絕）。換行正規化成 \\n。
+    Reads back a file the untrusted code in the sandbox can rewrite (junit.xml, the lcov report): (text, None); (None,
+    None) when it does not exist; (None, bilingual reason) when it is refused or unreadable. The code under test (nobody
+    in the container, or the same user in the local sandbox) can replace a report with a symlink to a host file, a
+    FIFO or a device, so: on POSIX it is opened with O_NOFOLLOW (fails when the last component is a symlink) plus
+    O_NONBLOCK (a FIFO cannot hang the harness); Windows has no O_NOFOLLOW, so a symlink / reparse point is refused
+    with lstat before opening and fstat is compared with lstat after opening (the same file). Once open only a regular
+    file (S_ISREG) with a single hard link (not a hard link to a host file) of at most max_bytes is accepted (at most
+    max_bytes + 1 bytes are read, so growing while being read is refused too). Newlines are normalised to \\n."""
+    name = os.path.basename(path)
+
+    def refused(zh: str, en: str) -> Tuple[Optional[str], Optional[str]]:
+        reason = bi(f"拒絕讀回沙盒產生的 {name}：{zh}", f"Refused to read back the sandbox's {name}: {en}")
+        logger.warning(reason)
+        return None, reason
+
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            return f.read()
-    except OSError:
-        return None
+        before = os.lstat(path)
+    except FileNotFoundError:
+        return None, None
+    except OSError as e:
+        return refused(f"無法讀取（{e}）", f"it is unreadable ({e})")
+    if stat.S_ISLNK(before.st_mode) or _reparse_point(before):
+        return refused("它是 symlink／重新剖析點", "it is a symbolic link / reparse point")
+    if not stat.S_ISREG(before.st_mode):
+        return refused("它不是一般檔案", "it is not a regular file")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOCTTY", 0)
+    flags |= getattr(os, "O_BINARY", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return None, None
+    except OSError as e:
+        if e.errno == errno.ELOOP:  # 檢查之後才被換成 symlink ／ swapped for a symlink after the check
+            return refused("它是 symlink／重新剖析點", "it is a symbolic link / reparse point")
+        return refused(f"無法讀取（{e}）", f"it is unreadable ({e})")
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return refused("它不是一般檔案", "it is not a regular file")
+        if (st.st_dev, st.st_ino) != (before.st_dev, before.st_ino):
+            return refused("檢查之後被換掉了", "it was replaced after being checked")
+        if st.st_nlink > 1:
+            return refused("它有其他硬連結", "it has other hard links")
+        if st.st_size > max_bytes:
+            return refused(f"超過 {max_bytes} 位元組的上限", f"it exceeds the {max_bytes}-byte cap")
+        chunks: List[bytes] = []
+        remaining = max_bytes + 1
+        while remaining > 0:
+            chunk = os.read(fd, min(remaining, 1024 * 1024))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if remaining <= 0:
+            return refused(f"超過 {max_bytes} 位元組的上限", f"it exceeds the {max_bytes}-byte cap")
+    except OSError as e:
+        return refused(f"無法讀取（{e}）", f"it is unreadable ({e})")
+    finally:
+        os.close(fd)
+    return b"".join(chunks).decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n"), None
 
 
-def _glob_include_root(include_root: Optional[str]) -> Optional[str]:
-    """可當成 --test-coverage-include 的絕對路徑；不行時為 None。
-    Windows 路徑（磁碟機代號或反斜線）先改成正斜線：Node 的 path.win32.matchesGlob 用 minimatch 的
-    windowsPathsNoEscape，把 `/` 與 `\\` 都當分隔符，所以 `C:/proj/pkg/**` 比對得到 `C:\\proj\\pkg\\m.mjs`。
-    含 glob 特殊字元（含 POSIX 路徑裡的反斜線）時不加 include，避免模式被當成跳脫或字元集合。
-    An absolute path usable as --test-coverage-include, or None. A Windows path (a drive prefix or
-    backslashes) is rewritten to forward slashes: Node's path.win32.matchesGlob uses minimatch with
-    windowsPathsNoEscape, so `/` and `\\` are both separators and `C:/proj/pkg/**` matches
-    `C:\\proj\\pkg\\m.mjs`. A path with glob metacharacters (including a backslash in a POSIX path) gets
-    no include, so the pattern is not read as an escape or a character class."""
+# 讀回的 junit.xml／lcov 報告的大小上限：與本機沙盒（RLIMIT_FSIZE）和 docker 沙盒（--ulimit fsize）寫檔的上限相同，
+# 正常寫出的報告不會超過它
+# The size cap of a junit.xml / lcov report read back: the same as the cap on writing a file in the local sandbox
+# (RLIMIT_FSIZE) and the docker sandbox (--ulimit fsize), so a report written normally never exceeds it
+MAX_REPORT_BYTES = 64 * 1024 * 1024
+
+
+def read_lcov_file(path: str) -> Optional[str]:
+    """讀回 lcov 報告（見 read_untrusted_file）；檔案不存在、被拒絕或讀不了時為 None（被拒絕時記一行雙語 WARNING）。
+    Reads the lcov report back (see read_untrusted_file); None when it is missing, refused or unreadable (a refusal
+    logs a bilingual WARNING)."""
+    return read_untrusted_file(path, MAX_REPORT_BYTES)[0]
+
+
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+
+
+def _glob_include_root(include_root: Optional[str], windows: Optional[bool] = None) -> Optional[str]:
+    """可當成 --test-coverage-include 的絕對路徑；不行時為 None。`windows` 決定路徑規則（預設看目前平台；容器內
+    一律 POSIX），與 target_relative_path 相同。
+    Windows 規則（或帶磁碟機代號的路徑）下反斜線是分隔符，先改成正斜線：Node 的 path.win32.matchesGlob 用 minimatch
+    的 windowsPathsNoEscape，把 `/` 與 `\\` 都當分隔符，所以 `C:/proj/pkg/**` 比對得到 `C:\\proj\\pkg\\m.mjs`（磁碟機
+    代號不分大小寫，目錄名稱分大小寫）。UNC 路徑（\\\\server\\share\\x）可以；`\\\\?\\`、`\\\\.\\` 裝置路徑與只有磁碟機
+    代號的相對路徑（C:foo）不行。POSIX 規則下反斜線是 glob 的跳脫字元，含反斜線的路徑不加 include（v0.9.0 的行為），
+    絕不把 /home/u/a\\b 改成指向別處的 /home/u/a/b。含 glob 特殊字元時同樣不加 include，避免模式被當成跳脫或字元
+    集合；根目錄本身（/）也不加（等於沒有篩選）。
+    An absolute path usable as --test-coverage-include, or None. `windows` picks the path rules (the current platform
+    by default; always POSIX inside a container), like target_relative_path.
+    Under the Windows rules (or for a path with a drive prefix) a backslash is a separator and is rewritten to a
+    forward slash first: Node's path.win32.matchesGlob uses minimatch with windowsPathsNoEscape, so `/` and `\\` are
+    both separators and `C:/proj/pkg/**` matches `C:\\proj\\pkg\\m.mjs` (the drive letter is case-insensitive, directory
+    names are case-sensitive). A UNC path (\\\\server\\share\\x) works; a `\\\\?\\` / `\\\\.\\` device path and a
+    drive-relative path (C:foo) do not. Under the POSIX rules a backslash is the glob escape character, so a path with
+    one gets no include (the v0.9.0 behaviour) and /home/u/a\\b is never rewritten into /home/u/a/b, which points
+    elsewhere. A path with glob metacharacters likewise gets no include, so the pattern is not read as an escape or a
+    character class; neither does the root itself (/), which would filter nothing."""
     if not include_root:
         return None
-    looks_windows = "\\" in include_root or (len(include_root) >= 2 and include_root[1] == ":")
-    normalized = include_root.replace("\\", "/") if looks_windows else include_root
+    windows = sys.platform == "win32" if windows is None else windows
+    windows_rules = windows or bool(_WINDOWS_DRIVE_RE.match(include_root))
+    normalized = include_root.replace("\\", "/") if windows_rules else include_root
     if _GLOB_META_RE.search(normalized):
         return None
-    drive = len(normalized) >= 3 and normalized[1] == ":" and normalized[2] == "/"
-    if not (normalized.startswith("/") or drive):
+    if windows_rules:
+        if normalized.startswith("//"):
+            # UNC：至少要有 //server/share，且不能是 //./ 或 //?/ 裝置路徑（? 已被特殊字元擋下）
+            # UNC: needs at least //server/share and must not be a //./ or //?/ device path (? is already caught)
+            parts = normalized[2:].split("/")
+            if len(parts) < 2 or not parts[0] or not parts[1] or parts[0] == ".":
+                return None
+            return "//" + "/".join(p for p in parts if p)
+        if not re.match(r"^[A-Za-z]:/", normalized):
+            return None  # 沒有磁碟機的 /x、相對路徑或 C:foo ／ /x without a drive, a relative path or C:foo
+        # 磁碟機根目錄 C:/ 變成 C:（模式是 C:/**）；連續的斜線收成一個 ／ the drive root C:/ becomes C: (pattern C:/**); repeated slashes collapse
+        return normalized[:2] + re.sub(r"/+", "/", normalized[2:]).rstrip("/")
+    if not normalized.startswith("/"):
         return None
-    return normalized.rstrip("/")
+    collapsed = re.sub(r"/+", "/", normalized).rstrip("/")
+    return collapsed or None
+
+
+def _glob_include_roots(include_roots: Union[str, Sequence[str], None], windows: Optional[bool] = None) -> List[str]:
+    """所有拼法都能當 include 時，回傳去重後的 include 根目錄；否則為空串列（不加 include，退回只用排除模式與自己的
+    篩選）。include 只是縮小報告的最佳化（以及讓位於 node_modules 底下的目標收得到涵蓋率）：多收的檔案會被解析 lcov
+    時的篩選丟掉，但漏掉 Node 實際回報的那個拼法就會讓涵蓋率變成 0，所以任何一個拼法表達不了就整個不加。
+    Windows 上兩個拼法（abspath 與 realpath）只在磁碟機代號大小寫不同時才算同一個；其他差異（對應的網路磁碟機
+    Z:\\ 與 realpath 的 \\\\server\\share、目錄名稱大小寫、junction）都不加 include：Node 回報的是匯入時的拼法，
+    而 include 的目錄名稱分大小寫，猜錯就什麼都不剩。POSIX 上每個拼法各給一個 include（Node 把多個 include 以 OR 合併）。
+    The deduplicated include roots when every spelling can be one; otherwise an empty list (no include, falling back to
+    the excludes and our own filtering). The include only narrows the report (and lets a target under node_modules get
+    coverage): files collected in excess are dropped by the filtering when the lcov is parsed, but missing the spelling
+    Node actually reports turns the coverage into 0, so when any one spelling cannot be expressed none is given.
+    On Windows two spellings (abspath and realpath) only count as one when they differ in the drive letter's case
+    alone; any other difference (a mapped drive Z:\\ against the realpath \\\\server\\share, directory-name case, a
+    junction) gets no include: Node reports the spelling the module was imported with and the include's directory names
+    are case-sensitive, so a wrong guess leaves nothing. On POSIX each spelling gets its own include (Node ORs several
+    includes)."""
+    if include_roots is None:
+        return []
+    candidates = [include_roots] if isinstance(include_roots, str) else list(include_roots)
+    windows = sys.platform == "win32" if windows is None else windows
+    roots: List[str] = []
+    for candidate in candidates:
+        root = _glob_include_root(candidate, windows)
+        if root is None:
+            return []
+        if windows and _WINDOWS_DRIVE_RE.match(root):
+            root = root[0].upper() + root[1:]  # 磁碟機代號不分大小寫 ／ the drive letter is case-insensitive
+        if root not in roots:
+            roots.append(root)
+    if windows and len(roots) > 1:
+        return []
+    return roots
