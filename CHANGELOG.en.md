@@ -35,7 +35,7 @@ Fifth review round: the Action takes its verdict only from the audit's own summa
 
 - The reports the code under test can rewrite (`junit.xml`, the lcov report) are read back through `jscoverage.read_untrusted_file`: `O_NOFOLLOW` plus `O_NONBLOCK` on POSIX (an `lstat` reparse-point check and an `fstat` identity check on Windows), a regular file only, the same inode as checked, a single hard link and at most 64 MiB (`MAX_REPORT_BYTES`); a symlink to a host file, a FIFO, a hard link or an oversized file is "no report", with a bilingual reason at the front of stderr (junit) or in a WARNING (lcov).
 - `--init-config` refuses a symlink (dangling or not) or a non-regular target even with `--force` and opens the file with `O_NOFOLLOW` plus `O_EXCL` (`O_TRUNC` with `--force`), so a planted symlink in an untrusted checkout cannot make it create or overwrite a file elsewhere.
-- `--init-config` creates its file with mode `0o644` instead of `0o666` (CodeQL `py/overly-permissive-file`).
+- `--init-config` creates its file with mode `0o600` (owner read/write only) instead of `0o666` (CodeQL `py/overly-permissive-file`).
 
 ### Fixed
 

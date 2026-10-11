@@ -35,7 +35,7 @@
 
 - 被測程式碼可以改寫的報告（`junit.xml`、lcov 報告）改經 `jscoverage.read_untrusted_file` 讀回：POSIX 上以 `O_NOFOLLOW` 加 `O_NONBLOCK` 開啟（Windows 上以 `lstat` 檢查重新剖析點、以 `fstat` 確認是同一個檔案），只接受一般檔案、與檢查時同一個 inode、只有一個硬連結、不超過 64 MiB（`MAX_REPORT_BYTES`）；指向主機檔案的 symlink、FIFO、硬連結或過大的檔案一律算「沒有報告」，雙語原因放在 stderr 最前面（junit）或記一行 WARNING（lcov）。
 - `--init-config` 即使加上 `--force` 也拒絕符號連結（不論是否懸空）與不是一般檔案的目標，並以 `O_NOFOLLOW` 加 `O_EXCL`（`--force` 時為 `O_TRUNC`）開啟，不受信任的 checkout 裡預先放好的符號連結因此無法讓它在別處建立或覆寫檔案。
-- `--init-config` 建立檔案時的權限遮罩由 `0o666` 改為 `0o644`（CodeQL `py/overly-permissive-file`）。
+- `--init-config` 建立檔案時的權限遮罩由 `0o666` 改為 `0o600`（只有擁有者可讀寫；CodeQL `py/overly-permissive-file`）。
 
 ### 修正
 
