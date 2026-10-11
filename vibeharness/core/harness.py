@@ -71,6 +71,13 @@ def _per_test_timeout(global_cfg: dict) -> int:
     ) or DEFAULT_PER_TEST_TIMEOUT_SECONDS
 
 
+def _setting_or_default(global_cfg: dict, key: str, default: Any) -> Any:
+    """`global.<key>`；省略或為 null 時是 `default`（與其他鍵一致，null 保留預設值）。
+    `global.<key>`; `default` when it is omitted or null (like the other keys, null keeps the default)."""
+    value = global_cfg.get(key)
+    return default if value is None else value
+
+
 def _sandbox_provider(global_cfg: dict) -> str:
     """`sandbox_provider`；省略或為 null 時是 local_subprocess（與其他鍵一致，null 保留預設值）。
     `sandbox_provider`; local_subprocess when omitted or null (like the other keys, null keeps the default)."""
@@ -325,23 +332,23 @@ class VibeHarnessCommander:
         # Docker 把 `--pids-limit 0` 當成不限制：null／0 改用預設值，只有明確的 -1 才是不限制
         # Docker treats `--pids-limit 0` as unlimited: null / 0 map to the default, only an explicit -1 means unlimited
         pids = pids or DEFAULT_DOCKER_PIDS_LIMIT
-        network = global_cfg.get("docker_network", "none")
+        network = _setting_or_default(global_cfg, "docker_network", "none")
         if not isinstance(network, str) or not network.strip():
             raise ValueError(bi("global.docker_network 必須是非空字串（例如 \"none\"、\"host\"）",
                                 "global.docker_network must be a non-empty string (e.g. \"none\", \"host\")"))
-        memory = global_cfg.get("docker_memory", "1g")
+        memory = _setting_or_default(global_cfg, "docker_memory", "1g")
         # Docker 接受的格式：數字 + b/k/m/g/t（可帶 b 或 ib，例如 512m、512mb、1GiB）／ what docker run --memory accepts
         if not isinstance(memory, str) or not re.fullmatch(r"\d+(?:\.\d+)?\s*(?:[bkmgt]|[kmgt]i?b)?", memory.strip(), re.IGNORECASE):
             raise ValueError(bi(f"global.docker_memory 必須是 Docker 記憶體字串（例如 \"1g\"、\"512m\"），目前為 {memory!r}",
                                 f"global.docker_memory must be a Docker memory string (e.g. \"1g\", \"512m\"), got {memory!r}"))
-        cpus = global_cfg.get("docker_cpus", "2")
+        cpus = _setting_or_default(global_cfg, "docker_cpus", "2")
         try:
             cpus_value = float(cpus) if not isinstance(cpus, bool) else float("nan")
         except (TypeError, ValueError):
             cpus_value = float("nan")
         if not math.isfinite(cpus_value) or cpus_value <= 0:
             raise ValueError(bi(f"global.docker_cpus 必須是正數，目前為 {cpus!r}", f"global.docker_cpus must be a positive number, got {cpus!r}"))
-        docker_bin = global_cfg.get("docker_bin", "docker")
+        docker_bin = _setting_or_default(global_cfg, "docker_bin", "docker")
         if not isinstance(docker_bin, str) or not docker_bin.strip():
             raise ValueError(bi("global.docker_bin 必須是非空字串", "global.docker_bin must be a non-empty string"))
         settings.update({"pids_limit": pids, "network": network.strip(), "memory": memory.strip(),
@@ -357,10 +364,13 @@ class VibeHarnessCommander:
                 f"sandbox_node_provider '{provider}' is not implemented; supported: 'local_subprocess', 'docker'"
             ))
         node = dict(settings if settings is not None else VibeHarnessCommander._sandbox_settings(global_cfg, provider == "docker"))
-        image = global_cfg.get("docker_node_image", DEFAULT_DOCKER_NODE_IMAGE)
-        if not isinstance(image, str) or not image.strip():
+        # docker_node_image 只有 Node 沙盒用 docker 時才讀：純本機的設定檔裡殘留的空值不會擋住啟動
+        # docker_node_image is read only when the Node sandbox uses docker: a stale empty value in a local-only config
+        # never blocks start-up
+        image = _setting_or_default(global_cfg, "docker_node_image", DEFAULT_DOCKER_NODE_IMAGE)
+        if provider == "docker" and (not isinstance(image, str) or not image.strip()):
             raise ValueError(bi("docker_node_image 必須是非空字串", "docker_node_image must be a non-empty string"))
-        node["image"] = image.strip()
+        node["image"] = image.strip() if isinstance(image, str) else DEFAULT_DOCKER_NODE_IMAGE
         return node
 
     def _build_node_sandbox(self) -> Optional[LocalSubprocessSandbox]:
@@ -447,7 +457,7 @@ class VibeHarnessCommander:
         if provider == "local_subprocess":
             return LocalSubprocessSandbox(timeout_seconds=settings["timeout"], memory_mb=settings["memory_mb"])
         if provider == "docker":
-            image = global_cfg.get("docker_image", DEFAULT_DOCKER_IMAGE)
+            image = _setting_or_default(global_cfg, "docker_image", DEFAULT_DOCKER_IMAGE)
             if not isinstance(image, str) or not image.strip():
                 raise ValueError(bi("docker_image 必須是非空字串", "docker_image must be a non-empty string"))
             return DockerSandbox(
