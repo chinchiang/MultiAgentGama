@@ -28,10 +28,13 @@ from vibeharness.core.i18n import bi
 
 # lcov 報告在執行目錄裡的檔名 ／ The lcov report's file name inside the run directory
 LCOV_REPORT_NAME = "lcov.info"
-# lcov 報告器與 --disable-warning 在 v20.11.0（20.x）與 v21.3.0 起才有；更舊的 Node 看到不認得的報告器會讓整次執行
-# 失敗，所以低於門檻時完全不收集涵蓋率（測試照常執行）
-# The lcov reporter and --disable-warning exist from v20.11.0 (20.x) and v21.3.0; an older Node fails the whole run on
-# an unknown reporter, so below the threshold no coverage is collected at all (the tests still run)
+# 收集涵蓋率的版本門檻。lcov 報告器本身較早就有（v21.2.0，20.x 為 v20.10.0）；真正的門檻是一起傳入的
+# --disable-warning（見 _DISABLE_LISTENER_WARNING），它從 v21.3.0（20.x 為 v20.11.0）才有。更舊的 Node 看到不認得的
+# 選項會讓整次執行失敗，所以低於門檻時完全不收集涵蓋率（測試照常執行）
+# The version gate for collecting coverage. The lcov reporter itself arrived earlier (v21.2.0, v20.10.0 on 20.x); the
+# real gate is the --disable-warning passed along with it (see _DISABLE_LISTENER_WARNING), which exists from v21.3.0
+# (v20.11.0 on 20.x). An older Node fails the whole run on an unknown option, so below the threshold no coverage is
+# collected at all (the tests still run)
 MIN_NODE_VERSION_LCOV_20 = (20, 11, 0)
 MIN_NODE_VERSION_LCOV = (21, 3, 0)
 # --test-coverage-include／--test-coverage-exclude 從 v22.5.0 起才有；更舊的版本只靠自己篩選 lcov
@@ -52,6 +55,33 @@ _GLOB_META_RE = re.compile(r"[*?\[\]{}()!+@\\]")
 _WINDOWS_DRIVE_URL_RE = re.compile(r"^/[A-Za-z]:")
 
 
+# Node >= 22.5 處理 --test-coverage-include／--test-coverage-exclude 時會在 stderr 印出這個沒有警告碼的
+# ExperimentalWarning（以及第一次警告後的 --trace-warnings 提示行）。--disable-warning 只接受警告碼或整個警告類型，
+# 停用整個 ExperimentalWarning 會連 --experimental-strip-types 等其他實驗功能的警告一起藏起來，所以改為只從擷取到的
+# stderr 拿掉這一則（見 strip_coverage_glob_warning）
+# Node >= 22.5 prints this code-less ExperimentalWarning on stderr when handling --test-coverage-include /
+# --test-coverage-exclude (plus the --trace-warnings hint after the first warning). --disable-warning only accepts a
+# warning code or a whole warning type, and disabling all of ExperimentalWarning would also hide the warnings of other
+# experimental features such as --experimental-strip-types, so only this one message is removed from the captured
+# stderr instead (see strip_coverage_glob_warning)
+_GLOB_WARNING_RE = re.compile(
+    r"^\(node:\d+\) ExperimentalWarning: glob is an experimental feature and might change at any time(?:\r?\n|\Z)"
+    r"(?:\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)(?:\r?\n|\Z))?",
+    re.MULTILINE,
+)
+
+
+def strip_coverage_glob_warning(stderr: str) -> str:
+    """從 Node 的 stderr 拿掉涵蓋率 glob 篩選引起的 ExperimentalWarning（與緊接著的 --trace-warnings 提示行），
+    其他內容原封不動；讓「沙盒沒有產生報告」之類的原因顯示真正的錯誤。
+    Removes the ExperimentalWarning the coverage glob filters cause (and the --trace-warnings hint right after it)
+    from Node's stderr, leaving everything else untouched, so reasons such as "sandbox produced no report" show the
+    real error."""
+    if not stderr or "ExperimentalWarning: glob" not in stderr:
+        return stderr
+    return _GLOB_WARNING_RE.sub("", stderr)
+
+
 def _version_text(version: Tuple[int, int, int]) -> str:
     return ".".join(map(str, version))
 
@@ -60,31 +90,40 @@ def node_coverage_problem(version: Optional[Tuple[int, int, int]]) -> Optional[s
     """這個 Node 版本收集不到 JS/TS 涵蓋率的原因；可以收集時為 None。
     Why this Node version cannot collect JS/TS coverage; None when it can."""
     if version is None:
-        return bi("無法判斷 Node 版本，因此不收集 JS/TS 行涵蓋率（lcov 報告器需要 Node >= 20.11）",
+        return bi("無法判斷 Node 版本，因此不收集 JS/TS 行涵蓋率（需要 Node >= 20.11 或 >= 21.3）",
                   "the Node version could not be determined, so JS/TS line coverage is not collected "
-                  "(the lcov reporter needs Node >= 20.11)")
+                  "(needs Node >= 20.11 or >= 21.3)")
     if version >= MIN_NODE_VERSION_LCOV or MIN_NODE_VERSION_LCOV_20 <= version < (21, 0, 0):
         return None
     found = _version_text(version)
-    return bi(f"Node v{found} 沒有 lcov 測試報告器（需要 Node >= 20.11 或 >= 21.3），因此不收集 JS/TS 行涵蓋率",
-              f"Node v{found} has no lcov test reporter (needs Node >= 20.11 or >= 21.3), so JS/TS line coverage "
-              "is not collected")
+    return bi(f"Node v{found} 不支援收集涵蓋率所需的 --disable-warning（需要 Node >= 20.11 或 >= 21.3），"
+              "因此不收集 JS/TS 行涵蓋率",
+              f"Node v{found} lacks the --disable-warning option coverage collection needs (needs Node >= 20.11 or "
+              ">= 21.3), so JS/TS line coverage is not collected")
 
 
 def node_coverage_args(version: Tuple[int, int, int], include_root: Optional[str]) -> Tuple[List[str], List[str]]:
     """(放在 --test 之前的 Node 選項, 涵蓋率篩選旗標)。篩選旗標只在 Node >= 22.5 時給：include 限制在目標目錄
     （include_root 為 POSIX 絕對路徑且不含 glob 特殊字元時；Windows 路徑的 glob 比對不可靠，交給自己的篩選），
-    exclude 去掉 node_modules 與產生的測試模組。不論有沒有這些旗標，解析 lcov 時都會再篩一次。
+    exclude 去掉目標根目錄以下的 node_modules（沒有 include 時是任何 node_modules）與產生的測試模組。明確的 include
+    會取代 Node 預設「路徑含 /node_modules/ 就排除」的規則，所以本身位於某個 node_modules 底下的目標
+    （/x/node_modules/pkg）也收得到涵蓋率。不論有沒有這些旗標，解析 lcov 時都會再篩一次。
     (Node options placed before --test, coverage filter flags). The filter flags are only given on Node >= 22.5: the
     include limits the report to the target directory (when include_root is an absolute POSIX path without glob
     metacharacters; glob matching of Windows paths is unreliable and left to our own filtering), the excludes drop
-    node_modules and the generated test modules. The lcov is filtered again when parsed, with or without them."""
+    node_modules below the target root (any node_modules without an include) and the generated test modules. An
+    explicit include replaces Node's default rule of dropping every path containing /node_modules/, so a target that
+    itself lives under a node_modules (/x/node_modules/pkg) still gets coverage. The lcov is filtered again when
+    parsed, with or without them."""
     options = ["--experimental-test-coverage", _DISABLE_LISTENER_WARNING]
     filters: List[str] = []
     if version >= MIN_NODE_VERSION_COVERAGE_GLOBS:
         if include_root and include_root.startswith("/") and not _GLOB_META_RE.search(include_root):
-            filters.append(f"--test-coverage-include={include_root.rstrip('/')}/**")
-        filters += ["--test-coverage-exclude=**/node_modules/**", "--test-coverage-exclude=**/test_vh_*"]
+            root = include_root.rstrip("/")
+            filters += [f"--test-coverage-include={root}/**", f"--test-coverage-exclude={root}/**/node_modules/**"]
+        else:
+            filters.append("--test-coverage-exclude=**/node_modules/**")
+        filters.append("--test-coverage-exclude=**/test_vh_*")
     return options, filters
 
 
@@ -145,10 +184,10 @@ def resolve_source_path(source: str, cwd: str, windows: Optional[bool] = None) -
 
 def target_relative_path(path: str, roots: Iterable[str], windows: Optional[bool] = None) -> Optional[str]:
     """`path` 是目標自己的原始檔時，回傳它相對於目標根目錄、以 '/' 分隔的路徑；在任何根目錄之外、位於 node_modules
-    底下，或是產生的測試模組時回傳 None。Windows 規則下不分大小寫比對。
+    底下，或是產生的測試模組時回傳 None。Windows 規則下不分大小寫比對，回傳的路徑也轉成小寫（os.path.normcase）。
     The path of `path` relative to the target root, '/'-separated, when it is one of the target's own source files;
     None when it is outside every root, under node_modules, or a generated test module. Case-insensitive under the
-    Windows rules."""
+    Windows rules, where the returned path is lower-cased as well (os.path.normcase)."""
     windows = sys.platform == "win32" if windows is None else windows
     path_mod = ntpath if windows else posixpath
     norm = path_mod.normcase if windows else (lambda p: p)
@@ -163,7 +202,10 @@ def target_relative_path(path: str, roots: Iterable[str], windows: Optional[bool
         parts = [p for p in re.split(r"[\\/]" if windows else "/", candidate[len(prefix):]) if p]
         if not parts or any(norm(p) == "node_modules" for p in parts) or _TEST_MODULE_RE.fullmatch(parts[-1]):
             return None
-        return "/".join(parts)
+        # Windows 規則下鍵也用 normcase（小寫）：同一個模組以不同大小寫匯入時，V8 可能寫出兩筆 SF，合併時不能重複計算
+        # Under the Windows rules the key is normcased (lower case) too: a module imported with different letter case
+        # may get two SF records from V8, which must not be counted twice when merged
+        return "/".join(norm(p) for p in parts)
     return None
 
 

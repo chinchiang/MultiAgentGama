@@ -77,6 +77,18 @@ _TARGET_SYNTAX_EXCEPTIONS = ("SyntaxError", "IndentationError", "TabError")
 # '<unknown>' / '<string>' means the target parsed input at run time (ast.parse, compile), which is target behaviour,
 # not a load failure
 _SYNTAX_ERROR_FILE_RE = re.compile(r'^E?\s*File "([^"]+)", line \d+', re.MULTILINE)
+# pytest 長回溯中各框架之間的分隔線（'_ _ _ ... _'）；最後一段就是最內層框架
+# The separator between frames in pytest's long traceback ('_ _ _ ... _'); the last section is the innermost frame
+_TRACEBACK_ENTRY_SEP_RE = re.compile(r"^(?:_ )+_\s*$", re.MULTILINE)
+# 最內層框架是匯入機制本身（importlib.import_module、importlib.reload、__import__ 走到的凍結模組）
+# The innermost frame is the import machinery itself (the frozen modules importlib.import_module, importlib.reload and
+# __import__ end up in)
+_IMPORT_MACHINERY_FRAME_RE = re.compile(r"^<frozen importlib\._bootstrap(?:_external)?>:\d+: [\w.]+\s*$", re.MULTILINE)
+# 最內層框架裡出錯的那一行（pytest 用 '>' 標示）是匯入陳述式或匯入呼叫
+# The failing line of the innermost frame (marked '>' by pytest) is an import statement or an import call
+_IMPORT_SOURCE_LINE_RE = re.compile(
+    r"^>\s+(?:(?:import|from)\s+[\w.]|.*\b(?:__import__|import_module|reload)\s*\()", re.MULTILINE
+)
 # 在產生的測試模組（最內層框架）拋出時，代表測試呼叫了目標上不存在的函式／屬性（測試端的錯誤）；
 # 在目標內部拋出的同樣訊息仍是目標的缺陷
 # Raised in the generated test module (innermost frame) this means the test called a function / attribute the target
@@ -101,6 +113,15 @@ _JS_MODULES_PER_BATCH = 10
 _JS_HARNESS_MARKERS = ("ERR_MODULE_NOT_FOUND", "Cannot find module", "Cannot find package", "ERR_UNKNOWN_FILE_EXTENSION",
                        "ERR_UNSUPPORTED_DIR_IMPORT", "ERR_REQUIRE_ESM", "ERR_PACKAGE_PATH_NOT_EXPORTED",
                        "ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX", "SyntaxError")
+# 沙盒的單檔大小上限讓 Node 寫入失敗（'Error: EFBIG: file too large, write'）：與 Python 的 [Errno 27] 一樣是沙盒
+# 的限制。只有 libuv 的系統錯誤才算——它在內文帶有 `errno: -27` 與 `code: 'EFBIG'`；目標自己 new Error('EFBIG: ...')
+# 拋出的訊息不帶 errno，維持為目標的行為
+# The sandbox's per-file size cap failing a Node write ('Error: EFBIG: file too large, write'): a sandbox limit like
+# Python's [Errno 27]. Only libuv's system error counts — its body carries `errno: -27` and `code: 'EFBIG'`; a message
+# the target throws itself with new Error('EFBIG: ...') has no errno and stays target behaviour
+_JS_FILE_TOO_LARGE_RE = re.compile(r"^Error: EFBIG: file too large")
+_JS_EFBIG_ERRNO_RE = re.compile(r"^\s*errno: -27,?\s*$", re.MULTILINE)
+_JS_EFBIG_CODE_RE = re.compile(r"^\s*code: 'EFBIG',?\s*$", re.MULTILINE)
 # 從產生的模組（最內層 V8 框架）拋出時屬於測試端的錯誤
 # Test-side mistakes when raised from the generated module (innermost V8 frame)
 _JS_TEST_SIDE_ERRORS = ("ReferenceError", "TypeError")
@@ -885,25 +906,42 @@ class TestSuiteExecutor:
 
     @staticmethod
     def _target_failed_to_load(case: dict) -> bool:
-        """測試執行中（非收集階段）目標根本載入不了時為 True：在目標框架裡拋出的 ImportError／ModuleNotFoundError
-        （延遲匯入沙盒中沒有的套件），或指向某個真實原始檔（非產生的測試模組、非 '<string>' 之類）的
-        SyntaxError 家族（測試裡匯入的目標子模組壞掉）。與收集錯誤路徑一樣歸為 REASON_TARGET_BROKEN 的 ERROR。
-        True when the target could not even load during a test (not at collection): an ImportError /
-        ModuleNotFoundError raised in a target frame (a lazy import of a package missing from the sandbox), or a
-        SyntaxError-family error pointing at a real source file (neither the generated test module nor '<string>'
-        and the like: a broken target submodule imported inside the test). Classified like the collection-error path,
-        as an ERROR with REASON_TARGET_BROKEN."""
+        """測試執行中（非收集階段）目標根本載入不了時為 True，與收集錯誤路徑一樣歸為 REASON_TARGET_BROKEN 的 ERROR：
+        - 在目標框架裡拋出的 ImportError／ModuleNotFoundError（延遲匯入沙盒中沒有的套件）。這是刻意的設計：目標函式
+          內部的選用匯入（`import yaml` 放在函式裡）在沙盒缺少該套件時，邊界從未被測到，所以是 ERROR 而不是缺陷；
+          代價是目標真的匯入了不存在的模組名稱時也只會得到 ERROR。
+        - 匯入時發生的 SyntaxError 家族：錯誤指向一個真實的 .py 原始檔（非產生的測試模組、非 '<string>' 之類），
+          而且最內層框架顯示它來自匯入——出錯的那一行是 import 陳述式／__import__／import_module 呼叫，或最內層框架
+          是 `<frozen importlib._bootstrap>`（測試或目標匯入了壞掉的子模組）。目標自己用 compile()／ast.parse()／exec
+          解析檔案（即使帶著真實的檔名）而拋出的 SyntaxError 不算：那是目標沒有包住錯誤的缺陷（FAILED）。
+        True when the target could not even load during a test (not at collection), classified like the
+        collection-error path as an ERROR with REASON_TARGET_BROKEN:
+        - an ImportError / ModuleNotFoundError raised in a target frame (a lazy import of a package missing from the
+          sandbox). This is by design: an optional import inside a target function (`import yaml` in a function body)
+          whose package the sandbox lacks means the boundary was never exercised, so it is an ERROR, not a defect; the
+          price is that a target importing a module name that truly does not exist also only gets an ERROR.
+        - a SyntaxError-family error raised by an import: it points at a real .py source file (neither the generated
+          test module nor '<string>' and the like) and the innermost frame shows it came from importing — the failing
+          line is an import statement / __import__ / import_module call, or the innermost frame is
+          `<frozen importlib._bootstrap>` (the test or the target imported a broken submodule). A SyntaxError the
+          target raises itself by parsing a file with compile() / ast.parse() / exec (even under a real file name)
+          does not count: not wrapping it is a defect in the target (FAILED)."""
+        details = case["details"] or ""
         location = TestSuiteExecutor._innermost_location(case)
-        if location is None:
-            return False
-        exception = location[1].rsplit(".", 1)[-1]
-        if exception in _TARGET_IMPORT_EXCEPTIONS:
+        exception = location[1].rsplit(".", 1)[-1] if location else None
+        if location is not None and exception in _TARGET_IMPORT_EXCEPTIONS:
             return not os.path.basename(location[0]).startswith("test_vh_")
-        if exception in _TARGET_SYNTAX_EXCEPTIONS:
-            files = _SYNTAX_ERROR_FILE_RE.findall(case["details"] or "")
-            return bool(files) and not files[-1].startswith("<") \
-                and not os.path.basename(files[-1]).startswith("test_vh_")
-        return False
+        innermost = _TRACEBACK_ENTRY_SEP_RE.split(details)[-1]
+        machinery = _IMPORT_MACHINERY_FRAME_RE.search(innermost)
+        if exception is None and machinery:
+            exception = machinery.group(0).rsplit(":", 1)[-1].strip().rsplit(".", 1)[-1]
+        if exception not in _TARGET_SYNTAX_EXCEPTIONS:
+            return False
+        files = _SYNTAX_ERROR_FILE_RE.findall(details)
+        if not files or files[-1].startswith("<") or not files[-1].endswith((".py", ".pyw")) \
+                or os.path.basename(files[-1]).startswith("test_vh_"):
+            return False
+        return bool(machinery or _IMPORT_SOURCE_LINE_RE.search(innermost))
 
     @staticmethod
     def _exception_summary(case: dict) -> str:
@@ -939,10 +977,10 @@ class TestSuiteExecutor:
 
     @staticmethod
     def _js_is_harness_failure(case: dict) -> bool:
-        """由產生的模組造成的 node:test 失敗（無法解析的匯入、語法），或由
+        """由產生的模組造成的 node:test 失敗（無法解析的匯入、語法）、沙盒的單檔大小上限（EFBIG 系統錯誤），或由
         該模組本身拋出的測試端 ReferenceError／TypeError。
-        A node:test failure caused by the generated module (unresolvable import, syntax) or by a
-        test-side ReferenceError/TypeError raised from the module itself."""
+        A node:test failure caused by the generated module (unresolvable import, syntax), by the sandbox's per-file
+        size cap (an EFBIG system error), or by a test-side ReferenceError/TypeError raised from the module itself."""
         # 只看 Node 回報的例外本身（cause 行或第一個 XError 行）：斷言失敗的內文可能提到目標拋出的
         # SyntaxError（例如 assert.doesNotThrow 的 actual），整段比對會把真正的突破降級成 harness 錯誤
         # Only the exception Node reports (the cause line or the first XError line): an assertion failure's body may
@@ -953,6 +991,10 @@ class TestSuiteExecutor:
         summary = TestSuiteExecutor._js_exception_summary(case)
         if any(marker in summary for marker in _JS_HARNESS_MARKERS):
             return True
+        details = case.get("details") or ""
+        if _JS_FILE_TOO_LARGE_RE.match(summary) and _JS_EFBIG_ERRNO_RE.search(details) \
+                and _JS_EFBIG_CODE_RE.search(details):
+            return True  # 沙盒的單檔大小上限，不是目標的缺陷 ／ the sandbox's per-file size cap, not a defect in the target
         return summary.startswith(_JS_TEST_SIDE_ERRORS) and not TestSuiteExecutor._js_raised_in_target_code(case) \
             and bool(_V8_FRAME_RE.search(case.get("details") or ""))
 

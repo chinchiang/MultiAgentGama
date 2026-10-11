@@ -101,7 +101,13 @@ def check_test_code(code: str) -> Tuple[bool, Optional[str]]:
     tests = _top_level_test_nodes(tree)
     if not tests:
         return False, "no top-level test_ function defined"
-    vacuous = [name for t in tests for name in _vacuous_tests(t, tree)]
+    try:
+        vacuous = [name for t in tests for name in _vacuous_tests(t, tree)]
+    except RecursionError:
+        # 走訪本身是迭代的；這只是保險：保守地視為找不到斷言證據，絕不讓整次執行崩潰
+        # The walk itself is iterative; this is only a safety net: conservatively treated as no assertion evidence
+        # found, never crashing the whole run
+        return False, "test function(s) without any assertion: analysis too deep"
     if vacuous:
         return False, f"test function(s) without any assertion: {', '.join(vacuous)}"
     return True, None
@@ -169,24 +175,27 @@ def _class_methods(cls: ast.ClassDef, classes: dict, seen: set) -> dict:
 
 def _asserts(fn: ast.AST, functions: dict, methods: dict, seen: set) -> bool:
     """函式本身含斷言，或它（遞移地）呼叫的同模組輔助函式（`name(...)`）或類別方法（`self.<名稱>()`）含斷言時為 True。
+    以明確的堆疊走訪呼叫圖（不遞迴），數千層的輔助函式鏈也不會拋出 RecursionError；`seen` 讓每個函式只看一次。
     True when the function asserts itself, or a same-module helper (`name(...)`) or class method (`self.<name>()`) it
-    calls does (transitively)."""
-    if _has_assertion(fn):
-        return True
-    for node in ast.walk(fn):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if isinstance(func, ast.Name) and func.id in functions and ("f", func.id) not in seen:
-            seen.add(("f", func.id))
-            # 模組層級的函式沒有 self：在它裡面不解析 self.<名稱>() ／ a module-level function has no self: no self.<name>() in it
-            if _asserts(functions[func.id], functions, {}, seen):
-                return True
-        elif (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id == "self"
-                and func.attr in methods and ("m", func.attr) not in seen):
-            seen.add(("m", func.attr))
-            if _asserts(methods[func.attr], functions, methods, seen):
-                return True
+    calls does (transitively). The call graph is walked with an explicit stack (no recursion), so a helper chain
+    thousands deep cannot raise RecursionError; `seen` visits every function once."""
+    stack: List[Tuple[ast.AST, dict]] = [(fn, methods)]
+    while stack:
+        current, current_methods = stack.pop()
+        if _has_assertion(current):
+            return True
+        for node in ast.walk(current):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Name) and func.id in functions and ("f", func.id) not in seen:
+                seen.add(("f", func.id))
+                # 模組層級的函式沒有 self：在它裡面不解析 self.<名稱>() ／ a module-level function has no self: no self.<name>() in it
+                stack.append((functions[func.id], {}))
+            elif (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id == "self"
+                    and func.attr in current_methods and ("m", func.attr) not in seen):
+                seen.add(("m", func.attr))
+                stack.append((current_methods[func.attr], current_methods))
     return False
 
 
