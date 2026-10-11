@@ -33,9 +33,10 @@ branding:
 # 供應商金鑰從環境變數讀取，action 不會印出。受稽核的程式碼會送到每一家設定的供應商（寫死的密鑰會先遮蔽）。
 # The provider keys are read from the environment; the action never prints them. The audited code
 # is sent to every configured provider (hard-coded secrets are redacted first).
-# 來自 fork 的 PR 拿不到 secrets：hybrid 模式下每次模型呼叫都會是模擬的，判定最多是 INCONCLUSIVE，action 會發出 ::warning::。
-# Pull requests from forks get no secrets: in hybrid mode every model call is then simulated, the verdict is at
-# best INCONCLUSIVE, and the action emits a ::warning::.
+# 來自 fork 的 PR 拿不到 secrets：hybrid 模式下每次模型呼叫都會是模擬的，判定不會是 READY_TO_SHIP（實際執行的
+# WB-PROBE 探針失敗時仍可能是 NEEDS_FIXES），action 會發出 ::warning::。
+# Pull requests from forks get no secrets: in hybrid mode every model call is then simulated, the verdict is never
+# READY_TO_SHIP (the WB-PROBE probes still run for real and can make it NEEDS_FIXES), and the action emits a ::warning::.
 
 inputs:
   target:
