@@ -6,6 +6,53 @@
 
 ## [Unreleased]
 
+第三輪審查：自動發現的設定檔不能再設定安全敏感的鍵、Action 以 `exec` 執行稽核而不留下持有金鑰且可讀的父行程、SARIF 不收模擬的項目、VH-AI-006 為了精確度與線性時間重寫、確定性規則會揭露未能完整掃描的檔案、補上 VH-AI-009／VH-AI-007 的缺口，並強化 repo 的 CI 與設定。
+
+### 新增
+
+- `--summary-json PATH`：稽核結束後寫出機器可讀的簡短摘要，與 `--format` 無關：判定、exit code、執行模式、各模式的模型呼叫數（`live`／`simulated`／`invalid`／`cached`）、`all_simulated` 與證據缺口；寫入位置在任何模型呼叫前就檢查。
+- `vibeharness/action_runner.py`：Action 的 audit step 以 `exec` 進入 `python -I -m vibeharness.action_runner`，它在同一個行程內執行 CLI，再寫出 `verdict`／`exit-code` outputs 與 step summary 並套用 `fail-on`；判定為 `INCONCLUSIVE` 而 `fail-on` 不會因此讓 job 失敗時，以及 hybrid／live 執行的每一次模型呼叫都是模擬的時候（例如拿不到 secrets 的 fork PR），發出 `::warning::`。
+- 證據缺口「確定性 AI 安全規則未能完整掃描 N 個原始碼檔案」：每個 Python 檔的 AST 規則有 30 秒上限（`_MAX_SCAN_SECONDS_PER_FILE`）；超過上限或意外出錯的檔案保留已找到的命中，並列入 `AISecurityStaticScanner.incomplete_files`。
+- VH-AI-006 的執行點新增 `os.exec*`、`os.spawn*`、`os.posix_spawn[p]`、`pty.spawn` 與 `loop.subprocess_shell`／`loop.subprocess_exec`，也認得執行點的別名（`r = subprocess.run`、`getattr(subprocess, 'run')`、`functools.partial(subprocess.run, ...)`）。
+
+### 變更
+
+- **破壞性**：`extra_params` 改為保留所有會改變目的地或憑證的 litellm 參數（`extra_headers`、`headers`、`apikey`、`token`、`organization`、`model_list`、`deployment_id`、`use_litellm_proxy`、Azure／Vertex／watsonx／OCI／GigaChat 的憑證與專案、自備的 client 等），並以名稱樣式補漏（`is_reserved_extra_param`：`aws_`／`azure_`／`vertex_`／`oci_`／`watsonx_`／`gigachat_` 字首，以及名稱裡有 key、token、secret、password、credential、endpoint、url、proxy、header 等字段）；設定了這些鍵的設定檔現在會 exit 5。
+- 不經 shell 的 VH-AI-006：直譯器後面接腳本路徑或 `-m 模組` 時，只有腳本或模組本身被污染才算；程式碼選項（`-c`、`-e`、`--eval`、`-ec` 這類 getopt 短選項串、`cmd /c`、`pwsh -Command`）與讀取被污染標準輸入的程式（`input=`、`Popen(...).communicate(x)`、`p.stdin.write(x)`）是 HIGH；包裝程式（`sudo`、`timeout`、`nice`、`env -S`、`xargs -I`、`flock`、`strace` 等）與執行器（`uv`／`poetry`／`pipenv`／`conda`／`pdm`／`npx`／`pnpm`／`yarn`／`npm`／`bun`、`docker`／`podman exec|run` 含 `--entrypoint`、`kubectl exec`、`find -exec`、`script -c`）依選項表跳過，`command -v` 只是查詢；`sed`／`sqlite3`／`psql`／`mysql` 的程式碼參數與 git 全域 `-c`／`--upload-pack` 的值也算；`shell=1` 與 `**{'shell': True}` 視為經過 shell。新增 MEDIUM 等級：無法確定的程式（`TOOL = os.environ.get(...)`）帶有被污染的引數，或 `shell=` 不是常數。`executable='bash'` 配上非 shell 的 argv 不再被標記。
+- 沒有套用跨模型驗證時，「發現沒有模型產生的測試」這條證據缺口改稱「未經驗證」，不再說「已確認」。
+- `--help`、`--version` 與 `--init-config` 在載入任何相依套件之前就解析，所以很快，在安裝不完整時也能用。
+- JS/TS 涵蓋率：只排除目標根目錄以下的 `node_modules`（Node ≥ 22.5 有明確的 include，本身位於 `node_modules` 底下的目標也收得到涵蓋率）；Windows 上 lcov 的鍵經 `normcase`，同一模組的大小寫變體會合併；版本門檻的說明更正為 `--disable-warning`（20.11／21.3 起才有；lcov 報告器 20.10／21.2 就有）。
+
+### 資安
+
+- 自動發現的 `./vibeharness.yaml`／`./.vibeharness.yaml`（沒有 `--config`）設定了安全敏感的鍵時，以 exit 5 拒絕並提示改用 `--config`：任何 global 的 `*_bin`（啟動時就會執行：`docker_bin: ./evil.sh` 在 mock 模式也會跑）、`docker_*`／`node_*`、`local_subprocess`／`docker` 以外的 `sandbox_provider`／`sandbox_node_provider`、`cache_dir`，以及模型的 `api_base`／`base_url`／`api_key_env`（內建設定用到的金鑰變數以外）／`aws_*`／`extra_params`／任何像端點或憑證的鍵；與內建預設相同的值不算，所以 `--init-config` 的覆本照樣可用。即使以 `--config` 指定，相對路徑的 `*_bin`（例如 `./node`）也會印出警告。
+- Action 不再留下持有金鑰的 bash 父行程：audit step 以 `exec` 進入稽核行程，生成的測試讀不到 `/proc/<ppid>/environ` 裡的金鑰；action 裡的每個 Python 輔助程式都以 `-I` 執行（或先把工作目錄從 `sys.path` 移除），受稽核 checkout 裡放的 `shlex.py`、`yaml.py` 或 `vibeharness/` 絕不會被匯入；`fail-on` 與 `sandbox`／`mutation` 一樣在稽核前就驗證。
+- SARIF 不再收模擬引擎產生的白箱發現與衍生自模擬威脅的突破（它們在 Code Scanning 裡看起來和真的警示一樣）；run 的 properties 以 `simulated_whitebox_findings_omitted`／`simulated_breaches_omitted` 計數。
+- VH-AI-009：會／已／被／曾 的描述豁免要有程式元件當主詞（主詞是 你／審查者／AI 這類讀者，或主詞省略而後面接著 請／直接／輸出／吧，都算宣稱；「此…已被視為安全」也會命中）；雙重否定（不得不、不能不）與反詰的 何不／豈能不 讓否定相消；時間／時刻 裡的「時」不是條件，「時」後面緊接祈使詞仍是命令；若干／當前 不是條件開頭，條件開頭之後出現 請／務必 就不再管轄後面的片語；同一行在描述句之前稱呼 AI／模型／審查者，或宣稱程式碼是乾淨的時，英文描述句的豁免失效。
+- VH-AI-007：含 prod／primary／master／replica／rds／live／prd 字樣的單一標籤主機不再算開發用主機（`admin:admin@prod-db` 會回報）；主機為空時改看查詢字串的 `?host=`；`$VAR` 只有大寫的環境變數形狀才算範本，`{var}`／`{{var}}`／`<var>` 只有內容是佔位名稱時才算。
+
+### 修正
+
+- 執行器：SyntaxError 只有在最內層 frame 顯示來自匯入（import 陳述式、`__import__`／`import_module`／`reload` 呼叫，或 `<frozen importlib._bootstrap>` frame），而且指向真實的 `.py` 檔時，才算目標載入失敗；目標以 `compile()`／`ast.parse()` 解析真實檔案時的 SyntaxError 改判為缺陷（FAILED），`importlib.import_module` 匯入壞掉的模組則判為載入失敗。單檔大小上限造成的 JS EFBIG 系統錯誤（`errno: -27`、`code: 'EFBIG'`）與 Python 的 `[Errno 27]` 一樣是 harness 錯誤。
+- 靜態閘門：`_asserts` 以明確的堆疊走訪輔助函式的呼叫圖，約 3000 層的輔助函式鏈不再 `RecursionError`（`check_test_code` 另有保守的保險）。
+- 沙盒：本機 Python／Node 子行程的 `TMPDIR`／`TMP`／`TEMP` 指向執行目錄，Node 涵蓋率的執行也把 `NODE_V8_COVERAGE` 固定在那裡，所以逾時被砍掉的執行不會在主機的暫存目錄留下 `node-coverage-XXXX`；涵蓋率執行的 stderr 拿掉 Node 沒有警告碼的「glob is an experimental feature」警告，「沒有產生報告」之類的原因會顯示真正的錯誤。
+- VH-AI-009 誤報：「不要回報」要有發現或程式碼這類對象，對象是送往前端、Sentry 或日誌時不算；檔案掃描或 KYC 應用邏輯裡對 檔案／文件 的判定，只有同一行稱呼讀者時才算；一般 AI 助理的注意事項與稱呼語，以及覆寫 system prompt（不再算成要求忽略指令），都要有跟審查相關的字眼；測試呼叫的字串與 docstring 的開頭算描述。VH-AI-007：userinfo 在第一個 `?`／`#` 就停止，除非冒號在它之前，所以查詢字串或片段裡的冒號不是憑證。
+- JS/TS 擷取：泛型參數清單可以含物件型別（`function List<T extends { id: string }>`、`server.post<{...}>(...)` 路由），class 主體會跳過繼承泛型裡的 `{` 型別字面值（`extends React.Component<{ n: number }>`），`<...>` 裡的逗號不再切開參數，很長的行上的片段改以字元位置切齊，壓縮過的單行檔案不會觸發片段上限而遺失符號。
+- 惡意輸入上的效能：JS/TS 詞法分析器為線性時間（正規表達式的結尾 `/` 查每行一次的表，`'/['*20000` 從 52 秒降到 0.02 秒；型別註記的往回查找有備忘，`'=>'*20000` 從 22 秒降到 0.03 秒；綁定的型別註記有長度上限，32 秒降到 0.2 秒；路由鏈以位置比對）；VH-AI-006 每個範疇的索引只建一次並快取 argv 判斷（4000 個執行點從超過 120 秒降到 0.45 秒），深層屬性鏈也不再 `RecursionError`；VH-AI-009 先以觸發詞與必要詞篩選行（1 MB 的換行從 4.9 秒降到約 0.1 秒）。
+
+### 工程
+
+- CodeQL：workflow 移到 `.github/workflows/codeql.yml`（workflow 與 job 名稱不變，因為它們是必要檢查），最上層 `permissions: {}`、`security-extended` 查詢、`timeout-minutes`，PR 的 concurrency 會取消進行中的舊分析。
+- `publish.yml`：GitHub Release 的內文是 `CHANGELOG.en.md` 中這個版本的區段（找不到時改用自動產生的內文；Release 已存在時改寫它的內文）。
+- Dependabot 也追蹤 pre-commit hook；pre-commit 的 ruff hook 釘在 v0.16.10 的 commit SHA。
+- Repo 設定：`master` 要求 PR 與包含 CodeQL 在內的 16 項檢查，只接受 merge commit 合併，合併後自動刪除分支；`v*` tag 只有管理員能建立、移動或刪除；Actions 必須以完整的 commit SHA 釘版；secret scanning 與 push protection、Dependabot alerts 與 Dependabot 安全性更新都已開啟。
+- Action 與 README 的範例把 `github/codeql-action/upload-sarif` 釘在 v4.38.3（與 CodeQL workflow 同一個 commit），並列出 job 需要的 `contents: read`／`security-events: write` 權限。
+- 新增回歸測試 `tests/test_r3_cli_report_action.py`、`test_r3_executor_sandbox.py`、`test_r3_extractor_scanner.py`、`test_r3_repo_meta.py` 與 `test_r3_sanitize.py`；清理器的時間上限為 CI 保留餘裕。
+
+### 文件
+
+- `SECURITY.md` 改列 0.8.x 為支援版本並列出 repo 的資安功能；`CONTRIBUTING.md` 說明必要檢查、合併規則與擴充後的發布清單；README、設定說明與設計文件描述自動發現設定檔的防護、`exec` 啟動器、fork PR 的行為與新的限制，設計文件的引用改對應目前的程式碼。
+
 ## [0.8.0] - 2026-10-11
 
 ### 新增
