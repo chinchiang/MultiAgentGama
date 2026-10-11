@@ -2,7 +2,7 @@
 
 English ｜ [正體中文（臺灣）](design.md)
 
-This document describes the design of VibeHarness-MAS: why it is built the way it is, how each component works, how data flows between phases, how the quality gate decides, the sandbox security model, and the known limitations. It corresponds to `vibeharness/__init__.py` version `0.10.0` (`[0.10.0]` in `CHANGELOG.md`, 2026-10-11, stricter discovered configs, the Action no longer overriding the config's cost guard, null keeping the defaults; `[0.9.0]` brought the third review round: the discovered-config guard, the Action `exec`ing the audit, simulated items kept out of SARIF, the VH-AI-006 rewrite, a per-file time cap on the deterministic rules, `--summary-json`; `[0.8.0]` added JS/TS line coverage; `[0.7.1]` was a fix release: the remaining timeout budget no longer gains a second, and the `--init-config` hint; `[0.7.0]` brought the second review round, PyPI packaging, `--init-config` and config discovery; `[0.6.0]` brought review-driven hardening plus `--cache-only`, `[0.5.1]` was a fix release, `[0.5.0]` added optional mutation testing and `[0.4.0]` brought `--baseline`, `--estimate`, JS/TS dynamic test execution and bilingual zh-TW / en output). Every `path:line` reference is to the files at commit `a05f93e`.
+This document describes the design of VibeHarness-MAS: why it is built the way it is, how each component works, how data flows between phases, how the quality gate decides, the sandbox security model, and the known limitations. It corresponds to `vibeharness/__init__.py` version `0.10.1` (`[0.10.1]` in `CHANGELOG.md`, 2026-10-11, a fix release: JS/TS coverage on Windows also covers a target under `node_modules`; `[0.10.0]` brought stricter discovered configs, the Action no longer overriding the config's cost guard, null keeping the defaults; `[0.9.0]` brought the third review round: the discovered-config guard, the Action `exec`ing the audit, simulated items kept out of SARIF, the VH-AI-006 rewrite, a per-file time cap on the deterministic rules, `--summary-json`; `[0.8.0]` added JS/TS line coverage; `[0.7.1]` was a fix release: the remaining timeout budget no longer gains a second, and the `--init-config` hint; `[0.7.0]` brought the second review round, PyPI packaging, `--init-config` and config discovery; `[0.6.0]` brought review-driven hardening plus `--cache-only`, `[0.5.1]` was a fix release, `[0.5.0]` added optional mutation testing and `[0.4.0]` brought `--baseline`, `--estimate`, JS/TS dynamic test execution and bilingual zh-TW / en output). Every `path:line` reference is to the files at tag `v0.10.1`.
 
 How this document relates to the others:
 
@@ -925,7 +925,7 @@ DAST / fuzzing, hypothesis (not installed in the sandbox image either), the e2b 
 
 ## 18. Appendix
 
-Line numbers refer to the code at commit `a05f93e`; verify with `grep -n "def name" file`.
+Line numbers refer to the code at tag `v0.10.1`; verify with `grep -n "def name" file`.
 
 ### 18.1 Key constants
 

@@ -6,9 +6,17 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-10-11
+
+A fix release: JS/TS coverage on Windows now also covers a target that lives under `node_modules`, and the hook that shortens test ids gets a regression test.
+
 ### Fixed
 
 - JS/TS line coverage on Windows passes `--test-coverage-include` too: an absolute path is rewritten to forward slashes (Node's win32 matcher treats `/` and `\` as the same separator), so a target that itself lives under `node_modules` is covered on Node >= 22.5, the same as on POSIX. A path that contains glob metacharacters still gets the exclude patterns only.
+
+### Tests
+
+- `tests/test_windows_env_limit.py` checks that `pytest_make_parametrize_id` keeps shortening long string parameter ids (Windows caps an environment variable at 32767 characters, and pytest writes the test id into `PYTEST_CURRENT_TEST`).
 
 ## [0.10.0] - 2026-10-11
 
@@ -411,7 +419,8 @@ Initial release.
 - CI matrix: ubuntu / windows × Python 3.10 / 3.13, with lint and coverage reporting
 - MIT license
 
-[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.7.1...v0.8.0

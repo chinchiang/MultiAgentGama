@@ -310,7 +310,7 @@ pip install vibeharness-mas
 vibeharness --version
 ```
 
-As an isolated command-line tool: `pipx install vibeharness-mas` or `uv tool install vibeharness-mas`. For reproducible CI, pin the version: `pip install vibeharness-mas==0.10.0`. `python -m vibeharness …` is the same as `vibeharness …`; an incomplete install (a missing dependency) exits 5 with reinstall instructions instead of a traceback; `--help`, `--version` and `--init-config` load no dependency and still work then.
+As an isolated command-line tool: `pipx install vibeharness-mas` or `uv tool install vibeharness-mas`. For reproducible CI, pin the version: `pip install vibeharness-mas==0.10.1`. `python -m vibeharness …` is the same as `vibeharness …`; an incomplete install (a missing dependency) exits 5 with reinstall instructions instead of a traceback; `--help`, `--version` and `--init-config` load no dependency and still work then.
 
 From source (for development; `python main.py` works from the checkout as well):
 
@@ -410,7 +410,7 @@ steps:
   with:
     fetch-depth: 0                             # changed-since needs the history to diff against the ref
     persist-credentials: false
-- uses: chinchiang/MultiAgentGama@v0.10.0      # installs the package from the action's own checkout (hash-verified dependencies) and runs the audit
+- uses: chinchiang/MultiAgentGama@v0.10.1      # installs the package from the action's own checkout (hash-verified dependencies) and runs the audit
   with:
     target: src
     mode: hybrid
@@ -459,7 +459,7 @@ The action's inputs (all optional):
 | `report` | Path of the written report (the derived name when `output` is empty) |
 | `sarif` | Path of the SARIF file (empty when disabled) |
 
-A first `prep` step validates `fail-on`, `mutation`, `sandbox`, `mode`, `format` and the numeric inputs in plain bash before anything is installed or a Docker image is built, so a typo exits 5 right away (no outputs are set then). `mode`, `max-model-calls` and `max-files` reach the CLI only when set, so a config's `execution_mode`, `max_model_calls` cost guard and `max_files` are never silently overridden. The job fails with exit 1 when `fail-on` matches the verdict, and a CLI exit of 4 or higher always fails it with that code and an `::error::`, whatever `fail-on` says; the step summary (verdict, exit code, report and SARIF paths) is written either way. Without the action, `pip install vibeharness-mas==0.10.0` and call `vibeharness` directly.
+A first `prep` step validates `fail-on`, `mutation`, `sandbox`, `mode`, `format` and the numeric inputs in plain bash before anything is installed or a Docker image is built, so a typo exits 5 right away (no outputs are set then). `mode`, `max-model-calls` and `max-files` reach the CLI only when set, so a config's `execution_mode`, `max_model_calls` cost guard and `max_files` are never silently overridden. The job fails with exit 1 when `fail-on` matches the verdict, and a CLI exit of 4 or higher always fails it with that code and an `::error::`, whatever `fail-on` says; the step summary (verdict, exit code, report and SARIF paths) is written either way. Without the action, `pip install vibeharness-mas==0.10.1` and call `vibeharness` directly.
 
 The audit step `exec`s the key-holding bash into the audit process itself (`python -I -m vibeharness.action_runner`, which runs the CLI in-process and then writes the outputs), so a generated test cannot read the keys from a parent's environ; the action's Python snippets never import modules from the workspace. When the verdict is `INCONCLUSIVE` and `fail-on` does not fail the job on it, the action emits a `::warning::`, and in `hybrid` or `live` mode it also warns when every model call was simulated. **Pull requests from forks**: GitHub does not hand secrets to fork PRs, so in hybrid mode every model call is simulated and the action emits that "every model call was simulated" `::warning::`; the verdict cannot be `READY_TO_SHIP` (it is `INCONCLUSIVE`, or `NEEDS_FIXES` when a deterministic `WB-PROBE` probe or a HIGH+ rule hit exposed a defect, which is still executed evidence). For real model evidence run it on events that have the keys (e.g. pushes to the default branch or maintainer-triggered workflows), and do not switch fork PRs to `pull_request_target` to hand secrets to untrusted code. The CLI's `--summary-json PATH` writes the machine-readable summary the action uses for this: `tool`, `version`, `verdict`, `exit_code`, `execution_mode`, `model_calls` (`total`, `live`, `simulated`, `invalid`, `cached`; the `retried` asks of a call are not counted), `all_simulated` and `inconclusive_reasons`. It is written after the report whatever `--format` is, and like `--output` / `--sarif` its location is checked before any model call.
 
