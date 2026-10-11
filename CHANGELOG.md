@@ -10,15 +10,45 @@
 
 - JS/TS 行涵蓋率在 Windows 上同樣加上 `--test-coverage-include`：絕對路徑先改成正斜線（Node 的 win32 matcher 把 `/` 與 `\` 當成同一種分隔符），所以本身位於 `node_modules` 底下的目標在 Node ≥ 22.5 也收得到涵蓋率，與 POSIX 相同。路徑含 glob 特殊字元時仍只加排除模式。
 
+## [0.10.0] - 2026-10-11
+
+第四輪審查：Action 不再蓋掉設定檔的成本防護、自動發現的設定檔不能再改接模型字串、別名或金鑰變數，其餘設定也改為 `null` 保留預設值。
+
+### 變更
+
+- **破壞性**：自動發現的 `./vibeharness.yaml`／`./.vibeharness.yaml`（沒有 `--config`）不能再改 `models.<alias>.model`／`fallback_model`、新增內建設定沒有的模型別名，或使用與內建設定同一別名不同的 `api_key_env`（過去內建設定裡任何一個金鑰變數都可以用在任何別名上，`ANTHROPIC_API_KEY` 因此可能被接到別家供應商）；這種設定檔會以 exit 5 結束並提示改用 `--config`。agent 仍可在內建的別名之間重新指派。
+- **破壞性**：每個 `models.<alias>` 都要有非空的 `model` 字串，`fallback_model` 必須是非空字串或 null，`base_url`（程式不讀，端點是 `api_base`）一律拒絕；這些都在啟動時以 exit 5 結束，而不是讓 agent 悄悄改用模擬（hybrid）或在執行中途失敗（live）。
+- **破壞性**：Action 的 `output` input 預設為空，依 `format` 推導（`vibeharness-report.md`，`format: json` 時為 `vibeharness-report.json`；過去不論格式都是 `vibeharness-report.md`）；`report` output 與上傳的 artifact 都用推導出的名稱。
+- Action：`mode`、`max-model-calls` 與 `max-files` 預設為空，只有填了才傳給 CLI，所以 `--config` 的 `execution_mode`、`max_model_calls` 與 `max_files` 不再被悄悄蓋掉（舊的預設 `max-model-calls: "0"` 會關掉設定檔的成本防護）。
+- Action：新增的第一個 `prep` step 在安裝與建置 Docker 映像之前，以純 bash 驗證 `fail-on`、`mutation`、`sandbox`、`mode`、`format` 與數值 input（`max-model-calls` 為非負整數、`max-files` ≥ 1）；`exit-code` output 的說明列出 130。
+- CLI：長旗標不再接受縮寫（`allow_abbrev=False`），`--conf x` 因此繞不過 Action 對 `--config` 的偵測；縮寫是用法錯誤（exit 5）。`--output` 與 `--max-files` 的說明文字補上 JSON／估算的輸出與 ≥ 1 的規則。
+- `null` 保留預設值：`agents.<id>.temperature: null` 為 0.2（`DEFAULT_TEMPERATURE`；過去 `None` 會送進 litellm 與快取 key）、`mutation_max_mutants: null`／`mutation_min_score: null` 維持 20／70（過去是 `ConfigError`）、`sandbox_provider: null` 為 `local_subprocess`（過去會被當成未知的 provider 而失敗），`sandbox_node_provider: null` 則跟隨它。內建設定檔的 `mutation_timeout_seconds` 改為 `null`（跟隨 `per_test_timeout_seconds`），分數門檻的錯誤訊息改為指名 `global.mutation_min_score`。
+- 突變測試：`ELIGIBLE_TEST_TYPES` 只剩 `whitebox_unit`；原本一併列出的 `whitebox_property` 從來不會產生。
+
+### 修正
+
+- Action：Docker 沙盒設定檔覆本可以處理空的 `global:` 區段。
+
+### 工程
+
+- 新增回歸測試 `tests/test_r4_behaviour.py`；JS 涵蓋率測試與 JS 執行測試一樣遵守 `VIBEHARNESS_REQUIRE_NODE=1`（缺少 Node 時失敗而不是略過；Node 版本不支援某項功能時仍會略過）。
+- 修正 `agents_config.yaml`（每個模型別名一位驗證者、批次預算、`sandbox_memory_mb: 0` 只關閉記憶體上限、JS/TS 的測試生成器寫 `node:test` 模組）與 `threat_rules.yaml`（`atlas_techniques` 是功能性欄位）的註解。
+
+### 文件
+
+- 架構圖補上選用的 Phase 3.5（突變測試）、基準比對、閘道的回應快取、重問與 `prompt_sha256`、兩種不受信任通道、JS/TS 涵蓋率，以及閘門每一個證據缺口的來源；「六個線性階段」改為「六個階段加上選用的 Phase 3.5」。
+- README：Action 完整的 inputs 與 outputs 表、`prep` 驗證與 job 的結束語意、`--summary-json` 的欄位、exit 3 的每一種 INCONCLUSIVE 條件，以及其餘的限制（其他語言直接被忽略、非原始碼檔案不掃描密鑰、沙盒映像沒有 Hypothesis）；更正：`--estimate` 只跑符號擷取、單一審查者的檢查計算的是不同的模型別名、完全模擬的 fork PR 仍可能經 `WB-PROBE` 探針得到 `NEEDS_FIXES`。
+- 設定說明：`docker_bin`、`max_concurrent_calls`、`docker_*` 鍵與 `include`／`exclude` 的驗證、`aws_region_name` 只與 `aws_profile_name` 一起生效、`sandbox_memory_mb: 0`、`temperature` 與 `drop_params`、`extra_params` 保留的內部掛鉤與名稱片段；設計文件依目前的程式碼重新核對引用並記載新的資料模型欄位，`CONTRIBUTING.md` 說明 Docker／Node 測試的開關、設定驗證的位置與 PyPI 發布的把關。
+
 ## [0.9.0] - 2026-10-11
 
 第三輪審查：自動發現的設定檔不能再設定安全敏感的鍵、Action 以 `exec` 執行稽核而不留下持有金鑰且可讀的父行程、SARIF 不收模擬的項目、VH-AI-006 為了精確度與線性時間重寫、確定性規則會揭露未能完整掃描的檔案、補上 VH-AI-009／VH-AI-007 的缺口，並強化 repo 的 CI 與設定。
 
 ### 新增
 
-- `--summary-json PATH`：稽核結束後寫出機器可讀的簡短摘要，與 `--format` 無關：判定、exit code、執行模式、各模式的模型呼叫數（`live`／`simulated`／`invalid`／`cached`）、`all_simulated` 與證據缺口；寫入位置在任何模型呼叫前就檢查。
+- `--summary-json PATH`：稽核結束後寫出機器可讀的簡短摘要，與 `--format` 無關：`tool`、`version`、判定、exit code、執行模式、模型呼叫數（`total`、`live`、`simulated`、`invalid`、`cached`；同一次呼叫中 `retried` 的詢問不計入）、`all_simulated` 與證據缺口；寫入位置在任何模型呼叫前就檢查。
 - `vibeharness/action_runner.py`：Action 的 audit step 以 `exec` 進入 `python -I -m vibeharness.action_runner`，它在同一個行程內執行 CLI，再寫出 `verdict`／`exit-code` outputs 與 step summary 並套用 `fail-on`；判定為 `INCONCLUSIVE` 而 `fail-on` 不會因此讓 job 失敗時，以及 hybrid／live 執行的每一次模型呼叫都是模擬的時候（例如拿不到 secrets 的 fork PR），發出 `::warning::`。
-- 證據缺口「確定性 AI 安全規則未能完整掃描 N 個原始碼檔案」：每個 Python 檔的 AST 規則有 30 秒上限（`_MAX_SCAN_SECONDS_PER_FILE`）；超過上限或意外出錯的檔案保留已找到的命中，並列入 `AISecurityStaticScanner.incomplete_files`。
+- 證據缺口「確定性 AI 安全規則未能完整掃描 N 個原始碼檔案（逾時或出錯）」：每個 Python 檔的 AST 規則有 30 秒上限（`_MAX_SCAN_SECONDS_PER_FILE`）；超過上限或意外出錯的檔案保留已找到的命中，並列入 `AISecurityStaticScanner.incomplete_files`。
 - VH-AI-006 的執行點新增 `os.exec*`、`os.spawn*`、`os.posix_spawn[p]`、`pty.spawn` 與 `loop.subprocess_shell`／`loop.subprocess_exec`，也認得執行點的別名（`r = subprocess.run`、`getattr(subprocess, 'run')`、`functools.partial(subprocess.run, ...)`）。
 
 ### 變更
@@ -57,7 +87,7 @@
 
 ### 文件
 
-- `SECURITY.md` 改列 0.8.x 為支援版本並列出 repo 的資安功能；`CONTRIBUTING.md` 說明必要檢查、合併規則與擴充後的發布清單；README、設定說明與設計文件描述自動發現設定檔的防護、`exec` 啟動器、fork PR 的行為與新的限制，設計文件的引用改對應目前的程式碼。
+- `SECURITY.md` 改列 0.9.x 為支援版本並列出 repo 的資安功能；`CONTRIBUTING.md` 說明必要檢查、合併規則與擴充後的發布清單；README、設定說明與設計文件描述自動發現設定檔的防護、`exec` 啟動器、fork PR 的行為與新的限制，設計文件的引用改對應目前的程式碼。
 
 ## [0.8.0] - 2026-10-11
 
@@ -381,7 +411,8 @@ CI 整合（`--baseline`、GitHub Action）、`--estimate`、JS/TS 動態測試�
 - CI 矩陣：ubuntu / windows × Python 3.10 / 3.13，含 lint 與覆蓋率報告
 - MIT 授權
 
-[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/chinchiang/MultiAgentGama/compare/v0.7.0...v0.7.1

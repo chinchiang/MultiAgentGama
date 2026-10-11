@@ -12,7 +12,7 @@ Why in-process: the step's environment holds the provider keys. bash used to be 
 process whose initial environment holds the keys is the harness itself, which turns non-dumpable before it
 launches local sandbox children (sandbox.harden_harness_process).
 
-環境變數 ／ Environment: VH_FAIL_ON、VH_OUTPUT、VH_SARIF、VH_MODE、GITHUB_OUTPUT、GITHUB_STEP_SUMMARY、RUNNER_TEMP。
+環境變數 ／ Environment: VH_FAIL_ON、VH_OUTPUT、VH_SARIF、GITHUB_OUTPUT、GITHUB_STEP_SUMMARY、RUNNER_TEMP。
 """
 import json
 import os

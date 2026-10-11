@@ -101,12 +101,12 @@ owasp_api_top10:
     severity: "High"
 
 # OWASP Top 10 for LLM Applications 2026（v1.0，2026-08）。只在目標匯入 AI／LLM SDK 時使用
-# （見 agents/whitebox/ai_static_scanner.py）。功能性欄位：id / name / common_vibe_bugs。
+# （見 agents/whitebox/ai_static_scanner.py）。功能性欄位：id / name / common_vibe_bugs / atlas_techniques。
 # `cwe` 與 `atlas_tactics` 依 2026 文件附錄 A 的對應表（MITRE ATLAS 內容 v2026.06，tactic 層級）；
 # `atlas_techniques` 是本 harness 自己的 technique 層級對應，已對照 ATLAS 2026.07 內容版本核對。
 # 威脅建模 agent 會被要求用這些 technique id 填 atlas_mapping。
 # OWASP Top 10 for LLM Applications 2026 (v1.0, 2026-08). Used only when the target imports an
-# AI/LLM SDK (see agents/whitebox/ai_static_scanner.py). Functional fields: id / name / common_vibe_bugs.
+# AI/LLM SDK (see agents/whitebox/ai_static_scanner.py). Functional fields: id / name / common_vibe_bugs / atlas_techniques.
 # `cwe` and `atlas_tactics` follow the 2026 document's Appendix A mapping tables (MITRE ATLAS content
 # v2026.06, tactic level); `atlas_techniques` is this harness's technique-level mapping, checked against
 # ATLAS content release 2026.07. The threat modeler is told to use these technique ids for atlas_mapping.

@@ -57,6 +57,7 @@ DEFAULT_MUTATION_MIN_SCORE = 70.0
 DEFAULT_SANDBOX_TIMEOUT_SECONDS = 120
 DEFAULT_PER_TEST_TIMEOUT_SECONDS = 30
 DEFAULT_DOCKER_PIDS_LIMIT = 256
+DEFAULT_SANDBOX_PROVIDER = "local_subprocess"
 
 
 def _per_test_timeout(global_cfg: dict) -> int:
@@ -68,6 +69,20 @@ def _per_test_timeout(global_cfg: dict) -> int:
     return LLMGateway._positive_int(
         global_cfg.get("per_test_timeout_seconds"), "per_test_timeout_seconds"
     ) or DEFAULT_PER_TEST_TIMEOUT_SECONDS
+
+
+def _sandbox_provider(global_cfg: dict) -> str:
+    """`sandbox_provider`；省略或為 null 時是 local_subprocess（與其他鍵一致，null 保留預設值）。
+    `sandbox_provider`; local_subprocess when omitted or null (like the other keys, null keeps the default)."""
+    value = global_cfg.get("sandbox_provider")
+    return DEFAULT_SANDBOX_PROVIDER if value is None else str(value)
+
+
+def _sandbox_node_provider(global_cfg: dict) -> str:
+    """`sandbox_node_provider`；省略或為 null 時跟隨 sandbox_provider。
+    `sandbox_node_provider`; follows sandbox_provider when omitted or null."""
+    value = global_cfg.get("sandbox_node_provider")
+    return _sandbox_provider(global_cfg) if value is None else str(value)
 
 
 def sorted_call_log(call_log: List[AgentCallRecord]) -> List[AgentCallRecord]:
@@ -119,8 +134,8 @@ class VibeHarnessCommander:
         self.console = Console(force_terminal=False)
         self.gateway = LLMGateway(config_path, execution_mode=execution_mode)
         global_cfg = self.gateway.config.get("global") or {}
-        node_provider = str(global_cfg.get("sandbox_node_provider") or global_cfg.get("sandbox_provider", "local_subprocess"))
-        need_docker = global_cfg.get("sandbox_provider", "local_subprocess") == "docker" or node_provider == "docker"
+        node_provider = _sandbox_node_provider(global_cfg)
+        need_docker = _sandbox_provider(global_cfg) == "docker" or node_provider == "docker"
         self._sandbox_cfg = self._sandbox_settings(global_cfg, need_docker)
         self.sandbox = self._build_sandbox(global_cfg, self._sandbox_cfg)
         self.ast_extractor = ASTExtractor()
@@ -138,7 +153,7 @@ class VibeHarnessCommander:
         # JS/TS tests run with Node's built-in runner; the sandbox is built lazily, the first time one is needed
         self._global_cfg = global_cfg
         self.node_bin = str(global_cfg.get("node_bin") or "node")
-        self.sandbox_node_provider = str(global_cfg.get("sandbox_node_provider") or global_cfg.get("sandbox_provider", "local_subprocess"))
+        self.sandbox_node_provider = node_provider
         # Node 沙盒是延遲建立的，它用到的每個設定都在這裡（啟動時）驗證一次，之後直接取用；錯誤值 exit 5，不會在第一個 JS 測試時才炸
         # The Node sandbox is built lazily, so every setting it uses is validated once here (start-up) and reused;
         # a bad value exits 5 instead of surfacing at the first JS test
@@ -158,7 +173,7 @@ class VibeHarnessCommander:
         self.max_files = LLMGateway._positive_int(global_cfg.get("max_files"), "max_files") or DEFAULT_MAX_FILES
         self.max_file_bytes = LLMGateway._positive_int(global_cfg.get("max_file_bytes"), "max_file_bytes") or DEFAULT_MAX_FILE_BYTES
         self.config_path = os.path.abspath(config_path)
-        self.sandbox_provider = str(global_cfg.get("sandbox_provider", "local_subprocess"))
+        self.sandbox_provider = _sandbox_provider(global_cfg)
         # 檔案選取（CLI 的 --include/--exclude 會覆寫設定檔中的清單；--changed-since 會加入 only_files）
         # File selection (CLI --include/--exclude override the config lists; --changed-since adds only_files)
         self.include_patterns: List[str] = self._pattern_list(global_cfg.get("include"), "include")
@@ -251,21 +266,28 @@ class VibeHarnessCommander:
 
     @staticmethod
     def _mutation_settings(global_cfg: dict) -> Dict[str, Any]:
-        """突變測試的設定，啟動時驗證一次（錯誤值 exit 5）。
-        The mutation-testing settings, validated once at start-up (a bad value exits 5)."""
+        """突變測試的設定，啟動時驗證一次（錯誤值 exit 5）。與其他鍵一致：null 保留預設值（max_mutants 20、
+        min_score 70）；mutation_timeout_seconds／mutation_max_copy_mb 的 null 或 0 保留預設值，負數是 ConfigError。
+        The mutation-testing settings, validated once at start-up (a bad value exits 5). Like the other keys, null
+        keeps the default (max_mutants 20, min_score 70); null or 0 for mutation_timeout_seconds /
+        mutation_max_copy_mb keeps the default, a negative value is a ConfigError."""
         enabled = global_cfg.get("mutation_testing")
         if enabled is not None and not isinstance(enabled, bool):
             raise ValueError(bi(f"global.mutation_testing 必須是 true 或 false，目前為 {enabled!r}",
                                 f"global.mutation_testing must be true or false, got {enabled!r}"))
-        max_mutants = global_cfg.get("mutation_max_mutants", DEFAULT_MUTATION_MAX_MUTANTS)
+        max_mutants = global_cfg.get("mutation_max_mutants")
+        if max_mutants is None:
+            max_mutants = DEFAULT_MUTATION_MAX_MUTANTS
         if isinstance(max_mutants, bool) or not isinstance(max_mutants, int) or max_mutants < 1:
             raise ValueError(bi(f"global.mutation_max_mutants 必須是至少 1 的整數，目前為 {max_mutants!r}",
                                 f"global.mutation_max_mutants must be an integer >= 1, got {max_mutants!r}"))
         per_test = _per_test_timeout(global_cfg)
-        timeout = LLMGateway._positive_int(global_cfg.get("mutation_timeout_seconds", per_test), "mutation_timeout_seconds") or per_test
-        min_score = global_cfg.get("mutation_min_score", DEFAULT_MUTATION_MIN_SCORE)
-        LLMGateway._number(min_score, "mutation_min_score", 0, 100)
-        max_copy_mb = LLMGateway._positive_int(global_cfg.get("mutation_max_copy_mb", DEFAULT_MAX_COPY_MB), "mutation_max_copy_mb") or DEFAULT_MAX_COPY_MB
+        timeout = LLMGateway._positive_int(global_cfg.get("mutation_timeout_seconds"), "mutation_timeout_seconds") or per_test
+        min_score = global_cfg.get("mutation_min_score")
+        if min_score is None:
+            min_score = DEFAULT_MUTATION_MIN_SCORE
+        LLMGateway._number(min_score, "global.mutation_min_score", 0, 100)
+        max_copy_mb = LLMGateway._positive_int(global_cfg.get("mutation_max_copy_mb"), "mutation_max_copy_mb") or DEFAULT_MAX_COPY_MB
         return {"enabled": bool(enabled), "max_mutants": max_mutants, "timeout": timeout, "min_score": float(min_score),
                 "max_copy_mb": max_copy_mb}
 
@@ -419,7 +441,7 @@ class VibeHarnessCommander:
 
     @staticmethod
     def _build_sandbox(global_cfg: dict, settings: Optional[Dict[str, Any]] = None) -> LocalSubprocessSandbox:
-        provider = global_cfg.get("sandbox_provider", "local_subprocess")
+        provider = _sandbox_provider(global_cfg)
         if settings is None:
             settings = VibeHarnessCommander._sandbox_settings(global_cfg, provider == "docker")
         if provider == "local_subprocess":
