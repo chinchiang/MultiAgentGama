@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Fixed
+
+- JS/TS line coverage on Windows passes `--test-coverage-include` too: an absolute path is rewritten to forward slashes (Node's win32 matcher treats `/` and `\` as the same separator), so a target that itself lives under `node_modules` is covered on Node >= 22.5, the same as on POSIX. A path that contains glob metacharacters still gets the exclude patterns only.
+
 ## [0.10.0] - 2026-10-11
 
 Fourth review round: the Action no longer overrides the config's cost guard, discovered configs can no longer rewire model strings, aliases or key variables, and `null` keeps the default for the remaining settings.
