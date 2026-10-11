@@ -180,14 +180,20 @@ def test_python_versions_agree_across_ci_classifiers_and_requires_python():
 
 
 def test_pre_commit_ruff_matches_the_dev_pin():
-    """.pre-commit-config.yaml 的 ruff rev 等於 requirements-dev.txt 的 ruff 釘版。
-    The ruff rev in .pre-commit-config.yaml equals the ruff pin in requirements-dev.txt."""
+    """.pre-commit-config.yaml 的 ruff rev 釘在 40 字元的 commit SHA，行尾 `# frozen: vX.Y.Z` 等於 requirements-dev.txt 的 ruff 釘版。
+    The ruff rev in .pre-commit-config.yaml is a 40-character commit SHA whose trailing `# frozen: vX.Y.Z` equals the
+    ruff pin in requirements-dev.txt."""
     path = os.path.join(REPO_ROOT, ".pre-commit-config.yaml")
     if not os.path.exists(path):
         pytest.skip(".pre-commit-config.yaml is not shipped in the sdist")
-    config = yaml.safe_load(open(path, encoding="utf-8"))
+    text = open(path, encoding="utf-8").read()
+    config = yaml.safe_load(text)
     rev = next(r["rev"] for r in config["repos"] if r["repo"].endswith("/ruff-pre-commit"))
-    assert rev == "v" + _pins(_read("requirements-dev.txt"))["ruff"]
+    assert re.fullmatch(r"[0-9a-f]{40}", rev), rev
+    # 版本在 YAML 讀不到的行尾註解裡 ／ The version lives in the trailing comment, which YAML drops
+    frozen = re.search(r"^\s*rev:\s*" + rev + r"\s+#\s*frozen:\s*v(\S+)\s*$", text, re.MULTILINE)
+    assert frozen, "missing `# frozen: vX.Y.Z` comment on the ruff-pre-commit rev"
+    assert frozen.group(1) == _pins(_read("requirements-dev.txt"))["ruff"]
 
 
 # --- 鎖定檔與沙盒映像 ----------------------------------------------------------------------------

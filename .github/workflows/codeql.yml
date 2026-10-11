@@ -1,0 +1,69 @@
+# CodeQL 程式碼掃描（Python 與 GitHub Actions workflow）。workflow 名稱 "CodeQL Advanced" 與 job 名稱
+# "Analyze (python)"／"Analyze (actions)" 是 master 的必要檢查，改名會讓分支保護等不到檢查而卡住 PR：不要改。
+# CodeQL code scanning (Python and the GitHub Actions workflows). The workflow name "CodeQL Advanced" and the job
+# names "Analyze (python)" / "Analyze (actions)" are required checks on master; renaming them leaves branch
+# protection waiting for a check that never reports and blocks every PR: do not rename them.
+name: "CodeQL Advanced"
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+  # 每週一次，讓新的查詢規則也掃到沒變動的程式碼 ／ Weekly, so new queries also cover unchanged code
+  schedule:
+    - cron: '17 9 * * 5'
+
+# 預設不給任何權限；分析 job 只拿它需要的 ／ No permissions by default; the analyze job gets only what it needs
+permissions: {}
+
+# 同一個 PR 的新推送取消舊的分析；master 的 push 與排程不取消（每個 commit 都要有結果）
+# A new push to the same PR cancels the older analysis; pushes to master and scheduled runs are never cancelled
+# (every commit gets a result)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # 公開 repo 不需要 actions: read（只有私有 repo 要）與 packages: read（只有私有 CodeQL pack 要）
+    # A public repository needs neither actions: read (private repositories only) nor packages: read (private
+    # CodeQL packs only)
+    permissions:
+      # 上傳 code scanning 結果 ／ Upload the code scanning results
+      security-events: write
+      # checkout 讀取程式碼 ／ checkout reads the code
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+          - language: python
+            build-mode: none
+    steps:
+      # 第三方 action 釘在 commit SHA；升版時同步改註解裡的 tag
+      # Third-party actions are pinned to commit SHAs; bump the tag in the comment
+      - name: Checkout repository ／ 取出程式碼
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL ／ 初始化 CodeQL
+        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          # 預設查詢之外加上 security-extended（較多、精確度略低的安全查詢）
+          # security-extended on top of the default suite (more security queries, slightly lower precision)
+          queries: security-extended
+
+      - name: Perform CodeQL Analysis ／ 執行 CodeQL 分析
+        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          category: "/language:${{ matrix.language }}"
