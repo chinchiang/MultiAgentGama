@@ -214,8 +214,12 @@ def test_sandbox_requirements_match_requirements_lock():
     The sandbox image's hashed lock pins the same versions as requirements.lock, so the container behaves like CI."""
     lock = _pins(_read("requirements.lock"))
     sandbox = _pins(_read("docker", "sandbox-requirements.txt"))
-    assert {"pytest", "pytest-cov", "requests"} <= set(sandbox)
-    assert {name: v for name, v in sandbox.items() if lock.get(name) != v} == {}
+    assert {"pytest", "pytest-cov", "requests", "hypothesis"} <= set(sandbox)
+    # 只有 hypothesis 與其相依 sortedcontainers 不在 requirements.lock 中，由沙盒鎖定檔自行釘版
+    # Only hypothesis and its dependency sortedcontainers are absent from requirements.lock; the sandbox lock pins them
+    sandbox_only = {"hypothesis", "sortedcontainers"}
+    assert sandbox_only.isdisjoint(lock)
+    assert {name: v for name, v in sandbox.items() if name not in sandbox_only and lock.get(name) != v} == {}
 
 
 @pytest.mark.parametrize("dockerfile", ["sandbox.Dockerfile", "sandbox-node.Dockerfile"])

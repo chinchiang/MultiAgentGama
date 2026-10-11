@@ -2,6 +2,7 @@
 Regression tests: malformed model output degrades gracefully, and probe fallback is disclosed."""
 import json
 import os
+import threading
 
 from vibeharness.core.llm_gateway import LLMGateway, PROVENANCE_KEY, REASON_NOT_VALID_JSON
 from vibeharness.core.i18n import bi, en_only
@@ -89,14 +90,19 @@ def test_large_targets_are_threat_modeled_in_batches():
     gw = LLMGateway(CONFIG, execution_mode="mock")
     prompts = []
     state = {"n": 0}
+    # 批次會並行執行：計數要上鎖，否則兩個批次可能拿到同一個標題而被合併
+    # batches run concurrently: the counter takes a lock, or two batches could get the same title and be merged
+    lock = threading.Lock()
 
     def responder(agent_id, system_prompt, user_prompt, **k):
-        state["n"] += 1
-        prompts.append(user_prompt)
+        with lock:
+            state["n"] += 1
+            n = state["n"]
+            prompts.append(user_prompt)
         # 每個批次都回報相同且衝突的 threat_id，以證明重新編號有效
         # every batch reports the same colliding threat_id to prove renumbering works
         return {
-            "threats": [{"threat_id": "THREAT-01", "stride_category": "Tampering", "title": f"t{state['n']}"}],
+            "threats": [{"threat_id": "THREAT-01", "stride_category": "Tampering", "title": f"t{n}"}],
             "entrypoints": ["/api/batch"],
         }
 

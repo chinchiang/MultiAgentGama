@@ -6,6 +6,57 @@
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-11
+
+第五輪審查：Action 的判定只取自這次稽核自己的摘要，`extra-args` 以 CLI 的解析器檢查；自動發現的設定檔只能調低花費；litellm 的記錄／callback 參數列為保留鍵；不支援語言的原始碼與設定檔裡的密鑰不再悄悄漏掉；沙盒的報告讀回、執行目錄權限、涵蓋率 include 與 Docker 輸出上限也一併強化。
+
+### 新增
+
+- 擷取器不支援的語言的原始碼檔案（`UNSUPPORTED_SOURCE_EXTENSIONS`：Go、Java、Kotlin、Rust、C／C++、C#、PHP、Ruby、Swift、Scala、Objective-C、Dart、Lua、Perl、Elixir、Erlang、Haskell、Clojure、F#、Visual Basic、Groovy、Vue、Svelte、Solidity；刻意不含 shell 腳本、SQL 與 HTML／CSS）依與原始碼相同的走訪規則（略過的目錄與隱藏目錄、`include`／`exclude`、`--changed-since`）逐語言計數，並列為證據缺口（「N 個不支援語言的原始碼檔案（go: 3, …）未納入分析」），這種目標因此不會再得到 `READY_TO_SHIP`；取代原本不可能觸發的「…只做了靜態審查」缺口。
+- 設定類檔案（`.env`、`.env.*`、`*.env`、YAML、JSON、TOML、INI、CFG、`.properties`、Terraform 的 `.tf`／`.tfvars`、`Dockerfile`、`Dockerfile.*`、`*.dockerfile`、`.npmrc`、`.pypirc`、`.netrc`；略過鎖定檔）在本機以 VH-AI-007 做密鑰掃描（`AISecurityStaticScanner.scan_config_files`），絕不送給模型：每次最多 200 個（`DEFAULT_MAX_CONFIG_FILES`），各自受 `max_file_bytes` 限制，以 64 KB 為一段、在單檔 30 秒上限內掃描（私鑰區塊不會被切開）。因數量上限、`max_file_bytes` 或時間上限而沒有完整掃描的檔案是新的證據缺口。VH-AI-007 的標題改為「原始碼或設定檔中寫死的憑證 ／ Hard-coded credential in source or configuration」。
+- `vibeharness.cli.parse_args_for_inspection`：沒有副作用的 CLI 參數解析器（`--help`／`--version` 不印出也不結束、只含實際給出的參數、用法錯誤拋出 `ValueError`）；Action 用它檢查 `extra-args`。
+- Docker 沙盒映像附上 `hypothesis`（與其相依的 `sortedcontainers`），以雜湊鎖定在 `docker/sandbox-requirements.txt`（它們不在 `requirements.lock`），生成的性質測試因此能在容器內執行。
+
+### 變更
+
+- **破壞性**：Action 的判定只取自這次稽核的 `--summary-json`（`tool` 為 `vibeharness`，且 `exit_code` 與 CLI 相同）；CLI 以 0–3 結束卻沒有這份摘要時為 `ERROR`、exit 5，沒有稽核的執行不能再以 `READY_TO_SHIP` 通過。
+- **破壞性**：Action 以 CLI 自己的解析器檢查 `extra-args`：不執行稽核的旗標（`--estimate`、`--help`／`-h`、`--version`、`--init-config`、`--force`、`--summary-json`）、有專屬 input 的旗標（`--output`／`-o`、`--format`／`-f`、`--sarif`）與 CLI 無法解析的參數，都在執行任何東西之前以 exit 5 結束。`--config` 不論以 CLI 接受的哪種寫法出現都認得（`--config=x`、`-c x`、`-vc x`／`-vcx` 這類合併的短旗標；與 CLI 一樣以最後一個為準）。
+- **破壞性**：`extra_params` 保留 litellm 的記錄／callback 參數，它們會把完整的提示與回答（即待審程式碼）轉送給第三方觀測服務：`callbacks`、`success_callback`、`failure_callback` 與任何名稱含 `callback` 的鍵、`metadata`／`litellm_metadata`／`litellm_params`、`litellm_trusted_callback_vars`、`verbose`、`litellm_request_debug`，`langfuse_`、`langsmith_`、`gcs_`、`s3_`、`dd_`、`datadog_`、`helicone_`、`lunary_` 等整合前綴，以及名稱片段 `webhook`、`host`、`bucket`；另外是會改寫請求的 `prompt_id`／`prompt_variables`／`prompt_version`／`prompt_environment`、`litellm_system_prompt`、`model_alias_map`、`custom_prompt_dict`、`context_window_fallback_dict`、`routing_strategy`、`retry_policy`／`retry_strategy`、`force_timeout`、`client_side_timeout`、`azure` 與 `data_residency`。名稱片段含 `cost` 的成本覆寫（`input_cost_per_token`、`output_cost_per_token`、`cache_read_input_token_cost`）改為允許；其他含 `token` 片段的鍵仍然保留。
+- **破壞性**：`agents.<id>.model_alias` 指向 `models` 區段沒有的別名（打錯字）時，啟動即 `ConfigError`（exit 5）；過去會悄悄解析成 `unconfigured`（hybrid 改用模擬，live 在付費呼叫之後才中途失敗）。省略、`null` 或 `unconfigured` 仍代表沒有模型。
+- **破壞性**：自動發現的設定檔只能調低花費：`execution_mode` 只能是 `hybrid`（內建值）或 `mock`；`max_model_calls`、`max_concurrent_calls`、`max_output_tokens`（全域與每個模型）、`retry_invalid_output`、`max_retries`、`max_files`、`max_file_bytes` 的實際值都不能高於內建設定（自動發現的檔案整份取代內建設定，所以省略或 `null` 即 harness 預設值）；也不能新增 `whitebox_reviewer_*` agent。
+- 自動發現的設定檔可以保留先前版本內建設定的同一別名模型字串（`_PREVIOUS_BUNDLED_MODELS`：`claude` 的 `claude-sonnet-5`，v0.1.0～v0.2.0 的內建值），舊版 `--init-config` 寫出的覆本因此照樣能載入；拒絕訊息也會建議以 `vibeharness --init-config <PATH> --force` 重新產生。
+- 匯入 litellm 之前設定 `LITELLM_LOCAL_MODEL_COST_MAP=True`（只在環境變數尚未設定時），改用 litellm 套件內附的價格表，`mock`／`--estimate` 因此完全不連網；要讓 litellm 抓最新價格表，請設成 `False`。
+- 每個 `docker_*` 鍵設為 `null` 都保留預設值；`docker_node_image` 只在 Node 沙盒用 docker 時、`docker_image` 只在 `sandbox_provider` 是 docker 時才驗證，純本機設定檔裡殘留的值不會再擋住啟動。`models.<alias>.model`／`fallback_model` 去掉前後空白後保存，前後的空白不會送進 litellm 或快取 key。
+- Action：`sandbox: docker` 在設定檔覆本中也設定 `sandbox_node_provider: docker`，即使底稿把 JS／TS 測試留在本機，它們也會在容器內執行；`report`／`sarif` outputs 改由 runner 設定，只有這次稽核寫出了檔案才有值（workspace 裡舊的同名檔案不算，`ERROR` 時兩者都為空），這時 step summary 寫「沒有寫出報告 ／ No report was written」；`prep` 拒絕含換行的 `sarif` 路徑。
+- Docker 沙盒：harness 以 root 執行時，執行目錄交給 `nobody`（`chown 65534:65534`、權限 0700），而不是 `chmod 0777`，主機上的其他使用者因此無法在裡面放檔案或換掉報告（CodeQL `py/overly-permissive-file`）；啟用 userns-remap 的 daemon 這時需要對沙盒停用它，或以非 root 執行 harness。
+- Docker 沙盒：docker CLI 在 `RLIMIT_FSIZE` 64 MiB 下執行（忽略 SIGXFSZ），主機上的擷取暫存檔因此有上限；它的輸出達到上限時移除容器（`docker rm -f`），該批次為 `EXECUTION_FAILURE`，stderr 最後附上雙語說明（`OUTPUT_CAP_NOTE`）。容器另加 `--ulimit fsize=64 MiB` 限制可寫入的 bind，並以 `--log-driver none` 不留 daemon 端沒有上限的 json 日誌。
+
+### 資安
+
+- 被測程式碼可以改寫的報告（`junit.xml`、lcov 報告）改經 `jscoverage.read_untrusted_file` 讀回：POSIX 上以 `O_NOFOLLOW` 加 `O_NONBLOCK` 開啟（Windows 上以 `lstat` 檢查重新剖析點、以 `fstat` 確認是同一個檔案），只接受一般檔案、與檢查時同一個 inode、只有一個硬連結、不超過 64 MiB（`MAX_REPORT_BYTES`）；指向主機檔案的 symlink、FIFO、硬連結或過大的檔案一律算「沒有報告」，雙語原因放在 stderr 最前面（junit）或記一行 WARNING（lcov）。
+- `--init-config` 即使加上 `--force` 也拒絕符號連結（不論是否懸空）與不是一般檔案的目標，並以 `O_NOFOLLOW` 加 `O_EXCL`（`--force` 時為 `O_TRUNC`）開啟，不受信任的 checkout 裡預先放好的符號連結因此無法讓它在別處建立或覆寫檔案。
+- `--init-config` 建立檔案時的權限遮罩由 `0o666` 改為 `0o600`（只有擁有者可讀寫；CodeQL `py/overly-permissive-file`）。
+
+### 修正
+
+- POSIX 上的 JS/TS 涵蓋率：含反斜線的目標路徑再次不加 `--test-coverage-include`（0.10.1 會把 `/home/u/a\b` 改寫成指向別處的 `/home/u/a/b`）；只有在 Windows 規則下（Windows 或帶磁碟機代號）反斜線才是分隔符。目標的每種寫法（abspath 與 realpath）各給一個 include（Node 以 OR 合併）；Windows 上兩種寫法只差在磁碟機代號大小寫時才加 include（對應的網路磁碟機與 UNC、目錄名稱大小寫或 junction 不同時，退回只用排除模式與自己的 lcov 篩選）。UNC 路徑可以；`\\?\`／`\\.\` 裝置路徑、`C:foo` 與 `/` 不加 include。
+- CLI：寫不出雙語文字的串流（例如 `PYTHONIOENCODING=ascii`、`LANG=C`）在每個平台上都改用 `backslashreplace` 輸出，而不是以 `UnicodeEncodeError` 當掉；參數解析、`--help`／`--version` 與 `--init-config` 也在防護內執行，意外錯誤以 5 結束（Ctrl-C 為 130），不再是 Python 預設的 1。
+- Action 的 runner 在 Windows 的 cp1252 主控台印雙語 `::error::` 時不再以 `UnicodeEncodeError`（exit 1）結束：與 CLI 一樣先把 stdio 改成可寫出雙語文字。
+
+### 測試
+
+- 新增回歸測試 `tests/test_r5_action_cli.py`、`tests/test_r5_gateway_harness.py`（也逐一比對每個 `v*` tag 的內建設定與 `_PREVIOUS_BUNDLED_MODELS`）、`tests/test_r5_languages_secrets.py`、`tests/test_r5_sandbox_coverage.py`，以及 `tests/test_r5_coverage_gaps.py`（經由公開函式完整涵蓋 `baseline.py` 與 `sandbox.py` 穩定的輔助函式）。
+- 對時間敏感的測試放寬時間上限，量測涵蓋率時再按比例放大；Stripe 格式的測試金鑰改以字串串接組成，避免 repo 被密鑰掃描標記。
+- `test_large_targets_are_threat_modeled_in_batches` 的模擬回應在鎖內計數：批次並行執行時，兩個批次可能拿到同一個標題而被合併，使測試偶發失敗。
+
+### 工程
+
+- ruff 0.17.0（`requirements-dev.txt` 與 pre-commit hook 凍結的 SHA `44b5042…`）。
+
+### 文件
+
+- README、設計文件與設定說明記載以上變更；「尚未實作」表拿掉其他語言、非原始碼檔案的密鑰與 Docker 輸出沒有上限這三列，改加 userns-remap 的注意事項；架構圖畫出閘門的每一個輸入（審查者設定、沒有模型測試的發現、VH-AI-008／009 的完整性命中、測試結果、`--base-url`、不支援語言與設定檔掃描的缺口）；exit code 表列出所有 exit 5 的原因與不稽核的 exit 0；設計文件依目前的程式碼重新核對引用。
+
 ## [0.10.1] - 2026-10-11
 
 修正版：Windows 上的 JS/TS 涵蓋率也收得到位於 `node_modules` 底下的目標，並為縮短測試 ID 的 hook 補上回歸測試。
@@ -419,7 +470,8 @@ CI 整合（`--baseline`、GitHub Action）、`--estimate`、JS/TS 動態測試�
 - CI 矩陣：ubuntu / windows × Python 3.10 / 3.13，含 lint 與覆蓋率報告
 - MIT 授權
 
-[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.8.0...v0.9.0

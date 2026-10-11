@@ -821,7 +821,7 @@ def test_bad_node_settings_fail_at_start_up(tmp_path):
     base = yaml.safe_load(open(CONFIG, encoding="utf-8"))
     for key, value, match in (("sandbox_node_provider", "e2b", "not implemented"), ("sandbox_memory_mb", "abc", "sandbox_memory_mb"),
                               ("docker_pids_limit", "many", "docker_pids_limit"), ("sandbox_timeout_seconds", -1, "sandbox_timeout_seconds"),
-                              ("docker_node_image", "", "docker_node_image"), ("docker_network", None, "docker_network"),
+                              ("docker_node_image", "", "docker_node_image"), ("docker_network", "", "docker_network"),
                               ("docker_memory", 1, "docker_memory"), ("docker_cpus", "two", "docker_cpus"),
                               ("docker_cpus", "inf", "docker_cpus"), ("docker_pids_limit", -2, "docker_pids_limit"),
                               ("sandbox_timeout_seconds", "60", "sandbox_timeout_seconds")):

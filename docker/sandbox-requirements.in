@@ -7,3 +7,7 @@
 pytest
 pytest-cov
 requests
+# hypothesis 讓產生的屬性測試能在容器內執行；它與其相依 sortedcontainers 不在 requirements.lock，版本只由本鎖定檔決定
+# hypothesis lets generated property-based tests run in the container; it and its dependency sortedcontainers are
+# not in requirements.lock, so this lock alone decides their versions
+hypothesis

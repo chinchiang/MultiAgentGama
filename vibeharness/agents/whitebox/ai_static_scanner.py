@@ -25,7 +25,7 @@ import logging
 import os
 import re
 import time
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
 from vibeharness.core.models import FindingSeverity, StaticFinding
 from vibeharness.core.i18n import bi
@@ -103,7 +103,7 @@ RULES: Dict[str, Dict[str, str]] = {
                           "code, use parameterized queries and argument lists, and never eval/exec or shell it."),
     },
     "VH-AI-007": {
-        "title": bi("原始碼中寫死的憑證", "Hard-coded credential in source"),
+        "title": bi("原始碼或設定檔中寫死的憑證", "Hard-coded credential in source or configuration"),
         "severity": "HIGH", "owasp": "LLM02:2026 Sensitive Information Disclosure", "atlas": "AML.T0055",
         "cwe": "CWE-798",
         "remediation": bi("把密鑰移到密鑰管理服務或環境變數並輪替；絕不把憑證放進提示詞（LLM08:2026 Hidden Context Exposure）。",
@@ -229,6 +229,10 @@ _GENERIC_CODE_FLAGS = {"-c", "-e", "--eval", "/c", "/k", "-command", "--command"
 # beyond it a warning is logged, the remaining rules of that file are skipped, and the file is listed in
 # `incomplete_files` so the caller can disclose it
 _MAX_SCAN_SECONDS_PER_FILE = 30.0
+# 設定類檔案的密鑰掃描每次處理的大約字元數：每段之後檢查單一檔案的時間上限
+# The rough number of characters the secret scan of a configuration-like file handles at a time: the per-file time cap
+# is checked after each chunk
+_CONFIG_SCAN_CHUNK_CHARS = 64 * 1024
 # 點號名稱保留的屬性層數：最後 _CHAIN_TAIL 層（後綴比對：`chat.completions.create`）與最前 _CHAIN_HEAD 層（模組字首比對）；
 # 更深的鏈縮寫，所以每個節點的名稱長度有上限
 # Attribute levels a dotted name keeps: the last _CHAIN_TAIL (suffix matching: `chat.completions.create`) and the first
@@ -597,6 +601,8 @@ class AISecurityStaticScanner:
         # Files whose Python rule analysis is incomplete (time cap exceeded or an unexpected error): the caller should
         # disclose them as evidence gaps
         self.incomplete_files: List[str] = []
+        # 設定類檔案中密鑰掃描超過時間上限而未完成的檔案 ／ Configuration-like files whose secret scan hit the time cap
+        self.incomplete_config_files: List[str] = []
         # 目前檔案的分析期限（time.monotonic()）與工作計數；`_receiver_is_ai` 的備忘表（節點 id -> 結果）
         # The current file's analysis deadline (time.monotonic()) and work counter; `_receiver_is_ai`'s memo (node id -> result)
         self._deadline: Optional[float] = None
@@ -641,6 +647,56 @@ class AISecurityStaticScanner:
                 components |= set(_AI_JS_PACKAGE_RE.findall(text))
         self.ai_components = sorted(components)
         return self._dedupe(findings)
+
+    def scan_config_files(self, files: Iterable[str]) -> List[StaticFinding]:
+        """只對設定類檔案（.env、YAML、JSON、TOML、Dockerfile、Terraform …）執行確定性的密鑰規則 VH-AI-007。
+        全部在本機進行，沒有模型參與，佔位憑證的豁免規則與原始碼相同；單一檔案超過時間上限時保留已找到的命中，
+        並列入 `incomplete_config_files`。
+        Runs only the deterministic secret rule VH-AI-007 over configuration-like files (.env, YAML, JSON, TOML,
+        Dockerfile, Terraform ...). Everything happens locally with no model involved, and the placeholder exemptions
+        are the same as for source; a file that exceeds the time cap keeps the hits already found and is listed in
+        `incomplete_config_files`."""
+        findings: List[StaticFinding] = []
+        self.incomplete_config_files = []
+        for path in files:
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+            except OSError:
+                self.incomplete_config_files.append(path)
+                continue
+            deadline = time.monotonic() + _MAX_SCAN_SECONDS_PER_FILE
+            for line_offset, chunk, last in self._config_chunks(text):
+                findings.extend(self._finding("VH-AI-007", path, line_offset + line, f"{kind} literal (value redacted)")
+                                for line, kind in find_secrets(chunk))
+                if not last and time.monotonic() >= deadline:
+                    logger.warning(bi(f"{path} 的密鑰掃描超過 {_MAX_SCAN_SECONDS_PER_FILE:g} 秒的上限，該檔案其餘部分已略過",
+                                      f"The secret scan of {path} exceeded its {_MAX_SCAN_SECONDS_PER_FILE:g} s cap; "
+                                      "the rest of that file was skipped"))
+                    self.incomplete_config_files.append(path)
+                    break
+        return self._dedupe(findings)
+
+    @staticmethod
+    def _config_chunks(text: str) -> Iterator[Tuple[int, str, bool]]:
+        """把文字切成在行邊界結束的區段：（此區段之前的行數, 區段, 是否最後一段）。
+        私鑰區塊不會被切開：區段結束在其中最後一個 BEGIN 對應的 END 行之後。
+        Splits the text into chunks that end on a line boundary: (lines before the chunk, chunk, is it the last).
+        A private-key block is never split: the chunk ends after the END line of the last BEGIN inside it."""
+        start, lines_before, n = 0, 0, len(text)
+        while start < n:
+            end = text.find("\n", min(start + _CONFIG_SCAN_CHUNK_CHARS, n))
+            end = n if end == -1 else end + 1
+            begin = text.rfind("-----BEGIN ", start, end)
+            if begin != -1 and text.find("-----END ", begin, end) == -1:
+                close = text.find("-----END ", end)
+                if close != -1:
+                    nl = text.find("\n", close)
+                    end = n if nl == -1 else nl + 1
+            chunk = text[start:end]
+            yield lines_before, chunk, end >= n
+            lines_before += chunk.count("\n")
+            start = end
 
     @staticmethod
     def _finding(rule_id: str, path: str, line: int, evidence: str = "", severity: Optional[str] = None,

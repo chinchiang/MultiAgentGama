@@ -295,6 +295,12 @@ class _BatchHangsPySandbox:
         return TIMEOUT_EXIT_CODE, "", "timed out", 0.0, None, None
 
 
+# 重跑共睡 3 秒（2 + 1）；上限多留 4 秒給較慢的 runner，涵蓋率啟用時再放寬 2 倍——超出預算的重跑仍會被抓到
+# The reruns sleep 3 s in total (2 + 1); the bound adds 4 s of headroom for slower runners and doubles it while
+# coverage is active — a rerun that overran the budget would still be caught
+_RERUN_BOUND = (3.0 + 4.0) * (2 if "coverage" in sys.modules else 1)
+
+
 def test_python_rerun_timeouts_are_capped_by_the_remaining_budget(tmp_path):
     sandbox = _BatchHangsPySandbox()
     executor = TestSuiteExecutor(sandbox=sandbox, per_test_timeout_seconds=2)
@@ -302,7 +308,7 @@ def test_python_rerun_timeouts_are_capped_by_the_remaining_budget(tmp_path):
     start = time.monotonic()
     results, _ = executor.execute_test_suite(tests, working_dir=str(tmp_path))
     assert sandbox.budgets == [None, 2, 1]
-    assert time.monotonic() - start < 4.5  # 重跑總時間不超出 3 秒的批次預算 ／ the reruns stay within the 3s batch budget
+    assert time.monotonic() - start < _RERUN_BOUND  # 重跑總時間不超出 3 秒的批次預算 ／ the reruns stay within the 3s batch budget
     assert "after 2s" in results[0].failure_reason and "after 1s" in results[1].failure_reason
     assert results[2].failure_reason == REASON_RERUN_BUDGET_EXHAUSTED
 

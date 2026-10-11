@@ -15,7 +15,7 @@ branding:
 #     contents: read
 #     security-events: write
 #   steps:
-#   - uses: chinchiang/MultiAgentGama@v0.10.1
+#   - uses: chinchiang/MultiAgentGama@v0.11.0
 #     with:
 #       target: src
 #       mode: hybrid
@@ -77,7 +77,12 @@ inputs:
     description: "SARIF 輸出路徑；留空則不產生 ／ SARIF output path; empty disables"
     default: "vibeharness.sarif"
   extra-args:
-    description: "額外的 CLI 參數，例如 --exclude 'tests/*' --cache-dir .vibeharness-cache ／ Additional CLI arguments, e.g. --exclude 'tests/*' --cache-dir .vibeharness-cache"
+    description: >-
+      額外的 CLI 參數，例如 --exclude 'tests/*' --cache-dir .vibeharness-cache；以 CLI 自己的解析器檢查，不執行稽核的旗標
+      （--estimate、--help、--version、--init-config、--force、--summary-json）與有專屬 input 的旗標（--output、--format、--sarif）
+      以 exit 5 拒絕 ／ Additional CLI arguments, e.g. --exclude 'tests/*' --cache-dir .vibeharness-cache; checked with the
+      CLI's own parser, and non-audit flags (--estimate, --help, --version, --init-config, --force, --summary-json) and flags
+      with a dedicated input (--output, --format, --sarif) are refused with exit 5
     default: ""
   python-version:
     description: "要安裝的 Python 版本 ／ Python version to set up"
@@ -89,13 +94,13 @@ inputs:
     description: >-
       生成測試的沙盒：local_subprocess（預設；沿用設定檔的 sandbox_provider，內建設定檔即為 local_subprocess，不是安全邊界）
       或 docker（從 action 自帶的 docker/sandbox.Dockerfile 與 sandbox-node.Dockerfile 建置沙盒映像，並以
-      sandbox_provider: docker 的設定檔覆本執行；需要有 Docker 的 runner，例如 ubuntu-latest）。extra-args 有 --config 時，
-      docker 以該設定檔為底稿 ／
+      sandbox_provider: docker 與 sandbox_node_provider: docker 的設定檔覆本執行，Python 與 JS／TS 測試都在容器內；
+      需要有 Docker 的 runner，例如 ubuntu-latest）。extra-args 有 --config 時，docker 以該設定檔為底稿 ／
       Sandbox for generated tests: local_subprocess (default; keeps the config's sandbox_provider, which is
       local_subprocess in the bundled config and is NOT a security boundary) or docker (builds the sandbox images from
       the action's own docker/sandbox.Dockerfile and sandbox-node.Dockerfile and runs with a copy of the config set to
-      sandbox_provider: docker; needs a runner with Docker, e.g. ubuntu-latest). With --config in extra-args, docker
-      uses that file as the base
+      sandbox_provider: docker and sandbox_node_provider: docker, so both Python and JS / TS tests run in containers;
+      needs a runner with Docker, e.g. ubuntu-latest). With --config in extra-args, docker uses that file as the base
     default: "local_subprocess"
   artifact-name:
     description: >-
@@ -120,11 +125,16 @@ outputs:
     description: "CLI 的 exit code（0-3 判定、4 live 失敗、5 harness 錯誤、130 中斷）／ The CLI exit code (0-3 verdicts, 4 live failure, 5 harness error, 130 interrupted)"
     value: ${{ steps.audit.outputs.exit-code }}
   report:
-    description: "寫出的報告路徑（output 留空時為依 format 推導的名稱）／ Path of the written report (the name derived from format when output is empty)"
-    value: ${{ steps.prep.outputs.output }}
+    description: >-
+      這次稽核寫出的報告路徑（output 留空時為依 format 推導的名稱）；稽核沒有完成（verdict 為 ERROR）時為空 ／
+      Path of the report this audit wrote (the name derived from format when output is empty); empty when the audit did
+      not complete (verdict ERROR)
+    value: ${{ steps.audit.outputs.report }}
   sarif:
-    description: "寫出的 SARIF 路徑（未啟用時為空）／ Path of the written SARIF file (empty when disabled)"
-    value: ${{ inputs.sarif }}
+    description: >-
+      這次稽核寫出的 SARIF 路徑；未啟用或稽核沒有完成（verdict 為 ERROR）時為空 ／ Path of the SARIF file this audit wrote;
+      empty when disabled or when the audit did not complete (verdict ERROR)
+    value: ${{ steps.audit.outputs.sarif }}
 
 runs:
   using: composite
@@ -141,6 +151,7 @@ runs:
         VH_MUTATION: ${{ inputs.mutation }}
         VH_FAIL_ON: ${{ inputs.fail-on }}
         VH_SANDBOX: ${{ inputs.sandbox }}
+        VH_SARIF: ${{ inputs.sarif }}
       run: |
         # 在安裝與建置 Docker 映像之前就驗證（純 bash），打錯字不會等到建置或整個稽核之後才失敗
         # Validated before the install and the Docker image build (plain bash), so a typo never fails only after a build or a whole audit
@@ -178,6 +189,9 @@ runs:
         fi
         case "$output" in
           *$'\n'*|*$'\r'*) echo "::error::output must not contain a line break"; exit 5 ;;
+        esac
+        case "$VH_SARIF" in
+          *$'\n'*|*$'\r'*) echo "::error::sarif must not contain a line break"; exit 5 ;;
         esac
         printf 'output=%s\n' "$output" >> "$GITHUB_OUTPUT"
 
@@ -278,10 +292,16 @@ runs:
         # 不讓 CLI 自動讀取工作目錄裡（可能由 PR 加入）的 vibeharness.yaml／.vibeharness.yaml
         # The audited repo is untrusted: without --config in extra-args, pass the bundled config explicitly so the
         # CLI never auto-discovers a vibeharness.yaml / .vibeharness.yaml in the workspace (a PR could add one)
+        # extra-args 以 CLI 自己的 argparse 解析器檢查（合併的短旗標 -vc x、-vcx 也認得）：不執行稽核的旗標（--estimate、
+        # --help、--version、--init-config、--force、--summary-json）與有專屬 input 的旗標（--output、--format、--sarif）
+        # 以 exit 5 拒絕；有 --config 時寫到 vh_config_arg
+        # extra-args are checked with the CLI's own argparse parser (combined short flags -vc x, -vcx are recognized too):
+        # non-audit flags (--estimate, --help, --version, --init-config, --force, --summary-json) and flags with a
+        # dedicated input (--output, --format, --sarif) are refused with exit 5; a --config is written to vh_config_arg
+        python -I -c 'import sys; from vibeharness.action_runner import extra_args_main; sys.exit(extra_args_main(sys.argv[1], sys.argv[2]))' \
+          "$RUNNER_TEMP/vh_extra_args" "$RUNNER_TEMP/vh_config_arg" || exit 5
         has_config=0
-        for arg in "${extra[@]}"; do
-          case "$arg" in --config|--config=*|-c|-c?*) has_config=1 ;; esac
-        done
+        [ -e "$RUNNER_TEMP/vh_config_arg" ] && has_config=1
         case "$VH_SANDBOX" in
           local_subprocess)
             if [ "$has_config" = 0 ]; then
@@ -295,20 +315,17 @@ runs:
         import os, sys
         sys.path[:] = [p for p in sys.path if p and os.path.abspath(p) != os.getcwd()]
         import yaml
+        from vibeharness.action_runner import config_from_extra_args
         from vibeharness.core.llm_gateway import DEFAULT_CONFIG_PATH
         with open(sys.argv[1], encoding="utf-8") as f:
             args = [a for a in f.read().split("\0") if a]
-        base = DEFAULT_CONFIG_PATH
-        for i, arg in enumerate(args):
-            if arg in ("--config", "-c") and i + 1 < len(args):
-                base = args[i + 1]
-            elif arg.startswith("--config="):
-                base = arg.split("=", 1)[1]
-            elif arg.startswith("-c") and len(arg) > 2:
-                base = arg[2:]
+        # 與 CLI 相同的解析器決定底稿（-vc x、-vcx、--config=x 都認得）／ The CLI's own parser picks the base (-vc x, -vcx, --config=x all work)
+        base = config_from_extra_args(args) or DEFAULT_CONFIG_PATH
         with open(base, encoding="utf-8") as f:
             config = yaml.safe_load(f) or {}
-        config["global"] = {**(config.get("global") or {}), "sandbox_provider": "docker"}
+        # JS／TS 測試也進 docker：底稿的 sandbox_node_provider: local_subprocess 不能把它們留在 runner 上
+        # JS / TS tests go to docker too: a base's sandbox_node_provider: local_subprocess must not keep them on the runner
+        config["global"] = {**(config.get("global") or {}), "sandbox_provider": "docker", "sandbox_node_provider": "docker"}
         with open(sys.argv[2], "w", encoding="utf-8") as f:
             yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False)
         print(f"sandbox: docker (config based on {base})")
