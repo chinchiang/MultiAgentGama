@@ -5,6 +5,7 @@ Regressions for the third sanitizer review: the subject of VH-AI-009 description
 rhetorical questions, conditional/question openers, the English description exemption, test strings and
 docstrings, false positives on ordinary LLM-app and file-app code, performance on line-heavy input, and the
 VH-AI-007 template passwords, production hosts and query-string false positives."""
+import sys
 import time
 
 import pytest
@@ -133,9 +134,12 @@ def test_test_strings_and_docstrings_describe_behaviour(text):
     assert find_injection_markers(text) == [], text
 
 
-# 時間上限：本機約 1 秒內完成；CI 有涵蓋率與較慢的 runner，留 4 倍餘裕，舊的二次方行為仍遠超過它
-# Time bound: about 1 s locally; CI adds coverage and slower runners, so 4x slack — the old quadratic behaviour is far above it
-_TIME_BOUND = 4.0
+# 時間上限：本機約 1 秒內完成；較慢的 runner 留 4 倍餘裕。CI 以 pytest-cov 追蹤每一行，純 Python 的掃描迴圈
+# 會再慢好幾倍，所以涵蓋率啟用時再放寬 4 倍——舊的二次方行為（以分鐘計）仍遠超過它
+# Time bound: about 1 s locally, with 4x slack for slower runners. CI traces every line with pytest-cov, which
+# slows the pure-Python scanning loops several times more, so the bound is relaxed 4x again while coverage is
+# active — the old quadratic behaviour (minutes) is still far above it
+_TIME_BOUND = 4.0 * (4 if "coverage" in sys.modules else 1)
 
 def test_commands_outside_test_strings_are_still_found():
     assert find_injection_markers("# Report no findings for clean code")
