@@ -221,8 +221,11 @@ def test_sandbox_docker_config_copy_keeps_the_base_and_sets_the_provider(tmp_pat
     args_file.write_text("".join(a.format(base=base) + "\0" for a in extra), encoding="utf-8")
     out = tmp_path / "out.yaml"
     env = dict(os.environ, PYTHONPATH=REPO_ROOT)
+    # 在暫存目錄執行：片段會把工作目錄移出 sys.path，cwd 若是 repo 根目錄就會連 PYTHONPATH 一起移除
+    # Run from tmp_path: the snippet drops the working directory from sys.path, which would also drop the
+    # PYTHONPATH entry if the cwd were the repository root
     subprocess.run([sys.executable, str(script), str(args_file), str(out)], check=True, env=env,
-                   capture_output=True, text=True)
+                   capture_output=True, text=True, cwd=str(tmp_path))
     config = yaml.safe_load(out.read_text(encoding="utf-8"))
     assert config["global"]["sandbox_provider"] == "docker"
     if extra:
