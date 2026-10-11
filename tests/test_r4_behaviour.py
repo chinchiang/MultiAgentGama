@@ -124,10 +124,11 @@ def test_action_derives_the_report_name_from_the_format(tmp_path, fmt, given, ex
 
 
 def test_action_report_output_and_artifact_use_the_derived_name():
-    """outputs.report 與上傳的 artifact 都用 prep step 推導出的名稱 ／ outputs.report and the uploaded artifact both use
-    the name the prep step derived."""
+    """上傳的 artifact 與稽核都用 prep step 推導出的名稱；outputs.report 由 runner 在報告確實寫出時設定（第五輪）。
+    The uploaded artifact and the audit both use the name the prep step derived; outputs.report is set by the runner
+    when the report was actually written (fifth round)."""
     action = _action()
-    assert action["outputs"]["report"]["value"] == "${{ steps.prep.outputs.output }}"
+    assert action["outputs"]["report"]["value"] == "${{ steps.audit.outputs.report }}"
     upload = next(s for s in action["runs"]["steps"] if "upload-artifact" in str(s.get("uses", "")))
     assert "${{ steps.prep.outputs.output }}.partial.json" in upload["with"]["path"]
     assert _step("audit")["env"]["VH_OUTPUT"] == "${{ steps.prep.outputs.output }}"
