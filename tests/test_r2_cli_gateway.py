@@ -83,7 +83,7 @@ def test_markdown_shows_na_for_a_null_confirmed_count_even_if_arbitration_is_fla
 # --- 2. 安裝不完整：exit 5，不是 1 ------------------------------------------------------------------------
 # --- 2. A broken install exits 5, not 1 ---------------------------------------------------------------------
 
-def test_missing_dependency_exits_5_with_a_clear_message(monkeypatch, capsys):
+def test_missing_dependency_exits_5_with_a_clear_message(monkeypatch, capsys, tmp_path):
     """harness 匯入失敗（模擬缺少 yaml）時，main() 以 5 結束並說明如何重新安裝，而不是 1（NEEDS_FIXES）。
     When importing the harness fails (a simulated missing yaml), main() exits 5 and says how to reinstall,
     instead of 1 (NEEDS_FIXES)."""
@@ -94,7 +94,9 @@ def test_missing_dependency_exits_5_with_a_clear_message(monkeypatch, capsys):
         raise ModuleNotFoundError("No module named 'yaml'", name="yaml")
 
     monkeypatch.setattr(cli.importlib, "import_module", broken)
-    assert _run_cli(monkeypatch, "--version") == cli.USAGE_ERROR_EXIT_CODE
+    # 真正的稽核才載入 harness；--version 不需要相依套件（見 test_r3_cli_report_action）
+    # Only a real audit loads the harness; --version needs no dependency (see test_r3_cli_report_action)
+    assert _run_cli(monkeypatch, "-m", "mock", "-t", str(tmp_path)) == cli.USAGE_ERROR_EXIT_CODE
     err = capsys.readouterr().err
     assert "pip install --force-reinstall vibeharness-mas" in err and "missing module: yaml" in err
 
@@ -117,9 +119,11 @@ def test_importing_the_cli_module_loads_no_third_party_dependency():
 def test_every_launcher_exits_5_when_a_dependency_is_missing(launcher):
     """`python -m vibeharness`、`python main.py` 與 console script 在缺少相依套件（yaml 被封鎖）時都以 5 結束。
     `python -m vibeharness`, `python main.py` and the console script all exit 5 when a dependency (blocked yaml) is missing."""
-    code = f"import sys; sys.modules['yaml'] = None; sys.argv = ['vibeharness', '--version']; {launcher}"
+    code = f"import sys; sys.modules['yaml'] = None; sys.argv = ['vibeharness', '-m', 'mock']; {launcher}"
+    # CLI 把輸出切成 UTF-8（雙語訊息）；Windows 上 text=True 預設用 cp1252 解碼會失敗，要明確指定
+    # The CLI switches its output to UTF-8 (bilingual messages); on Windows text=True would decode with cp1252 and fail
     proc = subprocess.run([sys.executable, "-c", code], cwd=REPO_ROOT, capture_output=True, text=True,
-                          env=dict(os.environ, PYTHONPATH=REPO_ROOT))
+                          encoding="utf-8", errors="replace", env=dict(os.environ, PYTHONPATH=REPO_ROOT))
     assert proc.returncode == 5, proc.stderr
     assert "vibeharness-mas" in proc.stderr and "Traceback" not in proc.stderr
 

@@ -1,6 +1,6 @@
-# 讓釘 SHA 的 Actions、鎖定的 Python 相依套件集與沙盒基底映像保持最新。CI 的 `audit` job（對 requirements.lock 跑 pip-audit）
+# 讓釘 SHA 的 Actions、鎖定的 Python 相依套件集、pre-commit hook 與沙盒基底映像保持最新。CI 的 `audit` job（對 requirements.lock 跑 pip-audit）
 # 會在某個鎖定版本出現已知 CVE 時讓每個 PR 失敗，沒有這個設定就只能手動更新鎖定檔。
-# Keeps the SHA-pinned Actions, the locked Python dependency set and the sandbox base images current. The CI `audit` job
+# Keeps the SHA-pinned Actions, the locked Python dependency set, the pre-commit hooks and the sandbox base images current. The CI `audit` job
 # (pip-audit over requirements.lock) fails every PR once a locked version gains a known CVE, so
 # without this the lock could only be refreshed by hand.
 version: 2
@@ -40,6 +40,20 @@ updates:
       # The build backend in requirements-build.txt: capped like pyproject.toml [build-system] (<85); bump both together
       - dependency-name: setuptools
         update-types: ["version-update:semver-major"]
+  # .pre-commit-config.yaml 的 hook rev（ruff-pre-commit 釘在 commit SHA＋`# frozen: vX.Y.Z` 註解，Dependabot 會一起改）。
+  # ruff 同時釘在 requirements-dev.txt（pip 生態系），兩邊是分開的 PR：tests/test_review_build.py 會在版本不一致時失敗，
+  # 合併其中一個前把另一個也升到同版。
+  # The hook revs in .pre-commit-config.yaml (ruff-pre-commit is pinned to a commit SHA + `# frozen: vX.Y.Z` comment,
+  # which Dependabot updates together). ruff is also pinned in requirements-dev.txt (pip ecosystem) and the two arrive
+  # as separate PRs: tests/test_review_build.py fails while they disagree, so bump the other one to the same version
+  # before merging either.
+  - package-ecosystem: pre-commit
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      pre-commit-hooks:
+        patterns: ["*"]
   # 沙盒映像的基底映像（以 tag＋index digest 釘死）／ Base images of the sandbox images (pinned by tag + index digest)
   - package-ecosystem: docker
     directory: /docker

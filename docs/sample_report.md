@@ -2,7 +2,7 @@
 **目標系統路徑 ／ Target System Path**: `examples`  
 **協調者 ／ Orchestrator**: Commander Harness 代理 ／ Commander Harness Agent  
 **整體狀態 ／ Overall Status**: `NEEDS_FIXES`  
-**產生時間 ／ Generated**: 2026-10-09T00:00:00+00:00 由 VibeHarness-MAS 0.8.0 產生 ／ by VibeHarness-MAS 0.8.0 (mode `mock`, sandbox `local_subprocess`)  
+**產生時間 ／ Generated**: 2026-10-09T00:00:00+00:00 由 VibeHarness-MAS 0.9.0 產生 ／ by VibeHarness-MAS 0.9.0 (mode `mock`, sandbox `local_subprocess`)  
 **目標修訂 ／ Target revision**: `5a10af0f2e4c0b7d9e8a1c3b6d4f2a8e7c9b1d0e`  
 **設定檔 ／ Config**: `vibeharness/config/agents_config.yaml`  
 
@@ -15,7 +15,7 @@
 
 **證據缺口 ／ Evidence gaps:**
 - 以下代理使用了模擬引擎（非真實模型） ／ Simulation engine (not real models) was used for: blackbox_test_synthesizer, blackbox_threat_modeler, whitebox_reviewer_claude, whitebox_reviewer_deepseek, whitebox_reviewer_gemini, whitebox_reviewer_glm, whitebox_test_generator, whitebox_verifier_claude, whitebox_verifier_deepseek, whitebox_verifier_gemini, whitebox_verifier_glm
-- 4 筆已確認的發現沒有可用的模型產生測試，只由確定性探針涵蓋，而非針對該缺陷的測試 ／ 4 confirmed finding(s) had no usable model-generated test and were only covered by deterministic probes, not by a test targeting the defect: WB-CLA-01, WB-DEE-01, WB-GLM-01, WB-GEM-01
+- 4 筆未經驗證的發現沒有可用的模型產生測試，只由確定性探針涵蓋，而非針對該缺陷的測試 ／ 4 unverified finding(s) had no usable model-generated test and were only covered by deterministic probes, not by a test targeting the defect: WB-CLA-01, WB-DEE-01, WB-GLM-01, WB-GEM-01
 - 3 個已建模的威脅沒有可執行的測試 ／ 3 modeled threat(s) have no executable test: THREAT-01, THREAT-02, THREAT-03
 
 | 指標 ／ Metric | 數值 ／ Value | 目標 ／ Target |

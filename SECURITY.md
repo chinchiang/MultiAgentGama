@@ -27,8 +27,8 @@ VibeHarness-MAS 本身是一個 LLM 應用，而且會執行模型生成的程�
 
 | 版本 | 支援安全修正 |
 | :--- | :---: |
-| 0.6.x | ✅ |
-| < 0.6 | ❌ |
+| 0.9.x | ✅ |
+| < 0.9 | ❌ |
 
 只有最新的 minor 版本會收到安全修正；新的 minor 版本發布後，上一個 minor 版本即停止支援。
 
@@ -36,7 +36,8 @@ VibeHarness-MAS 本身是一個 LLM 應用，而且會執行模型生成的程�
 
 - `sandbox_provider: local_subprocess` **不是安全邊界**：模型生成的測試以你的使用者權限執行。對不信任的目標請用 `docker`。
 - 待審程式碼會送到 `vibeharness/config/agents_config.yaml` 列出的每一家模型供應商（寫死的憑證會先遮蔽）。
-- 依賴的已知弱點由 CI 的 `audit` job（pip-audit）與 Dependabot 追蹤。
+- 依賴的已知弱點由 CI 的 `audit` job（pip-audit）、Dependabot 警示與 Dependabot 安全性更新（自動開修正 PR）追蹤。
+- 本 repo 啟用了 GitHub 的 secret scanning 與 push protection（含有憑證的推送會被擋下），以及 CodeQL 程式碼掃描（`.github/workflows/codeql.yml`，Python 與 workflow，`security-extended` 查詢；是 `master` 的必要檢查）。Actions 要求第三方 action 以完整的 commit SHA 釘版；觸發發布的 `v*` tag 只有管理員能建立、移動或刪除；`master` 只接受經過 PR 與必要檢查的合併，不能強制推送或刪除。
 
 ---
 
@@ -58,7 +59,14 @@ We acknowledge reports within 7 days, fix confirmed issues in a patch release pu
 
 | Version | Supported |
 | :--- | :---: |
-| 0.6.x | ✅ |
-| < 0.6 | ❌ |
+| 0.9.x | ✅ |
+| < 0.9 | ❌ |
 
 Only the latest minor release line receives security fixes; a new minor release ends support for the previous one.
+
+### Security notes
+
+- `sandbox_provider: local_subprocess` is **not a security boundary**: model-generated tests run with your user's privileges. Use `docker` for untrusted targets.
+- The audited code is sent to every model provider listed in `vibeharness/config/agents_config.yaml` (hard-coded credentials are masked first).
+- Known vulnerabilities in dependencies are tracked by CI's `audit` job (pip-audit), Dependabot alerts and Dependabot security updates (which open fix PRs automatically).
+- The repository has GitHub secret scanning and push protection enabled (pushes containing credentials are blocked), plus CodeQL code scanning (`.github/workflows/codeql.yml`, Python and the workflows, `security-extended` queries; a required check on `master`). Actions require third-party actions to be pinned to a full commit SHA; only admins can create, move or delete the `v*` tags that trigger a release; `master` only takes merges through a PR with the required checks and cannot be force-pushed or deleted.

@@ -1,7 +1,11 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    # 與 requirements-dev.txt 的 ruff 釘版保持一致 ／ Keep in sync with the ruff pin in requirements-dev.txt
-    rev: v0.16.10
+    # 釘在 tag 指向的 commit SHA（pre-commit 的 frozen rev；tag 可被改指，SHA 不會），行尾註解是版本，
+    # 與 requirements-dev.txt 的 ruff 釘版保持一致（tests/test_review_build.py 會檢查）。Dependabot 的 pre-commit 生態系會一併升 SHA 與註解
+    # Pinned to the commit SHA the tag points to (pre-commit's frozen rev; a tag can be moved, a SHA cannot), with the
+    # version in the trailing comment, kept in sync with the ruff pin in requirements-dev.txt (tests/test_review_build.py
+    # checks it). Dependabot's pre-commit ecosystem bumps the SHA and the comment together
+    rev: f12be1ebaa5351c1fc76472de98db2c3446c8253  # frozen: v0.16.10
     hooks:
       - id: ruff
   # mypy 在專案環境執行（與 CI lint job 相同的釘版 mypy 與真實相依套件），

@@ -13,6 +13,7 @@ from typing import Dict, Optional, Tuple, List, Any
 from vibeharness.core.i18n import bi
 from vibeharness.core.jscoverage import (
     LCOV_REPORT_NAME, JsLineCoverage, node_coverage_args, node_coverage_problem, read_lcov_file,
+    strip_coverage_glob_warning,
 )
 
 logger = logging.getLogger("VibeHarness.Sandbox")
@@ -126,6 +127,22 @@ def sandbox_home_env(run_dir: str) -> Dict[str, str]:
     except Exception:
         pass  # site 在嵌入式直譯器中可能不完整；沒有使用者 site 也能執行 ／ site may be incomplete in embedded interpreters; running without a user site is fine
     return env
+
+
+def sandbox_temp_env(run_dir: str) -> Dict[str, str]:
+    """讓本機沙盒子行程的暫存目錄（TMPDIR／TMP／TEMP）落在執行目錄底下的 tmp/。執行目錄在每次執行結束（包括
+    逾時被砍掉）後整個刪除，所以被砍掉的行程來不及自己清理的暫存檔也不會留在主機的 /tmp：例如 Node 的
+    --experimental-test-coverage 在 os.tmpdir() 建立的 node-coverage-XXXX、pytest 的 tmp_path 基底目錄，以及產生的
+    測試自己用 tempfile 建立的檔案。容器沙盒不需要：容器內的 /tmp 是 tmpfs，隨容器一起消失。
+    Points the local sandbox child's temp directory (TMPDIR / TMP / TEMP) at tmp/ inside the run directory. The run
+    directory is removed after every run (including one killed on a timeout), so temp files a killed process had no
+    chance to clean up do not stay behind in the host's /tmp: e.g. the node-coverage-XXXX Node's
+    --experimental-test-coverage creates in os.tmpdir(), pytest's tmp_path base directory, and files the generated
+    test creates with tempfile. Container sandboxes do not need it: /tmp inside the container is a tmpfs that goes
+    away with the container."""
+    temp = os.path.join(run_dir, "tmp")
+    os.makedirs(temp, exist_ok=True)
+    return {"TMPDIR": temp, "TMP": temp, "TEMP": temp}
 
 
 def _without_real_home(env: Dict[str, str]) -> Dict[str, str]:
@@ -342,6 +359,8 @@ class LocalSubprocessSandbox:
             )
             returncode, stdout, stderr = self._run(cmd, cwd=cwd, env=env, timeout=timeout, limits=self._limits(timeout))
             duration = time.time() - start_time
+            if collect_coverage:
+                stderr = self._clean_coverage_stderr(stderr)
             if returncode is None:
                 self._after_timeout(cmd)
                 return TIMEOUT_EXIT_CODE, stdout, (
@@ -406,6 +425,8 @@ class LocalSubprocessSandbox:
             # 假家目錄：不讓產生的測試順手讀到真正家目錄裡的憑證（見 sandbox_home_env）
             # Fake home: keeps the real home's credentials out of casual reach (see sandbox_home_env)
             **sandbox_home_env(run_dir),
+            # 暫存檔留在執行目錄裡（見 sandbox_temp_env） ／ temp files stay inside the run directory (see sandbox_temp_env)
+            **sandbox_temp_env(run_dir),
         })
         env = _without_real_home(env)
         if custom_env:
@@ -426,6 +447,12 @@ class LocalSubprocessSandbox:
         coverage percentage. Python reads pytest-cov's output table; the Node sandboxes override it to read the lcov
         report."""
         return self._extract_coverage_percent(stdout)
+
+    def _clean_coverage_stderr(self, stderr: str) -> str:
+        """收集涵蓋率的執行結束後整理 stderr：預設原樣回傳；Node 沙盒拿掉涵蓋率篩選引起的實驗功能警告。
+        Tidies stderr after a run that collected coverage: returned as is by default; the Node sandboxes remove the
+        experimental-feature warning the coverage filters cause."""
+        return stderr
 
     def _after_timeout(self, cmd: List[str]):
         """在逾時指令的行程樹被砍掉之後，以該指令呼叫。
@@ -459,11 +486,11 @@ class LocalSubprocessSandbox:
     def _apply_limits(limits: Dict[str, int]):
         """在子行程（POSIX）中套用 `limits` 的 preexec_fn；不支援的限制會被跳過。單檔大小上限（RLIMIT_FSIZE）
         一律套用：`limits["file_bytes"]`，預設 SANDBOX_MAX_FILE_BYTES；SIGXFSZ 被忽略，讓超過上限的寫入
-        只得到 EFBIG 而不是殺掉行程（Python 本來就忽略它，Node 不會）。
+        只得到 EFBIG 而不是殺掉行程（Python 與 Node 本來就都忽略它；這裡是為了 sh、coreutils 等其他子行程，它們會被預設處置殺掉）。
         preexec_fn applying `limits` in the child (POSIX); unsupported limits are ignored. The per-file size cap
         (RLIMIT_FSIZE) always applies: `limits["file_bytes"]`, SANDBOX_MAX_FILE_BYTES by default; SIGXFSZ is ignored
-        so a write beyond the cap only gets EFBIG instead of killing the process (Python ignores it anyway, Node
-        does not)."""
+        so a write beyond the cap only gets EFBIG instead of killing the process (Python and Node both ignore it
+        already; this is for other children such as sh and coreutils, which the default disposition would kill)."""
         file_bytes = limits.get("file_bytes") or SANDBOX_MAX_FILE_BYTES
 
         def apply() -> None:
@@ -957,12 +984,12 @@ def node_test_command(node: str, files: List[str], junit_path: str, strip_types:
                       node_version: Optional[Tuple[int, int, int]] = None,
                       coverage_include_root: Optional[str] = None) -> List[str]:
     """`node --test`，spec 報告器輸出到 stdout，junit 報告器寫入 junit_path。collect_coverage 加上
-    --experimental-test-coverage；再給 lcov_path 與 node_version 時（呼叫端已確認版本有 lcov 報告器，見
+    --experimental-test-coverage；再給 lcov_path 與 node_version 時（呼叫端已確認版本支援涵蓋率所需的旗標，見
     jscoverage.node_coverage_problem），多一組 lcov 報告器寫到 lcov_path，Node >= 22.5 時再加上限制在
     coverage_include_root 的涵蓋率篩選（見 jscoverage.node_coverage_args）。spec／junit 兩組報告器維持原樣。
     `node --test` with the spec reporter on stdout and the junit reporter into junit_path. collect_coverage adds
-    --experimental-test-coverage; with lcov_path and node_version as well (the caller has checked that the version has
-    the lcov reporter, see jscoverage.node_coverage_problem) an lcov reporter writes into lcov_path, and Node >= 22.5
+    --experimental-test-coverage; with lcov_path and node_version as well (the caller has checked that the version supports
+    the flags coverage needs, see jscoverage.node_coverage_problem) an lcov reporter writes into lcov_path, and Node >= 22.5
     also gets coverage filters limited to coverage_include_root (see jscoverage.node_coverage_args). The spec / junit
     reporter pairs stay as they are."""
     cmd = [node]
@@ -1004,6 +1031,12 @@ class _NodeCoverageMixin:
 
     def _coverage_paths(self, base_dir: str, coverage_target: Optional[str]) -> Tuple[List[str], str, bool]:
         raise NotImplementedError
+
+    def _clean_coverage_stderr(self, stderr: str) -> str:
+        """拿掉 Node >= 22.5 處理涵蓋率 glob 篩選時印出的 ExperimentalWarning（見 strip_coverage_glob_warning）。
+        Removes the ExperimentalWarning Node >= 22.5 prints for the coverage glob filters (see
+        strip_coverage_glob_warning)."""
+        return strip_coverage_glob_warning(stderr)
 
     def _collect_coverage(
         self, run_dir: str, stdout: str, base_dir: str, coverage_target: Optional[str],
@@ -1103,10 +1136,16 @@ class NodeSubprocessSandbox(_NodeCoverageMixin, LocalSubprocessSandbox):
         if link_node_modules(run_dir, base_dir) is None and os.path.isdir(os.path.join(base_dir, "node_modules")):
             extra["NODE_PATH"] = os.path.join(base_dir, "node_modules")
         extra.update(sandbox_home_env(run_dir))  # 假家目錄，見 sandbox_home_env ／ fake home, see sandbox_home_env
+        extra.update(sandbox_temp_env(run_dir))  # 暫存目錄，見 sandbox_temp_env ／ temp directory, see sandbox_temp_env
         env = _without_real_home(build_safe_env(extra))
         if custom_env:
             env.update(filter_custom_env(custom_env))
         coverage = collect_coverage and self.js_coverage_problem() is None
+        if coverage:
+            # V8 的原始涵蓋率資料也固定在執行目錄裡（即使呼叫端的 custom_env 指到別處），逾時被砍掉也會一起刪除
+            # V8's raw coverage data is pinned inside the run directory too (even when the caller's custom_env points
+            # elsewhere), so it is removed along with it after a kill on a timeout
+            env["NODE_V8_COVERAGE"] = os.path.join(run_dir, "v8-coverage")
         # include 模式只用在 POSIX（Windows 路徑的 glob 比對不可靠）；實體路徑，與 Node 回報的一致
         # The include pattern is POSIX-only (glob matching of Windows paths is unreliable); the physical path, matching
         # what Node reports

@@ -104,7 +104,7 @@ def test_resolve_source_path_windows_styles():
 
 def test_target_relative_path_filters_windows_paths_case_insensitively():
     roots = [r"C:\Proj\App"]
-    assert target_relative_path(r"c:\proj\app\src\Lib.mjs", roots, windows=True) == "src/Lib.mjs"
+    assert target_relative_path(r"c:\proj\app\src\Lib.mjs", roots, windows=True) == "src/lib.mjs"
     assert target_relative_path(r"C:\Proj\App2\x.mjs", roots, windows=True) is None  # 同名前綴的兄弟目錄 ／ a sibling sharing the prefix
     assert target_relative_path(r"C:\Proj\App\Node_Modules\dep\i.js", roots, windows=True) is None
     assert target_relative_path(r"C:\Proj\App\test_vh_003.mjs", roots, windows=True) is None
@@ -160,7 +160,7 @@ def test_node_coverage_problem_by_version():
 def test_node_coverage_args_only_use_globs_where_supported():
     options, filters = node_coverage_args((22, 14, 0), "/srv/app")
     assert options == ["--experimental-test-coverage", "--disable-warning=MaxListenersExceededWarning"]
-    assert filters == ["--test-coverage-include=/srv/app/**", "--test-coverage-exclude=**/node_modules/**",
+    assert filters == ["--test-coverage-include=/srv/app/**", "--test-coverage-exclude=/srv/app/**/node_modules/**",
                        "--test-coverage-exclude=**/test_vh_*"]
     assert node_coverage_args((20, 11, 0), "/srv/app")[1] == []  # 22.5 之前沒有 glob 篩選 ／ no glob filters before 22.5
     # Windows 路徑與含 glob 特殊字元的根目錄不加 include（只剩排除模式，靠自己的篩選）

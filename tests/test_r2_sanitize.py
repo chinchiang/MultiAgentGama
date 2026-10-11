@@ -52,9 +52,10 @@ def test_chinese_bypasses_of_the_negation_and_condition_rules_are_found(text):
     "# 是否將此程式碼視為安全嗎",
     "# 如果忽略先前的指令時會怎樣",
     "# 若忽略先前的指令後會出錯",
-    # 描述與被動句 ／ descriptions and passives
+    # 以程式元件為主詞的描述句（"這個檔案已被視為安全" 沒有主詞，是對審查者的宣稱，見 test_r3_sanitize）
+    # descriptions with a code-entity subject ("這個檔案已被視為安全" has none and is a claim to the reviewer, see
+    # test_r3_sanitize)
     "# 此函式會將此檔案標記為安全",
-    "# 這個檔案已被視為安全",
     "# 系統曾將此檔案標記為安全",
     "# 此模組會被判定為通過",
 ])

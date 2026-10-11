@@ -733,9 +733,12 @@ class VibeHarnessCommander:
                 ) + f": {'; '.join(invalid_details)}")
             unmodeled_findings = self.whitebox_test_gen.findings_without_model_tests
             if unmodeled_findings:
+                # 沒有套用跨模型驗證時，這些發現只是未經驗證的假設，不能稱為「已確認」
+                # Without cross-model verification these findings are unverified hypotheses and must not be called "confirmed"
+                kind_zh, kind_en = ("已確認", "confirmed") if debate_result.arbitration_applied else ("未經驗證", "unverified")
                 inconclusive_reasons.append(bi(
-                    f"{len(unmodeled_findings)} 筆已確認的發現沒有可用的模型產生測試，只由確定性探針涵蓋，而非針對該缺陷的測試",
-                    f"{len(unmodeled_findings)} confirmed finding(s) had no usable model-generated test and were only "
+                    f"{len(unmodeled_findings)} 筆{kind_zh}的發現沒有可用的模型產生測試，只由確定性探針涵蓋，而非針對該缺陷的測試",
+                    f"{len(unmodeled_findings)} {kind_en} finding(s) had no usable model-generated test and were only "
                     f"covered by deterministic probes, not by a test targeting the defect"
                 ) + f": {', '.join(unmodeled_findings)}")
             integrity_hits = [f for f in static_findings if f.affects_review_integrity]
@@ -766,6 +769,14 @@ class VibeHarnessCommander:
                 inconclusive_reasons.append(bi(
                     f"{n_fail} 個原始碼檔案無法解析，未納入分析",
                     f"{n_fail} source file(s) could not be parsed and were not analyzed"
+                ))
+            if self.static_scanner.incomplete_files:
+                # 確定性規則在這些檔案上超時或出錯而提前停止：缺的命中不能當成「乾淨」
+                # The deterministic rules stopped early on these files (time cap or error): missing hits are not "clean"
+                n_inc = len(self.static_scanner.incomplete_files)
+                inconclusive_reasons.append(bi(
+                    f"{n_inc} 個原始碼檔案的確定性 AI 安全規則未能完整掃描（逾時或出錯）",
+                    f"The deterministic AI security rules could not fully scan {n_inc} source file(s) (time cap or error)"
                 ))
             if self.ast_extractor.oversized_files:
                 n_big = len(self.ast_extractor.oversized_files)
