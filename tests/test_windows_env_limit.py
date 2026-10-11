@@ -13,8 +13,9 @@ def test_long_string_parameters_stay_under_the_windows_env_limit(request):
     short strings to pytest's own id."""
     make_id = request.config.hook.pytest_make_parametrize_id
     samples = [
-        ("code", "=>" * 20000),                 # test_pathological_lines_lex_in_linear_time
-        ("text", "\n" * 1_000_000),             # test_line_heavy_input_is_fast
+        ("code", "=>" * 20000),  # 病理行的詞法分析 ／ test_pathological_lines_lex_in_linear_time
+        ("text", "\n" * 1_000_000),  # 大量換行的輸入 ／ test_line_heavy_input_is_fast
+        # 大量 sink 與深層呼叫鏈 ／ many sinks and a deep call chain
         ("body", "    subprocess.run(cmd)\n" * 4000),  # test_many_sinks_and_deep_chains_scan_in_linear_time
     ]
     for argname, value in samples:
