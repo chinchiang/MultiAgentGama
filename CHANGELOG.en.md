@@ -47,6 +47,7 @@ Fifth review round: the Action takes its verdict only from the audit's own summa
 
 - New regression suites `tests/test_r5_action_cli.py`, `tests/test_r5_gateway_harness.py` (which also checks `_PREVIOUS_BUNDLED_MODELS` against the bundled config at every `v*` tag), `tests/test_r5_languages_secrets.py`, `tests/test_r5_sandbox_coverage.py`, and `tests/test_r5_coverage_gaps.py` (covers `baseline.py` fully and the stable `sandbox.py` helpers through public functions).
 - Timing bounds of the time-sensitive tests are widened and scaled when coverage is measured; the Stripe-shaped test keys are built by concatenation so secret scanning does not flag the repository.
+- `test_large_targets_are_threat_modeled_in_batches` counts under a lock in its fake responder: with batches running concurrently, two could get the same title and be merged, making the test flaky.
 
 ### Engineering
 

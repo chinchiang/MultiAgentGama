@@ -47,6 +47,7 @@
 
 - 新增回歸測試 `tests/test_r5_action_cli.py`、`tests/test_r5_gateway_harness.py`（也逐一比對每個 `v*` tag 的內建設定與 `_PREVIOUS_BUNDLED_MODELS`）、`tests/test_r5_languages_secrets.py`、`tests/test_r5_sandbox_coverage.py`，以及 `tests/test_r5_coverage_gaps.py`（經由公開函式完整涵蓋 `baseline.py` 與 `sandbox.py` 穩定的輔助函式）。
 - 對時間敏感的測試放寬時間上限，量測涵蓋率時再按比例放大；Stripe 格式的測試金鑰改以字串串接組成，避免 repo 被密鑰掃描標記。
+- `test_large_targets_are_threat_modeled_in_batches` 的模擬回應在鎖內計數：批次並行執行時，兩個批次可能拿到同一個標題而被合併，使測試偶發失敗。
 
 ### 工程
 
