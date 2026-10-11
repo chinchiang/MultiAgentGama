@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-11
+
 Fourth review round: the Action no longer overrides the config's cost guard, discovered configs can no longer rewire model strings, aliases or key variables, and `null` keeps the default for the remaining settings.
 
 ### Changed
@@ -405,7 +407,8 @@ Initial release.
 - CI matrix: ubuntu / windows × Python 3.10 / 3.13, with lint and coverage reporting
 - MIT license
 
-[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/chinchiang/MultiAgentGama/compare/v0.7.0...v0.7.1

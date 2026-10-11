@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-11
+
 第四輪審查：Action 不再蓋掉設定檔的成本防護、自動發現的設定檔不能再改接模型字串、別名或金鑰變數，其餘設定也改為 `null` 保留預設值。
 
 ### 變更
@@ -405,7 +407,8 @@ CI 整合（`--baseline`、GitHub Action）、`--estimate`、JS/TS 動態測試�
 - CI 矩陣：ubuntu / windows × Python 3.10 / 3.13，含 lint 與覆蓋率報告
 - MIT 授權
 
-[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/chinchiang/MultiAgentGama/compare/v0.7.0...v0.7.1
