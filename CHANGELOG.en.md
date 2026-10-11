@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Fixed
+
+- JS/TS line coverage on Windows passes `--test-coverage-include` too: an absolute path is rewritten to forward slashes (Node's win32 matcher treats `/` and `\` as the same separator), so a target that itself lives under `node_modules` is covered on Node >= 22.5, the same as on POSIX. A path that contains glob metacharacters still gets the exclude patterns only.
+
 ## [0.9.0] - 2026-10-11
 
 Third review round: discovered configs can no longer set security-sensitive keys, the Action `exec`s the audit so no key-holding parent stays readable, simulated items stay out of SARIF, VH-AI-006 is rewritten for precision and linear time, the deterministic rules disclose files they could not fully scan, VH-AI-009 / VH-AI-007 gaps are closed, and the repository's CI and settings are hardened.
