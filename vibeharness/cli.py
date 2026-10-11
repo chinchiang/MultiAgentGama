@@ -9,11 +9,10 @@ explanation instead of crashing before main() with Python's default 1 (= NEEDS_F
 import argparse
 import importlib
 import logging
-import shutil
 import sys
 import os
 import traceback
-from typing import TYPE_CHECKING, Any, NoReturn, Optional, Tuple
+from typing import TYPE_CHECKING, Any, List, NoReturn, Optional, Tuple
 
 from vibeharness import __version__
 from vibeharness.core.i18n import bi
@@ -87,10 +86,10 @@ def _print_error(text: str) -> None:
         encoding = getattr(sys.stderr, "encoding", None) or "ascii"
         print(text.encode(encoding, "replace").decode(encoding), file=sys.stderr)
 
-# 保留給 harness／用法問題的結束碼。判定結果碼（0/1/2/3/4）記載於
+# 保留給 harness／用法問題的結束碼。判定結果碼 0-3 與 live 失敗碼 4 記載於
 # README；這些碼絕不能與之衝突，否則 CI 會把當掉的執行誤讀成判定結果。
-# Exit codes reserved for harness/usage problems. Verdict codes (0/1/2/3/4) are documented in
-# the README; these must never collide with them, or CI would misread a crashed run as a verdict.
+# Exit codes reserved for harness/usage problems. The verdict codes 0-3 and the live-failure code 4 are documented
+# in the README; these must never collide with them, or CI would misread a crashed run as a verdict.
 USAGE_ERROR_EXIT_CODE = 5
 # Ctrl-C：慣例上的 128 + SIGINT，與所有判定結果碼及用法錯誤碼都不同
 # Ctrl-C: the conventional 128 + SIGINT, distinct from every verdict and usage code
@@ -178,20 +177,44 @@ def resolve_config_path(explicit: Optional[str], cwd: Optional[str] = None) -> T
 
 
 def _init_config(path: str, force: bool) -> int:
-    """--init-config：把套件內的預設設定複製到 `path`。成功回傳 0；已存在（沒有 --force）或無法寫入回傳 5。
+    """--init-config：把套件內的預設設定複製到 `path`。成功回傳 0；已存在（沒有 --force）、是符號連結或不是一般檔案、
+    或無法寫入時回傳 5。目標絕不經由符號連結寫入：不可信 checkout 裡的（懸空）符號連結不能讓它建立或覆寫別處的檔案。
     --init-config: copies the bundled default config to `path`. Returns 0 on success; 5 when the file exists
-    (without --force) or cannot be written."""
+    (without --force), is a symlink or not a regular file, or cannot be written. The target is never written through
+    a symlink: a (dangling) symlink in an untrusted checkout cannot make it create or overwrite a file elsewhere."""
     target = os.path.abspath(path)
+    if os.path.islink(target):
+        _print_error(f"{bi('錯誤', 'Error')}: " + bi(f"--init-config：'{path}' 是符號連結，拒絕經由它寫入",
+                                                    f"--init-config: '{path}' is a symlink; refusing to write through it"))
+        return USAGE_ERROR_EXIT_CODE
     if os.path.isdir(target):
         _print_error(f"{bi('錯誤', 'Error')}: " + bi(f"--init-config：'{path}' 是目錄，請給檔案路徑",
                                                     f"--init-config: '{path}' is a directory; give a file path"))
         return USAGE_ERROR_EXIT_CODE
-    if os.path.exists(target) and not force:
+    if os.path.lexists(target) and not force:
         _print_error(f"{bi('錯誤', 'Error')}: " + bi(f"--init-config：'{path}' 已存在，未覆寫（要覆寫請加 --force）",
                                                     f"--init-config: '{path}' already exists and was not overwritten (add --force to overwrite)"))
         return USAGE_ERROR_EXIT_CODE
+    if os.path.lexists(target) and not os.path.isfile(target):
+        # FIFO、裝置等：--force 也不寫（開啟 FIFO 會卡住）／ A FIFO, a device, ...: not even with --force (opening a FIFO blocks)
+        _print_error(f"{bi('錯誤', 'Error')}: " + bi(f"--init-config：'{path}' 不是一般檔案",
+                                                    f"--init-config: '{path}' is not a regular file"))
+        return USAGE_ERROR_EXIT_CODE
+    # O_NOFOLLOW：檢查之後才換成的符號連結也不會被跟隨（有提供的平台）；沒有 --force 時 O_EXCL 讓已存在的檔案失敗
+    # O_NOFOLLOW: a symlink swapped in after the checks is not followed either (where available); without --force,
+    # O_EXCL makes an existing file fail
+    flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    flags |= os.O_TRUNC if force else os.O_EXCL
     try:
-        shutil.copyfile(DEFAULT_CONFIG_PATH, target)
+        with open(DEFAULT_CONFIG_PATH, "rb") as f:
+            content = f.read()
+        fd = os.open(target, flags, 0o666)
+        with os.fdopen(fd, "wb") as out:
+            out.write(content)
+    except FileExistsError:
+        _print_error(f"{bi('錯誤', 'Error')}: " + bi(f"--init-config：'{path}' 已存在，未覆寫（要覆寫請加 --force）",
+                                                    f"--init-config: '{path}' already exists and was not overwritten (add --force to overwrite)"))
+        return USAGE_ERROR_EXIT_CODE
     except OSError as e:
         _print_error(f"{bi('錯誤', 'Error')}: " + bi(f"--init-config：無法寫入 '{path}'", f"--init-config: cannot write '{path}'") + f": {e}")
         return USAGE_ERROR_EXIT_CODE
@@ -219,13 +242,21 @@ def main():
     真正的稽核才在載入失敗時以 exit 5 結束。
     Arguments are parsed first: --help, --version and --init-config load none of the harness's dependencies, so
     they are fast and work even on a broken install; only a real audit exits 5 when loading fails."""
-    _force_utf8_stdio()
-    parser = _build_parser()
-    args = parser.parse_args()
-    if args.init_config is not None:
-        sys.exit(_init_config(args.init_config, args.force))
-    if args.force:
-        parser.error(bi("--force 只能與 --init-config 一起使用", "--force is only valid with --init-config"))
+    # 解析參數、--help／--version 與 --init-config 也在防護內：任何意外錯誤都是 5，不是 Python 預設的 1
+    # Parsing, --help / --version and --init-config are inside the guard too: any unexpected error is 5, not Python's default 1
+    try:
+        _force_utf8_stdio()
+        parser = _build_parser()
+        args = parser.parse_args()
+        if args.init_config is not None:
+            sys.exit(_init_config(args.init_config, args.force))
+        if args.force:
+            parser.error(bi("--force 只能與 --init-config 一起使用", "--force is only valid with --init-config"))
+    except KeyboardInterrupt:
+        _print_error(bi("已中斷。", "Interrupted."))
+        sys.exit(INTERRUPTED_EXIT_CODE)
+    except Exception as e:
+        _crash_exit("參數解析意外失敗", "argument handling failed unexpectedly", e)
     try:
         _load_dependencies()
     except KeyboardInterrupt:
@@ -254,36 +285,66 @@ def main():
         _crash_exit("harness 意外崩潰", "harness crashed unexpectedly", e)
 
 
+# 能否輸出雙語文字的探測字串（中文、全形斜線、破折號）／ The probe for whether bilingual text can be written
+# (Chinese, the full-width slash, a dash)
+_STDIO_PROBE = "錯誤／—"
+
+
 def _force_utf8_stdio() -> None:
-    """只用標準函式庫的 harness.force_utf8_stdio：Windows 上在解析參數（--help 的中文說明）之前就把 stdout／stderr
-    設為 UTF-8，不必先載入 harness。
-    A standard-library-only harness.force_utf8_stdio: on Windows, stdout / stderr become UTF-8 before the arguments
-    are parsed (--help's Chinese text), without loading the harness first."""
-    if sys.platform != "win32":
-        return
+    """只用標準函式庫的 stdout／stderr 防護，在解析參數（--help 的中文說明）之前執行，不必先載入 harness：
+    Windows 上設為 UTF-8；其他平台上，若串流的編碼寫不出雙語文字（例如 PYTHONIOENCODING=ascii、LANG=C），
+    改以 backslashreplace 輸出無法編碼的字元，而不是以 UnicodeEncodeError 當掉。
+    A standard-library-only stdout / stderr guard that runs before the arguments are parsed (--help's Chinese text),
+    without loading the harness first: on Windows the streams become UTF-8; elsewhere, when a stream's encoding
+    cannot write the bilingual text (e.g. PYTHONIOENCODING=ascii, LANG=C), characters it cannot encode are written
+    with backslashreplace instead of crashing with a UnicodeEncodeError."""
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is None:
             continue
         try:
-            reconfigure(encoding="utf-8", errors="replace")
+            if sys.platform == "win32":
+                reconfigure(encoding="utf-8", errors="replace")
+                continue
+            if getattr(stream, "errors", "strict") != "strict":
+                # 已經不會因無法編碼的字元而當掉（例如 stderr 預設的 backslashreplace）
+                # Already cannot crash on an unencodable character (e.g. stderr's default backslashreplace)
+                continue
+            try:
+                _STDIO_PROBE.encode(getattr(stream, "encoding", None) or "ascii")
+            except (UnicodeEncodeError, LookupError):
+                reconfigure(errors="backslashreplace")
         except (OSError, ValueError):
             pass
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    """CLI 的參數解析器；只用標準函式庫，建立時不載入任何 harness 相依套件。
-    The CLI's argument parser; standard library only, building it loads none of the harness's dependencies."""
+class _InspectionParser(argparse.ArgumentParser):
+    """parse_args_for_inspection 用的解析器：用法錯誤以 ValueError 拋出，不印訊息也不結束行程。
+    The parser behind parse_args_for_inspection: usage errors raise ValueError instead of printing and exiting."""
+
+    def error(self, message):
+        raise ValueError(message)
+
+
+def _build_parser(inspection: bool = False) -> argparse.ArgumentParser:
+    """CLI 的參數解析器；只用標準函式庫，建立時不載入任何 harness 相依套件。`inspection` 為 True 時見
+    parse_args_for_inspection：--help／--version 只是布林旗標、沒有預設值、用法錯誤拋出 ValueError。
+    The CLI's argument parser; standard library only, building it loads none of the harness's dependencies. With
+    `inspection` see parse_args_for_inspection: --help / --version are plain booleans, there are no defaults and
+    usage errors raise ValueError."""
     # 固定程式名稱：Python 3.14 的 argparse 在 `python -m` 下會改用模組路徑當 prog
     # Fixed program name: Python 3.14's argparse derives prog from the module path under `python -m`
-    parser = _UsageErrorParser(
+    parser = (_InspectionParser if inspection else _UsageErrorParser)(
         prog="vibeharness",
         # 不接受縮寫的長旗標：`--conf x` 不能繞過 GitHub Action 對 --config 的偵測
         # No abbreviated long flags: `--conf x` cannot slip past the GitHub Action's --config detection
         allow_abbrev=False,
+        add_help=not inspection,
         description="[VibeHarness-MAS] 針對 vibe coding 的多代理白箱與黑箱測試 harness ／ "
                     "Multi-Agent White-Box & Black-Box Testing Harness for Vibe Coding"
     )
+    if inspection:
+        parser.add_argument("-h", "--help", action="store_true")
     parser.add_argument(
         "--target", "-t",
         default=".",
@@ -458,12 +519,29 @@ def _build_parser() -> argparse.ArgumentParser:
              "(verdict, exit code, execution mode, model calls per mode, whether every call was simulated) to PATH, "
              "whatever --format is; the GitHub Action uses it for its warnings"
     )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"%(prog)s {__version__}"
-    )
+    if inspection:
+        parser.add_argument("--version", action="store_true")
+        # 沒有預設值：命名空間裡只有實際給出的參數 ／ No defaults: the namespace holds only the arguments actually given
+        for action in parser._actions:
+            action.default = argparse.SUPPRESS
+    else:
+        parser.add_argument(
+            "--version",
+            action="version",
+            version=f"%(prog)s {__version__}"
+        )
     return parser
+
+
+def parse_args_for_inspection(argv: List[str]) -> argparse.Namespace:
+    """以 CLI 自己的規則解析 `argv`（合併的短旗標 `-vc x`、`-vcx`、`--opt=值`、最後一個為準）但沒有副作用：
+    --help／--version 不印出也不結束，命名空間只含實際給出的參數（dest 名稱），用法錯誤拋出 ValueError。
+    GitHub Action 用它檢查 extra-args，而不是自己比對字串。
+    Parses `argv` by the CLI's own rules (combined short flags `-vc x`, `-vcx`, `--opt=value`, the last one wins) but
+    without side effects: --help / --version neither print nor exit, the namespace holds only the arguments actually
+    given (by dest name), and usage errors raise ValueError. The GitHub Action checks extra-args with it instead of
+    matching strings itself."""
+    return _build_parser(inspection=True).parse_args(argv)
 
 
 def _summary_json(summary: Any, execution_mode: str) -> str:

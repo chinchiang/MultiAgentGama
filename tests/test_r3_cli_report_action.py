@@ -410,11 +410,16 @@ def _run_runner(monkeypatch, tmp_path, rc, summary, fail_on="needs-fixes"):
     def fake_cli(argv):
         seen["argv"] = argv
         if summary is not None:
+            # 與真正的 CLI 一樣：稽核完成時寫出報告、SARIF 與對應 exit code 的摘要
+            # Like the real CLI: a completed audit writes the report, the SARIF and a summary matching the exit code
+            for name in ("r.md", "r.sarif"):
+                (tmp_path / name).write_text("x", encoding="utf-8")
             with open(argv[argv.index("--summary-json") + 1], "w", encoding="utf-8") as f:
-                json.dump(summary, f)
+                json.dump({"tool": "vibeharness", "exit_code": rc, **summary}, f)
         return rc
 
     monkeypatch.setattr(action_runner, "run_cli", fake_cli)
+    monkeypatch.chdir(tmp_path)
     for name, value in {"VH_FAIL_ON": fail_on, "RUNNER_TEMP": str(tmp_path), "GITHUB_OUTPUT": str(tmp_path / "out"),
                         "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"), "VH_OUTPUT": "r.md", "VH_SARIF": "r.sarif"}.items():
         monkeypatch.setenv(name, value)
@@ -431,7 +436,7 @@ def test_runner_writes_outputs_and_warns_on_an_inconclusive_verdict_that_does_no
     summary = {"execution_mode": "hybrid", "all_simulated": False}
     code, outputs, step_summary = _run_runner(monkeypatch, tmp_path, 3, summary)
     assert code == 0
-    assert outputs == "verdict=INCONCLUSIVE\nexit-code=3\n"
+    assert outputs == "verdict=INCONCLUSIVE\nexit-code=3\nreport=r.md\nsarif=r.sarif\n"
     assert "## VibeHarness-MAS: INCONCLUSIVE (exit 3)" in step_summary and "SARIF: `r.sarif`" in step_summary
     warnings = [line for line in capsys.readouterr().out.splitlines() if line.startswith("::warning::")]
     assert len(warnings) == 1 and "INCONCLUSIVE" in warnings[0] and "fail-on: needs-fixes" in warnings[0]
@@ -457,7 +462,7 @@ def test_runner_reports_a_harness_error_with_its_exit_code(monkeypatch, tmp_path
     """exit 4／5：verdict=ERROR、::error::，並以原 exit code 結束（沒有摘要也不會當掉）。
     Exit 4 / 5: verdict=ERROR, an ::error::, and the original exit code (no summary does not crash it)."""
     code, outputs, _ = _run_runner(monkeypatch, tmp_path, 5, None)
-    assert code == 5 and outputs == "verdict=ERROR\nexit-code=5\n"
+    assert code == 5 and outputs == "verdict=ERROR\nexit-code=5\nreport=\nsarif=\n"
     assert "::error::VibeHarness-MAS could not complete the audit (exit 5)" in capsys.readouterr().out
 
 
