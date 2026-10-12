@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-12
+
 第六輪審查：中文的威脅與發現不再被誤合併；`--changed-since` 不再漏掉非 ASCII 檔名或 symlink 目標下的檔案；基準線鍵分得出不同檔案的同名函式，換機器重跑時也不會把名稱含點的目錄當成檔案；`--estimate` 與逐測重跑的錯誤原因也一併修正。
 
 ### 變更
@@ -498,7 +500,8 @@ CI 整合（`--baseline`、GitHub Action）、`--estimate`、JS/TS 動態測試�
 - CI 矩陣：ubuntu / windows × Python 3.10 / 3.13，含 lint 與覆蓋率報告
 - MIT 授權
 
-[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.9.0...v0.10.0
