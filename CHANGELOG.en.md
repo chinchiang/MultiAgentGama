@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-12
+
 Sixth review round: Chinese threats and findings are no longer merged by mistake; `--changed-since` no longer drops non-ASCII file names or the files under a symlinked target; baseline keys tell same-named functions in different files apart and do not take a dotted directory for a file when replayed on another machine; the `--estimate` mutation ceiling and the failure reason of a per-test rerun are fixed too.
 
 ### Changed
@@ -498,7 +500,8 @@ Initial release.
 - CI matrix: ubuntu / windows × Python 3.10 / 3.13, with lint and coverage reporting
 - MIT license
 
-[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.9.0...v0.10.0
