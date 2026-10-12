@@ -263,12 +263,22 @@ class VibeHarnessCommander:
         if self._git(["rev-parse", "--verify", "--quiet", f"{since_ref}^{{commit}}"], cwd) is None:
             raise ValueError(bi(f"--changed-since：git ref {since_ref!r} 無法在 {root} 解析",
                                 f"--changed-since: git ref {since_ref!r} cannot be resolved in {root}"))
-        spec = os.path.abspath(target_dir)
-        # 兩個指令都在版本庫根目錄執行，因此其輸出路徑相對於根目錄
-        # Both commands run from the repository root so their output paths are root-relative
-        diff = self._git(["diff", "--name-only", "--diff-filter=ACMR", since_ref, "--", spec], root) or ""
-        untracked = self._git(["ls-files", "--others", "--exclude-standard", "--", spec], root) or ""
-        paths = {os.path.join(root, line.strip()) for line in (diff + untracked).splitlines() if line.strip()}
+        spec = os.path.realpath(target_dir)
+        shown = os.path.abspath(target_dir)
+        # 兩個指令都在版本庫根目錄執行，因此其輸出路徑相對於根目錄；-z 讓非 ASCII 檔名原樣輸出，不被 C 風格加引號
+        # Both commands run from the repository root so their output paths are root-relative; -z keeps non-ASCII
+        # names verbatim instead of C-quoting them
+        diff = self._git(["diff", "--name-only", "-z", "--diff-filter=ACMR", since_ref, "--", spec], root) or ""
+        untracked = self._git(["ls-files", "-z", "--others", "--exclude-standard", "--", spec], root) or ""
+        paths = set()
+        for name in (diff + untracked).split("\0"):
+            if not name:
+                continue
+            real = os.path.normpath(os.path.join(root, name))
+            # git 回報解析過 symlink 的真實路徑，走訪卻用目標原本的寫法：換回目標的寫法才對得上
+            # git reports symlink-resolved real paths but the walk uses the target as given: map back so they match
+            rel = os.path.relpath(real, spec)
+            paths.add(real if rel.startswith("..") else os.path.normpath(os.path.join(shown, rel)))
         return sorted(p for p in paths if os.path.isfile(p))
 
     @staticmethod

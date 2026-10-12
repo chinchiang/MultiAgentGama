@@ -6,6 +6,34 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+Sixth review round: Chinese threats and findings are no longer merged by mistake; `--changed-since` no longer drops non-ASCII file names or the files under a symlinked target; baseline keys tell same-named functions in different files apart and do not take a dotted directory for a file when replayed on another machine; the `--estimate` mutation ceiling and the failure reason of a per-test rerun are fixed too.
+
+### Changed
+
+- The `source_ref` of a deterministic probe (`WB-PROBE-*`) is now the file path relative to the target root, `::` and the function name (e.g. `src/a.py::process`) instead of the function name, so baseline keys tell same-named functions in different files apart. A known probe failure in a baseline written by an older version reads as new on the first comparison.
+- The `--estimate` mutation ceiling (`mutation_sandbox_runs_max`) is now `mutation_max_mutants + 1`, counting the batch that first confirms the tests pass on the unmutated copy; the text reads "up to N mutant(s), one sandbox batch each, plus one on the unmutated copy: up to N+1 sandbox batch(es)".
+
+### Security
+
+- `extra_params` also reserves keys with a `key` name part (`cache_key`, e.g. `prompt_cache_key`, which only names a cache entry, is still allowed) and the `signoz_` prefix: litellm 1.105's new `signoz_ingestion_key` forwards prompts and answers to SigNoz and slipped past the previous name patterns.
+
+### Fixed
+
+- When the threat modeler merges duplicate threats across batches, titles and attack vectors are normalized with the letters and digits of any script (as in `baseline.normalize`): ASCII only turned every Chinese title into an empty string, so different Chinese threats with the same STRIDE category and attack vector were merged into one, and the dropped ones were neither tested nor listed as untested.
+- White-box finding de-duplication also takes the adjacent character pairs of every CJK run as terms: with ASCII words only, "SQL 注入於搜尋參數" and "SQL 盲注造成資料外洩" were both reduced to `sql` and merged, losing a defect.
+- `--changed-since` reads file names with `git diff -z` / `git ls-files -z`: git C-quoted non-ASCII names, which then matched no file and were silently left out of the analysis without an evidence gap.
+- When the `--changed-since` target is a symlink (or lies under one, like macOS `/tmp`), the real paths git reports are mapped back onto the target as given, so the walk matches them; before, no file matched and the run was `INCONCLUSIVE` with "No analyzable source symbols".
+- The baseline's `target_relative` only treats the target as a file (and relates paths to its directory) when the file does not lie under it: replaying an older baseline on another machine took a dotted directory target (`app.v2`) for a file, prefixed every key with the directory and turned every known problem into a new one. An existing file target without an extension no longer keys as `.` either.
+- A per-test rerun after a batch timeout that produces no JUnit report (e.g. the interpreter killed by an RLIMIT) is reported as "Sandbox run produced no report" with that rerun's stderr, instead of blaming the generated test with "No test was collected".
+
+### Tests
+
+- New regression tests in `tests/test_r6_review.py`.
+
+### Documentation
+
+- The configuration reference and the design document describe the `key` name part and the `signoz_` prefix; the design document's mutation estimate counts the batch on the unmutated copy, and its line references are updated to the current code.
+
 ## [0.11.0] - 2026-10-11
 
 Fifth review round: the Action takes its verdict only from the audit's own summary and checks `extra-args` with the CLI's parser, discovered configs may only lower spend, litellm's logging / callback parameters are reserved, source in unsupported languages and secrets in config files no longer pass unnoticed, and the sandbox's report read-back, run-directory permissions, coverage includes and Docker output caps are hardened.
