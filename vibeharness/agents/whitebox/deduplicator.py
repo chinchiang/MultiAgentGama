@@ -37,6 +37,9 @@ _GENERIC_TERMS = {
     "weak", "security", "vulnerability", "vulnerable", "risk", "data", "user", "incorrect", "invalid", "bad",
     "logic", "edge", "case", "unchecked", "untrusted", "parameter", "argument", "output", "control",
 }
+# 中日韓文字的連續段（漢字、假名、諺文）：這些文字不以空格分詞
+# Runs of CJK script (Han, kana, Hangul): these scripts do not separate words with spaces
+_CJK_RUN = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]+")
 
 
 def _stem(word: str) -> str:
@@ -54,8 +57,17 @@ def _stem(word: str) -> str:
 
 
 def _words(text: str) -> Set[str]:
-    words = re.findall(r"[a-z0-9_]+", text.lower())
-    return {w for w in (_stem(w) for w in words if len(w) >= 3 and w not in _STOPWORDS)}
+    """ASCII 詞（至少 3 個字元、去掉停用詞並還原詞幹），加上每個 CJK 字元連續段的相鄰二字詞
+    （中文沒有空格，單字太泛，整段又太難重疊）；只有一個字的段落整段算一個詞。
+    ASCII words (3+ characters, stop words dropped, stemmed), plus the adjacent character pairs of every CJK run
+    (Chinese has no spaces; single characters are too generic and whole runs rarely overlap); a one-character
+    run counts whole."""
+    lowered = text.lower()
+    words = re.findall(r"[a-z0-9_]+", lowered)
+    terms = {w for w in (_stem(w) for w in words if len(w) >= 3 and w not in _STOPWORDS)}
+    for run in _CJK_RUN.findall(lowered):
+        terms.update({run} if len(run) == 1 else {run[i:i + 2] for i in range(len(run) - 1)})
+    return terms
 
 
 def _terms(finding: ReviewFinding) -> Set[str]:

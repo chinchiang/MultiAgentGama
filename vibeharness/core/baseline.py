@@ -64,13 +64,19 @@ def target_relative(file_path: Optional[str], target_path: str) -> str:
     if not file_path or file_path.strip() == "unknown":
         return ""
     base = os.path.abspath(target_path)
-    if not os.path.isdir(base) and os.path.splitext(base)[1]:
-        base = os.path.dirname(base)
+    path = os.path.abspath(file_path)
     try:
-        rel = os.path.relpath(os.path.abspath(file_path), base)
+        rel = os.path.relpath(path, base)
+        # 檔案位於目標之下時目標必定是目錄，即使它在這台機器上不存在且名稱含點（另一台機器的 app.v2）；
+        # 只有不在其下時，存在的檔案或帶副檔名的不存在路徑才改以其所在目錄為基準
+        # A file under the target means the target is a directory, even one that does not exist on this machine and
+        # has a dot in its name (another machine's app.v2); only when it is not under it is an existing file, or a
+        # missing path with an extension, related to its directory instead
+        if rel.startswith("..") and (os.path.isfile(base) or (not os.path.isdir(base) and os.path.splitext(base)[1])):
+            rel = os.path.relpath(path, os.path.dirname(base))
     except ValueError:
         return os.path.basename(file_path)
-    if rel.startswith(".."):
+    if rel == "." or rel.startswith(".."):
         return os.path.basename(file_path)
     return rel.replace(os.sep, "/")
 

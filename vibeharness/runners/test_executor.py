@@ -400,13 +400,15 @@ class TestSuiteExecutor:
                                   "Batch run timed out; re-running each test module individually to isolate the hang."))
                 coverage_pct = None
                 cases, timed_out, not_rerun, parse_failed = self._run_individually(
-                    files, working_dir, sandbox, language, timeout_used
+                    files, working_dir, sandbox, language, timeout_used, runs
                 )
                 junit_xml = ""  # 逐模組的結果現在在 `cases`／`timed_out` 裡 ／ per-module outcomes are now in `cases` / `timed_out`
             elif exit_code == TIMEOUT_EXIT_CODE:
                 batch_timeout = getattr(sandbox, "timeout_seconds", None)
+            # 重跑過的模組保留自己那次的結果（含沒有報告的情況）；其餘沿用批次的結果
+            # A rerun module keeps its own outcome (including no report); the others take the batch's
             for module in module_to_idx:
-                runs[module] = (exit_code, stdout, stderr, junit_xml)
+                runs.setdefault(module, (exit_code, stdout, stderr, junit_xml))
 
         for module, idx in module_to_idx.items():
             t = tests[idx]
@@ -463,15 +465,18 @@ class TestSuiteExecutor:
 
     def _run_individually(
         self, files: Dict[str, str], working_dir: str, sandbox: Optional[LocalSubprocessSandbox] = None,
-        language: str = "python", timeout_used: Optional[Dict[str, int]] = None
+        language: str = "python", timeout_used: Optional[Dict[str, int]] = None,
+        runs: Optional[Dict[str, Tuple[int, str, str, Optional[str]]]] = None
     ) -> Tuple[Dict[str, List[dict]], Set[str], Set[str], Set[str]]:
         """在各自的行程中執行每個模組。每次重跑的逾時是 min(單測預算, 剩下的重跑預算)，所以重跑的總時間
         不會超出沙盒的批次預算（只差無條件進位的不到 1 秒），而不是在最後一個模組多出整整一份單測預算。
-        實際使用的逾時填入 `timeout_used`（若有給）。
+        實際使用的逾時填入 `timeout_used`（若有給）；每次重跑的 (結束代碼, stdout, stderr, junit xml) 填入 `runs`（若有給），
+        讓沒有產生報告的重跑回報成沙盒問題，而不是「沒有收集到測試」。
         Runs each module in its own process. Each rerun's timeout is min(per-test budget, rerun budget left), so the
         reruns never exceed the sandbox's batch budget in total (up to sub-second rounding up), instead of
         overshooting by a whole per-test budget on the last module. The timeout actually used goes into
-        `timeout_used` (when given).
+        `timeout_used` (when given); each rerun's (exit code, stdout, stderr, junit xml) goes into `runs` (when given), so
+        a rerun that produced no report is reported as a sandbox problem rather than "no test collected".
 
         回傳 (依模組分組的 junit 案例, 逾時的模組, 因重跑預算（沙盒自己的批次預算）
         用盡而跳過的模組, JUnit 報告無法解析的模組)。
@@ -496,9 +501,11 @@ class TestSuiteExecutor:
             timeout = min(per_test, remaining)
             if timeout_used is not None:
                 timeout_used[module] = timeout
-            exit_code, _, _, _, _, junit_xml = sandbox.execute_pytest_files(
+            exit_code, stdout, stderr, _, _, junit_xml = sandbox.execute_pytest_files(
                 {filename: code}, working_dir=working_dir, timeout_seconds=timeout
             )
+            if runs is not None:
+                runs[module] = (exit_code, stdout, stderr, junit_xml)
             if exit_code == TIMEOUT_EXIT_CODE:
                 timed_out.add(module)
                 continue

@@ -358,6 +358,23 @@ class WhiteboxTestGenerator:
                              "Target-derived deterministic probe (no model-generated test available)."),
                 expected_outcome=bi("函式拒絕或妥善處理 None 輸入，不會出現未處理的 TypeError/KeyError/AttributeError/IndexError。",
                                     "Function rejects or handles None inputs without an unhandled TypeError/KeyError/AttributeError/IndexError."),
-                source_ref=sym.name
+                source_ref=self._probe_ref(sym, root_dir)
             ))
         return probes
+
+    @staticmethod
+    def _probe_ref(sym: CodeSymbol, root_dir: Optional[str]) -> str:
+        """探測的 source_ref：相對於目標根目錄的檔案路徑加符號名稱（`src/a.py::process`），讓不同檔案的同名函式
+        有不同的基準線鍵；沒有根目錄或檔案在根目錄之外時用檔名。
+        A probe's source_ref: the file path relative to the target root plus the symbol name (`src/a.py::process`),
+        so same-named functions in different files get distinct baseline keys; the bare file name when there is
+        no root or the file lies outside it."""
+        rel = os.path.basename(sym.file_path)
+        if root_dir:
+            try:
+                candidate = os.path.relpath(os.path.abspath(sym.file_path), os.path.abspath(root_dir))
+            except ValueError:
+                candidate = ".."
+            if not candidate.startswith(".."):
+                rel = candidate.replace(os.sep, "/")
+        return f"{rel}::{sym.name}"

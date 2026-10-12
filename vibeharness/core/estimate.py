@@ -78,8 +78,9 @@ class RunEstimate(BaseModel):
     # Per model alias: calls / tokens / cost (cost only when the alias has price fields)
     by_model: Dict[str, Dict[str, float]] = Field(default_factory=dict)
     estimated_cost_usd: Optional[float] = None
-    # 突變測試（只有開啟時）：每個變異體一個沙盒批次，不呼叫模型；上限 = mutation_max_mutants
-    # Mutation testing (only when on): one sandbox batch per mutant, no model call; the ceiling is mutation_max_mutants
+    # 突變測試（只有開啟時）：每個變異體一個沙盒批次，加上未變異複本上的一批，不呼叫模型；上限 = mutation_max_mutants + 1
+    # Mutation testing (only when on): one sandbox batch per mutant plus one on the unmutated copy, no model call;
+    # the ceiling is mutation_max_mutants + 1
     mutation_sandbox_runs_max: Optional[int] = None
     warnings: List[str] = Field(default_factory=list)
 
@@ -116,7 +117,9 @@ def estimate_run(
         assumptions={"findings_per_reviewer_batch": findings_per_batch, "threats_per_batch": threats_per_batch,
                      "confirmed_share": 0.7, "tests_per_finding": 1.0, "heal_rate": 0.3},
         retry_invalid_output=retry, max_model_calls=gateway.max_model_calls, cache_only=gateway.cache_only,
-        mutation_sandbox_runs_max=commander._mutation_cfg["max_mutants"] if commander.mutation_testing else None,
+        # 變異體各一批，再加上先在未變異複本上確認測試通過的那一批
+        # One batch per mutant, plus the batch that first confirms the tests pass on the unmutated copy
+        mutation_sandbox_runs_max=commander._mutation_cfg["max_mutants"] + 1 if commander.mutation_testing else None,
     )
     if filters:
         est.warnings.append(bi("已套用檔案篩選", "File selection applied") + ": " + "; ".join(filters))
@@ -290,8 +293,11 @@ def estimate_lines(est: RunEstimate) -> List[str]:
         lines.append(f"{bi('預估費用（僅計有定價的模型）', 'Estimated cost (priced models only)')}: ~${est.estimated_cost_usd:.4f}")
     if est.mutation_sandbox_runs_max is not None:
         lines.append(f"{bi('突變測試', 'Mutation testing')}: "
-                     + bi(f"最多 {est.mutation_sandbox_runs_max} 個變異體，每個一次沙盒批次（不呼叫模型）；實際數量要等第 3 階段有通過的測試才知道",
-                          f"up to {est.mutation_sandbox_runs_max} mutant(s), one sandbox batch each (no model call); the real number is known only after Phase 3 has passing tests"))
+                     + bi(f"最多 {est.mutation_sandbox_runs_max - 1} 個變異體，每個一次沙盒批次，另加未變異複本上的一批，"
+                          f"共最多 {est.mutation_sandbox_runs_max} 批（不呼叫模型）；實際數量要等第 3 階段有通過的測試才知道",
+                          f"up to {est.mutation_sandbox_runs_max - 1} mutant(s), one sandbox batch each, plus one on the unmutated "
+                          f"copy: up to {est.mutation_sandbox_runs_max} sandbox batch(es) (no model call); the real number is known "
+                          "only after Phase 3 has passing tests"))
     for w in est.warnings:
         lines.append(f"[!] {w}")
     lines.append(bi("沒有呼叫任何模型。典型／最大數字是情境推估；精確數字是第 2 與第 4 階段實際會花費的。",

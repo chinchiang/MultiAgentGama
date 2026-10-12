@@ -147,7 +147,7 @@ RESERVED_EXTRA_PARAMS = frozenset({
 _RESERVED_EXTRA_PARAM_RE = re.compile(
     r"^(?:aws|azure|vertex|oci|watsonx|gigachat"
     r"|langfuse|langsmith|gcs|s3|dd|datadog|helicone|lunary|humanloop|arize|posthog|braintrust|slack|newrelic"
-    r"|wandb|weave|otel|opik|mlflow|logfire|sentry|phoenix|galileo|athina|literalai|openmeter|greenscale|traceloop)_"
+    r"|wandb|weave|otel|opik|mlflow|logfire|sentry|phoenix|galileo|athina|literalai|openmeter|greenscale|traceloop|signoz)_"
     r"|callback"
     r"|(?:^|_)(?:api_?key|secret|password|credentials?|endpoint|url|api_base|base_url|proxy|headers?|webhook|host|bucket)(?:$|_)",
     re.IGNORECASE,
@@ -159,12 +159,20 @@ _RESERVED_EXTRA_PARAM_RE = re.compile(
 # destination, so they are allowed
 _TOKEN_NAME_PART_RE = re.compile(r"(?:^|_)token(?:$|_)", re.IGNORECASE)
 _COST_NAME_PART_RE = re.compile(r"(?:^|_)cost(?:$|_)", re.IGNORECASE)
+# 名稱含有 key 的部分同樣另外判斷：signoz_ingestion_key（litellm 1.105）、public_key 等都是憑證而保留；只指名快取項目的
+# cache_key（prompt_cache_key）不改變目的地，允許
+# A `key` name part is judged the same way: signoz_ingestion_key (litellm 1.105), public_key and the like are
+# credentials and reserved; cache_key (prompt_cache_key) only names a cache entry, not a destination, so it is allowed
+_KEY_NAME_PART_RE = re.compile(r"(?:^|_)key(?:$|_)", re.IGNORECASE)
+_CACHE_KEY_NAME_PART_RE = re.compile(r"(?:^|_)cache_key(?:$|_)", re.IGNORECASE)
 
 
 def _is_reserved_param_name(name: str) -> bool:
     """名稱符合端點／憑證／callback 樣式（不看 RESERVED_EXTRA_PARAMS 名單）。
     The name matches an endpoint / credential / callback pattern (without consulting RESERVED_EXTRA_PARAMS)."""
     if _RESERVED_EXTRA_PARAM_RE.search(name):
+        return True
+    if _KEY_NAME_PART_RE.search(name) and not _CACHE_KEY_NAME_PART_RE.search(name):
         return True
     return bool(_TOKEN_NAME_PART_RE.search(name)) and not _COST_NAME_PART_RE.search(name)
 

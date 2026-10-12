@@ -383,8 +383,10 @@ class AutomatedThreatModeler:
         Merges the same threat reported by several batches (same STRIDE category, title and
         attack vector after normalization). The first report is kept, with the highest severity
         any batch gave it; otherwise every batch would synthesize and run the same attack again."""
+        # 任何文字的字母與數字都算（與 baseline.normalize 相同），中文標題才不會塌成空字串而被合併
+        # Letters and digits of any script count (as in baseline.normalize), so Chinese titles do not collapse to "" and merge
         def norm(text: str) -> str:
-            return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
+            return " ".join(re.findall(r"[^\W_]+", text.lower()))
 
         merged: Dict[Any, ThreatItem] = {}
         for t in threats:
