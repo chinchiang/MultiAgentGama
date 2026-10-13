@@ -177,11 +177,14 @@ class WhiteboxTestGenerator:
             json_output=True, schema=TESTS_SCHEMA, simulated=lambda alias: {"tests": []},
         )
 
+        # `tests` 裡可用的項目優先；沒有任何一項可用時（不是清單、空清單，或每一項都沒有 code），改用回答本身的 `code`，
+        # 與形狀檢查（TESTS_SCHEMA 的 any_of）接受這個回答的理由一致
+        # The usable items of `tests` come first; when none is usable (not a list, an empty list, or no item with code),
+        # the answer's own `code` is used, matching why the shape check (TESTS_SCHEMA's any_of) accepted the answer
         raw_tests = resp.get("tests")
-        tests_data = raw_tests if isinstance(raw_tests, list) else []
-        if not tests_data and isinstance(resp.get("code"), str) and resp["code"].strip():
+        tests_data = [t for t in raw_tests if isinstance(t, dict) and is_usable_test(t)] if isinstance(raw_tests, list) else []
+        if not tests_data and is_usable_test(resp):
             tests_data = [resp]
-        tests_data = [t for t in tests_data if isinstance(t, dict) and is_usable_test(t)]
 
         tests: List[GeneratedTest] = []
         has_valid_test = False

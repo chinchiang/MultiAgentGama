@@ -650,3 +650,31 @@ def test_a_cached_answer_that_no_longer_fits_is_invalid_under_cache_only_and_rea
     assert en_only(CACHED_ANSWER_PREFIX) not in transport.prompts()[0][1]
     again, _ = gateway(pytest.fail, cache_only=True)
     assert again.generate("whitebox_reviewer_claude", "sys", "user", schema=FINDINGS_SCHEMA)["findings"] == [{"title": "ok"}]
+
+
+def test_test_generation_falls_back_to_code_when_tests_has_no_usable_item(tmp_path):
+    """`tests` 是清單、卻沒有任何一項有 code 時，改用回答裡非空的 `code`：形狀檢查已經因為 `code` 可用而接受這個回答，
+    代理過去卻因為 `tests` 不是空清單就忽略 `code`，那個發現因此沒有模型測試。`tests` 有可用的項目時仍忽略 `code`。
+    When `tests` is a list but no item has code, the answer's non-empty `code` is used: the shape check already
+    accepts the answer because `code` is usable, yet the agent used to ignore `code` as soon as `tests` was a
+    non-empty list, leaving the finding without a model test. When `tests` has a usable item, `code` is still
+    ignored."""
+    (tmp_path / "svc.py").write_text("def f(x):\n    return x['id']\n", encoding="utf-8")
+    symbols = ASTExtractor().parse_file(str(tmp_path / "svc.py"))
+    code = "import svc\n\ndef test_f():\n    assert svc.f({'id': 1}) == 1\n"
+    finding = ReviewFinding(finding_id="WB-CLA-01", reviewer_name="Claude", model_alias="claude",
+                            file_path=str(tmp_path / "svc.py"), symbol_name="f", severity=FindingSeverity.HIGH,
+                            title="KeyError", description="d", root_cause="r", suspected_vibe_flaw="v",
+                            suggested_test_scenario="s")
+
+    def generator(answer):
+        gw = LLMGateway(CONFIG, execution_mode="mock")
+        gw.generate = lambda *a, **k: answer
+        return WhiteboxTestGenerator(gw)
+    fallback = generator({"tests": ["not an object", {"title": "no code"}], "code": code})
+    tests = fallback.generate_tests_for_findings([finding], symbols, root_dir=str(tmp_path))
+    assert [t.code.strip() for t in tests if t.test_type == "whitebox_unit"] == [code.strip()]
+    assert fallback.findings_without_model_tests == []
+    preferred = generator({"tests": [{"title": "from tests", "code": code}], "code": "def test_other():\n    assert 2\n"})
+    tests = preferred.generate_tests_for_findings([finding], symbols, root_dir=str(tmp_path))
+    assert [t.title for t in tests if t.test_type == "whitebox_unit"] == ["from tests"]
