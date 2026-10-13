@@ -791,7 +791,7 @@ console 輸出另外用 `rich.markup.escape`（`vibeharness/core/harness.py:12`�
 | `test_parallel_and_budgets.py` | 並行且順序穩定、`max_concurrent_calls`、單項失敗隔離、預算在 hybrid 與 live 的行為、並行下計數精確、CLI 旗標、`max_files` 驗證、單一模型的 evidence gap |
 | `test_prompt_context.py` | import 名稱與指引、prompt 帶入實際程式碼、fallback model、config 與 cwd 無關 |
 | `test_quality_fixes.py` | wheel 帶 config、null 欄位、`--base-url`、`__future__`、跨批去重、規則降級、SARIF、簽名錯誤判 ERROR、批次隔離（含崩潰的記錄）、coverage 解析 |
-| `test_quality_gate.py` | 只透過 `evaluate()` 測試品質閘門：每一級判定、只有 HIGH 以上的規則命中會阻擋、每個 `GapCode` 各一個案例、缺口依宣告順序、互斥的 JS/TS 缺口、baseline 的新／已知拆分、建議順序 |
+| `test_quality_gate.py` | 透過 `evaluate()` 測試品質閘門，另有一個 mock pipeline 測試確認擷取器、掃描器、上限與審查名單的事實送進閘門：每一級判定、只有 HIGH 以上的規則命中會阻擋、每個 `GapCode` 各一個案例、缺口依宣告順序、互斥的 JS/TS 缺口、baseline 的新／已知拆分、建議順序 |
 | `test_r2_cli_gateway.py` | 第二輪審查：沒有驗證時已確認數為 `null`、安裝不完整時 exit 5、litellm 罐頭回應鍵與 `ssl_verify` 為保留鍵、呼叫紀錄的時間順序（`attempt`）、`--cache-only` 的估算與 mock 警告、`--target` 預設值、`--init-config`、設定檔探索 |
 | `test_r2_executor_sandbox.py` | 測試執行中目標載入失敗、測試呼叫不存在的函式、單檔大小上限、不可 dump 的開關、JS 分批與重跑上限、同模組輔助函式與基底類別裡的斷言、Windows 假家目錄、遺失的結束狀態絕不讀成 0 |
 | `test_r2_extractor_scanner.py` | JS/TS lexer 的遞迴與時間上限、JSX 掃描預算、VH-AI-006 的 argv 程式解析（直譯器、包裝前綴、常數、可變位置引數與關鍵字引數）、根路由／萬用路由的比對 |

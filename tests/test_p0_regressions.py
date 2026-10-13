@@ -438,6 +438,20 @@ def test_offline_probes_derive_from_target_not_sample_app(executor, tmp_path):
     assert [r.status for r in results] == [TestStatus.PASSED, TestStatus.FAILED]
 
 
+def test_offline_probes_only_target_python_functions_with_required_arguments(tmp_path):
+    """None 探測只針對有必要引數的 Python 函式：類別、JS 函式與沒有必要引數的函式都不探測。
+    None probes only target Python functions with required arguments: classes, JS functions and functions without
+    required arguments are never probed."""
+    (tmp_path / "app.py").write_text(
+        "class Repo:\n    pass\n\ndef f():\n    return 1\n\ndef g(x=1):\n    return x\n\ndef h(x):\n    return x\n",
+        encoding="utf-8")
+    (tmp_path / "auth.mjs").write_text("export function login(user) {\n  return user.name;\n}\n", encoding="utf-8")
+    symbols = ASTExtractor().parse_directory(str(tmp_path))
+    assert {"Repo", "f", "g", "h", "login"} <= {s.name for s in symbols}
+    probes = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="mock")).build_offline_probes(symbols)
+    assert [p.target_component for p in probes] == ["h"]
+
+
 def test_simulated_blackbox_does_not_fabricate_tests():
     gateway = LLMGateway(CONFIG, execution_mode="mock")
     threats = AutomatedThreatModeler(gateway).model_system("API", ["/api/users"]).threats
@@ -459,22 +473,6 @@ def test_mock_pipeline_is_never_ready_to_ship_and_report_discloses_simulation(tm
     assert "SIMULATED RESULTS" in report
     assert "Threats Not Tested" in report
     assert METRIC_TABLE_HEADER in report
-
-
-def test_clean_target_in_mock_mode_is_inconclusive(tmp_path):
-    target = tmp_path / "app"
-    target.mkdir()
-    (target / "ok.py").write_text(
-        "def greet(name):\n    if name is None:\n        raise ValueError('name required')\n    return 'hi ' + name\n",
-        encoding="utf-8"
-    )
-    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
-    summary = commander.run_full_pipeline(
-        target_dir=str(target), base_url="http://localhost:59999", output_report_path=str(tmp_path / "r.md")
-    )
-    assert summary.whitebox_tests_failed == 0
-    assert summary.overall_status == "INCONCLUSIVE"
-    assert summary.inconclusive_reasons
 
 
 # --- 關卡的誠實性：空洞測試、無法使用的模型輸出、仲裁 ---------------------------
@@ -552,26 +550,20 @@ def test_missing_required_key_is_recorded_invalid(fake_live):
     assert gateway.invalid_calls and "threats" in gateway.invalid_calls[0].reason
 
 
-def test_unusable_threat_model_and_modeled_criticals_never_ship_or_block(fake_live, tmp_path):
-    target = tmp_path / "app"
-    target.mkdir()
-    (target / "ok.py").write_text("def greet(name):\n    return 'hi'\n", encoding="utf-8")
-    critical = ('{"threat_id": "T%d", "stride_category": "Spoofing", "title": "t", "severity": "CRITICAL"}')
-    threats = '{"threats": [%s]}' % ", ".join(critical % i for i in range(4))
-
-    def responder(system, user):
-        if "Threat Modeling Specialist" in system:
-            return threats
-        return "not json"
-    fake_live(responder)
-    summary = VibeHarnessCommander(config_path=CONFIG, execution_mode="live").run_full_pipeline(
-        target_dir=str(target), base_url="http://localhost:59999", output_report_path=str(tmp_path / "r.md")
+def test_report_labels_an_invalid_model_call(tmp_path):
+    """無法使用的模型輸出在來源紀錄表中標為「無效輸出」（缺口本身見 test_quality_gate.py）。
+    An unusable model answer is labelled "invalid output" in the provenance table (the gap itself is in test_quality_gate.py)."""
+    from vibeharness.core.models import MultiModelDebateResult, ThreatModelReport, VibeHarnessSummary
+    from vibeharness.reports.report_generator import ReportGenerator
+    summary = VibeHarnessSummary(
+        overall_status="INCONCLUSIVE", total_whitebox_findings=0, confirmed_whitebox_bugs=None, whitebox_tests_passed=0,
+        whitebox_tests_failed=0, total_threats_modeled=0, critical_threats_count=0, blackbox_tests_passed=0,
+        blackbox_security_breaches=0, agent_calls=[AgentCallRecord(
+            agent_id="blackbox_threat_modeler", model_alias="claude", model_name="m", mode="invalid", reason="not json")],
     )
-    # 4 個建模出的 CRITICAL 威脅只是假設，不是證據；無法使用的輸出讓這次執行結果不確定
-    # 4 modeled CRITICAL threats are hypotheses, not evidence; unusable outputs make the run inconclusive
-    assert summary.overall_status == "INCONCLUSIVE"
-    assert any("unusable output" in r for r in summary.inconclusive_reasons)
-    assert "invalid output" in (tmp_path / "r.md").read_text(encoding="utf-8")
+    md = ReportGenerator().generate_markdown_report(summary, MultiModelDebateResult(consensus_summary=""),
+                                                    ThreatModelReport(system_description=""), [], [], "app")
+    assert "invalid output" in md and "blackbox_threat_modeler" in md
 
 
 def test_single_file_target_is_analyzed(tmp_path):

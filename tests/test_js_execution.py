@@ -754,27 +754,6 @@ def test_js_target_without_a_node_runtime_is_an_evidence_gap(tmp_path, fake_live
     assert summary.run.node_runtime is None
 
 
-def test_mock_mode_discloses_that_no_js_test_was_generated(tmp_path):
-    target = tmp_path / "app"
-    target.mkdir()
-    (target / "auth.mjs").write_text(_JS_TARGET, encoding="utf-8")
-    summary = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock").run_full_pipeline(
-        target_dir=str(target), base_url="http://localhost:59999", output_report_path=str(tmp_path / "r.md"))
-    assert summary.overall_status == "INCONCLUSIVE"
-    assert any("no JS/TS test was generated" in r for r in summary.inconclusive_reasons)
-    assert summary.js_line_coverage_pct is None  # 沒有 JS/TS 測試就沒有涵蓋率，也不另外算缺口 ／ no JS/TS test, no coverage, no extra gap
-
-
-def test_other_languages_keep_the_static_only_gap(tmp_path):
-    target = tmp_path / "app"
-    target.mkdir()
-    (target / "main.go").write_text("package main\n\nfunc main() {}\n", encoding="utf-8")
-    (target / "ok.py").write_text("def f():\n    return 1\n", encoding="utf-8")
-    summary = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock").run_full_pipeline(
-        target_dir=str(target), base_url="http://localhost:59999", output_report_path=str(tmp_path / "r.md"))
-    assert not any("JS/TS" in r for r in summary.inconclusive_reasons)
-
-
 def test_harness_node_sandbox_provider_selection(tmp_path, monkeypatch):
     commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
     # docker provider：用映像檔自帶的 Node，主機沒有 node 也能建；TS 支援看映像檔的版本
