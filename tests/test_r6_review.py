@@ -16,7 +16,7 @@ from vibeharness.core.estimate import estimate_lines, estimate_run
 from vibeharness.core.harness import VibeHarnessCommander
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.models import (
-    FindingSeverity, GeneratedTest, ReviewFinding, STRIDECategory, StaticFinding, TestExecutionResult, TestStatus,
+    FindingSeverity, GeneratedTest, ReviewFinding, STRIDECategory, TestExecutionResult, TestStatus,
     ThreatItem,
 )
 from vibeharness.core.sandbox import TIMEOUT_EXIT_CODE
@@ -62,6 +62,75 @@ def test_distinct_chinese_threats_are_not_merged():
     # 真正的重複（只差大小寫與標點）仍會合併 ／ a real duplicate (case and punctuation only) still merges
     again = AutomatedThreatModeler._merge_duplicate_threats([_threat("THREAT-01", "偽造會話權杖！"), _threat("THREAT-02", "偽造會話權杖")])
     assert [t.threat_id for t in again] == ["THREAT-01"]
+
+
+def test_simulated_threats_with_the_same_english_half_merge_like_their_breach_keys():
+    """威脅合併與 breach_key 用同一個威脅身分：模擬的雙語標題只看英文半，所以中文半不同、英文半相同的兩個模擬威脅
+    是同一威脅（基準線早就把它們的突破視為同一個），合併時保留較高的嚴重度。
+    The threat merge and breach_key share one threat identity: a simulated bilingual title counts by its English half,
+    so two simulated threats with the same English half and different Chinese halves are one threat (the baseline
+    already treats their breaches as one), and the merge keeps the higher severity."""
+    from vibeharness.core.i18n import bi
+    first = _threat("THREAT-01", bi("越權存取", "IDOR")).model_copy(update={"is_simulated": True})
+    second = _threat("THREAT-02", bi("越權", "IDOR")).model_copy(
+        update={"is_simulated": True, "severity": FindingSeverity.CRITICAL})
+    merged = AutomatedThreatModeler._merge_duplicate_threats([first, second])
+    assert [(t.threat_id, t.severity) for t in merged] == [("THREAT-01", FindingSeverity.CRITICAL)]
+    result = TestExecutionResult(test_id="BB-TEST-1", test_type="blackbox_security", status=TestStatus.FAILED)
+    assert bl.breach_key(result, first) == bl.breach_key(result, second)
+
+
+def test_a_simulated_and_a_real_threat_with_the_same_bilingual_title_stay_apart():
+    """真實模型的文字原樣進鍵、模擬的只取英文半：標題字面相同的一個模擬威脅與一個真實威脅不是同一威脅（breach_key 也不同），
+    所以不會合併，真實威脅不會被模擬範本吞掉。
+    Real model text enters the key as is and simulated text by its English half: a simulated and a real threat with
+    the same literal bilingual title are not the same threat (their breach_keys differ too), so they are not merged
+    and the real threat is not swallowed by a simulated template."""
+    from vibeharness.core.i18n import bi
+    title = bi("越權存取", "IDOR")
+    simulated = _threat("THREAT-01", title).model_copy(update={"is_simulated": True})
+    real = _threat("THREAT-02", title)
+    merged = AutomatedThreatModeler._merge_duplicate_threats([simulated, real])
+    assert [t.threat_id for t in merged] == ["THREAT-01", "THREAT-02"]
+    result = TestExecutionResult(test_id="BB-TEST-1", test_type="blackbox_security", status=TestStatus.FAILED)
+    assert bl.breach_key(result, simulated) != bl.breach_key(result, real)
+
+
+# --- 無法歸屬的位置：None、空字串、只有空白與 "unknown" 一律算未知 -----------------------------------------
+# --- An unattributable location: None, empty, whitespace-only and "unknown" all count as unknown -------------
+
+def _review(fid, path, title, symbol="f"):
+    return ReviewFinding(finding_id=fid, reviewer_name="R", model_alias="claude", file_path=path, symbol_name=symbol,
+                         severity=FindingSeverity.HIGH, title=title, description="d", root_cause="",
+                         suspected_vibe_flaw="v", suggested_test_scenario="s")
+
+
+@pytest.mark.parametrize("path", ["", "   ", " unknown "])
+def test_dedup_merges_findings_at_an_unknown_location_only_on_an_identical_title(path):
+    """位置未知時不能用符號判斷是不是同一缺陷：只有標題完全相同才合併（與 "unknown" 相同）。
+    With an unknown location the symbol cannot tell whether it is the same defect: only an identical title merges
+    (as with "unknown")."""
+    similar = deduplicate_findings([_review("A", path, "SQL injection via search term"),
+                                    _review("B", path, "SQL injection in the search term")])
+    assert [f.finding_id for f in similar] == ["A", "B"]
+    same = deduplicate_findings([_review("A", path, "SQL injection via search term"),
+                                 _review("B", "unknown", "SQL injection via search term")])
+    assert [f.finding_id for f in same] == ["A"]
+
+
+@pytest.mark.parametrize("path", ["", "   ", " unknown "])
+def test_test_generation_for_an_unknown_location_uses_the_target_file(tmp_path, path):
+    """位置未知的發現改用目標檔案決定語言與匯入方式（與 "unknown" 相同），不會把空白當成檔名。
+    A finding with an unknown location takes its language and import from the target file (as with "unknown"),
+    not from a blank file name."""
+    (tmp_path / "auth.mjs").write_text("export function login(u) { return u; }\n", encoding="utf-8")
+    symbols = ASTExtractor().parse_directory(str(tmp_path))
+    gateway = LLMGateway(CONFIG, execution_mode="mock")
+    systems = []
+    gateway.generate = lambda agent_id, system, user, **k: systems.append(system) or {"tests": []}
+    WhiteboxTestGenerator(gateway).generate_tests_for_findings([_review("A", path, "login echoes", "login")], symbols,
+                                                               root_dir=str(tmp_path))
+    assert systems and "JavaScript/TypeScript QA Engineer" in systems[0]
 
 
 # --- 2. --changed-since 不會漏掉非 ASCII 檔名 ---------------------------------------------------
@@ -119,26 +188,6 @@ def test_dedup_keeps_findings_that_differ_only_in_chinese_words():
     # 同一句中文的重複回報仍會合併 ／ a repeated report of the same Chinese title still merges
     same = [_finding("WB-CLA-01", "SQL 注入於搜尋參數"), _finding("WB-DEE-01", "SQL 注入於搜尋參數")]
     assert len(deduplicate_findings(same)) == 1
-
-
-# --- 6. 換機器重跑時，名稱含點的目錄目標算出相同的鍵 ----------------------------------------------
-# --- 6. A dotted directory target keys the same when an old baseline is replayed elsewhere --------------------
-
-def test_old_baseline_of_a_dotted_directory_from_another_machine_keys_the_same(tmp_path):
-    here = tmp_path / "app.v2"
-    (here / "src").mkdir(parents=True)
-    other = "/nonexistent-ci/work/app.v2"
-    sf = dict(rule_id="VH-AI-001", title="t", severity="HIGH", line_number=3, evidence="pickle.load(x)",
-              remediation="")
-    old = StaticFinding(**sf, file_path=f"{other}/src/x.py")
-    now = StaticFinding(**sf, file_path=str(here / "src" / "x.py"))
-    assert bl.target_relative(old.file_path, other) == "src/x.py"
-    assert bl.static_key(old, other) == bl.static_key(now, str(here))
-    # 檔案目標（不論是否存在）仍以檔名為鍵 ／ a file target (existing or not) still keys by its name
-    assert bl.target_relative("/nonexistent-ci/work/app.py", "/nonexistent-ci/work/app.py") == "app.py"
-    script = here / "run"
-    script.write_text("print(1)\n", encoding="utf-8")
-    assert bl.target_relative(str(script), str(script)) == "run"
 
 
 # --- 7. --estimate 計入未變異複本上的那一批 -----------------------------------------------------

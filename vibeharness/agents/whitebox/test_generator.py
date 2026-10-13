@@ -14,6 +14,7 @@ from vibeharness.core.codecontext import (
 )
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, prepare_untrusted_code, untrusted_block
 from vibeharness.core.fanout import Call, fan_out
+from vibeharness.core.identity import is_unknown_location
 
 logger = logging.getLogger("VibeHarness.TestGenerator")
 
@@ -88,7 +89,7 @@ class WhiteboxTestGenerator:
     ) -> Tuple[List[GeneratedTest], bool]:
         """為一個發現產生（並修復）的模型測試，以及其中是否有任何一個可執行。
         Model-generated (and healed) tests for one finding, and whether any of them is executable."""
-        file_path = finding.file_path if finding.file_path not in ("", "unknown") else target_file
+        file_path = target_file if is_unknown_location(finding.file_path) else finding.file_path
         language = language_for_file(file_path)
         if language == "python":
             role = (
@@ -236,7 +237,7 @@ class WhiteboxTestGenerator:
     def _code_context(finding: ReviewFinding, symbols: List[CodeSymbol], root: str, default_file: str) -> str:
         """匯入說明加上發現所指的原始碼（其符號，否則整個檔案）。
         Import instructions plus the source the finding refers to (its symbol, else its whole file)."""
-        file_path = finding.file_path if finding.file_path not in ("", "unknown") else default_file
+        file_path = default_file if is_unknown_location(finding.file_path) else finding.file_path
         symbol = next((s for s in symbols if s.name == finding.symbol_name and s.file_path == file_path), None)
         if symbol:
             source = truncate_to_tokens(prepare_untrusted_code(symbol.source_code), CODE_CONTEXT_TOKENS)

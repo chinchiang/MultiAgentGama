@@ -53,32 +53,6 @@ def _write(tmp_path, payload):
     return str(path)
 
 
-# --- baseline：target_relative 的邊界情況 -------------------------------------------------------------
-# --- baseline: target_relative edge cases ------------------------------------------------------------
-
-@pytest.mark.parametrize("path", [None, "", "unknown", "  unknown "])
-def test_rel_placeholder(path):
-    assert bl.target_relative(path, "/t") == ""
-
-
-def test_rel_file_target(tmp_path):
-    # 目標是單一檔案（即使尚不存在）時，以它所在的目錄為基準
-    # A single-file target (even one that does not exist yet) is related to its directory
-    target = os.path.join(str(tmp_path), "app.py")
-    assert bl.target_relative(os.path.join(str(tmp_path), "pkg", "m.py"), target) == "pkg/m.py"
-
-
-def test_rel_outside_and_other_drive(monkeypatch):
-    assert bl.target_relative("/elsewhere/m.py", "/t") == "m.py"
-
-    def boom(*a, **k):
-        raise ValueError("path is on mount 'D:', start on mount 'C:'")
-    # relpath 在不同磁碟機時拋出 ValueError：退回純檔名
-    # relpath raises ValueError across drives: fall back to the bare name
-    monkeypatch.setattr(bl.os.path, "relpath", boom)
-    assert bl.target_relative("/t/sub/m.py", "/t") == "m.py"
-
-
 # --- baseline：從沒有 fingerprint 的報告重算鍵，略過壞掉的項目 ---------------------------------------------
 # --- baseline: keys recomputed from reports without fingerprints, broken items skipped ---------------------
 

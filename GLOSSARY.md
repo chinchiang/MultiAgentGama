@@ -85,3 +85,13 @@ _Avoid_: suppressed finding, ignored issue
 嚴重度 HIGH 以上的確定性規則命中；只有不屬於已知問題的才計入判定結果。
 A deterministic rule hit of HIGH severity or above; only those that are not Known problems count toward the Verdict.
 _Avoid_: HIGH+ hit (in prose), static blocker
+
+**身分 ／ Identity**:
+讓同一個發現、威脅或規則命中在不同次執行之間被認出來的依據：位置、符號或規則，以及不分大小寫與標點的文字，不含逐次執行的編號。基準與 SARIF 都以它為準，所以它的雜湊一旦寫進報告就不能改變。
+What lets the same finding, threat or rule hit be recognized across runs: its location, symbol or rule, and its case- and punctuation-insensitive text, never the per-run number. The Baseline and SARIF both go by it, so its hash must not change once it is in a report.
+_Avoid_: fingerprint (for the concept; a fingerprint is its hash), finding id
+
+**未知位置 ／ Unknown location**:
+無法歸屬到任何檔案的發現位置（審查者寫下的 `unknown` 佔位字，或空白）。這類發現只在標題完全相同時才算同一個，其身分不含路徑。
+The location of a finding that cannot be tied to any file (the reviewer's `unknown` placeholder, or a blank). Such findings are only the same when their titles are identical, and their Identity has no path.
+_Avoid_: missing file, unknown file

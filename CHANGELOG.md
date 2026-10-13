@@ -18,12 +18,15 @@
 - 模型呼叫改經新的 `vibeharness/core/transport.py` 接縫：閘道對每次模型嘗試送出一個 `ModelRequest`（帶 `agent_id`、模型別名、候選模型字串、messages 與原樣的 litellm 參數），由 `ModelTransport` 回一個 `ModelReply`。預設的 `LiteLLMTransport` 是唯一 import litellm 的地方；`LLMGateway` 與 `VibeHarnessCommander` 接受 `transport=`。模式、預算、回應快取、fallback 順序、重問與來源紀錄都留在閘道。僅為內部變更：報告、呼叫紀錄與結束碼都不變。
 - 模擬輸出改由各代理以 `generate(..., simulated=fn)` 提供（審查者、威脅建模者、驗證者、測試生成器與攻擊合成器各自的範本），閘道不再依代理名稱編造回答；代理的模型別名統一由 `GatewaySettings.alias_for` 解析。模擬的內容不變。
 - 審查者、驗證者、測試生成器、威脅建模者與攻擊合成器並行的模型呼叫改由新的 `vibeharness/core/fanout.py` 執行：代理只交出呼叫清單（`Call(agent_id, label, run)`）與當掉時的 fallback，執行緒池大小、依呼叫順序收集、取消、live 失敗時的中止、錯誤 log 與 `record_failure` 都在這一個模組裡。刪除 `vibeharness/agents/whitebox/common.py`。這一步本身不改變行為；修正一節的兩個條目是隨後在同一個模組上做的修正。
+- 發現、威脅與靜態命中的身分識別集中到新的 `vibeharness/core/identity.py`：模型文字的正規化（`normalize`、`key_text`）、位置規則、嚴重度順序（`severity_rank`，取代去重與威脅建模各自的一份），以及 `--baseline` 的鍵與 SARIF 的 partialFingerprints（`sarif_static_fingerprint`／`sarif_finding_fingerprint`／`sarif_breach_fingerprint`）並排定義；威脅合併改用同一個 `normalize`，不再有自己的副本。`vibeharness/core/baseline.py` 保留載入、比對與加註，並以舊名稱重新匯出這些函式。每個基準線 fingerprint 與 SARIF 指紋都逐位元組不變，既有的基準與 Code Scanning 警示照常相符；修正一節的兩個條目是隨後在這個模組上做的修正。
 
 ### 修正
 
 - 使用 `--baseline` 時，報告的「確定性 AI 資安規則命中」列會計入所有 HIGH 以上的命中，包括判定已忽略的已知命中，因此 `READY_TO_SHIP` 或 `INCONCLUSIVE` 的報告可能顯示「2 HIGH+」而目標是「0 HIGH+」。現在新的與已知的命中分開列出（例如「0 個新的 HIGH+，2 個基準中已知」，目標為「0 個新的 HIGH+」）。沒有 `--baseline` 時該列不變。
 - 審查者、驗證者與測試生成器在 live 模式的呼叫失敗時，過去要等主執行緒依序收集到那個失敗才取消尚未開始的呼叫；主執行緒還在等前面較慢的呼叫時，佇列中的呼叫會繼續開始並付費。現在與威脅建模者、攻擊合成器相同，在失敗的那個工作執行緒裡就中止整批，佇列中的呼叫不會開始。只影響已經會以 exit 4 結束的執行。
 - 測試生成在閘道之外當掉時（例如處理模型回答時拋出例外），過去只寫一行錯誤，該發現只顯示為「沒有模型產生的測試」；現在與其他代理相同，記成一筆 `whitebox_test_generator` 的無效呼叫（原因為「代理呼叫在產生輸出前就當掉 ／ agent call crashed before producing output」），報告與 JSON 的 `agent_calls` 多一筆紀錄，並列出無效模型輸出的證據缺口。判定結果不變：該發現原本就讓判定最多是 `INCONCLUSIVE`。
+- 合併多個批次回報的同一威脅時，判斷方式改為與基準線的突破鍵相同（core/identity.py 的 `threat_identity`）：模擬引擎的雙語標題與攻擊向量只看英文半。過去合併看完整文字，所以（a）中文半不同、英文半相同的兩個模擬威脅不會合併，而基準線早已把它們的突破視為同一個；（b）標題字面相同的一個模擬威脅與一個真實模型的威脅會被合併，真實威脅可能被模擬範本取代。兩種情況都只會出現在同時有模擬與真實威脅、或有雙語標題的執行。
+- 無法歸屬的發現位置改由單一判斷（core/identity.py 的 `is_unknown_location`）決定：None、空字串、只有空白與 `unknown` 佔位字（前後空白不計）都算未知。過去去重、測試生成、基準線鍵與 SARIF 各自判斷、條件略有不同：只有空白的路徑在基準線鍵中被當成檔名，去重會用符號而不是完全相同的標題判斷、測試生成會用空白當檔名；空字串或 ` unknown ` 在去重中也被當成已知的位置。實際上審查者只會寫出 `unknown`，所以一般執行的輸出不變。
 
 ### 測試
 
@@ -33,6 +36,7 @@
 - `tests/conftest.py` 新增 `scripted({代理 glob: 回答})` fixture：一個依 `request.agent_id` 回答、記錄每個 `ModelRequest` 的 `ModelTransport`，腳本裡的例外在那次嘗試中拋出，就像供應商錯誤。十一個原本從提示詞文字猜測是哪個代理在呼叫的測試改用它。
 - 新增 `tests/test_transport.py`：每次嘗試一個帶 `agent_id` 的請求、主要模型失敗改試 fallback、轉接器不可用時的 hybrid／live 行為、litellm 轉接器讀回覆、模擬輸出由呼叫端提供，以及 `scripted` fixture 本身。
 - 新增 `tests/test_fanout.py`，只透過 `fan_out` 測試扇出：呼叫順序、當掉換成 fallback 並以代理的 logger 與 `agent_id` 記錄、live 失敗與 Ctrl-C 時佇列中的呼叫不會開始、並行數上限、空清單不開執行緒池。十個重複的測試案例改由它涵蓋；各代理只保留一個接線測試，確認當機記在自己的 `agent_id` 名下，並改經公開的 `gateway.generate` 觸發，不再替換代理的私有批次函式。覆蓋率沒有任何一行下降。
+- 新增 `tests/test_identity.py`，只透過 `core/identity.py` 測試身分識別：任何文字的正規化、改寫措辭與不同文字、模擬項目的英文半、各種鍵與其 SARIF 指紋的性質、嚴重度順序與未知位置，加上一張取自 master、釘住雜湊值的 golden 表，讓之後任何會讓既有基準或 Code Scanning 警示失配的改動都會讓測試失敗。散在其他檔案、直接測試鍵函式的 11 個測試搬進來；測試鍵的使用者（基準的載入與比對、SARIF 端對端、威脅合併、去重）留在原處。覆蓋率沒有任何一行下降。
 
 ### 文件
 
@@ -47,6 +51,9 @@
 - README 的專案結構列出 `core/transport.py` 與 `tests/test_transport.py`。
 - 設計文件說明 `vibeharness/core/fanout.py`（模組表、失敗處理的共同模式、各代理一節與並行一節），並行一節的表格改列每個代理當掉時的 fallback，重要函式索引新增 `fanout.py` 一行並移除 `common.py`，行號引用也更新為 commit `c8d1e26`。
 - README 的專案結構列出 `core/fanout.py` 與 `tests/test_fanout.py`，並移除 `agents/whitebox/common.py`。
+- 設計文件說明 `vibeharness/core/identity.py`（模組表、去重的位置規則與嚴重度、威脅合併、`--baseline` 一節、SARIF 的位置），重要函式索引新增 `identity.py` 一行，`baseline.py` 一行移除搬走的鍵函式，行號引用也更新為 commit `f6e741b`。
+- README 的專案結構列出 `core/identity.py` 與 `tests/test_identity.py`。
+- `GLOSSARY.md` 新增身分與未知位置。
 
 ## [0.12.0] - 2026-10-12
 

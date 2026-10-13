@@ -34,46 +34,6 @@ def _threat(tid="THREAT-01", title="BOLA on update", vector="PUT /api/users/{id}
     )
 
 
-# --- 鍵值在重新編號、改寫措辭與行號漂移後仍不變 -----------------------------------------------
-# --- Keys survive re-numbering, rewording and line drift --------------------------------------
-
-def test_finding_key_ignores_run_numbering_and_cosmetic_rewording():
-    a = bl.finding_key(_finding("WB-CLA-01", "Unchecked null in get_user"), EXAMPLES)
-    b = bl.finding_key(_finding("WB-DEE-07", "unchecked NULL in get_user!"), EXAMPLES)
-    c = bl.finding_key(_finding("WB-CLA-01", "SQL injection in get_user"), EXAMPLES)
-    assert a == b != c
-    # 同一個檔案透過另一個簽出路徑來看：鍵值相對於目標
-    # Same file seen through another checkout path: the key is relative to the target
-    d = bl.finding_key(_finding(path="/elsewhere/examples/vibe_sample_app.py"), "/elsewhere/examples")
-    assert d == a
-
-
-def test_static_key_ignores_line_drift_but_not_the_rule_or_evidence():
-    def hit(line, rule="VH-AI-003", evidence="pickle.load(...)"):
-        return StaticFinding(rule_id=rule, title="t", severity=FindingSeverity.MEDIUM,
-                             file_path=os.path.join(EXAMPLES, "m.py"), line_number=line, evidence=evidence)
-    assert bl.static_key(hit(10), EXAMPLES) == bl.static_key(hit(42), EXAMPLES)
-    assert bl.static_key(hit(10), EXAMPLES) != bl.static_key(hit(10, rule="VH-AI-002"), EXAMPLES)
-    assert bl.static_key(hit(10), EXAMPLES) != bl.static_key(hit(10, evidence="dill.load(...)"), EXAMPLES)
-
-
-def test_breach_key_comes_from_the_threat_not_the_test_id():
-    r1 = TestExecutionResult(test_id="BB-TEST-THREAT-01", test_type="blackbox_security", status=TestStatus.FAILED,
-                             is_security_exploit_confirmed=True, source_ref="THREAT-01")
-    r2 = TestExecutionResult(test_id="BB-TEST-THREAT-09", test_type="blackbox_security", status=TestStatus.FAILED,
-                             is_security_exploit_confirmed=True, source_ref="THREAT-09")
-    assert bl.breach_key(r1, _threat("THREAT-01")) == bl.breach_key(r2, _threat("THREAT-09", "bola ON update"))
-    assert bl.breach_key(r1, _threat()) != bl.breach_key(r1, _threat(vector="DELETE /api/users/{id}"))
-    assert bl.breach_key(r1, None) != bl.breach_key(r2, None)
-
-
-def test_probe_failures_are_keyed_by_symbol():
-    probe = TestExecutionResult(test_id="WB-PROBE-03", test_type="whitebox_probe", status=TestStatus.FAILED, source_ref="transfer")
-    assert bl.whitebox_failure_key(probe, None, EXAMPLES) == bl.probe_key(probe)
-    unresolved = TestExecutionResult(test_id="WB-TEST-01", test_type="whitebox_unit", status=TestStatus.FAILED, source_ref="WB-GONE-01")
-    assert bl.whitebox_failure_key(unresolved, None, EXAMPLES) is None  # 無法比對：一律視為新的 ／ cannot be matched: always new
-
-
 # --- 載入 ------------------------------------------------------------------------------------
 # --- Loading ---------------------------------------------------------------------------------
 
@@ -215,35 +175,6 @@ def test_composite_action_is_well_formed():
     steps = action["runs"]["steps"]
     assert all("@" in s["uses"] and len(s["uses"].split("@")[1].split()[0]) == 40 for s in steps if "uses" in s), "actions must be SHA-pinned"
     assert any(s.get("id") == "audit" for s in steps)
-
-
-def test_keys_distinguish_cjk_titles_and_ignore_the_chinese_half_of_bilingual_text():
-    """中文標題各自不同（不會塌成空字串而共用一個鍵）；`bi()` 字串只取英文半，所以 0.3.0 的鍵不變。
-    CJK titles stay distinct (they no longer collapse to "" and share one key); a `bi()` string is keyed by its
-    English half, so keys from 0.3.0 are unchanged."""
-    from vibeharness.core.i18n import bi
-    t1 = _threat().model_copy(update={"title": "大量指派管理員欄位"})
-    t2 = _threat().model_copy(update={"title": "跨租戶資料竄改"})
-    breach = TestExecutionResult(test_id="BB-TEST-THREAT-01", test_type="blackbox_security", status=TestStatus.FAILED,
-                                 is_security_exploit_confirmed=True, source_ref="THREAT-01")
-    assert bl.breach_key(breach, t1) != bl.breach_key(breach, t2)
-    assert bl.normalize("大量指派管理員欄位") != "" and bl.normalize("Mass_Assignment, v2!") == "mass assignment v2"
-    plain = _threat().model_copy(update={"title": "Mass assignment of admin fields"})
-    simulated = _threat().model_copy(update={"title": bi("大量指派管理員欄位", "Mass assignment of admin fields"), "is_simulated": True})
-    assert bl.breach_key(breach, plain) == bl.breach_key(breach, simulated)
-    # 真實模型的文字原樣進鍵，即使含有全形斜線：0.3.0 的鍵不受 bi() 的分隔符影響
-    # Real model text keys as is, even with a full-width slash: 0.3.0 keys are untouched by the bi() separator
-    real = _threat().model_copy(update={"title": bi("大量指派管理員欄位", "Mass assignment of admin fields")})
-    assert bl.breach_key(breach, real) != bl.breach_key(breach, plain)
-    assert bl.normalize('token = "abc ／ def"') == "token abc def"
-
-
-def test_sarif_fingerprints_use_the_same_helpers_as_the_baseline():
-    """SARIF 的 partialFingerprints 與基準線鍵共用同一套 normalize／fingerprint，不會各自漂移。
-    SARIF partialFingerprints and baseline keys share one normalize / fingerprint pair, so they cannot drift apart."""
-    from vibeharness.reports import report_generator as rg
-    assert rg.normalize is bl.normalize and rg.fingerprint is bl.fingerprint
-    assert not hasattr(rg.ReportGenerator, "_normalize") and not hasattr(rg.ReportGenerator, "_fingerprint")
 
 
 def test_old_simulated_reports_without_per_item_flags_still_match():
