@@ -21,10 +21,9 @@ import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
 from vibeharness.core.i18n import bi
+from vibeharness.core.verdict import Verdict
 
 FAIL_ON_VALUES = ("blocked", "needs-fixes", "inconclusive", "never")
-# exit code → 判定 ／ exit code → verdict
-VERDICTS = {0: "READY_TO_SHIP", 1: "NEEDS_FIXES", 2: "BLOCKED_CRITICAL_RISK", 3: "INCONCLUSIVE"}
 USAGE_ERROR_EXIT_CODE = 5
 # CLI 旗標（dest）→ 顯示名稱。這些旗標讓 CLI 不稽核就以 0 結束（job 會以 READY_TO_SHIP 通過）、在 workspace 寫檔，
 # 或蓋掉 runner 自己的 --summary-json，所以不能放進 extra-args
@@ -219,7 +218,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     sys.stdout.flush()
     sys.stderr.flush()
     summary = _read_summary(summary_path)
-    if rc in VERDICTS and not (summary and summary.get("tool") == "vibeharness" and summary.get("exit_code") == rc):
+    if Verdict.from_exit_code(rc) is not None and not (summary and summary.get("tool") == "vibeharness" and summary.get("exit_code") == rc):
         # 判定碼卻沒有對應的稽核摘要：CLI 沒有執行稽核（例如漏網的非稽核旗標），絕不能讀成判定
         # A verdict code without a matching audit summary: the CLI did not run an audit (e.g. a non-audit flag that
         # slipped through), so it must never read as a verdict
@@ -229,7 +228,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             f"vibeharness exited {rc} without writing a matching audit summary, so there is no verdict; extra-args "
             "must not contain non-audit flags (--estimate, --help, --version, --init-config)"), flush=True)
         rc = USAGE_ERROR_EXIT_CODE
-    verdict = VERDICTS.get(rc, "ERROR")
+    verdict = str(Verdict.from_exit_code(rc) or "ERROR")
     # 報告與 SARIF 只在稽核完成時寫出：沒有判定時 outputs 為空（workspace 裡舊的同名檔案不算）
     # The report and the SARIF are written only when the audit completes: without a verdict the outputs are empty
     # (an old file of the same name in the workspace does not count)

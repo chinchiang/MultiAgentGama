@@ -17,6 +17,7 @@ import yaml
 
 from vibeharness import action_runner, cli
 from vibeharness.core.llm_gateway import DEFAULT_CONFIG_PATH
+from vibeharness.core.verdict import Verdict
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SMALL_TARGET = os.path.join(REPO_ROOT, "vibeharness", "core", "i18n.py")
@@ -113,7 +114,7 @@ def test_the_real_runner_refuses_estimate_and_reports_a_real_audit(tmp_path):
                          env=_env(tmp_path, VH_OUTPUT="r.md", VH_SARIF="none.sarif", VH_FAIL_ON="never"))
     assert out.returncode == 0, out.stdout + out.stderr
     outputs = _outputs(tmp_path)
-    assert outputs["verdict"] in action_runner.VERDICTS.values()
+    assert Verdict.parse(outputs["verdict"]) is not None
     assert outputs["report"] == "r.md" and (tmp_path / "r.md").is_file()
     # 沒有傳 --sarif 給 CLI：檔案不存在，output 為空 ／ No --sarif was passed to the CLI: no file, so an empty output
     assert outputs["sarif"] == ""

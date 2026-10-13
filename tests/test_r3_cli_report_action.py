@@ -25,6 +25,7 @@ from vibeharness.core.models import (
     ThreatItem, ThreatModelReport, VibeHarnessSummary,
 )
 from vibeharness.reports.report_generator import ReportGenerator
+from vibeharness.core.verdict import Verdict
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -199,7 +200,7 @@ def test_summary_json_reports_the_verdict_and_whether_every_call_was_simulated(m
     code = _run_cli(monkeypatch, "-m", "mock", "-t", str(tmp_path / "app.py"), "-o", str(tmp_path / "r.md"),
                     "--config", DEFAULT_CONFIG_PATH, "--summary-json", str(out))
     data = json.loads(out.read_text(encoding="utf-8"))
-    assert data["exit_code"] == code and data["verdict"] == action_runner.VERDICTS[code]
+    assert data["exit_code"] == code and data["verdict"] == Verdict.from_exit_code(code)
     assert data["execution_mode"] == "mock" and data["all_simulated"] is True
     assert data["model_calls"]["total"] == data["model_calls"]["simulated"] > 0 and data["model_calls"]["live"] == 0
     # 6. 沒有套用跨模型驗證：證據缺口說「未經驗證」，不是「已確認」

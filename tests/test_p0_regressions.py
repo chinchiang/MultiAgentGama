@@ -1051,3 +1051,14 @@ def test_docker_sandbox_never_limits_the_docker_cli():
     from vibeharness.core.sandbox import DockerSandbox, SANDBOX_MAX_FILE_BYTES
     sandbox = DockerSandbox(verify=False)
     assert sandbox.memory_mb == 0 and sandbox._limits(60) == {"file_bytes": SANDBOX_MAX_FILE_BYTES}
+
+
+def test_verdict_exit_codes_round_trip():
+    """每個判定結果的結束碼都能轉回同一個判定結果；其他結束碼不是判定結果。
+    Every verdict's exit code maps back to the same verdict; any other exit code is not a verdict."""
+    from vibeharness.core.verdict import Verdict
+    for verdict in Verdict:
+        assert Verdict.from_exit_code(verdict.exit_code) is verdict
+        assert f"{verdict}" == str(verdict) == verdict.value
+    assert Verdict.from_exit_code(4) is None and Verdict.from_exit_code(5) is None
+    assert Verdict.parse("MYSTERY_STATUS") is None

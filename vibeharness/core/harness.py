@@ -32,6 +32,7 @@ from vibeharness.core.sandbox import (
     NodeDockerSandbox, NodeSubprocessSandbox, detect_node, parse_node_version,
 )
 from vibeharness.core.baseline import Baseline, annotate_report_payload, compare_with_baseline
+from vibeharness.core.verdict import Verdict
 from vibeharness.core.mutation import DEFAULT_MAX_COPY_MB, run_mutation_testing
 from vibeharness.core.i18n import bi
 from vibeharness.agents.whitebox.ast_extractor import ASTExtractor, DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES
@@ -947,13 +948,13 @@ class VibeHarnessCommander:
                         + f" ({escape(', '.join(s.id for s in suppressed))})[/yellow]"
                     )
             if bb_breaches > 0:
-                overall_status = "BLOCKED_CRITICAL_RISK"
+                overall_status = Verdict.BLOCKED_CRITICAL_RISK
             elif wb_failed > 0 or static_blocking:
-                overall_status = "NEEDS_FIXES"
+                overall_status = Verdict.NEEDS_FIXES
             elif inconclusive_reasons:
-                overall_status = "INCONCLUSIVE"
+                overall_status = Verdict.INCONCLUSIVE
             else:
-                overall_status = "READY_TO_SHIP"
+                overall_status = Verdict.READY_TO_SHIP
             for reason in inconclusive_reasons:
                 self.console.print(f"[yellow][!] {bi('證據缺口', 'Evidence gap')}: {reason}[/yellow]")
 
@@ -1053,7 +1054,7 @@ class VibeHarnessCommander:
                 with open(output_sarif_path, "w", encoding="utf-8") as f:
                     f.write(sarif_content)
                 self.console.print(f"[+] {bi('SARIF 報告已寫入', 'SARIF report written to')}: [bold green]{output_sarif_path}[/bold green] ({bi('供 GitHub Code Scanning 使用', 'for GitHub Code Scanning')})")
-            verdict_color = {"READY_TO_SHIP": "green", "INCONCLUSIVE": "yellow"}.get(overall_status, "red")
+            verdict_color = {Verdict.READY_TO_SHIP: "green", Verdict.INCONCLUSIVE: "yellow"}.get(overall_status, "red")
             self.console.print(Panel.fit(
                 f"[bold]{bi('品質閘門判定結果', 'Quality Gate Verdict')}:[/bold] [{verdict_color} bold]{overall_status}[/{verdict_color} bold]\n"
                 f"{bi('白箱通過', 'White-Box Passed')}: {wb_passed} | {bi('黑箱突破', 'Black-Box Breaches')}: {bb_breaches}\n"

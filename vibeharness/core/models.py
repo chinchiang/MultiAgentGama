@@ -269,7 +269,10 @@ class MutationReport(BaseModel):
 class VibeHarnessSummary(BaseModel):
     """由 Commander Harness 產出的最上層評估摘要。
     Top-level assessment summary produced by the Commander Harness."""
-    overall_status: str  # 四種狀態之一："READY_TO_SHIP"、"NEEDS_FIXES"、"BLOCKED_CRITICAL_RISK"、"INCONCLUSIVE" ／ "READY_TO_SHIP", "NEEDS_FIXES", "BLOCKED_CRITICAL_RISK", "INCONCLUSIVE"
+    # Verdict 的值之一（core/verdict.py）；維持 str，無法辨識的狀態才能由 cli 以失敗收場，而不是在建構時就被拒絕
+    # One of the Verdict values (core/verdict.py); kept a str so the cli can fail closed on an unrecognized status
+    # instead of rejecting it at construction
+    overall_status: str
     run: Optional[RunMetadata] = None
     total_whitebox_findings: int  # 審查者的原始回報數，合併重複之前 ／ raw reviewer reports, before duplicates are merged
     distinct_whitebox_findings: Optional[int] = None
