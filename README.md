@@ -205,6 +205,7 @@ MultiAgentGama/
 │   │   ├── codecheck.py             # 生成測試的靜態檢查（每個 test_ 函式／方法都要有斷言；拒絕安裝套件）
 │   │   ├── codecontext.py           # 提供給模型的原始碼與 import 指引（經不受信任程式碼通道）
 │   │   ├── estimate.py              # --estimate：不呼叫模型即估算呼叫數、token 與花費
+│   │   ├── fanout.py                # 扇出：並行執行代理的模型呼叫、依呼叫順序收集、當掉的呼叫記成證據缺口
 │   │   ├── gate.py                  # 品質閘門：證據缺口、--baseline 的新／已知拆分、判定與建議（純函式）
 │   │   ├── i18n.py                  # 「中文 ／ English」雙語輸出的工具（bi／en_only）
 │   │   ├── jscoverage.py            # JS/TS 行涵蓋率：Node 涵蓋率旗標、lcov 解析、跨模組聯集
@@ -220,7 +221,6 @@ MultiAgentGama/
 │   │   │   ├── __init__.py
 │   │   │   ├── ast_extractor.py     # 符號解析與路由提取（Python 用 AST；JS/TS 用無相依 lexer）
 │   │   │   ├── ai_static_scanner.py # 確定性 AI 安全規則 VH-AI-001～009（不經模型）
-│   │   │   ├── common.py            # 共用工具：live 失敗或 Ctrl-C 時取消排隊中的模型呼叫
 │   │   │   ├── multi_reviewer.py    # 異構模型評議 (Ensemble，由設定檔的 whitebox_reviewer_* 組成)
 │   │   │   ├── deduplicator.py      # 合併多個模型回報的同一缺陷（complete-linkage）
 │   │   │   ├── debater.py           # 交叉驗證：由非作者模型投票判定
@@ -251,6 +251,7 @@ MultiAgentGama/
 │   ├── test_dedup_and_budget.py        # 重複發現合併與 token 預算內的提示上下文
 │   ├── test_docker_sandbox.py          # Docker 沙盒：路徑映射、容器強化參數、實際執行（有 Docker 時）
 │   ├── test_estimate.py                # --estimate：精確值與情境值、價格、不呼叫模型
+│   ├── test_fanout.py                  # 透過 fan_out 測試扇出：順序、當掉換成 fallback 並記錄、live 失敗與 Ctrl-C 不再開始佇列中的呼叫
 │   ├── test_harness_components.py      # 各元件於 mock 模式下的整合測試
 │   ├── test_i18n.py                    # 雙語工具、報告／console／CLI 字串、雙語的 docstring 與註解
 │   ├── test_i18n_output.py             # 提示詞維持英文、雙語的規則標題、執行器原因與 PoC

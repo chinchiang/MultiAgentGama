@@ -17,6 +17,7 @@ All notable changes to this project are documented in this file. The format foll
 - When one invocation has both a config problem and a target or flag problem (e.g. a bad `--config` value and a missing `--target`), the config problem is now reported first; it used to be reported only when the harness was built, after the target and flag checks. The exit code is 5 either way. A `--cache-dir` is now created before the target and flags are checked, and an unavailable Docker sandbox is reported after every config problem.
 - Model calls go through the new `vibeharness/core/transport.py` seam: the gateway sends one `ModelRequest` per model attempt (carrying the `agent_id`, the model alias, the candidate model string, the messages and the litellm keyword arguments as is), and a `ModelTransport` returns one `ModelReply`. The default `LiteLLMTransport` is the only place that imports litellm; `LLMGateway` and `VibeHarnessCommander` take `transport=`. The mode, the budget, the response cache, the fallback order, re-asks and provenance stay in the gateway. Internal only: reports, the call log and exit codes are unchanged.
 - Simulated output is provided by each agent with `generate(..., simulated=fn)` (the reviewers', threat modeler's, verifiers', test generator's and attack synthesizer's own templates) instead of being made up by the gateway from the agent's name, and an agent's model alias is resolved in one place, `GatewaySettings.alias_for`. The simulated content is unchanged.
+- The concurrent model calls of the reviewers, the verifiers, the test generator, the threat modeler and the attack synthesizer run through the new `vibeharness/core/fanout.py`: an agent hands over only its list of calls (`Call(agent_id, label, run)`) and the fallback for a crash, while the pool size, collection in call order, cancellation, the abort on a live failure, the error log line and `record_failure` all live in that one module. `vibeharness/agents/whitebox/common.py` is deleted. This step alone changes no behaviour; the two Fixed entries are follow-up fixes made in that module.
 
 ### Fixed
 
@@ -31,6 +32,7 @@ All notable changes to this project are documented in this file. The format foll
 - New `tests/test_settings.py` tests the settings through `load_settings` only: every key's null / 0 / negative / wrong-type rule, the validation order, the Discovered config policy, the CLI overrides and their sources, the warnings and the read-only models / agents. It replaces the tests of the deleted private validators.
 - `tests/conftest.py` adds a `scripted({agent_glob: answer})` fixture: a `ModelTransport` that answers by `request.agent_id` and records every `ModelRequest`, and raises an exception from the script in that attempt like a provider error. Eleven tests that guessed the calling agent from prompt text use it instead.
 - New `tests/test_transport.py`: one request carrying the `agent_id` per attempt, a failed primary retried on the fallback, the hybrid / live behaviour of an unavailable transport, the litellm adapter reading the reply, Simulated output from the caller, and the `scripted` fixture itself.
+- New `tests/test_fanout.py` tests the fan-out through `fan_out` only: call order, a crash replaced by the fallback and booked with the agent's logger and `agent_id`, no queued call starting after a live failure or Ctrl-C, the concurrency cap, no pool for an empty list. It covers ten duplicated test cases; each agent keeps one wiring test that its crash is booked under its own `agent_id`, now triggered through the public `gateway.generate` instead of replacing the agent's private batch function. No line loses coverage.
 
 ### Documentation
 
@@ -43,6 +45,8 @@ All notable changes to this project are documented in this file. The format foll
 - The design document describes the model-call seam (the module table, chapter 5's decision order and real-call details) and agent-provided Simulated output (section 5.7), its testing chapter describes the `scripted` fixture, its key-function index has a `transport.py` line, and its line references are updated to commit `c46d9b3`; four response-cache references that pointed at `settings.py` by mistake now point at `llm_gateway.py`.
 - `CONTEXT.md` adds the model answers: Execution mode, Live call and Simulated output.
 - The README project trees list `core/transport.py` and `tests/test_transport.py`.
+- The design document describes `vibeharness/core/fanout.py` (the module table, the shared failure-handling pattern, the agent sections and the concurrency section), the concurrency table lists each agent's fallback for a crash, the key-function index gains a `fanout.py` line and drops `common.py`, and its line references are updated to commit `c8d1e26`.
+- The README project trees list `core/fanout.py` and `tests/test_fanout.py` and drop `agents/whitebox/common.py`.
 
 ## [0.12.0] - 2026-10-12
 
