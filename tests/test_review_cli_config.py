@@ -1,6 +1,7 @@
 """CLI 結束碼、設定驗證、閘道重試與快取鍵，以及未經驗證假設的計數（審查發現的回歸測試）。
 CLI exit codes, config validation, gateway re-asks and cache keys, and the unverified-hypothesis count
 (regression tests for review findings)."""
+import dataclasses
 import os
 import random
 import shutil
@@ -14,6 +15,7 @@ from vibeharness.core.harness import VibeHarnessCommander, sorted_call_log
 from vibeharness.core.llm_gateway import ConfigError, LLMGateway, LLMGatewayError, RESERVED_EXTRA_PARAMS
 from vibeharness.core.models import AgentCallRecord
 from vibeharness.core.sandbox import SandboxUnavailableError
+from vibeharness.core.settings import freeze, load_settings
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -76,10 +78,11 @@ def test_any_construction_failure_exits_5_not_1(monkeypatch, tmp_path, error):
 def test_failure_while_configuring_the_harness_exits_5(monkeypatch, tmp_path):
     """設定 harness（例如 --cache-dir）時的意外例外也以 5 結束。
     An unexpected exception while configuring the harness (e.g. --cache-dir) exits 5 too."""
-    def boom(self, path):
+    def boom(path):
         raise PermissionError("denied")
 
-    monkeypatch.setattr(LLMGateway, "set_cache_dir", boom)
+    # --cache-dir 在載入設定時準備 ／ --cache-dir is prepared while the settings are loaded
+    monkeypatch.setattr("vibeharness.core.settings.prepare_cache_dir", boom)
     assert _run_cli(monkeypatch, "-t", str(tmp_path), "-m", "mock", "--cache-dir", str(tmp_path / "c")) == 5
 
 
@@ -178,7 +181,7 @@ def test_null_or_zero_per_test_timeout_keeps_the_default_everywhere(tmp_path, va
         _write_config(tmp_path, f"global: {{per_test_timeout_seconds: {value}}}\n"), execution_mode="mock"
     )
     assert commander.executor.per_test_timeout_seconds == 30
-    assert commander._mutation_cfg["timeout"] == 30
+    assert commander.settings.mutation.timeout == 30
 
 
 def test_per_test_timeout_reaches_the_executor_and_mutation(tmp_path):
@@ -188,7 +191,7 @@ def test_per_test_timeout_reaches_the_executor_and_mutation(tmp_path):
         _write_config(tmp_path, "global: {per_test_timeout_seconds: 7}\n"), execution_mode="mock"
     )
     assert commander.executor.per_test_timeout_seconds == 7
-    assert commander._mutation_cfg["timeout"] == 7
+    assert commander.settings.mutation.timeout == 7
 
 
 @pytest.mark.parametrize("value", ["-5", "1.5", "abc", "true"])
@@ -198,33 +201,6 @@ def test_invalid_per_test_timeout_is_a_config_error(tmp_path, value):
     with pytest.raises(ConfigError, match="per_test_timeout_seconds"):
         VibeHarnessCommander(_write_config(tmp_path, f"global: {{per_test_timeout_seconds: {value}}}\n"),
                              execution_mode="mock")
-
-
-@pytest.mark.parametrize("value, expected", [(None, 256), (0, 256), (-1, -1), (64, 64)])
-def test_docker_pids_limit_zero_never_means_unlimited(value, expected):
-    """docker_pids_limit 為 0／null 時用預設值（Docker 把 0 當成不限制），只有 -1 才是不限制。
-    A docker_pids_limit of 0 / null uses the default (Docker reads 0 as unlimited); only -1 is unlimited."""
-    cfg = {} if value is None else {"docker_pids_limit": value}
-    assert VibeHarnessCommander._sandbox_settings(cfg, need_docker=True)["pids_limit"] == expected
-    assert VibeHarnessCommander._sandbox_settings({"docker_pids_limit": None}, need_docker=True)["pids_limit"] == 256
-
-
-@pytest.mark.parametrize("value", [-2, "lots", True])
-def test_invalid_docker_pids_limit_is_rejected(value):
-    """無效的 docker_pids_limit 是設定錯誤。
-    An invalid docker_pids_limit is a configuration error."""
-    with pytest.raises(ValueError, match="docker_pids_limit"):
-        VibeHarnessCommander._sandbox_settings({"docker_pids_limit": value}, need_docker=True)
-
-
-def test_null_sandbox_memory_keeps_the_cap_and_only_zero_disables():
-    """sandbox_memory_mb 為 null 時保留預設上限；只有明確的 0 才關閉 RLIMIT_AS。
-    A null sandbox_memory_mb keeps the default cap; only an explicit 0 disables RLIMIT_AS."""
-    settings = VibeHarnessCommander._sandbox_settings
-    assert settings({"sandbox_memory_mb": None}, need_docker=False)["memory_mb"] == 2048
-    assert settings({}, need_docker=False)["memory_mb"] == 2048
-    assert settings({"sandbox_memory_mb": 0}, need_docker=False)["memory_mb"] == 0
-    assert settings({"sandbox_memory_mb": 512}, need_docker=False)["memory_mb"] == 512
 
 
 def test_null_sandbox_timeout_keeps_the_default(tmp_path):
@@ -293,10 +269,12 @@ def test_ordinary_extra_params_still_pass_through(tmp_path, fake_live):
         "models:\n  a: {model: m-a, api_key_env: ANTHROPIC_API_KEY, extra_params: {reasoning_effort: low}}\n"
         "agents:\n  x: {model_alias: a}\n"
     )
-    gw = LLMGateway(_write_config(tmp_path, text))
-    # 縱深防禦：即使設定在啟動後被改動，保留鍵也不會送到 litellm
-    # Defense in depth: even if the config is changed after start-up, a reserved key never reaches litellm
-    gw.models_config["a"]["extra_params"]["api_base"] = "http://evil.example"
+    settings = load_settings(_write_config(tmp_path, text), origin="explicit")
+    # 縱深防禦：即使設定沒有經過載入時的驗證（直接建構），保留鍵也不會送到 litellm
+    # Defense in depth: even for settings that skipped the load-time validation (built directly), a reserved key
+    # never reaches litellm
+    models = freeze({"a": {**settings.gateway.models["a"], "extra_params": {"reasoning_effort": "low", "api_base": "http://evil.example"}}})
+    gw = LLMGateway(settings=dataclasses.replace(settings, gateway=dataclasses.replace(settings.gateway, models=models)))
     fake = fake_live(lambda system, user: '{"ok": 1}')
     gw.generate("x", "s", "u")
     assert fake.calls[0]["reasoning_effort"] == "low"

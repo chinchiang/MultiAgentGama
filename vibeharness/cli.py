@@ -22,9 +22,8 @@ if TYPE_CHECKING:
     # 型別檢查器看得到這些名稱；執行時由 _load_dependencies() 放進模組命名空間
     # Type checkers see these names; at run time _load_dependencies() puts them into the module namespace
     from vibeharness.core.harness import VibeHarnessCommander, force_utf8_stdio
-    from vibeharness.core.llm_gateway import (
-        LLMGatewayError, ConfigError, check_discovered_config, load_config_file, relative_executable_warnings,
-    )
+    from vibeharness.core.llm_gateway import LLMGatewayError, ConfigError
+    from vibeharness.core.settings import Origin, Overrides, load_settings
     from vibeharness.core.sandbox import SandboxUnavailableError
     from vibeharness.agents.blackbox.scenario_builder import validate_base_url
     from vibeharness.core.baseline import load_baseline
@@ -37,9 +36,8 @@ _LAZY_IMPORTS = {
     "force_utf8_stdio": ("vibeharness.core.harness", "force_utf8_stdio"),
     "LLMGatewayError": ("vibeharness.core.llm_gateway", "LLMGatewayError"),
     "ConfigError": ("vibeharness.core.llm_gateway", "ConfigError"),
-    "check_discovered_config": ("vibeharness.core.llm_gateway", "check_discovered_config"),
-    "load_config_file": ("vibeharness.core.llm_gateway", "load_config_file"),
-    "relative_executable_warnings": ("vibeharness.core.llm_gateway", "relative_executable_warnings"),
+    "Overrides": ("vibeharness.core.settings", "Overrides"),
+    "load_settings": ("vibeharness.core.settings", "load_settings"),
     "SandboxUnavailableError": ("vibeharness.core.sandbox", "SandboxUnavailableError"),
     "validate_base_url": ("vibeharness.agents.blackbox.scenario_builder", "validate_base_url"),
     "load_baseline": ("vibeharness.core.baseline", "load_baseline"),
@@ -561,18 +559,37 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     explicit_config = args.config is not None
     args.config, config_source = resolve_config_path(args.config)
     print(f"{bi('設定檔', 'Config')}: {args.config} ({config_source})", file=sys.stderr)
+    origin: "Origin"
+    if explicit_config:
+        origin = "explicit"
+    elif os.path.abspath(args.config) == os.path.abspath(DEFAULT_CONFIG_PATH):
+        origin = "bundled"
+    else:
+        # 自動發現的設定檔可能來自不可信的 checkout：在 harness 執行任何東西之前拒絕安全敏感的鍵
+        # A discovered config may come from an untrusted checkout: refuse security-sensitive keys before the
+        # harness runs anything
+        origin = "discovered"
+    # 設定檔只載入、驗證一次，連同 CLI 旗標的覆寫值；任何設定問題都在檢查目標與旗標之前回報
+    # The config is loaded and validated once, together with the CLI flags' overrides; every config problem is
+    # reported before the target and the flags are checked
     try:
-        if not explicit_config and os.path.abspath(args.config) != os.path.abspath(DEFAULT_CONFIG_PATH):
-            # 自動發現的設定檔可能來自不可信的 checkout：在 harness 執行任何東西之前拒絕安全敏感的鍵
-            # A discovered config may come from an untrusted checkout: refuse security-sensitive keys before the
-            # harness runs anything
-            check_discovered_config(args.config, DEFAULT_CONFIG_PATH)
-        if os.path.isfile(args.config):
-            for warning in relative_executable_warnings(load_config_file(args.config)):
-                print(f"{bi('警告', 'Warning')}: {warning}", file=sys.stderr)
+        settings = load_settings(args.config, origin=origin, overrides=Overrides(
+            execution_mode=args.mode, max_files=args.max_files, max_model_calls=args.max_model_calls,
+            mutation_testing=args.mutation, mutation_max_mutants=args.mutation_max_mutants,
+            include=None if args.include is None else tuple(args.include),
+            exclude=None if args.exclude is None else tuple(args.exclude),
+            changed_since=args.changed_since or None, cache_dir=args.cache_dir or None, cache_only=bool(args.cache_only),
+        ))
     except ConfigError as e:
         print(f"{bi('錯誤', 'Error')}: {bi('harness 設定問題', 'harness configuration problem')}: {e}", file=sys.stderr)
         sys.exit(USAGE_ERROR_EXIT_CODE)
+    except Exception as e:
+        # 與下方當掉的執行一樣：載入設定時的意外錯誤絕不能落到結束碼 1（NEEDS_FIXES）
+        # Like a crashed run below: an unexpected error while loading the config must never fall through to exit
+        # code 1 (NEEDS_FIXES)
+        _crash_exit("harness 無法啟動", "harness failed to start", e)
+    for warning in settings.warnings:
+        print(f"{bi('警告', 'Warning')}: {warning}", file=sys.stderr)
 
     target_path = os.path.abspath(args.target)
     if not os.path.exists(target_path):
@@ -597,35 +614,14 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             parser.error(f"{flag}: " + bi(f"無法寫入 '{path}'（目錄不存在或不可寫入）",
                                            f"cannot write to '{path}' (directory missing or not writable)"))
     try:
-        commander = VibeHarnessCommander(config_path=args.config, execution_mode=args.mode)
-        if args.max_files is not None:
-            commander.max_files = args.max_files
-        if args.max_model_calls is not None:
-            commander.gateway.max_model_calls = args.max_model_calls or None
-        if args.mutation is not None:
-            commander.set_mutation(args.mutation, "cli")
-        if args.mutation_max_mutants is not None:
-            commander._mutation_cfg["max_mutants"] = args.mutation_max_mutants
-        if args.include is not None:
-            commander.include_patterns = args.include
-        if args.exclude is not None:
-            commander.exclude_patterns = args.exclude
-        if args.changed_since:
-            commander.changed_since = args.changed_since
-        if args.cache_dir:
-            commander.gateway.set_cache_dir(args.cache_dir)
-        if args.cache_only:
-            if not commander.gateway.cache_dir:
-                raise ConfigError(bi("--cache-only 需要回應快取：請指定 --cache-dir 或設定 global.cache_dir",
-                                     "--cache-only needs a response cache: pass --cache-dir or set global.cache_dir"))
-            commander.gateway.cache_only = True
-            if commander.gateway.execution_mode == "mock":
-                # mock 模式根本不讀快取：--cache-only 不會有任何作用，說出來而不是默默接受
-                # Mock mode never reads the cache: --cache-only has no effect, so say so instead of silently accepting it
-                print(f"{bi('警告', 'Warning')}: " + bi(
-                    "--cache-only 在 mock 模式下沒有作用：每次呼叫都是模擬的，不會讀取回應快取（要重播快取請用 --mode hybrid 或 live）",
-                    "--cache-only has no effect in mock mode: every call is simulated and the response cache is never "
-                    "read (use --mode hybrid or live to replay the cache)"), file=sys.stderr)
+        commander = VibeHarnessCommander(settings=settings)
+        if settings.gateway.cache_only and settings.gateway.execution_mode == "mock":
+            # mock 模式根本不讀快取：--cache-only 不會有任何作用，說出來而不是默默接受
+            # Mock mode never reads the cache: --cache-only has no effect, so say so instead of silently accepting it
+            print(f"{bi('警告', 'Warning')}: " + bi(
+                "--cache-only 在 mock 模式下沒有作用：每次呼叫都是模擬的，不會讀取回應快取（要重播快取請用 --mode hybrid 或 live）",
+                "--cache-only has no effect in mock mode: every call is simulated and the response cache is never "
+                "read (use --mode hybrid or live to replay the cache)"), file=sys.stderr)
         if args.baseline:
             commander.baseline = load_baseline(args.baseline)
     except (ConfigError, ValueError, SandboxUnavailableError) as e:

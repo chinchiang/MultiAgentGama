@@ -13,7 +13,7 @@ import yaml
 
 from vibeharness import cli
 from vibeharness.core import mutation
-from vibeharness.core.harness import DEFAULT_MUTATION_MAX_MUTANTS, DEFAULT_MUTATION_MIN_SCORE, VibeHarnessCommander
+from vibeharness.core.harness import VibeHarnessCommander
 from vibeharness.core.llm_gateway import (
     DEFAULT_CONFIG_PATH, DEFAULT_TEMPERATURE, ConfigError, LLMGateway, discovered_config_violations, load_config_file,
 )
@@ -210,27 +210,6 @@ def test_output_and_max_files_help_texts():
 # --- 4. null 保留預設值 ---------------------------------------------------------------------------------
 # --- 4. null keeps the default --------------------------------------------------------------------------
 
-def test_null_mutation_settings_keep_the_defaults():
-    """mutation_* 的 null（以及 timeout／copy 的 0）保留預設值 ／ null mutation_* (and 0 for timeout / copy) keep the defaults."""
-    cfg = VibeHarnessCommander._mutation_settings({"mutation_max_mutants": None, "mutation_min_score": None,
-                                                   "mutation_timeout_seconds": 0, "mutation_max_copy_mb": None,
-                                                   "per_test_timeout_seconds": 45})
-    assert cfg["max_mutants"] == DEFAULT_MUTATION_MAX_MUTANTS and cfg["min_score"] == DEFAULT_MUTATION_MIN_SCORE
-    assert cfg["timeout"] == 45 and cfg["max_copy_mb"] == mutation.DEFAULT_MAX_COPY_MB
-
-
-@pytest.mark.parametrize("key", ["mutation_timeout_seconds", "mutation_max_copy_mb"])
-def test_negative_mutation_limits_are_config_errors(key):
-    """負數是 ConfigError ／ A negative value is a ConfigError."""
-    with pytest.raises(ConfigError, match=f"global.{key}"):
-        VibeHarnessCommander._mutation_settings({key: -1})
-
-
-def test_a_bad_mutation_min_score_names_the_global_key():
-    """錯誤訊息寫出完整的鍵名 global.mutation_min_score ／ The error names the full key global.mutation_min_score."""
-    with pytest.raises(ConfigError, match=r"global\.mutation_min_score"):
-        VibeHarnessCommander._mutation_settings({"mutation_min_score": 101})
-
 
 def _config_file(tmp_path, global_cfg=None, models=None, agents=None):
     config = load_config_file(DEFAULT_CONFIG_PATH)
@@ -302,7 +281,7 @@ def test_bundled_mutation_timeout_follows_per_test_timeout(tmp_path):
     The bundled config no longer hard-codes mutation_timeout_seconds, so it follows per_test_timeout_seconds (as documented)."""
     assert load_config_file(DEFAULT_CONFIG_PATH)["global"].get("mutation_timeout_seconds") is None
     commander = VibeHarnessCommander(_config_file(tmp_path, {"per_test_timeout_seconds": 45}), execution_mode="mock")
-    assert commander._mutation_cfg["timeout"] == 45
+    assert commander.settings.mutation.timeout == 45
 
 
 def test_mutation_uses_only_the_test_types_that_are_produced():

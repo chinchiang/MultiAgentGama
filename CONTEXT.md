@@ -36,6 +36,23 @@ _Avoid_: confirmed finding (unless cross-model verified)
 A black-box test failure classified as a confirmed exploit; any new Breach makes the Verdict `BLOCKED_CRITICAL_RISK`.
 _Avoid_: exploit, black-box failure
 
+### 設定檔來源 ／ Config origin
+
+**內建設定檔 ／ Bundled config**:
+套件內附的預設設定檔；沒有 `--config` 也沒有探索到的設定檔時使用。
+The default config file shipped inside the package; used when there is neither `--config` nor a Discovered config.
+_Avoid_: default config (for the file), packaged config
+
+**探索到的設定檔 ／ Discovered config**:
+在目前目錄自動找到的 `vibeharness.yaml` 或 `.vibeharness.yaml`；它可能來自不可信的 checkout，所以只能調低花費、不得設定安全敏感的鍵。
+A `vibeharness.yaml` or `.vibeharness.yaml` found automatically in the current directory; it may come from an untrusted checkout, so it may only lower spend and may set no security-sensitive key.
+_Avoid_: auto-config, workspace config, local config
+
+**指定的設定檔 ／ Explicit config**:
+以 `--config` 傳入的設定檔；完全受信任，不受探索到的設定檔的限制。
+A config file passed with `--config`; fully trusted, not subject to the Discovered config restrictions.
+_Avoid_: custom config, user config
+
 ### 基準 ／ Baseline
 
 **基準 ／ Baseline**:

@@ -711,7 +711,8 @@ class LocalSubprocessSandbox:
 # --- Docker 沙盒 -------------------------------------------------------------------
 # --- Docker sandbox -----------------------------------------------------------------
 
-DEFAULT_DOCKER_IMAGE = "vibeharness-sandbox:latest"
+# 映像檔名稱的預設值定義在 core/settings.py ／ the image name defaults are defined in core/settings.py
+from vibeharness.core.settings import DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_NODE_IMAGE  # noqa: E402
 CONTAINER_WORK_ROOT = "/work"      # 目標掛載在 /work/<目標名稱> ／ the target is mounted at /work/<target name>
 CONTAINER_RUN_DIR = "/sandbox"     # 產生的測試模組、JUnit XML 與涵蓋率資料 ／ generated test modules, JUnit XML and coverage data
 # 轉送給 docker CLI 本身（絕不進入容器），讓遠端 daemon／context 能繼續運作
@@ -1008,7 +1009,6 @@ class DockerSandbox(LocalSubprocessSandbox):
 
 MIN_NODE_VERSION = (20, 0, 0)
 MIN_NODE_VERSION_TS = (22, 6, 0)  # --experimental-strip-types 所需 ／ --experimental-strip-types
-DEFAULT_DOCKER_NODE_IMAGE = "vibeharness-sandbox-node:latest"
 NODE_TEST_FILE_EXT = ".mjs"
 
 

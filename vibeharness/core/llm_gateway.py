@@ -6,11 +6,61 @@ import tempfile
 import logging
 import re
 import threading
-import urllib.parse
-from typing import Dict, Any, FrozenSet, Optional, List
-import yaml
+from typing import Dict, Any, Optional, List
+# 設定檔的 yaml 在 core/settings.py 才延遲匯入；這裡仍在匯入時載入它，缺少 yaml 的安裝才會在 main() 的防護內被認出是
+# 安裝不完整（exit 5 並說明如何重新安裝），而不是在讀設定檔時才當掉
+# yaml is imported lazily in core/settings.py; it is still loaded here at import time so an install without yaml is
+# recognised as broken inside main()'s guard (exit 5 with reinstall instructions) instead of crashing while reading the config
+import yaml  # noqa: F401
 
 from vibeharness.core.models import AgentCallRecord
+# 設定檔的預設值、載入與政策都在 core/settings.py；這裡以同名重新匯出 ／ the config defaults, loading and policy live in
+# core/settings.py; re-exported here under the same names
+from vibeharness.core.settings import (
+    GatewaySettings,
+    Overrides,
+    Settings,
+    load_settings,
+    prepare_cache_dir,
+    DEFAULT_CONFIG_PATH,
+    DEFAULT_MAX_CONCURRENT_CALLS as DEFAULT_MAX_CONCURRENT_CALLS,
+    DEFAULT_MAX_OUTPUT_TOKENS as DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_TIMEOUT_SECONDS as DEFAULT_TIMEOUT_SECONDS,
+    DEFAULT_MAX_RETRIES as DEFAULT_MAX_RETRIES,
+    DEFAULT_RETRY_INVALID_OUTPUT as DEFAULT_RETRY_INVALID_OUTPUT,
+    DEFAULT_TEMPERATURE,
+    UNCONFIGURED_ALIAS,
+    _LOOPBACK_HOSTS as _LOOPBACK_HOSTS,
+    is_reserved_extra_param,
+    _TOKEN_CAP_PARAMS as _TOKEN_CAP_PARAMS,
+    ConfigError as ConfigError,
+    load_config_file as load_config_file,
+    RESERVED_EXTRA_PARAMS as RESERVED_EXTRA_PARAMS,
+    _RESERVED_EXTRA_PARAM_RE as _RESERVED_EXTRA_PARAM_RE,
+    _TOKEN_NAME_PART_RE as _TOKEN_NAME_PART_RE,
+    _COST_NAME_PART_RE as _COST_NAME_PART_RE,
+    _KEY_NAME_PART_RE as _KEY_NAME_PART_RE,
+    _CACHE_KEY_NAME_PART_RE as _CACHE_KEY_NAME_PART_RE,
+    _is_reserved_param_name as _is_reserved_param_name,
+    _DISCOVERED_SENSITIVE_GLOBAL_KEYS as _DISCOVERED_SENSITIVE_GLOBAL_KEYS,
+    _DISCOVERED_SENSITIVE_GLOBAL_PREFIXES as _DISCOVERED_SENSITIVE_GLOBAL_PREFIXES,
+    _BUILTIN_GLOBAL_DEFAULTS as _BUILTIN_GLOBAL_DEFAULTS,
+    _DISCOVERED_ALLOWED_GLOBAL_VALUES as _DISCOVERED_ALLOWED_GLOBAL_VALUES,
+    _DISCOVERED_SENSITIVE_MODEL_KEYS as _DISCOVERED_SENSITIVE_MODEL_KEYS,
+    _DISCOVERED_PINNED_MODEL_KEYS as _DISCOVERED_PINNED_MODEL_KEYS,
+    _PREVIOUS_BUNDLED_MODELS as _PREVIOUS_BUNDLED_MODELS,
+    _DISCOVERED_COST_LIMIT_KEYS as _DISCOVERED_COST_LIMIT_KEYS,
+    _ZERO_MEANS_DEFAULT_KEYS as _ZERO_MEANS_DEFAULT_KEYS,
+    _DISCOVERED_REVIEWER_PREFIX as _DISCOVERED_REVIEWER_PREFIX,
+    _builtin_cost_default as _builtin_cost_default,
+    _effective_cost_limit as _effective_cost_limit,
+    _raises_limit as _raises_limit,
+    _is_sensitive_global_key as _is_sensitive_global_key,
+    _is_sensitive_model_key as _is_sensitive_model_key,
+    discovered_config_violations as discovered_config_violations,
+    check_discovered_config as check_discovered_config,
+    relative_executable_warnings as relative_executable_warnings,
+)
 from vibeharness.core.i18n import bi, en_only, zh_only
 from vibeharness.core.sanitize import clean_model_text, redact_secrets
 
@@ -28,22 +78,11 @@ except ImportError:  # pragma: no cover - litellm 是選用的執行期相依套
 
 logger = logging.getLogger("VibeHarness.LLMGateway")
 
-DEFAULT_CONFIG_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "agents_config.yaml"
-)
 
 # 加到每個回應的鍵，讓呼叫端能分辨模擬輸出與真實模型輸出
 # Key added to every response so callers can tell simulated output from real model output
 PROVENANCE_KEY = "_provenance"
 
-DEFAULT_MAX_CONCURRENT_CALLS = 6
-# 這是上限而非花費：威脅模型 JSON 與推理模型的思考 token 在線上執行時都曾超過 4096
-# A cap, not a spend: threat-model JSON and reasoning models' thinking tokens both overflowed 4096 in live runs
-DEFAULT_MAX_OUTPUT_TOKENS = 16384
-# 單次 LLM 請求的逾時（秒）與 litellm 層級的重試次數；設定為 null 時也採用這些值
-# Per-request LLM timeout (seconds) and litellm-level retry count; a null setting also means these values
-DEFAULT_TIMEOUT_SECONDS = 180
-DEFAULT_MAX_RETRIES = 2
 
 
 BUDGET_EXHAUSTED_REASON = bi("max_model_calls 預算已用盡", "max_model_calls budget exhausted")
@@ -53,13 +92,6 @@ BUDGET_EXHAUSTED_REASON = bi("max_model_calls 預算已用盡", "max_model_calls
 CACHE_MISS_REASON = bi("--cache-only 模式下回應快取未命中", "cache miss in --cache-only mode")
 REASON_NOT_VALID_JSON = bi("回應不是有效的 JSON", "response is not valid JSON")
 REASON_CALL_CRASHED = bi("代理呼叫在產生輸出前就當掉", "agent call crashed before producing output")
-# 無法使用的線上回答（非 JSON、缺少鍵、空白）在登記為 `invalid` 之前
-# 會被重新詢問的次數；每次重新詢問都是真實呼叫，會計入 max_model_calls
-# How many times an unusable live answer (not JSON, missing keys, empty) is re-asked before it is
-# booked as `invalid`; each re-ask is a real call that counts against max_model_calls
-DEFAULT_RETRY_INVALID_OUTPUT = 1
-# agents.<id>.temperature 省略或為 null 時的取樣溫度 ／ sampling temperature when agents.<id>.temperature is omitted or null
-DEFAULT_TEMPERATURE = 0.2
 # 附加到重新詢問的使用者提示之後，讓模型知道第一次回答哪裡有問題
 # （模型提示：維持英文；雙語原因會先經過 en_only）
 # Appended to the user prompt of a re-ask so the model knows what was wrong with its first answer
@@ -69,122 +101,7 @@ _RETRY_SUFFIX = (
     "in the instructions: no prose, no code fence, and include every required key."
 )
 
-# 設定檔中缺少的代理會解析為此別名，它沒有模型也沒有金鑰：hybrid 模式
-# 會模擬它們，而 live 模式會明確失敗，而不是悄悄地把它們導向某個真實供應商
-# Agents missing from the config resolve to this alias, which has no model and no key: hybrid mode
-# simulates them and live mode fails loudly, instead of silently routing them to some real provider
-UNCONFIGURED_ALIAS = "unconfigured"
 
-_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
-
-# `extra_params` 不得覆寫的 litellm 參數：端點與憑證（會繞過 api_base 的 https 檢查，
-# 把目標原始碼送到任意主機）、harness 自己設定的請求內容與重試／逾時控制，以及會讓
-# 回應解析失效的 stream。這些都有專用的設定鍵（或由 harness 決定），放進 extra_params 即為 ConfigError。
-# litellm parameters `extra_params` must not override: endpoints and credentials (they would bypass
-# the https check on api_base and send the target source code to an arbitrary host), the request
-# content and the retry / timeout controls the harness sets itself, and stream, which would break
-# response parsing. Each has a dedicated setting (or is the harness's call); in extra_params it is a ConfigError.
-RESERVED_EXTRA_PARAMS = frozenset({
-    "model", "messages", "api_base", "base_url", "api_key", "api_version", "timeout", "request_timeout",
-    "num_retries", "max_retries", "fallbacks", "stream", "aws_profile_name", "aws_region_name",
-    "aws_access_key_id", "aws_secret_access_key", "aws_session_token", "aws_bedrock_runtime_endpoint",
-    "aws_role_name", "aws_web_identity_token", "custom_llm_provider",
-    # 輸出 token 上限只能用 max_output_tokens 設定：這些鍵會覆寫它，--estimate 與快取鍵也會看錯上限
-    # The output-token cap is set only through max_output_tokens: these keys would override it, and
-    # --estimate and the cache key would see the wrong cap
-    "max_tokens", "max_completion_tokens", "max_output_tokens",
-    # litellm 的罐頭回應鍵：完全不連網就回傳 mock_completion 的假答案，模擬的輸出會被登記成 live 證據
-    # litellm's canned-response keys: they return mock_completion's fake answer with no network call at all,
-    # so simulated output would be booked as live evidence
-    "mock_response", "mock_tool_calls", "mock_timeout", "mock_delay",
-    # TLS 驗證只能維持開啟：關掉後 api_base 的 https 檢查就失去意義
-    # TLS verification stays on: turning it off would make the https check on api_base meaningless
-    "ssl_verify",
-    # litellm 其他會改變目的地或憑證的參數（依 litellm 的 completion() 與各 provider 讀取的鍵整理）：
-    # 別名式的金鑰與端點、Azure／Vertex／watsonx／OCI／GigaChat 等雲端憑證與專案、代理與部署路由、
-    # 可覆寫 Authorization 的標頭，以及自備的 HTTP 用戶端
-    # Other litellm parameters that change the destination or the credentials (collected from litellm's
-    # completion() and the keys its providers read): alias spellings of the key and the endpoint, Azure / Vertex /
-    # watsonx / OCI / GigaChat cloud credentials and projects, proxy and deployment routing, headers that could
-    # override Authorization, and a caller-supplied HTTP client
-    "apikey", "token", "model_list", "deployment_id", "engine", "organization", "extra_headers", "headers",
-    "provider_specific_header", "client", "shared_session", "use_litellm_proxy", "use_xai_oauth",
-    "use_psc_endpoint_format", "use_bearer_for_custom_base", "tenant_id", "client_id", "client_secret",
-    "azure_ad_token", "azure_ad_token_provider", "azure_username", "azure_password", "azure_scope",
-    "vertex_project", "vertex_location", "vertex_credentials", "vertex_ai_project", "vertex_ai_location",
-    "vertex_ai_credentials", "vertex_count_tokens_location", "watsonx_project", "watsonx_credentials", "project_id",
-    "account_id", "predibase_tenant_id", "gigachat_access_token", "gigachat_auth_url", "gigachat_scope",
-    "aws_external_id", "aws_session_name", "aws_session_tags", "aws_sts_endpoint", "aws_bedrock_project_id",
-    "aws_bedrock_client", "sagemaker_base_url", "custom_endpoint", "deployment_url", "oci_endpoint_id", "oci_region",
-    "oci_key", "oci_key_file", "zen_api_key", "gemini_api_key", "_litellm_internal_model_credentials",
-    "litellm_logging_obj", "logger_fn", "proxy_server_request",
-    # litellm 的記錄／callback 參數（litellm 1.103 的 StandardCallbackDynamicParams、
-    # initialize_dynamic_callback_params 與 Logging 讀取的 kwargs）：它們會把完整的提示與回答（也就是受稽核的原始碼）
-    # 轉送給第三方的觀測服務（Langfuse、LangSmith、Datadog、GCS／S3 bucket、Slack webhook……）。
-    # metadata／litellm_metadata 也在內：litellm 會從其中讀取同一組 callback 參數（例如 metadata.langfuse_host）
-    # litellm's logging / callback parameters (the kwargs litellm 1.103 reads through StandardCallbackDynamicParams,
-    # initialize_dynamic_callback_params and Logging): they forward the full prompt and answer (that is, the audited
-    # source code) to third-party observability services (Langfuse, LangSmith, Datadog, GCS / S3 buckets, a Slack
-    # webhook, ...). metadata / litellm_metadata are included: litellm reads the same callback parameters from them
-    # (e.g. metadata.langfuse_host)
-    "callbacks", "success_callback", "failure_callback", "_async_success_callback", "_async_failure_callback",
-    "litellm_disabled_callbacks", "litellm_trusted_callback_vars", "metadata", "litellm_metadata", "litellm_params",
-    "lunary_public_key", "litellm_request_debug", "verbose",
-    # 會改寫請求內容或改送到別的模型的參數：litellm 的提示管理（從第三方服務取回提示）、系統提示注入、
-    # 模型別名對應、context window 的備援模型、路由與重試策略，以及其他逾時控制
-    # Parameters that rewrite the request or reroute it to another model: litellm's prompt management (fetches the
-    # prompt from a third-party service), system-prompt injection, model alias mapping, the context-window fallback
-    # model, routing and retry policies, and other timeout controls
-    "prompt_id", "prompt_variables", "prompt_version", "prompt_environment", "litellm_system_prompt",
-    "model_alias_map", "custom_prompt_dict", "context_window_fallback_dict", "routing_strategy", "_router_weights",
-    "retry_policy", "retry_strategy", "force_timeout", "client_side_timeout", "azure", "data_residency",
-})
-# 名單之外的同類鍵（litellm 新版本或少見的 provider）以名稱樣式保留：雲端憑證與觀測服務整合的前綴，以及含有金鑰、
-# 密碼、憑證、端點、URL、代理、標頭、callback、webhook、主機或 bucket 字樣的名稱
-# Keys of the same kind outside the list (newer litellm versions or rare providers) are reserved by name
-# pattern: cloud credential and observability-integration prefixes, and names containing key, secret, password,
-# credential, endpoint, URL, proxy, header, callback, webhook, host or bucket parts
-_RESERVED_EXTRA_PARAM_RE = re.compile(
-    r"^(?:aws|azure|vertex|oci|watsonx|gigachat"
-    r"|langfuse|langsmith|gcs|s3|dd|datadog|helicone|lunary|humanloop|arize|posthog|braintrust|slack|newrelic"
-    r"|wandb|weave|otel|opik|mlflow|logfire|sentry|phoenix|galileo|athina|literalai|openmeter|greenscale|traceloop|signoz)_"
-    r"|callback"
-    r"|(?:^|_)(?:api_?key|secret|password|credentials?|endpoint|url|api_base|base_url|proxy|headers?|webhook|host|bucket)(?:$|_)",
-    re.IGNORECASE,
-)
-# 名稱含有 token 的部分另外判斷：access_token、api_token、id_token、token 等都是憑證而保留；只改價格的成本覆寫
-# （input_cost_per_token、cache_read_input_token_cost……）不改變目的地，允許
-# A `token` name part is judged separately: access_token, api_token, id_token, token and the like are credentials and
-# reserved; cost overrides (input_cost_per_token, cache_read_input_token_cost, ...) only change the price, not the
-# destination, so they are allowed
-_TOKEN_NAME_PART_RE = re.compile(r"(?:^|_)token(?:$|_)", re.IGNORECASE)
-_COST_NAME_PART_RE = re.compile(r"(?:^|_)cost(?:$|_)", re.IGNORECASE)
-# 名稱含有 key 的部分同樣另外判斷：signoz_ingestion_key（litellm 1.105）、public_key 等都是憑證而保留；只指名快取項目的
-# cache_key（prompt_cache_key）不改變目的地，允許
-# A `key` name part is judged the same way: signoz_ingestion_key (litellm 1.105), public_key and the like are
-# credentials and reserved; cache_key (prompt_cache_key) only names a cache entry, not a destination, so it is allowed
-_KEY_NAME_PART_RE = re.compile(r"(?:^|_)key(?:$|_)", re.IGNORECASE)
-_CACHE_KEY_NAME_PART_RE = re.compile(r"(?:^|_)cache_key(?:$|_)", re.IGNORECASE)
-
-
-def _is_reserved_param_name(name: str) -> bool:
-    """名稱符合端點／憑證／callback 樣式（不看 RESERVED_EXTRA_PARAMS 名單）。
-    The name matches an endpoint / credential / callback pattern (without consulting RESERVED_EXTRA_PARAMS)."""
-    if _RESERVED_EXTRA_PARAM_RE.search(name):
-        return True
-    if _KEY_NAME_PART_RE.search(name) and not _CACHE_KEY_NAME_PART_RE.search(name):
-        return True
-    return bool(_TOKEN_NAME_PART_RE.search(name)) and not _COST_NAME_PART_RE.search(name)
-
-
-def is_reserved_extra_param(name: str) -> bool:
-    """`extra_params` 不得設定的 litellm 參數：在 RESERVED_EXTRA_PARAMS 裡，或名稱符合端點／憑證／callback 樣式。
-    A litellm parameter `extra_params` must not set: listed in RESERVED_EXTRA_PARAMS, or named like an endpoint,
-    a credential or a callback."""
-    return name in RESERVED_EXTRA_PARAMS or _is_reserved_param_name(name)
-# 上面屬於輸出 token 上限的保留鍵；錯誤訊息會指向 max_output_tokens
-# The reserved keys above that are the output-token cap; the error message points at max_output_tokens
-_TOKEN_CAP_PARAMS = frozenset({"max_tokens", "max_completion_tokens", "max_output_tokens"})
 
 # 屬於端點身分的模型設定：任一個不同就是不同的服務端點，回應快取不得共用
 # Model settings that identify the endpoint: if any differs it is a different service, so the response cache must not be shared
@@ -197,280 +114,6 @@ class LLMGatewayError(RuntimeError):
     Raised in strict 'live' mode when a real model invocation is impossible or fails."""
 
 
-class ConfigError(ValueError):
-    """代理設定檔缺少或無法解析時拋出。
-
-    繼承自 ValueError，使防範錯誤設定值的程式碼（與測試）得以繼續運作。
-    vibeharness/cli.py 會把它對應到專用的「harness 設定錯誤」結束碼，因此絕不會
-    被誤認為針對受稽核目標的 NEEDS_FIXES 判定結果。
-    Raised when the agent configuration file is missing or unparseable.
-
-    Subclasses ValueError so code (and tests) that guard against bad config values keeps working.
-    vibeharness/cli.py maps this to a dedicated 'harness misconfigured' exit code so it can never be
-    mistaken for a NEEDS_FIXES verdict about the audited target.
-    """
-
-
-def load_config_file(path: str) -> Dict[str, Any]:
-    """讀取並檢查代理設定檔的結構；缺少、無法解析或結構錯誤時拋出 ConfigError。
-    Reads an agent config file and checks its structure; raises ConfigError when it is missing, unparseable or malformed."""
-    # 缺少或無法解析的設定檔會悄悄地丟掉所有模型／代理對應，因此
-    # 以 ConfigError 明確失敗，而不是外洩原始的 FileNotFoundError/YAMLError
-    # A missing or unparseable config would silently drop every model/agent mapping, so
-    # fail loudly with ConfigError instead of leaking raw FileNotFoundError/YAMLError
-    if not os.path.exists(path):
-        raise ConfigError(bi(f"找不到代理設定檔：{path}", f"Agent config not found: {path}"))
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-    except yaml.YAMLError as e:
-        raise ConfigError(bi(f"代理設定檔不是有效的 YAML（{path}）：{e}",
-                             f"Agent config is not valid YAML ({path}): {e}")) from e
-    except (OSError, UnicodeDecodeError) as e:
-        # 例如把目錄、無法讀取的檔案或二進位檔當成 --config 傳入
-        # e.g. a directory, an unreadable file or a binary file passed as --config
-        raise ConfigError(bi(f"無法讀取代理設定檔（{path}）：{e}",
-                             f"Agent config cannot be read ({path}): {e}")) from e
-    if config is None:
-        return {}
-    if not isinstance(config, dict):
-        raise ConfigError(bi(f"代理設定檔的最上層必須是 YAML 對應表，目前為 {type(config).__name__}（{path}）",
-                             f"Agent config must be a YAML mapping at the top level, got {type(config).__name__} ({path})"))
-    for section in ("global", "models", "agents"):
-        value = config.get(section)
-        if value is not None and not isinstance(value, dict):
-            raise ConfigError(bi(f"代理設定檔的 '{section}' 區段必須是對應表，目前為 {type(value).__name__}（{path}）",
-                                 f"Agent config section '{section}' must be a mapping, got {type(value).__name__} ({path})"))
-    # 每個模型與代理項目本身也必須是對應表（或留空）：否則之後的 .get() 會在執行中途當掉
-    # Every model and agent entry must itself be a mapping (or empty): otherwise a later .get() crashes mid-run
-    for section in ("models", "agents"):
-        for name, entry in (config.get(section) or {}).items():
-            if entry is not None and not isinstance(entry, dict):
-                raise ConfigError(bi(f"{section}.{name} 必須是對應表，目前為 {type(entry).__name__}（{path}）",
-                                     f"{section}.{name} must be a mapping, got {type(entry).__name__} ({path})"))
-    return config
-
-
-# 自動發現的設定檔（目前目錄的 ./vibeharness.yaml、./.vibeharness.yaml，沒有以 --config 明確指定）可能來自
-# 不可信的 checkout（例如 PR）。它不得設定下列安全敏感的 global 鍵：可執行檔路徑（*_bin，啟動時就會被執行）、
-# 沙盒的選擇與 docker／node 設定，以及回應快取（預先放好的快取項目會被當成 live 回答）。除非值與套件內的預設相同
-# A discovered config (./vibeharness.yaml or ./.vibeharness.yaml in the current directory, not passed with --config)
-# may come from an untrusted checkout (e.g. a PR). It must not set these security-sensitive global keys: executable
-# paths (*_bin, run at start-up), the sandbox choice and its docker / node settings, and the response cache
-# (pre-planted cache entries would be served as live answers). Unless the value equals the bundled default
-_DISCOVERED_SENSITIVE_GLOBAL_KEYS = frozenset({
-    "sandbox_provider", "sandbox_node_provider", "cache_dir",
-})
-_DISCOVERED_SENSITIVE_GLOBAL_PREFIXES = ("docker_", "node_")
-# 套件內的預設設定沒寫、但 harness 有內建預設值的鍵 ／ keys the bundled config omits but the harness defaults
-_BUILTIN_GLOBAL_DEFAULTS: Dict[str, Any] = {"docker_bin": "docker", "node_bin": "node", "sandbox_provider": "local_subprocess"}
-# 除了預設值以外也允許的值：改用 docker 沙盒只會更嚴格（映像與 docker_bin 仍必須是預設值）
-# Values allowed besides the default: switching to the docker sandbox only makes it stricter (the image and
-# docker_bin must still be the defaults)
-_DISCOVERED_ALLOWED_GLOBAL_VALUES: Dict[str, Any] = {
-    "sandbox_provider": ("local_subprocess", "docker"), "sandbox_node_provider": ("local_subprocess", "docker"),
-}
-# models.<alias> 裡決定目的地或憑證的鍵：端點、金鑰環境變數、AWS 設定檔／區域，以及原樣傳給 litellm 的 extra_params
-# Keys of models.<alias> that decide the destination or the credentials: the endpoint, the key's environment
-# variable, the AWS profile / region, and extra_params, which is passed straight to litellm
-_DISCOVERED_SENSITIVE_MODEL_KEYS = frozenset({"api_base", "base_url", "api_key_env", "aws_profile_name", "aws_region_name",
-                                              "extra_params"})
-# models.<alias> 裡決定「送到哪個模型」的鍵：litellm 的模型字串本身就帶供應商路由（例如 openai/...），換掉它就能把
-# 套件內設定的金鑰送到另一家供應商，所以自動發現的設定檔只能沿用同一別名的內建值
-# Keys of models.<alias> that decide which model is called: a litellm model string carries the provider routing itself
-# (e.g. openai/...), so swapping it could send a bundled key to another provider; a discovered config may only keep
-# the bundled value of the same alias
-_DISCOVERED_PINNED_MODEL_KEYS = frozenset({"model", "fallback_model"})
-# 先前版本內建設定曾經使用過、但目前版本已換掉的 models.<alias> 值（依每個 v* tag 的
-# vibeharness/config/agents_config.yaml 與舊路徑 config/agents_config.yaml 整理；tests/test_r5_gateway_harness.py 會
-# 逐一比對每個 tag）。自動發現的設定檔若是舊版 --init-config 寫出的覆本，同一別名的這些值也接受：它們都曾是內建值，
-# 不會把金鑰送到別家供應商；新版本換掉內建模型字串時，請把舊值加進這裡
-# models.<alias> values a previous release's bundled config used and the current one has replaced (collected from
-# vibeharness/config/agents_config.yaml, and the old path config/agents_config.yaml, at every v* tag;
-# tests/test_r5_gateway_harness.py checks each tag). A discovered config that is a copy written by an older
-# --init-config may keep these values for the same alias: each was a bundled value, so none sends a key to another
-# provider. When a release replaces a bundled model string, add the old value here
-_PREVIOUS_BUNDLED_MODELS: Dict[str, Dict[str, FrozenSet[str]]] = {
-    "claude": {"model": frozenset({"claude-sonnet-5"})},  # v0.1.0 至 v0.2.0 的內建值 ／ bundled in v0.1.0 to v0.2.0
-}
-# 會增加花費的 global 數值上限：自動發現的設定檔只能把它們調低（或保持內建值），不能調高。值為 null 或省略時
-# 採用 harness 的預設值；這些鍵的 0 也代表預設值（max_model_calls 的 0／null 是不限制）
-# Global numeric limits that raise spend: a discovered config may only lower them (or keep the bundled value), never
-# raise them. null or omitted means the harness default; for these keys 0 means the default too (0 / null is
-# unlimited for max_model_calls)
-_DISCOVERED_COST_LIMIT_KEYS = ("max_model_calls", "max_concurrent_calls", "max_output_tokens", "retry_invalid_output",
-                               "max_retries", "max_files", "max_file_bytes")
-_ZERO_MEANS_DEFAULT_KEYS = frozenset({"max_model_calls", "max_concurrent_calls", "max_files", "max_file_bytes"})
-# 每個 whitebox_reviewer_* 代理都會審查每個符號，新增一個就多一整輪付費呼叫；驗證者則依模型別名去重，數量有上限
-# Every whitebox_reviewer_* agent reviews every symbol, so a new one adds a whole round of paid calls; verifiers are
-# de-duplicated per model alias, so their number is bounded
-_DISCOVERED_REVIEWER_PREFIX = "whitebox_reviewer_"
-
-
-def _builtin_cost_default(key: str) -> Optional[int]:
-    """`_DISCOVERED_COST_LIMIT_KEYS` 的 harness 內建預設值；None 表示不限制。
-    The harness's built-in default for a `_DISCOVERED_COST_LIMIT_KEYS` key; None means unlimited."""
-    # 延遲匯入：ast_extractor 只依賴 models 與 i18n，但閘道不需要在匯入時就載入它
-    # Lazy import: ast_extractor depends only on models and i18n, but the gateway need not load it at import time
-    from vibeharness.agents.whitebox.ast_extractor import DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_FILES
-    defaults: Dict[str, Optional[int]] = {
-        "max_model_calls": None, "max_concurrent_calls": DEFAULT_MAX_CONCURRENT_CALLS,
-        "max_output_tokens": DEFAULT_MAX_OUTPUT_TOKENS, "retry_invalid_output": DEFAULT_RETRY_INVALID_OUTPUT,
-        "max_retries": DEFAULT_MAX_RETRIES, "max_files": DEFAULT_MAX_FILES, "max_file_bytes": DEFAULT_MAX_FILE_BYTES,
-    }
-    return defaults[key]
-
-
-def _effective_cost_limit(key: str, value: Any) -> Any:
-    """設定值實際代表的上限：null（以及 _ZERO_MEANS_DEFAULT_KEYS 的 0）換成內建預設值；None 表示不限制。
-    非數值原樣回傳，由啟動時的驗證回報。
-    The limit a setting actually means: null (and 0 for _ZERO_MEANS_DEFAULT_KEYS) becomes the built-in default;
-    None means unlimited. A non-number is returned as is, for the start-up validation to report."""
-    if value is None or (value == 0 and not isinstance(value, bool) and key in _ZERO_MEANS_DEFAULT_KEYS):
-        return _builtin_cost_default(key)
-    return value
-
-
-def _raises_limit(value: Any, reference: Any) -> bool:
-    """`value` 比 `reference` 寬鬆（None 表示不限制）；非數值不在這裡判斷，交給啟動時的驗證。
-    `value` is looser than `reference` (None means unlimited); non-numbers are left to the start-up validation."""
-    if reference is None:
-        return False
-    if value is None:
-        return True
-    numeric = (int, float)
-    if isinstance(value, bool) or not isinstance(value, numeric) or isinstance(reference, bool) or not isinstance(reference, numeric):
-        return False
-    return value > reference
-
-
-def _is_sensitive_global_key(key: str) -> bool:
-    """自動發現的設定檔不得自訂的 global 鍵 ／ A global key a discovered config must not customize."""
-    return key in _DISCOVERED_SENSITIVE_GLOBAL_KEYS or key.endswith("_bin") or key.startswith(_DISCOVERED_SENSITIVE_GLOBAL_PREFIXES)
-
-
-def _is_sensitive_model_key(key: str) -> bool:
-    """自動發現的設定檔不得自訂的 models.<alias> 鍵 ／ A models.<alias> key a discovered config must not customize."""
-    return key in _DISCOVERED_SENSITIVE_MODEL_KEYS or _is_reserved_param_name(key)
-
-
-def discovered_config_violations(config: Dict[str, Any], reference: Dict[str, Any]) -> List[str]:
-    """自動發現的 `config` 中設定了安全敏感鍵的位置（例如 "global.docker_bin"），依序排列；空清單表示可以採用。
-    與 `reference`（套件內的預設設定）相同的值、null 以及省略都允許，所以 --init-config 寫出的覆本照樣可用。
-    models 區段只能使用預設設定裡已有的別名（新別名記為 "models.<alias>"）；每個別名的 model、fallback_model、
-    api_key_env 與端點鍵都必須與預設設定中「同一個別名」的值相同，或是先前版本內建設定的同一別名值
-    （_PREVIOUS_BUNDLED_MODELS；不能把 ANTHROPIC_API_KEY 接到別的供應商）。agent 仍可在內建別名之間重新指派，
-    但不能新增 whitebox_reviewer_* 代理。花費相關的設定只能調低：execution_mode 不能是 live，
-    _DISCOVERED_COST_LIMIT_KEYS 與 models.<alias>.max_output_tokens 的實際值（省略或 null 即 harness 預設值）不能高於預設設定。
-    The places where the discovered `config` sets a security-sensitive key (e.g. "global.docker_bin"), sorted;
-    an empty list means the config may be used. A value equal to `reference` (the bundled default), null and
-    omission are allowed, so a copy written by --init-config still works. The models section may only use aliases
-    the default config has (a new alias is reported as "models.<alias>"); each alias's model, fallback_model,
-    api_key_env and endpoint keys must equal the default config's value for the same alias, or a previous release's
-    bundled value for that alias (_PREVIOUS_BUNDLED_MODELS; so ANTHROPIC_API_KEY cannot be wired to another
-    provider). Agents may still be reassigned among the bundled aliases, but no whitebox_reviewer_* agent may be
-    added. Cost-related settings may only be lowered: execution_mode must not be live, and neither the
-    _DISCOVERED_COST_LIMIT_KEYS nor models.<alias>.max_output_tokens may exceed the default config in effect (omitted or
-    null means the harness default)."""
-    problems: List[str] = []
-    ref_global = reference.get("global") or {}
-    cfg_global = config.get("global") or {}
-    for key, value in cfg_global.items():
-        key = str(key)
-        if key == "execution_mode":
-            # 只能維持內建模式或改成 mock：live 在缺金鑰或呼叫失敗時也不會退回模擬，只會繼續付費呼叫或失敗
-            # Only the bundled mode or mock: live never falls back to simulation, it keeps making paid calls or fails
-            if value is not None and value != ref_global.get(key) and value != "mock":
-                problems.append(f"global.{key}")
-            continue
-        if key in _DISCOVERED_COST_LIMIT_KEYS:
-            continue
-        if value is None or not _is_sensitive_global_key(key):
-            continue
-        if value != ref_global.get(key, _BUILTIN_GLOBAL_DEFAULTS.get(key)) and value not in _DISCOVERED_ALLOWED_GLOBAL_VALUES.get(key, ()):
-            problems.append(f"global.{key}")
-    # 自動發現的設定檔是整份取代內建設定（不會合併），所以省略的上限代表 harness 預設值，也要比較
-    # A discovered config replaces the bundled one as a whole (no merge), so an omitted limit means the harness
-    # default and is compared too
-    for key in _DISCOVERED_COST_LIMIT_KEYS:
-        if _raises_limit(_effective_cost_limit(key, cfg_global.get(key)), _effective_cost_limit(key, ref_global.get(key))):
-            problems.append(f"global.{key}")
-    ref_models = reference.get("models") or {}
-    cfg_output_cap = _effective_cost_limit("max_output_tokens", cfg_global.get("max_output_tokens"))
-    ref_output_cap = _effective_cost_limit("max_output_tokens", ref_global.get("max_output_tokens"))
-    for alias, info in (config.get("models") or {}).items():
-        if alias not in ref_models:
-            problems.append(f"models.{alias}")
-            continue
-        ref_info = ref_models.get(alias) or {}
-        previous = _PREVIOUS_BUNDLED_MODELS.get(str(alias), {})
-        for key, value in (info or {}).items():
-            key = str(key)
-            if key == "max_output_tokens":
-                # 逐模型的上限省略時跟隨 global；與預設設定中同一別名的實際上限比較
-                # A per-model cap that is omitted follows global; compare with the same alias's actual cap in the default config
-                ref_cap = ref_output_cap if ref_info.get(key) is None else ref_info.get(key)
-                if _raises_limit(cfg_output_cap if value is None else value, ref_cap):
-                    problems.append(f"models.{alias}.{key}")
-                continue
-            if value is None or not (key in _DISCOVERED_PINNED_MODEL_KEYS or _is_sensitive_model_key(key)):
-                continue
-            if value == ref_info.get(key) or (isinstance(value, str) and value in previous.get(key, frozenset())):
-                continue
-            problems.append(f"models.{alias}.{key}")
-    ref_agents = reference.get("agents") or {}
-    for agent_id in (config.get("agents") or {}):
-        if str(agent_id).startswith(_DISCOVERED_REVIEWER_PREFIX) and agent_id not in ref_agents:
-            problems.append(f"agents.{agent_id}")
-    return sorted(problems)
-
-
-def check_discovered_config(path: str, reference_path: str = DEFAULT_CONFIG_PATH) -> None:
-    """自動發現的設定檔設定了安全敏感鍵時拋出 ConfigError（CLI 以 exit 5 結束），訊息列出那些鍵並說明：
-    信任這個檔案就以 --config 明確指定；若是其他版本寫出的覆本，就以 --init-config --force 重新產生。
-    Raises ConfigError (the CLI exits 5) when a discovered config sets a security-sensitive key; the message
-    names those keys and says to pass the file explicitly with --config if it is trusted, or to regenerate it with
-    --init-config --force if another version wrote it."""
-    problems = discovered_config_violations(load_config_file(path), load_config_file(reference_path))
-    if problems:
-        names = ", ".join(problems)
-        raise ConfigError(bi(
-            f"自動發現的設定檔 {path} 設定了安全敏感的鍵：{names}。自動發現的設定檔可能來自不可信的 checkout，"
-            "不得設定可執行檔路徑、沙盒／docker／node 設定、回應快取、新的模型別名或 whitebox_reviewer_* 代理、"
-            "模型的 model／fallback_model、端點、金鑰環境變數與 extra_params（必須與內建設定的同一別名相同），"
-            "也不得調高花費（execution_mode: live，或高於內建值的 max_model_calls、max_concurrent_calls、max_output_tokens、"
-            "retry_invalid_output、max_retries、max_files、max_file_bytes）。"
-            "這個檔案是較舊或較新版本的 VibeHarness 寫出的嗎？如果信任這個檔案，請以 "
-            f"--config {path} 明確指定；否則請以 vibeharness --init-config {path} --force 重新產生",
-            f"the discovered config {path} sets security-sensitive key(s): {names}. A discovered config may come "
-            "from an untrusted checkout, so it must not set executable paths, sandbox / docker / node settings, the "
-            "response cache, new model aliases or whitebox_reviewer_* agents, or a model's model / fallback_model, "
-            "endpoint, key environment variable or extra_params (they must equal the bundled config's same alias), "
-            "and it must not raise spend (execution_mode: live, or max_model_calls, max_concurrent_calls, "
-            "max_output_tokens, retry_invalid_output, max_retries, max_files or max_file_bytes above the bundled "
-            "value). Was this file written by an older or newer VibeHarness version? If you trust this file, pass "
-            f"it explicitly with --config {path}; otherwise regenerate it with vibeharness --init-config {path} --force",
-        ))
-
-
-def relative_executable_warnings(config: Dict[str, Any]) -> List[str]:
-    """global.*_bin 是相對路徑（含目錄分隔字元但不是絕對路徑，例如 ./node）時的警告：它會相對於目前目錄
-    （通常是受稽核的 checkout）解析並在啟動時執行。請用絕對路徑，或在 PATH 上解析的裸名稱。
-    Warnings for a global.*_bin that is a relative path (has a directory separator but is not absolute, e.g.
-    ./node): it resolves against the current directory (usually the audited checkout) and runs at start-up.
-    Use an absolute path, or a bare name resolved on PATH."""
-    warnings: List[str] = []
-    for key, value in sorted((config.get("global") or {}).items(), key=lambda kv: str(kv[0])):
-        if not str(key).endswith("_bin") or not isinstance(value, str):
-            continue
-        has_sep = "/" in value or (os.sep in value) or bool(os.altsep and os.altsep in value)
-        if has_sep and not os.path.isabs(value):
-            warnings.append(bi(
-                f"global.{key} 是相對路徑 {value!r}：它相對於目前目錄解析並會被執行；請改用絕對路徑或 PATH 上的名稱",
-                f"global.{key} is a relative path {value!r}: it resolves against the current directory and is "
-                "executed; use an absolute path or a name on PATH",
-            ))
-    return warnings
 
 
 # 呼叫紀錄的分類：閘道的屬性與品質閘門都用這些函式，原因字串只在這裡比對
@@ -510,86 +153,43 @@ class LLMGateway:
     Every call is recorded in `call_log` so reports can disclose which results are simulated.
     """
 
-    def __init__(self, config_path: str = DEFAULT_CONFIG_PATH, execution_mode: Optional[str] = None):
-        self.config = self._load_config(config_path)
-        # 空的 `global:` 會載入成 None：當成空對應表，而不是在 .get() 時拋出 AttributeError
-        # An empty `global:` loads as None: treat it as an empty mapping instead of raising AttributeError on .get()
-        global_cfg = self.config.get("global") or {}
-        self.execution_mode = execution_mode or global_cfg.get("execution_mode") or "hybrid"
-        if self.execution_mode not in ("live", "hybrid", "mock"):
-            raise ValueError(bi(f"未知的 execution_mode '{self.execution_mode}'（應為 live、hybrid 或 mock）",
-                                   f"Unknown execution_mode '{self.execution_mode}' (expected live, hybrid or mock)"))
-        self.models_config = self.config.get("models") or {}
-        self.agents_config = self.config.get("agents") or {}
+    def __init__(self, config_path: str = DEFAULT_CONFIG_PATH, execution_mode: Optional[str] = None, *,
+                 settings: Optional[Settings] = None):
+        """`settings` 是 load_settings 驗證過的設定；省略時以 `config_path`（視為指定的設定檔）與 `execution_mode` 載入。
+        `settings` are the settings load_settings validated; when omitted they are loaded from `config_path` (as an
+        Explicit config) and `execution_mode`."""
+        if settings is None:
+            settings = load_settings(config_path, origin="explicit", overrides=Overrides(execution_mode=execution_mode))
+        self.settings: GatewaySettings = settings.gateway
+        self.execution_mode = self.settings.execution_mode
+        # 唯讀，形狀與設定檔相同 ／ read-only, the same shape as the config file
+        self.models_config = self.settings.models
+        self.agents_config = self.settings.agents
         self.call_log: List[AgentCallRecord] = []
         # 成本防護：每次執行允許的線上模型呼叫次數（單次呼叫的 litellm 重試／fallback_model
-        # 不另外計算）。None 或 0 表示不限制。
+        # 不另外計算）。None 表示不限制。
         # Cost guard: live model invocations allowed per run (litellm retries / fallback_model of one
-        # invocation are not counted separately). None or 0 means unlimited.
-        self.max_model_calls = self._positive_int(global_cfg.get("max_model_calls"), "max_model_calls")
+        # invocation are not counted separately). None means unlimited.
+        self.max_model_calls = self.settings.max_model_calls
         # 代理把呼叫分散到最多這麼多個工作者的執行緒池上
         # Agents fan their calls out on a thread pool of at most this many workers
-        self.max_concurrent_calls = self._positive_int(
-            global_cfg.get("max_concurrent_calls", DEFAULT_MAX_CONCURRENT_CALLS), "max_concurrent_calls"
-        ) or DEFAULT_MAX_CONCURRENT_CALLS
+        self.max_concurrent_calls = self.settings.max_concurrent_calls
         self.live_calls_attempted = 0
         self._budget_lock = threading.Lock()
-        # null 與未設定相同，都用預設值（與 timeout_seconds、max_retries 一致）；只有明確的 0 才關閉
-        # null means the same as unset, the default (consistent with timeout_seconds, max_retries); only an explicit 0 disables
-        retries = global_cfg.get("retry_invalid_output")
-        self.retry_invalid_output = DEFAULT_RETRY_INVALID_OUTPUT if retries is None else retries
+        self.retry_invalid_output = self.settings.retry_invalid_output
         # 以模型 + 提示為鍵、存放可用線上回答的磁碟快取：以相同設定重新執行相同目標
         # 不需任何花費，且得到相同的回答。None 表示停用。
         # On-disk cache of usable live answers keyed by model + prompt: a re-run of the same target with
         # the same config costs nothing and gives the same answers. None disables it.
-        self.cache_dir: Optional[str] = None
+        self.cache_dir: Optional[str] = self.settings.cache_dir
         # --cache-only：每次模型呼叫都只從回應快取取用，未命中時絕不呼叫供應商（見 CACHE_MISS_REASON）
         # --cache-only: every model call is served from the response cache only; a miss never calls a provider (see CACHE_MISS_REASON)
-        self.cache_only = False
-        if global_cfg.get("cache_dir"):
-            self.set_cache_dir(str(global_cfg["cache_dir"]))
-        self._validate_endpoints()
-        self._validate_settings()
-
-    def _validate_endpoints(self) -> None:
-        """每個自訂的 api_base 都必須是 https（純 http 只允許連到 loopback）：目標原始碼與
-        提示會傳送到這些端點，因此打錯字或惡意設定不得把它們以明文送到任意主機
-        （OWASP LLM04:2026；允許清單內的模型端點）。
-        Every custom api_base must be https (plain http only to loopback): target source code and
-        prompts travel to these endpoints, so a typo or a hostile config must not send them in clear
-        text to an arbitrary host (OWASP LLM04:2026; allow-listed model endpoints)."""
-        for alias, info in self.models_config.items():
-            base = info.get("api_base") if isinstance(info, dict) else None
-            if not base:
-                continue
-            try:
-                parts = urllib.parse.urlsplit(str(base))
-                host = (parts.hostname or "").lower()
-            except ValueError as e:
-                raise ConfigError(bi(f"models.{alias}.api_base 不是有效的 URL：{base!r}",
-                                     f"models.{alias}.api_base is not a valid URL: {base!r}")) from e
-            if parts.scheme == "https" and host:
-                continue
-            if parts.scheme == "http" and host in _LOOPBACK_HOSTS:
-                continue
-            raise ConfigError(bi(
-                f"models.{alias}.api_base 必須是 https:// URL（只有回送位址可用 http://），目前為 {base!r}",
-                f"models.{alias}.api_base must be an https:// URL (http:// only for loopback hosts), got {base!r}"
-            ))
+        self.cache_only = self.settings.cache_only
 
     def set_cache_dir(self, path: str) -> None:
-        """在 `path` 啟用回應快取（不存在時會建立）。該目錄存放原始的模型回答，
-        其中可能引用受稽核的程式碼：請把它當成報告一樣看待。
-        Enables the response cache in `path` (created if missing). The directory holds raw model
-        answers, which can quote the audited code: treat it like the reports."""
-        target = os.path.abspath(path)
-        try:
-            os.makedirs(target, exist_ok=True)
-        except OSError as e:
-            raise ConfigError(bi(f"cache_dir {path!r} 無法建立：{e}", f"cache_dir {path!r} cannot be created: {e}")) from e
-        if not os.access(target, os.W_OK):
-            raise ConfigError(bi(f"cache_dir {path!r} 不可寫入", f"cache_dir {path!r} is not writable"))
-        self.cache_dir = target
+        """在 `path` 啟用回應快取（不存在時會建立；見 prepare_cache_dir）。
+        Enables the response cache in `path` (created if missing; see prepare_cache_dir)."""
+        self.cache_dir = prepare_cache_dir(path)
 
     def _cache_key(self, model_alias: str, model_info: Dict[str, Any], temperature: float, system_prompt: str, user_prompt: str) -> str:
         # 端點身分（api_base、AWS 區域／設定檔、金鑰環境變數）也在鍵內：同一個模型字串
@@ -633,104 +233,6 @@ class LLMGateway:
         except OSError as e:
             logger.warning(bi(f"無法寫入回應快取項目：{e}", f"Could not write the response cache entry: {e}"))
 
-    def _validate_settings(self) -> None:
-        """數值設定在啟動時檢查一次。過去它們只在發出呼叫時才被讀取，
-        因此像 `timeout_seconds: "abc"` 這樣的錯字會傳到 litellm、在那裡失敗，而在 hybrid
-        模式下被登記為「線上呼叫失敗」並悄悄地由模擬引擎取代。
-        Numeric settings are checked once at start-up. They used to be read only when a call was
-        made, so a typo such as `timeout_seconds: "abc"` reached litellm, failed there, and in hybrid
-        mode was booked as "live invocation failed" and silently replaced by the simulation engine."""
-        # null 與省略相同，都採用預設值（與其他數值設定一致）；0 或負數仍是 ConfigError
-        # null means the same as omitted, the default (consistent with the other numeric settings); 0 or a negative value is still a ConfigError
-        self._number(self._global_setting("timeout_seconds", DEFAULT_TIMEOUT_SECONDS), "global.timeout_seconds", minimum=1)
-        self._number(self._global_setting("max_retries", DEFAULT_MAX_RETRIES), "global.max_retries", minimum=0, integer=True)
-        self._number(self._global_setting("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS), "global.max_output_tokens",
-                     minimum=1, integer=True)
-        for alias, info in self.models_config.items():
-            # 每個模型項目都必須有 litellm 模型字串：否則指向它的 agent 會悄悄改用模擬（hybrid）或在 live 中途失敗
-            # Every model entry needs a litellm model string: otherwise an agent pointing at it silently simulates
-            # (hybrid) or fails mid-run (live)
-            info = info if isinstance(info, dict) else {}
-            model = info.get("model")
-            if not isinstance(model, str) or not model.strip():
-                raise ConfigError(bi(f"models.{alias}.model 必須是非空的 litellm 模型字串，目前為 {model!r}",
-                                     f"models.{alias}.model must be a non-empty litellm model string, got {model!r}"))
-            fallback = info.get("fallback_model")
-            if fallback is not None and (not isinstance(fallback, str) or not fallback.strip()):
-                raise ConfigError(bi(f"models.{alias}.fallback_model 必須是非空字串或 null，目前為 {fallback!r}",
-                                     f"models.{alias}.fallback_model must be a non-empty string or null, got {fallback!r}"))
-            # 檢查的是去掉前後空白的值，保存的也必須是它：否則 " claude-sonnet-5-5" 會原樣送進 litellm 與快取鍵
-            # The check is on the stripped value, so the stripped value is what is kept: otherwise " claude-sonnet-5-5"
-            # would reach litellm and the cache key as written
-            info["model"] = model.strip()
-            if fallback is not None:
-                info["fallback_model"] = fallback.strip()
-            # base_url 不會被讀取（端點是 api_base）：留著它會讓使用者以為呼叫送到了自訂端點
-            # base_url is never read (the endpoint is api_base): keeping it would make users think calls go to a custom endpoint
-            if info.get("base_url") is not None:
-                raise ConfigError(bi(f"models.{alias}.base_url 不會被讀取；自訂端點請改用 models.{alias}.api_base",
-                                     f"models.{alias}.base_url is not read; use models.{alias}.api_base for a custom endpoint"))
-            if info.get("max_output_tokens") is not None:
-                self._number(info["max_output_tokens"], f"models.{alias}.max_output_tokens", minimum=1, integer=True)
-        for agent_id, meta in self.agents_config.items():
-            # 打錯字的 model_alias 過去會悄悄解析成 unconfigured：hybrid 改用模擬，live 則在已付費的呼叫之後才中途失敗。
-            # 省略或 null 仍是刻意的 unconfigured；明確寫出的別名必須存在於 models
-            # A misspelled model_alias used to resolve silently to unconfigured: hybrid simulated it, live failed mid-run
-            # after paid calls. Omitted or null is still a deliberate unconfigured; an alias that is written must exist in models
-            alias = meta.get("model_alias") if isinstance(meta, dict) else None
-            if alias is not None and alias != UNCONFIGURED_ALIAS and (not isinstance(alias, str) or alias not in self.models_config):
-                known = ", ".join(sorted(str(a) for a in self.models_config)) or "-"
-                raise ConfigError(bi(
-                    f"agents.{agent_id}.model_alias {alias!r} 不在 models 區段中（已定義：{known}）",
-                    f"agents.{agent_id}.model_alias {alias!r} is not defined in the models section (defined: {known})",
-                ))
-            if isinstance(meta, dict) and meta.get("temperature") is not None:
-                self._number(meta["temperature"], f"agents.{agent_id}.temperature", minimum=0, maximum=2)
-        self._number(self.retry_invalid_output, "global.retry_invalid_output", minimum=0, maximum=5, integer=True)
-        for alias, info in self.models_config.items():
-            for key in ("price_per_million_input", "price_per_million_output"):
-                if isinstance(info, dict) and info.get(key) is not None:
-                    self._number(info[key], f"models.{alias}.{key}", minimum=0)
-            extra = info.get("extra_params") if isinstance(info, dict) else None
-            if extra is not None and (not isinstance(extra, dict) or not all(isinstance(k, str) for k in extra)):
-                raise ConfigError(bi(f"models.{alias}.extra_params 必須是 litellm 參數名稱的對應表，目前為 {extra!r}",
-                                     f"models.{alias}.extra_params must be a mapping of litellm parameter names, got {extra!r}"))
-            reserved = sorted(k for k in (extra or {}) if is_reserved_extra_param(k))
-            if reserved and set(reserved) <= _TOKEN_CAP_PARAMS:
-                names = ", ".join(reserved)
-                raise ConfigError(bi(
-                    f"models.{alias}.extra_params 不可設定輸出 token 上限：{names}"
-                    f"（請改用 models.{alias}.max_output_tokens 或 global.max_output_tokens）",
-                    f"models.{alias}.extra_params must not set the output-token cap: {names} "
-                    f"(use models.{alias}.max_output_tokens or global.max_output_tokens instead)"
-                ))
-            if reserved:
-                names = ", ".join(reserved)
-                raise ConfigError(bi(
-                    f"models.{alias}.extra_params 不可設定保留的 litellm 參數：{names}"
-                    "（端點、憑證、逾時與重試請用 models.<alias> 或 global 的專用設定鍵；輸出 token 上限請用 max_output_tokens）",
-                    f"models.{alias}.extra_params must not set reserved litellm parameter(s): {names} "
-                    "(use the dedicated models.<alias> / global settings for endpoints, credentials, timeouts and "
-                    "retries, and max_output_tokens for the output-token cap)"
-                ))
-
-    def _global_setting(self, key: str, default: Any) -> Any:
-        """`global.<key>` 的值；省略或為 null 時回傳 `default`，因此絕不會把 None 傳給 litellm。
-        The value of `global.<key>`; `default` when it is omitted or null, so None never reaches litellm."""
-        value = (self.config.get("global") or {}).get(key)
-        return default if value is None else value
-
-    @staticmethod
-    def _number(value: Any, key: str, minimum: float, maximum: Optional[float] = None, integer: bool = False) -> None:
-        ok = isinstance(value, (int, float)) and not isinstance(value, bool) and (not integer or isinstance(value, int))
-        if not ok or value < minimum or (maximum is not None and value > maximum):
-            kind = "an integer" if integer else "a number"
-            kind_zh = "整數" if integer else "數值"
-            bounds = f">= {minimum}" if maximum is None else f"between {minimum} and {maximum}"
-            bounds_zh = f">= {minimum}" if maximum is None else f"介於 {minimum} 與 {maximum} 之間"
-            raise ConfigError(bi(f"{key} 必須是 {bounds_zh} 的{kind_zh}，目前為 {value!r}",
-                                 f"{key} must be {kind} {bounds}, got {value!r}"))
-
     @staticmethod
     def _safe_reason(text: str) -> str:
         """可供記錄或列入報告的供應商錯誤文字：憑證已遮蔽（HTTP 用戶端
@@ -738,17 +240,6 @@ class LLMGateway:
         Provider error text as it may be logged or reported: credentials redacted (an HTTP client
         can echo a request URL or header carrying the API key), control characters removed."""
         return clean_model_text(redact_secrets(str(text)))
-
-    @staticmethod
-    def _positive_int(value: Any, key: str) -> Optional[int]:
-        """選用的正整數設定；None/0 表示「未設定」。
-        An optional positive integer setting; None/0 mean "not set"."""
-        if value is None or value == 0:
-            return None
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ConfigError(bi(f"global.{key} 必須是非負整數，目前為 {value!r}",
-                                 f"global.{key} must be a non-negative integer, got {value!r}"))
-        return value
 
     def _reserve_live_call(self) -> bool:
         """從預算中認領一次線上呼叫（執行緒安全）；預算用盡時為 False。
@@ -790,10 +281,6 @@ class LLMGateway:
         """模型有回答但其輸出無法使用時為 False。
         False when the model answered but its output could not be used."""
         return resp.get(PROVENANCE_KEY, {}).get("mode") != "invalid"
-
-    def _load_config(self, path: str) -> Dict[str, Any]:
-        """見 load_config_file ／ See load_config_file."""
-        return load_config_file(path)
 
     def is_live_configured(self, model_alias: str) -> bool:
         """檢查所要求的模型是否具備憑證：其 API 金鑰，或 AWS 設定檔
@@ -1004,10 +491,10 @@ class LLMGateway:
             # Newer models reject sampling knobs (Claude Opus 5.5 on Bedrock accepts only temperature=1;
             # Gemini 3 is deprecating them): drop what a model does not support rather than failing the call
             "drop_params": True,
-            # null 已由 _global_setting 換成預設值：timeout=None 對 litellm 代表不限時，絕不傳出
-            # null is already replaced by the default in _global_setting: timeout=None means no limit to litellm and is never passed
-            "timeout": self._global_setting("timeout_seconds", DEFAULT_TIMEOUT_SECONDS),
-            "num_retries": self._global_setting("max_retries", DEFAULT_MAX_RETRIES),
+            # null 已在載入設定時換成預設值：timeout=None 對 litellm 代表不限時，絕不傳出
+            # null was already replaced by the default when the settings were loaded: timeout=None means no limit to litellm and is never passed
+            "timeout": self.settings.timeout_seconds,
+            "num_retries": self.settings.max_retries,
             "max_tokens": self._max_output_tokens(model_info),
         }
         if env_var:
@@ -1056,7 +543,7 @@ class LLMGateway:
         value falls back to DEFAULT_MAX_OUTPUT_TOKENS."""
         value = model_info.get("max_output_tokens")
         if value is None:
-            value = self._global_setting("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)
+            value = self.settings.max_output_tokens
         return int(value)
 
     @staticmethod

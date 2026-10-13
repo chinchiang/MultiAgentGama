@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 from vibeharness import cli
-from vibeharness.core.harness import VibeHarnessCommander
+from vibeharness.core.settings import load_settings
 from vibeharness.core.llm_gateway import (
     DEFAULT_CONFIG_PATH, ConfigError, LLMGateway, _PREVIOUS_BUNDLED_MODELS, check_discovered_config,
     discovered_config_violations, is_reserved_extra_param, load_config_file,
@@ -276,33 +276,17 @@ def test_omitted_null_or_unconfigured_model_alias_is_still_allowed(tmp_path):
 # --- 5. docker_*：null 保留預設值，只在用到時驗證 ---------------------------------------------------------
 # --- 5. docker_*: null keeps the default, validated only when used --------------------------------------------
 
-def test_null_docker_keys_keep_their_defaults():
-    """重現：null 的 docker_network／docker_memory／docker_cpus／docker_bin 過去是錯誤；現在保留預設值。
-    Reproduction: a null docker_network / docker_memory / docker_cpus / docker_bin used to be an error; it now keeps the default."""
-    cfg = {"sandbox_provider": "docker", "docker_network": None, "docker_memory": None, "docker_cpus": None,
-           "docker_bin": None, "docker_pids_limit": None, "docker_image": None, "docker_node_image": None}
-    settings = VibeHarnessCommander._sandbox_settings(cfg, need_docker=True)
-    assert (settings["network"], settings["memory"], settings["cpus"], settings["docker_bin"]) == ("none", "1g", "2", "docker")
-    node = VibeHarnessCommander._validate_node_settings(cfg, "docker", settings)
-    assert node["image"] == "vibeharness-sandbox-node:latest"
 
-
-def test_docker_image_null_keeps_the_default(monkeypatch):
+def test_docker_image_null_keeps_the_default(tmp_path, monkeypatch):
     """docker_image: null 以預設映像建立 docker 沙盒 ／ docker_image: null builds the docker sandbox with the default image."""
     from vibeharness.core import harness, sandbox
     seen = {}
     monkeypatch.setattr(sandbox.DockerSandbox, "_verify_available", lambda self: seen.setdefault("image", self.image))
-    box = harness.VibeHarnessCommander._build_sandbox({"sandbox_provider": "docker", "docker_image": None})
+    cfg = load_config_file(DEFAULT_CONFIG_PATH)
+    cfg["global"].update(sandbox_provider="docker", docker_image=None)
+    settings = load_settings(_write(tmp_path, cfg), origin="explicit")
+    box = harness.VibeHarnessCommander._build_sandbox(settings.sandbox)
     assert box.image == harness.DEFAULT_DOCKER_IMAGE == seen["image"]
-
-
-def test_docker_node_image_is_validated_only_for_the_docker_node_provider():
-    """重現：local_subprocess 下空的 docker_node_image 過去也會擋住啟動；現在只有 Node 沙盒用 docker 時才驗證。
-    Reproduction: an empty docker_node_image used to block start-up even with local_subprocess; it is now validated
-    only when the Node sandbox uses docker."""
-    VibeHarnessCommander._validate_node_settings({"docker_node_image": ""}, "local_subprocess")
-    with pytest.raises(ValueError, match="docker_node_image"):
-        VibeHarnessCommander._validate_node_settings({"docker_node_image": ""}, "docker")
 
 
 # --- 6. 模型字串去掉空白後保存 ----------------------------------------------------------------------

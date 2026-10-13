@@ -119,7 +119,7 @@ def estimate_run(
         retry_invalid_output=retry, max_model_calls=gateway.max_model_calls, cache_only=gateway.cache_only,
         # 變異體各一批，再加上先在未變異複本上確認測試通過的那一批
         # One batch per mutant, plus the batch that first confirms the tests pass on the unmutated copy
-        mutation_sandbox_runs_max=commander._mutation_cfg["max_mutants"] + 1 if commander.mutation_testing else None,
+        mutation_sandbox_runs_max=commander.settings.mutation.max_mutants + 1 if commander.mutation_testing else None,
     )
     if filters:
         est.warnings.append(bi("已套用檔案篩選", "File selection applied") + ": " + "; ".join(filters))
