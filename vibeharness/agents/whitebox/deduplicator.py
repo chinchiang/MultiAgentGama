@@ -4,7 +4,7 @@ from typing import List, Set
 
 from vibeharness.core.models import ReviewFinding
 from vibeharness.core.i18n import bi
-from vibeharness.core.identity import UNKNOWN_FILE, severity_rank
+from vibeharness.core.identity import is_unknown_location, severity_rank
 
 logger = logging.getLogger("VibeHarness.Deduplicator")
 
@@ -96,10 +96,13 @@ def _terse_subset(a: ReviewFinding, b: ReviewFinding, ta: Set[str], tb: Set[str]
 
 
 def _same_location(a: ReviewFinding, b: ReviewFinding) -> bool:
-    # 無法對應到符號的發現只在標題完全相同時合併
-    # Findings that could not be tied to a symbol only merge on an identical title
-    if a.file_path == UNKNOWN_FILE or b.file_path == UNKNOWN_FILE or not a.symbol_name or not b.symbol_name:
-        return a.file_path == b.file_path and a.title.strip().lower() == b.title.strip().lower()
+    # 無法對應到檔案或符號的發現只在標題完全相同時合併；兩個未知位置（不論佔位字怎麼寫）算同一位置
+    # Findings that could not be tied to a file or a symbol only merge on an identical title; two unknown locations
+    # (however the placeholder is spelled) count as the same location
+    unknown_a, unknown_b = is_unknown_location(a.file_path), is_unknown_location(b.file_path)
+    if unknown_a or unknown_b or not a.symbol_name or not b.symbol_name:
+        same_file = (unknown_a and unknown_b) or a.file_path == b.file_path
+        return same_file and a.title.strip().lower() == b.title.strip().lower()
     return a.file_path == b.file_path and a.symbol_name == b.symbol_name
 
 

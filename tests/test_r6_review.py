@@ -96,6 +96,56 @@ def test_a_simulated_and_a_real_threat_with_the_same_bilingual_title_stay_apart(
     assert bl.breach_key(result, simulated) != bl.breach_key(result, real)
 
 
+# --- 無法歸屬的位置：None、空字串、只有空白與 "unknown" 一律算未知 -----------------------------------------
+# --- An unattributable location: None, empty, whitespace-only and "unknown" all count as unknown -------------
+
+_UNKNOWN_PATHS = [None, "", "   ", "unknown", " unknown "]
+
+
+@pytest.mark.parametrize("path", _UNKNOWN_PATHS)
+def test_every_unknown_spelling_is_an_unknown_location(path):
+    from vibeharness.core.identity import is_unknown_location
+    from vibeharness.reports.report_generator import ReportGenerator
+    assert is_unknown_location(path)
+    assert bl.target_relative(path, "/tmp/target") == ""  # 基準線鍵沒有路徑 ／ the baseline key has no path
+    assert ReportGenerator._sarif_uri(path or "", "/tmp/target") is None  # SARIF 沒有位置 ／ SARIF has no location
+    assert not is_unknown_location("app.py") and not is_unknown_location("unknown.py")
+
+
+def _review(fid, path, title, symbol="f"):
+    return ReviewFinding(finding_id=fid, reviewer_name="R", model_alias="claude", file_path=path, symbol_name=symbol,
+                         severity=FindingSeverity.HIGH, title=title, description="d", root_cause="",
+                         suspected_vibe_flaw="v", suggested_test_scenario="s")
+
+
+@pytest.mark.parametrize("path", ["", "   ", " unknown "])
+def test_dedup_merges_findings_at_an_unknown_location_only_on_an_identical_title(path):
+    """位置未知時不能用符號判斷是不是同一缺陷：只有標題完全相同才合併（與 "unknown" 相同）。
+    With an unknown location the symbol cannot tell whether it is the same defect: only an identical title merges
+    (as with "unknown")."""
+    similar = deduplicate_findings([_review("A", path, "SQL injection via search term"),
+                                    _review("B", path, "SQL injection in the search term")])
+    assert [f.finding_id for f in similar] == ["A", "B"]
+    same = deduplicate_findings([_review("A", path, "SQL injection via search term"),
+                                 _review("B", "unknown", "SQL injection via search term")])
+    assert [f.finding_id for f in same] == ["A"]
+
+
+@pytest.mark.parametrize("path", ["", "   ", " unknown "])
+def test_test_generation_for_an_unknown_location_uses_the_target_file(tmp_path, path):
+    """位置未知的發現改用目標檔案決定語言與匯入方式（與 "unknown" 相同），不會把空白當成檔名。
+    A finding with an unknown location takes its language and import from the target file (as with "unknown"),
+    not from a blank file name."""
+    (tmp_path / "auth.mjs").write_text("export function login(u) { return u; }\n", encoding="utf-8")
+    symbols = ASTExtractor().parse_directory(str(tmp_path))
+    gateway = LLMGateway(CONFIG, execution_mode="mock")
+    systems = []
+    gateway.generate = lambda agent_id, system, user, **k: systems.append(system) or {"tests": []}
+    WhiteboxTestGenerator(gateway).generate_tests_for_findings([_review("A", path, "login echoes", "login")], symbols,
+                                                               root_dir=str(tmp_path))
+    assert systems and "JavaScript/TypeScript QA Engineer" in systems[0]
+
+
 # --- 2. --changed-since 不會漏掉非 ASCII 檔名 ---------------------------------------------------
 # --- 2. --changed-since keeps non-ASCII file names --------------------------------------------------------
 

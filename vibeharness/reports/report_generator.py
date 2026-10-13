@@ -21,7 +21,7 @@ from vibeharness.core.models import (
     StaticFinding
 )
 from vibeharness.core.identity import (
-    UNKNOWN_FILE, sarif_breach_fingerprint, sarif_finding_fingerprint, sarif_static_fingerprint,
+    is_unknown_location, sarif_breach_fingerprint, sarif_finding_fingerprint, sarif_static_fingerprint,
 )
 from vibeharness.core.i18n import bi
 from vibeharness.core.sanitize import clean_model_text, markdown_safe
@@ -730,9 +730,8 @@ class ReportGenerator:
     def _sarif_uri(file_path: str, target_path: str) -> Optional[str]:
         """盡力而為、相對於版本庫根目錄且使用正斜線的 URI；未知時為 None。
         Best-effort repo-root-relative URI with forward slashes; None when unknown."""
-        # "unknown" 是審查者無法歸屬發現時的佔位符，不是檔案
-        # "unknown" is the reviewer's placeholder for a finding it could not attribute, not a file
-        if not file_path or not file_path.strip() or file_path.strip() == UNKNOWN_FILE:
+        # 無法歸屬的位置（"unknown" 佔位字、空白）不是檔案 ／ an unattributable location ("unknown", blank) is not a file
+        if is_unknown_location(file_path):
             return None
         path = file_path.strip()
         drive = _WINDOWS_DRIVE_RE.match(path)

@@ -25,6 +25,16 @@ from vibeharness.core.models import FindingSeverity, ReviewFinding, StaticFindin
 # The file placeholder for a finding the reviewer could not tie to any symbol; not a file
 UNKNOWN_FILE = "unknown"
 
+
+
+def is_unknown_location(file_path: Optional[str]) -> bool:
+    """發現沒有可用的檔案位置：None、空字串、只有空白，或（前後空白不計的）`UNKNOWN_FILE` 佔位字。
+    去重、測試生成、基準線鍵與 SARIF 都以這一個判斷為準。
+    The finding has no usable file location: None, empty, whitespace only, or the `UNKNOWN_FILE` placeholder
+    (surrounding whitespace ignored). Dedup, test generation, the baseline keys and SARIF all go by this one rule."""
+    return not file_path or not file_path.strip() or file_path.strip() == UNKNOWN_FILE
+
+
 _SEVERITY_RANK = {
     FindingSeverity.CRITICAL: 0, FindingSeverity.HIGH: 1, FindingSeverity.MEDIUM: 2,
     FindingSeverity.LOW: 3, FindingSeverity.INFO: 4,
@@ -65,7 +75,7 @@ def target_relative(file_path: Optional[str], target_path: str) -> str:
     `file_path` relative to the audited target as a forward-slash string, or the bare name when it
     cannot be related (an "unknown" placeholder, a different drive). Pure string work: a baseline from
     another checkout or machine must yield the same key for the same file."""
-    if not file_path or file_path.strip() == UNKNOWN_FILE:
+    if file_path is None or is_unknown_location(file_path):
         return ""
     base = os.path.abspath(target_path)
     path = os.path.abspath(file_path)
