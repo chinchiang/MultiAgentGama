@@ -136,63 +136,26 @@ def test_max_concurrent_calls_bounds_the_worker_pool(tmp_path):
     assert probe.peak == 1
 
 
-def test_one_crashed_synthesis_does_not_discard_the_others(tmp_path, monkeypatch):
-    gen = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="mock"))
-    real = gen._tests_for_finding
-
-    def flaky(idx, finding, *args):
-        if idx == 1:
-            raise RuntimeError("boom")
-        return real(idx, finding, *args)
-
-    monkeypatch.setattr(gen, "_tests_for_finding", flaky)
-    gen.gateway.generate = lambda *a, **k: {"code": "def test_ok():\n    assert True\n"}
-    tests = gen.generate_tests_for_findings([_finding(i) for i in range(3)], [], root_dir=str(tmp_path))
-    assert [t.source_ref for t in tests if t.test_type == "whitebox_unit"] == ["F0", "F2"]
-    assert gen.findings_without_model_tests == ["F1"]
-
-    builder = ThreatScenarioBuilder(LLMGateway(CONFIG, execution_mode="mock"))
-    real_bb = builder._test_for_threat
-    monkeypatch.setattr(builder, "_test_for_threat",
-                        lambda threat, *a: (_ for _ in ()).throw(RuntimeError("boom")) if threat.threat_id == "T1"
-                        else real_bb(threat, *a))
-    builder.gateway.generate = lambda *a, **k: {"code": "def test_ok():\n    assert True\n"}
-    assert [t.source_ref for t in builder.build_test_cases_from_threats([_threat(i) for i in range(3)])] == ["T0", "T2"]
-
-
-def test_strict_live_failures_still_propagate_from_the_pool(tmp_path):
-    gen = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="mock"))
-
-    def fail(*a, **k):
-        raise LLMGatewayError("no key")
-
-    gen.gateway.generate = fail
-    with pytest.raises(LLMGatewayError):
-        gen.generate_tests_for_findings([_finding(0), _finding(1)], [], root_dir=str(tmp_path))
-    builder = ThreatScenarioBuilder(LLMGateway(CONFIG, execution_mode="mock"))
-    builder.gateway.generate = fail
-    with pytest.raises(LLMGatewayError):
-        builder.build_test_cases_from_threats([_threat(0)])
-
-
 def test_a_crashed_test_generation_is_booked_as_an_invalid_call(tmp_path):
-    """測試生成在閘道之外當掉時，與其他代理一樣記成一次無效呼叫（證據缺口），而不只是「沒有模型測試」。
+    """測試生成在閘道之外當掉時，與其他代理一樣記成一次無效呼叫（證據缺口），而不只是「沒有模型測試」；
+    其他發現的測試保留（接線測試；扇出本身見 test_fanout.py）。
     A test generation that crashes outside the gateway is booked as an invalid call (an evidence gap), like the other
-    agents, not only as "no model test"."""
+    agents, not only as "no model test"; the other findings keep their tests (a wiring test; the fan-out itself is in
+    test_fanout.py)."""
     from vibeharness.core.llm_gateway import REASON_CALL_CRASHED
     gen = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="mock"))
-    generate = gen.gateway.generate
 
-    def crash_on_f0(agent_id, system, user, **kwargs):
-        if "defect 0" in user:
+    def crash_on_f1(agent_id, system, user, **kwargs):
+        if "defect 1" in user:
             raise RuntimeError("parser exploded")
-        return generate(agent_id, system, user, **kwargs)
-    gen.gateway.generate = crash_on_f0
-    gen.generate_tests_for_findings([_finding(0), _finding(1)], [], root_dir=str(tmp_path))
+        return {"code": "def test_ok():\n    assert True\n"}
+    gen.gateway.generate = crash_on_f1
+    tests = gen.generate_tests_for_findings([_finding(i) for i in range(3)], [], root_dir=str(tmp_path))
+    assert [t.source_ref for t in tests if t.test_type == "whitebox_unit"] == ["F0", "F2"]
     (record,) = gen.gateway.invalid_calls
     assert record.agent_id == "whitebox_test_generator"
     assert record.reason.startswith(REASON_CALL_CRASHED) and "RuntimeError: parser exploded" in record.reason
-    assert "F0" in gen.findings_without_model_tests
+    assert gen.findings_without_model_tests == ["F1"]
 
 
 def test_a_live_failure_starts_no_queued_reviewer_call(scripted, tmp_path):

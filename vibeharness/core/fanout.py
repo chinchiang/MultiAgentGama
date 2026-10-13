@@ -42,7 +42,7 @@ def fan_out(gateway: LLMGateway, calls: Sequence[Call[_T]], *, fallback: _T, log
     if not calls:
         return []
     results: List[_T] = []
-    for call, (result, error) in zip(calls, run_ordered([c.run for c in calls], gateway.max_concurrent_calls), strict=True):
+    for call, (result, error) in zip(calls, _run_ordered([c.run for c in calls], gateway.max_concurrent_calls), strict=True):
         if error is not None:
             _book(gateway, call, error, logger)
             results.append(fallback)
@@ -61,7 +61,7 @@ def _book(gateway: LLMGateway, call: "Call[Any]", error: Exception, logger: logg
     gateway.record_failure(call.agent_id, f"{type(error).__name__}: {error}")
 
 
-def run_ordered(calls: List[Callable[[], _T]], max_workers: int) -> List[Tuple[Optional[_T], Optional[Exception]]]:
+def _run_ordered(calls: List[Callable[[], _T]], max_workers: int) -> List[Tuple[Optional[_T], Optional[Exception]]]:
     """並行執行彼此獨立的呼叫，依呼叫順序回傳每一個的（結果, 例外）。
 
     一般例外會記成該呼叫的結果，讓其他呼叫繼續；LLMGatewayError（嚴格的 live 模式）與

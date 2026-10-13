@@ -4,13 +4,11 @@ Regressions for the sanitizer and black-box review fixes: placeholder credential
 positives, channel tags, en_only, severity, the port check, symbol matching and aborting concurrent calls."""
 import json
 import os
-import threading
-import time
 
 import pytest
 
 from vibeharness.core.i18n import bi, en_only, zh_only
-from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
+from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.models import CodeSymbol, FindingSeverity, STRIDECategory, ThreatItem
 from vibeharness.core.sanitize import (
     UNTRUSTED_MODEL_CLOSE, UNTRUSTED_MODEL_OPEN, find_injection_markers, find_invisible, find_secrets,
@@ -252,66 +250,3 @@ def test_qualified_method_name_does_not_drag_in_a_same_named_function():
     assert sorted(_names("call get_user directly", symbols)) == ["Service.get_user", "get_user"]
 
 
-# --- 並行呼叫：live 失敗後不再送出佇列中的呼叫 --------------------------------------------------------------
-# --- Concurrent calls: no queued call is sent after a live failure -----------------------------------------
-
-@pytest.mark.parametrize("fatal", [LLMGatewayError("down"), KeyboardInterrupt()])
-def test_run_ordered_cancels_queued_calls_after_a_fatal_failure(fatal):
-    from vibeharness.core.fanout import run_ordered
-    started = []
-    lock = threading.Lock()
-
-    def call(i):
-        def run():
-            with lock:
-                started.append(i)
-            if i == 0:
-                raise fatal
-            time.sleep(0.05)
-            return i
-        return run
-    with pytest.raises(type(fatal)):
-        run_ordered([call(i) for i in range(6)], max_workers=1)
-    assert started == [0]
-
-
-def test_run_ordered_raises_the_fatal_error_even_when_it_comes_later():
-    from vibeharness.core.fanout import run_ordered
-    gate = threading.Event()
-
-    def slow():
-        gate.wait(2)
-        return "slow"
-
-    def fatal():
-        try:
-            raise LLMGatewayError("down")
-        finally:
-            gate.set()
-    with pytest.raises(LLMGatewayError):
-        run_ordered([slow, fatal, lambda: "never"], max_workers=2)
-
-
-def test_run_ordered_keeps_ordinary_errors_per_call():
-    from vibeharness.core.fanout import run_ordered
-
-    def boom():
-        raise ValueError("x")
-    results = run_ordered([lambda: 1, boom, lambda: 3], max_workers=2)
-    assert [r for r, _ in results] == [1, None, 3] and isinstance(results[1][1], ValueError)
-
-
-def test_attack_synthesis_stops_after_a_live_failure(monkeypatch):
-    from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
-    builder = ThreatScenarioBuilder(LLMGateway(CONFIG, execution_mode="mock"))
-    builder.gateway.max_concurrent_calls = 1
-    made = []
-
-    def failing(threat, *args, **kwargs):
-        made.append(threat.threat_id)
-        raise LLMGatewayError("provider down")
-
-    monkeypatch.setattr(builder, "_test_for_threat", failing)
-    with pytest.raises(LLMGatewayError):
-        builder.build_test_cases_from_threats([_threat(f"T-{i}") for i in range(5)])
-    assert made == ["T-0"]

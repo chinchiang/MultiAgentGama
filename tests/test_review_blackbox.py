@@ -57,30 +57,34 @@ def test_stride_category_spelling_is_normalized(fake_live, raw, expected):
 # --- 當掉的批次會記入 call_log ---------------------------------------------------------------------
 # --- Crashed batches are booked in call_log --------------------------------------------------------
 
-def test_crashed_threat_modeling_batch_is_recorded(monkeypatch):
+def test_crashed_threat_modeling_batch_is_recorded():
+    """威脅建模批次在閘道之外當掉時記在 blackbox_threat_modeler 名下（接線測試；扇出本身見 test_fanout.py）。
+    A threat-modeling batch that crashes outside the gateway is booked under blackbox_threat_modeler (a wiring test;
+    the fan-out itself is in test_fanout.py)."""
     from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
-    modeler = AutomatedThreatModeler(LLMGateway(CONFIG, execution_mode="mock"))
+    gateway = LLMGateway(CONFIG, execution_mode="mock")
 
     def boom(*args, **kwargs):
         raise RuntimeError("simulated thread crash")
+    gateway.generate = boom
+    AutomatedThreatModeler(gateway).model_system("svc", ["f"])
+    (crashed,) = gateway.invalid_calls
+    assert crashed.agent_id == "blackbox_threat_modeler" and "RuntimeError: simulated thread crash" in (crashed.reason or "")
 
-    monkeypatch.setattr(modeler, "_model_batch", boom)
-    modeler.model_system("svc", ["f"])
-    crashed = [r for r in modeler.gateway.invalid_calls if r.agent_id == "blackbox_threat_modeler"]
-    assert len(crashed) == 1 and "RuntimeError: simulated thread crash" in (crashed[0].reason or "")
-
-
-def test_crashed_attack_synthesis_is_recorded(monkeypatch):
+def test_crashed_attack_synthesis_is_recorded():
+    """一個威脅的攻擊合成當掉時記在 blackbox_test_synthesizer 名下，其他威脅的測試保留（接線測試；
+    扇出本身見 test_fanout.py）。
+    A crashed attack synthesis for one threat is booked under blackbox_test_synthesizer and the other threats keep
+    their tests (a wiring test; the fan-out itself is in test_fanout.py)."""
     from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
-    builder = ThreatScenarioBuilder(LLMGateway(CONFIG, execution_mode="mock"))
-    real = builder._test_for_threat
+    gateway = LLMGateway(CONFIG, execution_mode="mock")
 
-    def flaky(threat, *args, **kwargs):
-        if threat.threat_id == "T-2":
+    def crash_t2(agent_id, system, user, **kwargs):
+        if "Threat ID: T-2\n" in user:
             raise ValueError("boom")
-        return real(threat, *args, **kwargs)
-
-    monkeypatch.setattr(builder, "_test_for_threat", flaky)
-    builder.build_test_cases_from_threats([_threat("T-1"), _threat("T-2")])
-    crashed = [r for r in builder.gateway.invalid_calls if r.agent_id == "blackbox_test_synthesizer"]
-    assert len(crashed) == 1 and "ValueError: boom" in (crashed[0].reason or "")
+        return {"code": "def test_ok():\n    assert True\n"}
+    gateway.generate = crash_t2
+    tests = ThreatScenarioBuilder(gateway).build_test_cases_from_threats([_threat("T-1"), _threat("T-2"), _threat("T-3")])
+    assert [t.source_ref for t in tests] == ["T-1", "T-3"]
+    (crashed,) = gateway.invalid_calls
+    assert crashed.agent_id == "blackbox_test_synthesizer" and "ValueError: boom" in (crashed.reason or "")
