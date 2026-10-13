@@ -16,8 +16,11 @@ class Verdict(str, Enum):
 
     # str() 與 f-string 都給出值（Python 3.12 起 str 混入的 Enum 預設會印成 "Verdict.X"）
     # str() and f-strings give the value (since Python 3.12 a str-mixin Enum prints as "Verdict.X" by default)
-    __str__ = str.__str__
-    __format__ = str.__format__
+    def __str__(self) -> str:
+        return str.__str__(self)
+
+    def __format__(self, format_spec: str) -> str:
+        return str.__format__(self, format_spec)
 
     @property
     def exit_code(self) -> int:
