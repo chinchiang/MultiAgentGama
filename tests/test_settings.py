@@ -372,7 +372,9 @@ def test_overrides_reject_unknown_flags():
 # --- 警告 ／ warnings -----------------------------------------------------------------------------
 
 def test_relative_executable_paths_are_warned_about(tmp_path):
-    s = _load(tmp_path, global_={"node_bin": "./node", "docker_bin": "/usr/bin/docker"})
+    # sys.executable 在每個平台都是絕對路徑（Windows 上 Python 3.13 起，沒有磁碟代號的 "/usr/bin/docker" 不算絕對路徑）
+    # sys.executable is absolute on every platform (on Windows, since Python 3.13, "/usr/bin/docker" without a drive is not)
+    s = _load(tmp_path, global_={"node_bin": "./node", "docker_bin": sys.executable})
     assert len(s.warnings) == 1 and "global.node_bin is a relative path './node'" in s.warnings[0]
 
 
