@@ -839,6 +839,7 @@ class VibeHarnessCommander:
                 static_findings=static_findings,
                 ai_components=ai_components,
                 reviewer_models=reviewer_models,
+                new_blocking_rule_hits=len(gate.blocking_rule_hits),
                 baseline_path=self.baseline.path if self.baseline else None,
                 baseline_suppressed=suppressed,
             )

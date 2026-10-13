@@ -311,10 +311,14 @@ class VibeHarnessSummary(BaseModel):
     ai_components: List[str] = Field(default_factory=list)
     reviewer_models: List[str] = Field(default_factory=list)
     key_recommendations: List[str] = Field(default_factory=list)
-    # --baseline：先前報告已包含的問題列在這裡，且不計入
-    # 判定（whitebox_tests_failed／blackbox_security_breaches／靜態 HIGH+ 只含新的問題）
+    # 計入判定結果的阻擋性規則命中（HIGH 以上）數；有 --baseline 時只算新的。不是品質閘門產生的摘要為 None
+    # Blocking rule hits (HIGH and above) counted toward the verdict; only the new ones with --baseline. None for a
+    # summary the quality gate did not produce
+    new_blocking_rule_hits: Optional[int] = None
+    # --baseline：先前報告已包含的問題列在這裡，且不計入判定（whitebox_tests_failed／
+    # blackbox_security_breaches／new_blocking_rule_hits 只含新的問題）
     # --baseline: problems the previous report already contained are listed here and not counted
-    # in the verdict (whitebox_tests_failed / blackbox_security_breaches / static HIGH+ hold new ones only)
+    # in the verdict (whitebox_tests_failed / blackbox_security_breaches / new_blocking_rule_hits hold new ones only)
     baseline_path: Optional[str] = None
     baseline_suppressed: List["BaselineSuppressedItem"] = Field(default_factory=list)
 

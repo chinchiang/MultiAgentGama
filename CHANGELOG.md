@@ -6,6 +6,22 @@
 
 ## [Unreleased]
 
+### 新增
+
+- JSON 報告的 `summary.new_blocking_rule_hits`：計入判定結果的 HIGH 以上確定性規則命中數（有 `--baseline` 時只算基準中沒有的）。屬於新增欄位，`schema_version` 維持 "2"。
+
+### 變更
+
+- 品質閘門的判定改在單一位置 `vibeharness/core/gate.py`（`evaluate(GateEvidence) -> GateResult`）決定，不再寫在 `run_full_pipeline` 裡；四種判定結果與其結束碼只在 `vibeharness/core/verdict.py` 定義一次，由 CLI 與 Action runner 共用。僅為內部變更：報告、`--summary-json`、結束碼與終端機輸出都不變。
+
+### 修正
+
+- 使用 `--baseline` 時，報告的「確定性 AI 資安規則命中」列會計入所有 HIGH 以上的命中，包括判定已忽略的已知命中，因此 `READY_TO_SHIP` 或 `INCONCLUSIVE` 的報告可能顯示「2 HIGH+」而目標是「0 HIGH+」。現在新的與已知的命中分開列出（例如「0 個新的 HIGH+，2 個基準中已知」，目標為「0 個新的 HIGH+」）。沒有 `--baseline` 時該列不變。
+
+### 測試
+
+- 新增 `tests/test_quality_gate.py`，只透過 `evaluate()` 測試閘門：每一級判定結果、每一種證據缺口代碼、缺口順序、基準的新／已知拆分與建議順序。
+
 ## [0.12.0] - 2026-10-12
 
 第六輪審查：中文的威脅與發現不再被誤合併；`--changed-since` 不再漏掉非 ASCII 檔名或 symlink 目標下的檔案；基準線鍵分得出不同檔案的同名函式，換機器重跑時也不會把名稱含點的目錄當成檔案；`--estimate` 與逐測重跑的錯誤原因也一併修正。
