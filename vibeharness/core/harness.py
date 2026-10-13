@@ -132,8 +132,8 @@ class VibeHarnessCommander:
         # (its settings were validated at load time)
         self.node_bin = settings.node.node_bin
         self.sandbox_node_provider = settings.node.provider
-        # 突變測試：開關優先順序為 CLI（set_mutation）> global.mutation_testing > 預設關閉，來源記進 RunMetadata
-        # Mutation testing: the switch precedence is CLI (set_mutation) > global.mutation_testing > off by default,
+        # 突變測試：開關優先順序為 CLI（--mutation，經 Overrides）> global.mutation_testing > 預設關閉，來源記進 RunMetadata
+        # Mutation testing: the switch precedence is CLI (--mutation, through Overrides) > global.mutation_testing > off by default,
         # and the source is recorded in RunMetadata
         self.mutation_testing: bool = settings.mutation.enabled
         self.mutation_source: str = settings.sources["mutation_testing"]

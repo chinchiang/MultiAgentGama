@@ -13,6 +13,8 @@
 ### 變更
 
 - 品質閘門的判定改在單一位置 `vibeharness/core/gate.py`（`evaluate(GateEvidence) -> GateResult`）決定，不再寫在 `run_full_pipeline` 裡；四種判定結果與其結束碼只在 `vibeharness/core/verdict.py` 定義一次，由 CLI 與 Action runner 共用。僅為內部變更：報告、`--summary-json`、結束碼與終端機輸出都不變。
+- 設定檔改由新的 `vibeharness/core/settings.py` 裡的 `load_settings` 只載入、套用預設值並驗證一次，產生凍結的設定樹，供閘道、harness 與 `--estimate` 讀取；CLI 的旗標以覆寫值傳給它，不再於 harness 建構之後修改它。每個預設值都定義在那裡，並以舊名稱重新匯出；探索到的設定檔檢查在載入時一併執行。每個鍵都維持文件所寫的 null／0 規則、訊息與結束碼。
+- 同一次執行同時有設定問題與目標或旗標問題時（例如 `--config` 的值錯誤又缺少 `--target`），現在先回報設定問題；過去要到建構 harness 時才回報，排在目標與旗標的檢查之後。兩種情況的結束碼都是 5。`--cache-dir` 現在在檢查目標與旗標之前就建立，無法使用的 Docker 沙盒則在所有設定問題之後才回報。
 
 ### 修正
 
@@ -22,6 +24,7 @@
 
 - 新增 `tests/test_quality_gate.py`，只透過 `evaluate()` 測試閘門：每一級判定結果、每一種證據缺口代碼、缺口順序、基準的新／已知拆分與建議順序。
 - 十二個只檢查判定或證據缺口規則的端到端 `run_full_pipeline` 測試與超大檔案測試的 pipeline 部分，改為透過 `evaluate()` 的測試，加上一個 mock pipeline 接線測試，確認擷取器、掃描器、設定的上限與審查名單的事實送進閘門。各來源仍保有自己的測試（新增一個測試鎖定哪些符號會做 None 探測）；模擬引擎、`--baseline`、沒有 Node 執行環境、未分類的黑箱失敗與突變測試中途當掉的端到端測試保留為接線測試。
+- 新增 `tests/test_settings.py`，只透過 `load_settings` 測試設定：每個鍵的 null／0／負數／錯誤型別規則、驗證順序、探索到的設定檔政策、CLI 覆寫值與其來源、警告，以及唯讀的 models／agents。它取代已刪除的私有驗證函式的測試。
 
 ### 文件
 

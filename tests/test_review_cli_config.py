@@ -78,10 +78,11 @@ def test_any_construction_failure_exits_5_not_1(monkeypatch, tmp_path, error):
 def test_failure_while_configuring_the_harness_exits_5(monkeypatch, tmp_path):
     """設定 harness（例如 --cache-dir）時的意外例外也以 5 結束。
     An unexpected exception while configuring the harness (e.g. --cache-dir) exits 5 too."""
-    def boom(self, path):
+    def boom(path):
         raise PermissionError("denied")
 
-    monkeypatch.setattr(LLMGateway, "set_cache_dir", boom)
+    # --cache-dir 在載入設定時準備 ／ --cache-dir is prepared while the settings are loaded
+    monkeypatch.setattr("vibeharness.core.settings.prepare_cache_dir", boom)
     assert _run_cli(monkeypatch, "-t", str(tmp_path), "-m", "mock", "--cache-dir", str(tmp_path / "c")) == 5
 
 
