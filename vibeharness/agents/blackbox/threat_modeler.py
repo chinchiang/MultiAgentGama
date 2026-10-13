@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from vibeharness.core.models import ThreatItem, ThreatModelReport, STRIDECategory, FindingSeverity, CodeSymbol
 from vibeharness.core.fanout import Call, fan_out
 from vibeharness.core.identity import severity_rank, threat_identity
+from vibeharness.core.model_output import ANY, OutputSchema
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.i18n import bi
 from vibeharness.core.codecontext import render_symbols, batch_symbols
@@ -16,6 +17,10 @@ from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
 DEFAULT_RULES_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config", "threat_rules.yaml")
 
 logger = logging.getLogger("VibeHarness.ThreatModeler")
+
+# 威脅建模回答的形狀（core/model_output.py）
+# The shape of a threat-modeling answer (core/model_output.py)
+THREATS_SCHEMA = OutputSchema(required={"threats": ANY})
 
 # 威脅模型驅動所有黑箱測試，所以每個符號都必須讓它看到：如同白箱審查者，
 # 符號會切成程式碼清單放得進 token 預算的批次，
@@ -188,7 +193,7 @@ class AutomatedThreatModeler:
             f"Only include threats that are plausible for the code shown, and name the concrete function/route in attack_vector."
         )
         return self.gateway.generate(
-            "blackbox_threat_modeler", system_prompt, user_prompt, json_output=True, required_keys=["threats"],
+            "blackbox_threat_modeler", system_prompt, user_prompt, json_output=True, schema=THREATS_SCHEMA,
             simulated=_simulated_threat_model,
         )
 

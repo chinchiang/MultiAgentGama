@@ -16,6 +16,7 @@ from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnse
 from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
 from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
 from vibeharness.runners.test_executor import TestSuiteExecutor
+from vibeharness.core.model_output import ANY, OutputSchema
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
@@ -220,7 +221,7 @@ def test_gateway_passes_call_options_and_uses_fallback_model(fake_live, monkeypa
     fake_live(lambda s, u: "")
     monkeypatch.setattr("vibeharness.core.transport.litellm", SimpleNamespace(completion=completion))
     gateway = LLMGateway(CONFIG, execution_mode="live")
-    resp = gateway.generate("whitebox_reviewer_claude", "sys", "prompt", required_keys=["findings"])
+    resp = gateway.generate("whitebox_reviewer_claude", "sys", "prompt", schema=OutputSchema(required={"findings": ANY}))
 
     assert [c["model"] for c in calls] == ["claude-sonnet-5-5", "claude-haiku-4-5-20251001"]
     assert calls[0]["api_key"] == "test-key"

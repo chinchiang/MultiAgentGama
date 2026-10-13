@@ -18,6 +18,7 @@ from vibeharness.core.models import (
 from vibeharness.runners.test_executor import (
     POC_HEADER_JS, POC_HEADER_PY, REASON_NOT_RUN_CORRECTLY, REASON_TARGET_BROKEN, TestSuiteExecutor,
 )
+from vibeharness.core.model_output import ANY, OutputSchema
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
@@ -43,7 +44,7 @@ def test_retry_prompt_built_from_a_bilingual_reason_has_no_cjk(fake_live):
 
     fake_live(responder)
     gw = LLMGateway(CONFIG, execution_mode="live")
-    resp = gw.generate("whitebox_reviewer_claude", "sys", "audit this", required_keys=["findings"])
+    resp = gw.generate("whitebox_reviewer_claude", "sys", "audit this", schema=OutputSchema(required={"findings": ANY}))
     assert gw.is_usable(resp)
     assert len(prompts) == 2 and prompts[1].startswith("audit this")
     assert "could not be used (response is not valid JSON)" in prompts[1]

@@ -4,7 +4,6 @@ import os
 import json
 import tempfile
 import logging
-import re
 import threading
 from typing import Callable, Dict, Any, Optional, List
 # 設定檔的 yaml 在 core/settings.py 才延遲匯入；這裡仍在匯入時載入它，缺少 yaml 的安裝才會在 main() 的防護內被認出是
@@ -16,6 +15,9 @@ import yaml  # noqa: F401
 from vibeharness.core.models import AgentCallRecord
 # 模型呼叫走 core/transport.py 的接縫；只有那裡知道 litellm ／ model calls go through the seam in core/transport.py; only it knows litellm
 from vibeharness.core.transport import LiteLLMTransport, ModelRequest, ModelTransport
+# 回答的解析與形狀檢查在 core/model_output.py；REASON_NOT_VALID_JSON 以舊名稱重新匯出
+# Parsing and shape checking of answers live in core/model_output.py; REASON_NOT_VALID_JSON is re-exported under its old name
+from vibeharness.core.model_output import REASON_NOT_VALID_JSON, OutputSchema, check_output, parse_json_object  # noqa: F401
 # 設定檔的預設值、載入與政策都在 core/settings.py；這裡以同名重新匯出 ／ the config defaults, loading and policy live in
 # core/settings.py; re-exported here under the same names
 from vibeharness.core.settings import (
@@ -81,7 +83,6 @@ BUDGET_EXHAUSTED_REASON = bi("max_model_calls 預算已用盡", "max_model_calls
 # --cache-only: a call the cache cannot answer makes no network call; handled like an exhausted budget
 # (simulation in hybrid, failure in live) and reported as an evidence gap
 CACHE_MISS_REASON = bi("--cache-only 模式下回應快取未命中", "cache miss in --cache-only mode")
-REASON_NOT_VALID_JSON = bi("回應不是有效的 JSON", "response is not valid JSON")
 REASON_CALL_CRASHED = bi("代理呼叫在產生輸出前就當掉", "agent call crashed before producing output")
 # 附加到重新詢問的使用者提示之後，讓模型知道第一次回答哪裡有問題
 # （模型提示：維持英文；雙語原因會先經過 en_only）
@@ -293,20 +294,19 @@ class LLMGateway:
         system_prompt: str,
         user_prompt: str,
         json_output: bool = True,
-        required_keys: Optional[List[str]] = None,
-        required_keys_any: Optional[List[str]] = None,
+        schema: Optional[OutputSchema] = None,
         simulated: Optional[Callable[[str], Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         針對指定代理所設定的 LLM 執行提示。
-        線上回應若不是有效的 JSON，或缺少 `required_keys` 中的任一鍵（全部都必須
-        存在）或 `required_keys_any`（至少要有一個存在），會以 mode "invalid" 記錄，
+        線上回應若不是有效的 JSON，或不合代理宣告的 `schema`（core/model_output.py 的 `OutputSchema`：
+        `required` 的鍵全部都必須存在、`any_of` 至少要有一個存在），重新詢問之後仍不合時會以 mode "invalid" 記錄，
         回傳只含 PROVENANCE_KEY（mode "invalid"、model、reason）的 dict，讓呼叫端與品質閘門絕不會把無法使用的回答
         誤認為真正的空結果（以 is_usable() 判斷）。
         Executes a prompt targeting the designated agent's configured LLM.
-        A live response that is not valid JSON or lacks any of `required_keys` (all must be
-        present) or `required_keys_any` (at least one must be present) is recorded with
-        mode "invalid" and returned as a dict holding only PROVENANCE_KEY (mode "invalid", model, reason), so
+        A live response that is not valid JSON or does not fit the agent's `schema` (an `OutputSchema` from
+        core/model_output.py: every `required` key must be present, at least one `any_of` key must be) is, when it
+        still does not fit after the re-asks, recorded with mode "invalid" and returned as a dict holding only PROVENANCE_KEY (mode "invalid", model, reason), so
         callers and the quality gate never mistake an unusable answer for a genuine empty result (check is_usable()).
         `simulated(model_alias)` 是代理自己的模擬輸出（不呼叫模型時回傳的固定備援回答，每次呼叫都是新的 dict）；
         省略時回傳一個通用的狀態 dict。閘道一律加上 PROVENANCE_KEY 並登記為 simulated。
@@ -396,7 +396,7 @@ class LLMGateway:
                 # Only the network call is guarded above: a bug in parsing/validation/booking
                 # must fail loudly instead of being masked as a fallback to simulation.
                 result = self._clean_and_parse_json(raw_text) if json_output else {"raw": raw_text}
-                problem = self._validate_output(result, json_output, required_keys, required_keys_any)
+                problem = self._validate_output(result, json_output, schema)
                 if problem is None and result is not None:
                     from_cache = cached is not None and attempt == 0
                     if not from_cache:
@@ -550,23 +550,8 @@ class LLMGateway:
         return int(value)
 
     @staticmethod
-    def _validate_output(
-        result: Any, json_output: bool,
-        required_keys: Optional[List[str]], required_keys_any: Optional[List[str]] = None
-    ) -> Optional[str]:
-        if not json_output:
-            return None
-        if result is None:
-            return REASON_NOT_VALID_JSON
-        if not isinstance(result, dict):
-            return bi(f"預期為 JSON 物件，實際為 {type(result).__name__}", f"expected a JSON object, got {type(result).__name__}")
-        missing = [k for k in (required_keys or []) if k not in result]
-        if missing:
-            return bi(f"回應缺少必要鍵：{', '.join(missing)}", f"response is missing required key(s): {', '.join(missing)}")
-        if required_keys_any and not any(k in result for k in required_keys_any):
-            return bi(f"回應沒有任何一個預期的鍵：{', '.join(required_keys_any)}",
-                      f"response has none of the expected key(s): {', '.join(required_keys_any)}")
-        return None
+    def _validate_output(result: Any, json_output: bool, schema: Optional[OutputSchema]) -> Optional[str]:
+        return check_output(result, schema) if json_output else None
 
     def record_failure(self, agent_id: str, reason: str) -> None:
         """登記一次在閘道能回答之前就當掉的代理呼叫（例如呼叫端執行緒池批次中的
@@ -595,70 +580,11 @@ class LLMGateway:
         return [rec for rec in self.call_log if rec.cached]
 
     def _clean_and_parse_json(self, text: str) -> Optional[Dict[str, Any]]:
-        """剝除 markdown 程式碼圍欄並安全地解析 JSON，並提供對話式退回路徑。
-        Strips markdown code fences and parses JSON safely, with conversational fallback."""
-        text = text.strip()
-        # 1. 已閉合的 markdown 程式碼圍欄（```json ... ``` 或 ```JSON / ```）
-        # 1. Closed markdown code fence (```json ... ``` or ```JSON / ```)
-        match = re.search(r"```[\w-]*\s*([\s\S]*?)\s*```", text)
-        if match:
-            candidate = match.group(1).strip()
-            try:
-                parsed = json.loads(candidate)
-                if isinstance(parsed, dict):
-                    return parsed
-            except json.JSONDecodeError:
-                pass
-
-        # 2. 直接的 JSON 字串
-        # 2. Direct JSON string
-        try:
-            parsed = json.loads(text)
-            if isinstance(parsed, dict):
-                return parsed
-        except json.JSONDecodeError:
-            pass
-
-        # 3. 未閉合的程式碼圍欄（以 ```tag 開頭但缺少結尾的 ```）
-        # 3. Unclosed code fence (starts with ```tag but missing closing ```)
-        unclosed_match = re.match(r"^\s*```[\w-]*\s*([\s\S]*)$", text)
-        if unclosed_match:
-            candidate = re.sub(r"```+\s*$", "", unclosed_match.group(1)).strip()
-            try:
-                parsed = json.loads(candidate)
-                if isinstance(parsed, dict):
-                    return parsed
-            except json.JSONDecodeError:
-                pass
-
-        # 4. 對話式包裹的退回路徑：擷取第一個 '{' 到最後一個 '}' 之間的子字串
-        # 4. Conversational wrapping fallback: extract substring between first '{' and last '}'
-        first_brace = text.find("{")
-        last_brace = text.rfind("}")
-        if first_brace != -1 and last_brace > first_brace:
-            candidate = text[first_brace:last_brace + 1]
-            try:
-                parsed = json.loads(candidate)
-                if isinstance(parsed, dict):
-                    return parsed
-            except json.JSONDecodeError:
-                # 若從第一個到最後一個失敗（例如前面有未閉合的非 JSON 大括號），則逐一嘗試每個 '{' 到最後一個 '}'
-                # If first-to-last failed (e.g. earlier unclosed non-JSON brace), search each '{' to last '}'
-                for m in re.finditer(r"\{", text):
-                    start = m.start()
-                    if start == first_brace or start >= last_brace:
-                        continue
-                    try:
-                        parsed = json.loads(text[start:last_brace + 1])
-                        if isinstance(parsed, dict):
-                            return parsed
-                    except json.JSONDecodeError:
-                        continue
-
-        logger.error(bi(f"JSON 解析錯誤：無法擷取有效的 JSON。原始內容：{text[:200]}",
-                        f"JSON parsing error: could not extract valid JSON. Raw content: {text[:200]}"))
-        # 回傳 None（而非哨兵 dict）：模型可能正當地回聲出這樣的 dict，
-        # 那會與解析失敗無法區分。
-        # None (not a sentinel dict): a model could legitimately echo such a dict, which would
-        # have been indistinguishable from a parse failure.
-        return None
+        """`parse_json_object`（core/model_output.py），解析失敗時以閘道的 logger 記錄。
+        `parse_json_object` (core/model_output.py), logged with the gateway's logger when parsing fails."""
+        parsed = parse_json_object(text)
+        if parsed is None:
+            text = text.strip()
+            logger.error(bi(f"JSON 解析錯誤：無法擷取有效的 JSON。原始內容：{text[:200]}",
+                            f"JSON parsing error: could not extract valid JSON. Raw content: {text[:200]}"))
+        return parsed

@@ -15,8 +15,13 @@ from vibeharness.core.codecontext import (
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, prepare_untrusted_code, untrusted_block
 from vibeharness.core.fanout import Call, fan_out
 from vibeharness.core.identity import is_unknown_location
+from vibeharness.core.model_output import ANY, OutputSchema
 
 logger = logging.getLogger("VibeHarness.TestGenerator")
+
+# 測試生成回答的形狀：`tests` 清單或單一的 `code`（core/model_output.py）
+# The shape of a test-generation answer: a `tests` list or a single `code` (core/model_output.py)
+TESTS_SCHEMA = OutputSchema(any_of={"tests": ANY, "code": ANY})
 
 # 每個發現所顯示目標原始碼的估計 token 預算
 # Estimated-token budget for the target source shown per finding
@@ -156,7 +161,7 @@ class WhiteboxTestGenerator:
         # The Simulated output holds no tests: the simulation engine cannot write target-specific tests, so deterministic, target-derived probes are used instead
         resp = self.gateway.generate(
             "whitebox_test_generator", system_prompt, user_prompt,
-            json_output=True, required_keys_any=["tests", "code"], simulated=lambda alias: {"tests": []},
+            json_output=True, schema=TESTS_SCHEMA, simulated=lambda alias: {"tests": []},
         )
 
         raw_tests = resp.get("tests")

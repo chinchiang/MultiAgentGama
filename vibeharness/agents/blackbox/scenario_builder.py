@@ -9,6 +9,7 @@ from typing import List, Optional, Tuple
 import os
 from vibeharness.core.models import ThreatItem, GeneratedTest, CodeSymbol, text_or
 from vibeharness.core.fanout import Call, fan_out
+from vibeharness.core.model_output import ANY, OutputSchema
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.codecheck import check_test_code_for, strip_code_fences
 from vibeharness.core.i18n import bi, en_only
@@ -18,6 +19,10 @@ from vibeharness.core.sanitize import (
 )
 
 logger = logging.getLogger("VibeHarness.ScenarioBuilder")
+
+# 攻擊合成回答的形狀（core/model_output.py）
+# The shape of an attack-synthesis answer (core/model_output.py)
+CODE_SCHEMA = OutputSchema(required={"code": ANY})
 
 # 每個威脅所顯示目標程式碼的估計 token 預算
 # Estimated-token budget for the target code shown per threat
@@ -363,7 +368,7 @@ class ThreatScenarioBuilder:
         # 模擬輸出沒有測試：模擬引擎無法撰寫針對目標的測試，這個威脅記為未測試
         # The Simulated output holds no tests: the simulation engine cannot write target-specific tests, so the threat is marked untested
         resp = self.gateway.generate(
-            "blackbox_test_synthesizer", system_prompt, user_prompt, json_output=True, required_keys=["code"],
+            "blackbox_test_synthesizer", system_prompt, user_prompt, json_output=True, schema=CODE_SCHEMA,
             simulated=lambda alias: {"tests": []},
         )
 

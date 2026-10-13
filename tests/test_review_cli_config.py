@@ -16,6 +16,7 @@ from vibeharness.core.llm_gateway import ConfigError, LLMGateway, LLMGatewayErro
 from vibeharness.core.models import AgentCallRecord
 from vibeharness.core.sandbox import SandboxUnavailableError
 from vibeharness.core.settings import freeze, load_settings
+from vibeharness.core.model_output import ANY, OutputSchema
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -314,7 +315,7 @@ def test_reask_after_a_fallback_answer_tries_the_primary_again(tmp_path, monkeyp
         "agents:\n  x: {model_alias: a}\n"
     )
     gw = LLMGateway(_write_config(tmp_path, text))
-    result = gw.generate("x", "s", "u", required_keys=["ok"])
+    result = gw.generate("x", "s", "u", schema=OutputSchema(required={"ok": ANY}))
     assert result["ok"] == 1
     assert fake.models == ["primary-model", "fallback-model", "primary-model", "fallback-model"]
 

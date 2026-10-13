@@ -18,6 +18,7 @@ from vibeharness.core.llm_gateway import (
     DEFAULT_CONFIG_PATH, DEFAULT_TEMPERATURE, ConfigError, LLMGateway, discovered_config_violations, load_config_file,
 )
 from vibeharness.core.sandbox import LocalSubprocessSandbox
+from vibeharness.core.model_output import ANY, OutputSchema
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _BASH = shutil.which("bash")
@@ -239,7 +240,7 @@ def test_null_temperature_uses_the_default_and_never_sends_none(tmp_path, fake_l
     models = {"deepseek": {"model": "deepseek/deepseek-v4-pro", "api_key_env": "DEEPSEEK_API_KEY"}}
     gateway = LLMGateway(_config_file(tmp_path, {"execution_mode": "live"}, models=models,
                                       agents={"a": {"model_alias": "deepseek", "temperature": None}}))
-    gateway.generate("a", "s", "u", required_keys=["ok"])
+    gateway.generate("a", "s", "u", schema=OutputSchema(required={"ok": ANY}))
     assert fake.calls[0]["temperature"] == DEFAULT_TEMPERATURE == 0.2
 
 

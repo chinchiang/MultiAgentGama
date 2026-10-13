@@ -8,8 +8,13 @@ from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import render_symbols, truncate_to_tokens
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
 from vibeharness.core.fanout import Call, fan_out
+from vibeharness.core.model_output import ANY, OutputSchema
 
 logger = logging.getLogger("VibeHarness.Debater")
+
+# 驗證者回答的形狀（core/model_output.py）
+# The shape of a verifier's answer (core/model_output.py)
+VERDICTS_SCHEMA = OutputSchema(required={"verdicts": ANY})
 
 VERIFIER_PREFIX = "whitebox_verifier_"
 _VERDICTS = {"confirm", "reject", "unsure"}
@@ -205,7 +210,7 @@ class MultiModelDebater:
         # 模擬輸出沒有裁決：樣板無法評判針對目標的發現，辯論者會略過模擬的裁決
         # The Simulated output holds no verdicts: a template cannot judge target-specific findings, and the debater
         # ignores simulated verdicts
-        resp = self.gateway.generate(agent_id, system_prompt, user_prompt, json_output=True, required_keys=["verdicts"],
+        resp = self.gateway.generate(agent_id, system_prompt, user_prompt, json_output=True, schema=VERDICTS_SCHEMA,
                                      simulated=lambda alias: {"verdicts": []})
         simulated = self.gateway.is_simulated(resp)
         if simulated or not self.gateway.is_usable(resp):

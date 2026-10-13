@@ -27,6 +27,7 @@ from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler, D
 from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
 from vibeharness.reports.report_generator import ReportGenerator
 from vibeharness.core.harness import VibeHarnessCommander
+from vibeharness.core.model_output import ANY, OutputSchema
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
@@ -448,16 +449,18 @@ def test_clean_and_parse_json_robustness():
 
 
 def test_validate_output_any_of_keys():
-    assert LLMGateway._validate_output({"tests": []}, True, None, ["tests", "code"]) is None
-    assert LLMGateway._validate_output({"code": "def test_x(): pass"}, True, None, ["tests", "code"]) is None
-    assert LLMGateway._validate_output(None, True, None, ["tests", "code"]) == REASON_NOT_VALID_JSON
+    tests_or_code = OutputSchema(any_of={"tests": ANY, "code": ANY})
+    assert LLMGateway._validate_output({"tests": []}, True, tests_or_code) is None
+    assert LLMGateway._validate_output({"code": "def test_x(): pass"}, True, tests_or_code) is None
+    assert LLMGateway._validate_output(None, True, tests_or_code) == REASON_NOT_VALID_JSON
     assert en_only(REASON_NOT_VALID_JSON) == "response is not valid JSON"
-    problem = LLMGateway._validate_output({"oops": 1}, True, None, ["tests", "code"])
+    problem = LLMGateway._validate_output({"oops": 1}, True, tests_or_code)
     assert problem is not None and "none of the expected" in problem
     # 全部必備（all-of）的語意不變
     # all-of semantics are unchanged
-    assert en_only(LLMGateway._validate_output({"a": 1}, True, ["a", "b"], None)) == "response is missing required key(s): b"
-    assert LLMGateway._validate_output({"a": 1, "b": 2}, True, ["a", "b"], None) is None
+    both = OutputSchema(required={"a": ANY, "b": ANY})
+    assert en_only(LLMGateway._validate_output({"a": 1}, True, both)) == "response is missing required key(s): b"
+    assert LLMGateway._validate_output({"a": 1, "b": 2}, True, both) is None
 
 
 def test_garbage_json_object_is_recorded_as_invalid_call(fake_live):
@@ -470,7 +473,7 @@ def test_garbage_json_object_is_recorded_as_invalid_call(fake_live):
     gw = LLMGateway(CONFIG, execution_mode="live")
     fake_live(lambda s, u: json.dumps({"sorry": "no tests in here"}))
     result = gw.generate("whitebox_test_generator", "sys", "user", json_output=True,
-                         required_keys_any=["tests", "code"])
+                         schema=OutputSchema(any_of={"tests": ANY, "code": ANY}))
     assert set(result.keys()) == {PROVENANCE_KEY}
     assert gw.call_log[-1].mode == "invalid"
     assert "none of the expected" in gw.call_log[-1].reason

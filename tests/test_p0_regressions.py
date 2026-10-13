@@ -16,6 +16,7 @@ from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
 from vibeharness.runners.test_executor import TestSuiteExecutor
 from vibeharness.core.harness import VibeHarnessCommander
 from vibeharness.reports.report_generator import METRIC_TABLE_HEADER
+from vibeharness.core.model_output import ANY, OutputSchema
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
@@ -535,7 +536,7 @@ def test_fallback_threat_ids_have_no_gaps(fake_live):
 def test_unparseable_live_output_is_recorded_invalid(fake_live):
     fake_live(lambda s, u: "Sorry, I cannot help with that.")
     gateway = LLMGateway(CONFIG, execution_mode="live")
-    resp = gateway.generate("whitebox_reviewer_claude", "sys", "prompt", required_keys=["findings"])
+    resp = gateway.generate("whitebox_reviewer_claude", "sys", "prompt", schema=OutputSchema(required={"findings": ANY}))
     assert not gateway.is_usable(resp)
     assert "findings" not in resp
     # 無法使用的回答會再問一次（登記為 `retried`），然後登記為 `invalid`
@@ -546,7 +547,7 @@ def test_unparseable_live_output_is_recorded_invalid(fake_live):
 def test_missing_required_key_is_recorded_invalid(fake_live):
     fake_live(lambda s, u: '{"something_else": []}')
     gateway = LLMGateway(CONFIG, execution_mode="hybrid")
-    gateway.generate("blackbox_threat_modeler", "sys", "prompt", required_keys=["threats"])
+    gateway.generate("blackbox_threat_modeler", "sys", "prompt", schema=OutputSchema(required={"threats": ANY}))
     assert gateway.invalid_calls and "threats" in gateway.invalid_calls[0].reason
 
 
