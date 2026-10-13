@@ -22,6 +22,12 @@
 
 - 新增 `tests/test_quality_gate.py`，只透過 `evaluate()` 測試閘門：每一級判定結果、每一種證據缺口代碼、缺口順序、基準的新／已知拆分與建議順序。
 
+### 文件
+
+- 設計文件的品質閘門一章說明 `evaluate(GateEvidence)` 是唯一決定判定結果的地方，證據缺口表列出每一項的 `GapCode` 與 `GateEvidence` 欄位，行號引用也更新為目前的程式碼（commit `ecdb9a3`）。
+- 新增 `CONTEXT.md`：領域用語的中英雙語詞彙表（品質閘門、判定結果、證據缺口、已執行的證據、假設、資安突破、基準、已知問題、阻擋性規則命中）。
+- README 的專案結構列出 `core/gate.py`、`core/verdict.py` 與 `tests/test_quality_gate.py`。
+
 ## [0.12.0] - 2026-10-12
 
 第六輪審查：中文的威脅與發現不再被誤合併；`--changed-since` 不再漏掉非 ASCII 檔名或 symlink 目標下的檔案；基準線鍵分得出不同檔案的同名函式，換機器重跑時也不會把名稱含點的目錄當成檔案；`--estimate` 與逐測重跑的錯誤原因也一併修正。

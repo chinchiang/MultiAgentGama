@@ -22,6 +22,12 @@ All notable changes to this project are documented in this file. The format foll
 
 - New `tests/test_quality_gate.py` tests the gate through `evaluate()` only: every verdict rung, a case for every evidence-gap code, gap order, the baseline new/known split and recommendation order.
 
+### Documentation
+
+- The design document's quality-gate chapter describes `evaluate(GateEvidence)` as the single place the verdict is decided, its evidence-gap table gives each gap's `GapCode` and `GateEvidence` field, and its line references are updated to the current code (commit `ecdb9a3`).
+- New `CONTEXT.md`: a bilingual glossary of the domain terms (Quality Gate, Verdict, Evidence gap, Executed evidence, Hypothesis, Breach, Baseline, Known problem, Blocking rule hit).
+- The README project trees list `core/gate.py`, `core/verdict.py` and `tests/test_quality_gate.py`.
+
 ## [0.12.0] - 2026-10-12
 
 Sixth review round: Chinese threats and findings are no longer merged by mistake; `--changed-since` no longer drops non-ASCII file names or the files under a symlinked target; baseline keys tell same-named functions in different files apart and do not take a dotted directory for a file when replayed on another machine; the `--estimate` mutation ceiling and the failure reason of a per-test rerun are fixed too.
