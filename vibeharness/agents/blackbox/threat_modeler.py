@@ -2,13 +2,12 @@ import functools
 import logging
 import os
 import re
-import threading
 import yaml
-from concurrent.futures import Future, ThreadPoolExecutor
 from pydantic import ValidationError
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+from typing import Any, Dict, List, Optional
 from vibeharness.core.models import ThreatItem, ThreatModelReport, STRIDECategory, FindingSeverity, CodeSymbol
-from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
+from vibeharness.core.fanout import Call, fan_out
+from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.i18n import bi
 from vibeharness.core.codecontext import render_symbols, batch_symbols
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
@@ -52,79 +51,6 @@ _SEVERITY_RANK = {
     FindingSeverity.CRITICAL: 0, FindingSeverity.HIGH: 1, FindingSeverity.MEDIUM: 2,
     FindingSeverity.LOW: 3, FindingSeverity.INFO: 4,
 }
-
-_T = TypeVar("_T")
-
-
-def run_ordered(calls: List[Callable[[], _T]], max_workers: int) -> List[Tuple[Optional[_T], Optional[Exception]]]:
-    """並行執行彼此獨立的呼叫，依呼叫順序回傳每一個的（結果, 例外）。
-
-    一般例外會記成該呼叫的結果，讓其他呼叫繼續；LLMGatewayError（嚴格的 live 模式）與
-    KeyboardInterrupt 會中止整批：還沒開始的呼叫被取消、絕不送出，然後才把例外往外拋。
-    失敗的工作執行緒在自己的執行緒裡就設下中止旗標，所以它不會再接手佇列中的下一個呼叫。
-    Runs independent calls concurrently and returns (result, exception) for each, in call order.
-
-    An ordinary exception becomes that call's result so the others carry on; an LLMGatewayError (strict
-    live mode) or a KeyboardInterrupt aborts the batch: calls that have not started are cancelled and never
-    sent, then the exception propagates. The failing worker raises the abort flag in its own thread, so it
-    never picks up the next queued call.
-    """
-    abort = threading.Event()
-
-    def guarded(call: Callable[[], _T]) -> _T:
-        if abort.is_set():
-            raise _Aborted()
-        try:
-            return call()
-        except BaseException as e:
-            # 致命的失敗（嚴格 live 模式或中斷）在這個執行緒裡就中止整批，佇列中的下一個呼叫不會開始
-            # A fatal failure (strict live mode or an interrupt) aborts the batch right in this thread, so the
-            # next queued call never starts
-            if isinstance(e, LLMGatewayError) or not isinstance(e, Exception):
-                abort.set()
-            raise
-
-    results: List[Tuple[Optional[_T], Optional[Exception]]] = []
-    with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(calls) or 1))) as pool:
-        futures = [pool.submit(guarded, call) for call in calls]
-        try:
-            for future in futures:
-                try:
-                    results.append((future.result(), None))
-                except LLMGatewayError:
-                    raise
-                except _Aborted:
-                    # 致命的失敗可能排在後面：等所有呼叫結束後拋出它，而不是拋出中止標記
-                    # The fatal failure may come later in call order: raise it once all calls are done,
-                    # never the abort marker
-                    raise _fatal_error(futures) from None
-                except Exception as e:
-                    results.append((None, e))
-        except BaseException:
-            abort.set()
-            for future in futures:
-                future.cancel()
-            raise
-    return results
-
-
-def _fatal_error(futures: "List[Future[Any]]") -> BaseException:
-    """已中止的一批呼叫中，第一個致命的例外（LLMGatewayError 或非 Exception 的中斷）。
-    The first fatal exception (LLMGatewayError or a non-Exception interrupt) of an aborted batch of calls."""
-    for future in futures:
-        if future.cancelled():
-            continue
-        error = future.exception()
-        if error is not None and not isinstance(error, _Aborted) and (
-                isinstance(error, LLMGatewayError) or not isinstance(error, Exception)):
-            return error
-    return LLMGatewayError(bi("一批模型呼叫已中止", "a batch of model calls was aborted"))
-
-
-class _Aborted(Exception):
-    """整批已中止後，佇列中尚未開始的呼叫收到的標記例外（從不往外拋給呼叫端）。
-    Marker raised by a queued call that starts after the batch was aborted (never surfaces to callers)."""
-
 
 DEFAULT_TRUST_BOUNDARIES = ["Internet to Public Gateway", "Gateway to Database"]
 DEFAULT_ASSETS = ["User Credentials", "Business Records"]
@@ -327,23 +253,17 @@ class AutomatedThreatModeler:
         batches = batch_symbols(ordered, root_dir or os.getcwd(), BATCH_MAX_TOKENS, BATCH_MAX_SYMBOLS) or [[]]
 
         logger.info(bi("開始 STRIDE 與 OWASP 威脅建模...", "Initiating STRIDE & OWASP threat modeling..."))
-        calls: List[Callable[[], Dict[str, Any]]] = [
-            functools.partial(self._model_batch, batch, system_prompt, system_description, entrypoints_summary,
-                              routes_summary, root_dir, ai_components)
+        calls: List[Call[Dict[str, Any]]] = [
+            Call("blackbox_threat_modeler", ("威脅建模批次", "Threat modeler batch"), functools.partial(
+                self._model_batch, batch, system_prompt, system_description, entrypoints_summary, routes_summary,
+                root_dir, ai_components))
             for batch in batches
         ]
-        responses: List[Dict[str, Any]] = []
-        # LLMGatewayError 與 KeyboardInterrupt 會在取消尚未開始的批次後往外拋
-        # LLMGatewayError and KeyboardInterrupt propagate after the batches not yet started are cancelled
-        for resp, error in run_ordered(calls, self.gateway.max_concurrent_calls):
-            if error is not None:
-                logger.error(bi(f"威脅建模批次失敗：{type(error).__name__}: {error}",
-                                f"Threat modeler batch failed: {type(error).__name__}: {error}"))
-                # 記入 call_log，讓品質閘門把缺少的批次視為證據缺口
-                # Booked in call_log so the quality gate sees the missing batch as an evidence gap
-                self.gateway.record_failure("blackbox_threat_modeler", f"{type(error).__name__}: {error}")
-                resp = {}
-            responses.append(resp or {})
+        # 當掉的批次由 fan_out 記成證據缺口；LLMGatewayError 與 KeyboardInterrupt 會在取消尚未開始的批次後往外拋
+        # fan_out books a crashed batch as an evidence gap; LLMGatewayError and KeyboardInterrupt propagate after the
+        # batches not yet started are cancelled
+        responses: List[Dict[str, Any]] = [
+            resp or {} for resp in fan_out(self.gateway, calls, fallback={}, logger=logger)]
 
         report_fields: Optional[Dict[str, Any]] = None
         threats: List[ThreatItem] = []

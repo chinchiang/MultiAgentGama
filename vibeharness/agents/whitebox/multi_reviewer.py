@@ -1,15 +1,15 @@
+import functools
 import logging
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any, Optional
 from pydantic import ValidationError
 from vibeharness.core.models import CodeSymbol, ReviewFinding, FindingSeverity, text_or
-from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
+from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import render_symbols, batch_symbols
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
-from vibeharness.agents.whitebox.common import cancel_pending
+from vibeharness.core.fanout import Call, fan_out
 
 logger = logging.getLogger("VibeHarness.MultiReviewer")
 
@@ -91,33 +91,17 @@ class HeterogeneousReviewerEnsemble:
         batches = batch_symbols(symbols, root, self.BATCH_MAX_TOKENS, self.BATCH_MAX_SYMBOLS)
         jobs = [(reviewer, batch) for reviewer in self.reviewer_agents for batch in batches]
 
-        # 審查者是彼此獨立的模型，所以它們的呼叫並行執行。一個當掉的批次
-        # 不能丟掉其他所有批次（已經付費的）結果；live 模式的失敗
-        # 仍會往上傳遞，讓執行大聲地失敗。
-        # Reviewers are independent models, so their calls run concurrently. A crashed batch
-        # must not discard every other batch's (already paid-for) results; live-mode failures
-        # still propagate so the run fails loudly.
-        with ThreadPoolExecutor(max_workers=min(self.gateway.max_concurrent_calls, len(jobs))) as pool:
-            futures = [pool.submit(self._review_batch, job[0], job[1], root) for job in jobs]
-            responses = []
-            try:
-                for job, future in zip(jobs, futures, strict=True):
-                    try:
-                        responses.append(future.result())
-                    except LLMGatewayError:
-                        raise
-                    except Exception as e:
-                        logger.error(bi(f"{job[0]['name']} 的審查批次失敗：{type(e).__name__}: {e}",
-                                        f"Reviewer batch for {job[0]['name']} failed: {type(e).__name__}: {e}"))
-                        # 記為一次無效呼叫：該批次的發現是缺漏，而不是不存在
-                        # Booked as an invalid call: the batch's findings are missing, not absent
-                        self.gateway.record_failure(job[0]["agent_id"], f"{type(e).__name__}: {e}")
-                        responses.append(({}, False))
-            except BaseException:
-                # live 失敗或 Ctrl-C：取消尚未開始的呼叫，不再為一次注定失敗的執行付費
-                # A live failure or Ctrl-C: cancel the calls not started yet instead of paying for a run that already failed
-                cancel_pending(futures)
-                raise
+        # 審查者是彼此獨立的模型，所以它們的呼叫並行執行。一個當掉的批次不能丟掉其他所有批次（已經付費的）結果：
+        # fan_out 把它記成無效呼叫（該批次的發現是缺漏，而不是不存在）；live 模式的失敗仍會往上傳遞，讓執行大聲地失敗。
+        # Reviewers are independent models, so their calls run concurrently. A crashed batch must not discard every
+        # other batch's (already paid-for) results: fan_out books it as an invalid call (the batch's findings are
+        # missing, not absent); live-mode failures still propagate so the run fails loudly.
+        calls = [
+            Call(reviewer["agent_id"], (f"{reviewer['name']} 的審查批次", f"Reviewer batch for {reviewer['name']}"),
+                 functools.partial(self._review_batch, reviewer, batch, root))
+            for reviewer, batch in jobs
+        ]
+        responses = fan_out(self.gateway, calls, fallback=({}, False), logger=logger, _abort_when_collected=True)
 
         all_findings: List[ReviewFinding] = []
         counters: Dict[str, int] = {}

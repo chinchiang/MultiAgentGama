@@ -257,7 +257,7 @@ def test_qualified_method_name_does_not_drag_in_a_same_named_function():
 
 @pytest.mark.parametrize("fatal", [LLMGatewayError("down"), KeyboardInterrupt()])
 def test_run_ordered_cancels_queued_calls_after_a_fatal_failure(fatal):
-    from vibeharness.agents.blackbox.threat_modeler import run_ordered
+    from vibeharness.core.fanout import run_ordered
     started = []
     lock = threading.Lock()
 
@@ -276,7 +276,7 @@ def test_run_ordered_cancels_queued_calls_after_a_fatal_failure(fatal):
 
 
 def test_run_ordered_raises_the_fatal_error_even_when_it_comes_later():
-    from vibeharness.agents.blackbox.threat_modeler import run_ordered
+    from vibeharness.core.fanout import run_ordered
     gate = threading.Event()
 
     def slow():
@@ -293,7 +293,7 @@ def test_run_ordered_raises_the_fatal_error_even_when_it_comes_later():
 
 
 def test_run_ordered_keeps_ordinary_errors_per_call():
-    from vibeharness.agents.blackbox.threat_modeler import run_ordered
+    from vibeharness.core.fanout import run_ordered
 
     def boom():
         raise ValueError("x")
