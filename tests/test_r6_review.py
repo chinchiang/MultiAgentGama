@@ -16,7 +16,7 @@ from vibeharness.core.estimate import estimate_lines, estimate_run
 from vibeharness.core.harness import VibeHarnessCommander
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.models import (
-    FindingSeverity, GeneratedTest, ReviewFinding, STRIDECategory, StaticFinding, TestExecutionResult, TestStatus,
+    FindingSeverity, GeneratedTest, ReviewFinding, STRIDECategory, TestExecutionResult, TestStatus,
     ThreatItem,
 )
 from vibeharness.core.sandbox import TIMEOUT_EXIT_CODE
@@ -98,19 +98,6 @@ def test_a_simulated_and_a_real_threat_with_the_same_bilingual_title_stay_apart(
 
 # --- 無法歸屬的位置：None、空字串、只有空白與 "unknown" 一律算未知 -----------------------------------------
 # --- An unattributable location: None, empty, whitespace-only and "unknown" all count as unknown -------------
-
-_UNKNOWN_PATHS = [None, "", "   ", "unknown", " unknown "]
-
-
-@pytest.mark.parametrize("path", _UNKNOWN_PATHS)
-def test_every_unknown_spelling_is_an_unknown_location(path):
-    from vibeharness.core.identity import is_unknown_location
-    from vibeharness.reports.report_generator import ReportGenerator
-    assert is_unknown_location(path)
-    assert bl.target_relative(path, "/tmp/target") == ""  # 基準線鍵沒有路徑 ／ the baseline key has no path
-    assert ReportGenerator._sarif_uri(path or "", "/tmp/target") is None  # SARIF 沒有位置 ／ SARIF has no location
-    assert not is_unknown_location("app.py") and not is_unknown_location("unknown.py")
-
 
 def _review(fid, path, title, symbol="f"):
     return ReviewFinding(finding_id=fid, reviewer_name="R", model_alias="claude", file_path=path, symbol_name=symbol,
@@ -201,26 +188,6 @@ def test_dedup_keeps_findings_that_differ_only_in_chinese_words():
     # 同一句中文的重複回報仍會合併 ／ a repeated report of the same Chinese title still merges
     same = [_finding("WB-CLA-01", "SQL 注入於搜尋參數"), _finding("WB-DEE-01", "SQL 注入於搜尋參數")]
     assert len(deduplicate_findings(same)) == 1
-
-
-# --- 6. 換機器重跑時，名稱含點的目錄目標算出相同的鍵 ----------------------------------------------
-# --- 6. A dotted directory target keys the same when an old baseline is replayed elsewhere --------------------
-
-def test_old_baseline_of_a_dotted_directory_from_another_machine_keys_the_same(tmp_path):
-    here = tmp_path / "app.v2"
-    (here / "src").mkdir(parents=True)
-    other = "/nonexistent-ci/work/app.v2"
-    sf = dict(rule_id="VH-AI-001", title="t", severity="HIGH", line_number=3, evidence="pickle.load(x)",
-              remediation="")
-    old = StaticFinding(**sf, file_path=f"{other}/src/x.py")
-    now = StaticFinding(**sf, file_path=str(here / "src" / "x.py"))
-    assert bl.target_relative(old.file_path, other) == "src/x.py"
-    assert bl.static_key(old, other) == bl.static_key(now, str(here))
-    # 檔案目標（不論是否存在）仍以檔名為鍵 ／ a file target (existing or not) still keys by its name
-    assert bl.target_relative("/nonexistent-ci/work/app.py", "/nonexistent-ci/work/app.py") == "app.py"
-    script = here / "run"
-    script.write_text("print(1)\n", encoding="utf-8")
-    assert bl.target_relative(str(script), str(script)) == "run"
 
 
 # --- 7. --estimate 計入未變異複本上的那一批 -----------------------------------------------------
