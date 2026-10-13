@@ -67,8 +67,7 @@ class WhiteboxTestGenerator:
                  functools.partial(self._tests_for_finding, idx, finding, symbols, root, target_file))
             for idx, finding in enumerate(findings)
         ]
-        outcomes = fan_out(self.gateway, calls, fallback=([], False), logger=logger, _book_failures=False,
-                           _abort_when_collected=True)
+        outcomes = fan_out(self.gateway, calls, fallback=([], False), logger=logger, _book_failures=False)
 
         generated_tests: List[GeneratedTest] = []
         for finding, (tests, has_valid_test) in zip(findings, outcomes, strict=True):

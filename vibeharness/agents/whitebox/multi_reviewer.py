@@ -101,7 +101,7 @@ class HeterogeneousReviewerEnsemble:
                  functools.partial(self._review_batch, reviewer, batch, root))
             for reviewer, batch in jobs
         ]
-        responses = fan_out(self.gateway, calls, fallback=({}, False), logger=logger, _abort_when_collected=True)
+        responses = fan_out(self.gateway, calls, fallback=({}, False), logger=logger)
 
         all_findings: List[ReviewFinding] = []
         counters: Dict[str, int] = {}

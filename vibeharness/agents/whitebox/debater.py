@@ -109,7 +109,7 @@ class MultiModelDebater:
                      functools.partial(self._verify, job[0], findings, job[1], symbols, root_dir))
                 for job in jobs
             ]
-            results = fan_out(self.gateway, calls, fallback=([], False), logger=logger, _abort_when_collected=True)
+            results = fan_out(self.gateway, calls, fallback=([], False), logger=logger)
             for job_votes, simulated in results:
                 any_simulated = any_simulated or simulated
                 for idx, vote in job_votes:

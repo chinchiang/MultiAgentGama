@@ -175,6 +175,28 @@ def test_strict_live_failures_still_propagate_from_the_pool(tmp_path):
         builder.build_test_cases_from_threats([_threat(0)])
 
 
+def test_a_live_failure_starts_no_queued_reviewer_call(scripted, tmp_path):
+    """白箱代理在 live 失敗的那個工作執行緒裡就中止整批：主執行緒還在等前面較慢的呼叫時，
+    佇列中的審查呼叫不會開始，也不會付費。
+    A white-box agent aborts the batch right in the worker whose live call failed: while the main thread still
+    waits on an earlier, slower call, the queued reviewer calls never start and are never paid for."""
+    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
+    from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
+    (tmp_path / "svc.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
+    symbols = ASTExtractor().parse_file(str(tmp_path / "svc.py"))
+    transport = scripted({
+        "whitebox_reviewer_claude": lambda request: time.sleep(0.5) or {"findings": []},
+        "whitebox_reviewer_deepseek": RuntimeError("provider down"),
+        "*": {"findings": []},
+    })
+    gateway = LLMGateway(_config(tmp_path, max_concurrent_calls=2), execution_mode="live", transport=transport)
+    ensemble = HeterogeneousReviewerEnsemble(gateway)
+    assert [r["agent_id"] for r in ensemble.reviewer_agents][:2] == ["whitebox_reviewer_claude", "whitebox_reviewer_deepseek"]
+    with pytest.raises(LLMGatewayError):
+        ensemble.review_symbols(symbols, root_dir=str(tmp_path))
+    assert {r.agent_id for r in transport.requests} == {"whitebox_reviewer_claude", "whitebox_reviewer_deepseek"}
+
+
 # --- live 模型呼叫預算 ----------------------------------------------------------------------
 # --- Live model-call budget ----------------------------------------------------------------------
 

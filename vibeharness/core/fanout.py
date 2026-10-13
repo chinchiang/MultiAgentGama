@@ -34,7 +34,7 @@ class Call(Generic[_T]):
 
 
 def fan_out(gateway: LLMGateway, calls: Sequence[Call[_T]], *, fallback: _T, logger: logging.Logger,
-            _book_failures: bool = True, _abort_when_collected: bool = False) -> List[_T]:
+            _book_failures: bool = True) -> List[_T]:
     """依呼叫順序回傳每個呼叫的結果；當掉的呼叫記錄一行錯誤（以呼叫端的 logger）、記成無效呼叫，結果換成 `fallback`。
     並行數是閘道的 `max_concurrent_calls`；沒有呼叫時直接回傳空清單。
     Returns each call's result in call order; a call that crashes logs one error line (with the caller's logger), is
@@ -42,8 +42,6 @@ def fan_out(gateway: LLMGateway, calls: Sequence[Call[_T]], *, fallback: _T, log
     `max_concurrent_calls`; no calls means an empty list straight away."""
     if not calls:
         return []
-    if _abort_when_collected:
-        return _collect_in_order(gateway, calls, fallback, logger, _book_failures)
     results: List[_T] = []
     for call, (result, error) in zip(calls, run_ordered([c.run for c in calls], gateway.max_concurrent_calls), strict=True):
         if error is not None:
@@ -63,32 +61,6 @@ def _book(gateway: LLMGateway, call: "Call[Any]", error: Exception, logger: logg
         # 記入 call_log，讓品質閘門把缺少的結果視為證據缺口
         # Booked in call_log so the quality gate sees the missing result as an evidence gap
         gateway.record_failure(call.agent_id, f"{type(error).__name__}: {error}")
-
-
-def _collect_in_order(gateway: LLMGateway, calls: Sequence[Call[_T]], fallback: _T, logger: logging.Logger,
-                      book: bool) -> List[_T]:
-    """白箱代理原本的中止方式：主執行緒依序收集到致命的失敗時才取消尚未開始的呼叫。
-    The white-box agents' original abort: calls not started yet are cancelled only once the main thread, collecting
-    in order, reaches the fatal failure."""
-    with ThreadPoolExecutor(max_workers=min(gateway.max_concurrent_calls, len(calls))) as pool:
-        futures = [pool.submit(call.run) for call in calls]
-        results: List[_T] = []
-        try:
-            for call, future in zip(calls, futures, strict=True):
-                try:
-                    results.append(future.result())
-                except LLMGatewayError:
-                    raise
-                except Exception as e:
-                    _book(gateway, call, e, logger, book)
-                    results.append(fallback)
-        except BaseException:
-            # live 失敗或 Ctrl-C：取消尚未開始的呼叫，不再為一次注定失敗的執行付費
-            # A live failure or Ctrl-C: cancel the calls not started yet instead of paying for a run that already failed
-            for future in futures:
-                future.cancel()
-            raise
-    return results
 
 
 def run_ordered(calls: List[Callable[[], _T]], max_workers: int) -> List[Tuple[Optional[_T], Optional[Exception]]]:
