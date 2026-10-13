@@ -224,33 +224,6 @@ def test_go_file_and_dotenv_key_block_ready_to_ship_and_reach_sarif(tmp_path):
     assert ANTHROPIC_KEY not in (tmp_path / "r.md").read_text(encoding="utf-8")
 
 
-def test_unsupported_files_alone_keep_the_verdict_off_ready_to_ship(tmp_path):
-    from vibeharness.core.harness import VibeHarnessCommander
-    target = tmp_path / "t"
-    _write(target, "app.py", "def add(a, b):\n    return a + b\n")
-    for rel in ("a.go", "b.go", "c.java"):
-        _write(target, rel, "class X {}\n")
-    summary = VibeHarnessCommander(CONFIG, execution_mode="mock").run_full_pipeline(
-        str(target), output_report_path=str(tmp_path / "r.md"))
-    assert summary.overall_status != "READY_TO_SHIP"
-    gap = next(r for r in summary.inconclusive_reasons if "unsupported languages" in r)
-    assert "3 source file(s) in unsupported languages (go: 2, java: 1)" in gap and "不支援語言" in gap
-
-
-def test_truncated_config_scan_is_an_evidence_gap(tmp_path, monkeypatch):
-    from vibeharness.core.harness import VibeHarnessCommander
-    # max_config_files 是最後一個預設參數：改成 1 ／ max_config_files is the last default argument: make it 1
-    defaults = list(ASTExtractor.parse_directory.__defaults__)
-    monkeypatch.setattr(ASTExtractor.parse_directory, "__defaults__", tuple(defaults[:-1] + [1]))
-    target = tmp_path / "t"
-    _write(target, "app.py", "def add(a, b):\n    return a + b\n")
-    _write(target, "a.yaml", "k: v\n")
-    _write(target, "b.yaml", "k: v\n")
-    summary = VibeHarnessCommander(CONFIG, execution_mode="mock").run_full_pipeline(
-        str(target), output_report_path=str(tmp_path / "r.md"))
-    assert any("1 configuration-like file(s) were not fully secret-scanned" in r for r in summary.inconclusive_reasons)
-
-
 def test_config_and_unsupported_files_are_never_sent_to_a_model(tmp_path, fake_live):
     from vibeharness.core.harness import VibeHarnessCommander
     target = _target(tmp_path)

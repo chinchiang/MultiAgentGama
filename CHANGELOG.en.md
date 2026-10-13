@@ -21,6 +21,7 @@ All notable changes to this project are documented in this file. The format foll
 ### Tests
 
 - New `tests/test_quality_gate.py` tests the gate through `evaluate()` only: every verdict rung, a case for every evidence-gap code, gap order, the baseline new/known split and recommendation order.
+- Twelve end-to-end `run_full_pipeline` tests that only checked verdict or evidence-gap rules, and the pipeline half of the oversized-files test, are replaced by tests through `evaluate()` and one mock-pipeline wiring test that checks the extractor, the scanner, the configured limits and the reviewer roster reach the gate. The producers keep their own tests (a new one pins which symbols get None probes), and the end-to-end tests of the simulation, `--baseline`, a missing Node runtime, an unclassified black-box failure and a crash inside mutation testing stay as wiring tests.
 
 ### Documentation
 

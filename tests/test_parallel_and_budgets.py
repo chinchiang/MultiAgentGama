@@ -272,11 +272,10 @@ def test_zero_or_null_max_files_keeps_the_default(tmp_path):
         assert commander.max_files == DEFAULT_MAX_FILES
 
 
-def test_single_reviewer_model_is_an_evidence_gap(tmp_path):
-    """四個審查代理共用一個模型時無法互相交叉驗證（沒有模型會對自己的發現下判定）：
-    這次執行必須在關卡中說明，而不只在終端機上（OWASP LLM07:2026）。
-    Four reviewer agents on one model cannot cross-verify each other (no model rules on its own
-    findings): the run must say so in the gate, not only on the console (OWASP LLM07:2026)."""
+def test_reviewers_on_one_model_have_one_distinct_model(tmp_path):
+    """四個審查代理共用一個模型時只算一個不同的模型；閘門因此記為缺口（訊息與接線見 test_quality_gate.py，OWASP LLM07:2026）。
+    Four reviewer agents on one model count as one distinct model; the gate therefore records a gap (message and
+    wiring in test_quality_gate.py, OWASP LLM07:2026)."""
     from vibeharness.core.harness import VibeHarnessCommander
     with open(CONFIG, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
@@ -285,41 +284,13 @@ def test_single_reviewer_model_is_an_evidence_gap(tmp_path):
             meta["model_alias"] = "gemini"
     path = tmp_path / "single.yaml"
     path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
-    target = tmp_path / "app"
-    target.mkdir()
-    (target / "app.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
     commander = VibeHarnessCommander(config_path=str(path), execution_mode="mock")
     assert commander.multi_reviewer.distinct_models == ["gemini"]
-    summary = commander.run_full_pipeline(target_dir=str(target), output_report_path=str(tmp_path / "r.md"))
-    assert summary.overall_status != "READY_TO_SHIP"
-    assert any("Only one distinct reviewer model (gemini)" in r for r in summary.inconclusive_reasons)
-
-
-def test_exhausted_budget_makes_the_run_inconclusive(fake_live, tmp_path):
-    from vibeharness.core.harness import VibeHarnessCommander
-    target = tmp_path / "app"
-    target.mkdir()
-    (target / "app.py").write_text("def greet(name):\n    return 'hi ' + name\n", encoding="utf-8")
-    fake_live(lambda s, u: json.dumps({"findings": [], "verdicts": [], "threats": []}))
-    commander = VibeHarnessCommander(config_path=_config(tmp_path, max_model_calls=1), execution_mode="hybrid")
-    summary = commander.run_full_pipeline(target_dir=str(target), output_report_path=str(tmp_path / "r.md"))
-    assert summary.overall_status in ("INCONCLUSIVE", "NEEDS_FIXES")
-    assert any("max_model_calls budget (1) was exhausted" in r for r in summary.inconclusive_reasons)
+    assert len(commander.multi_reviewer.reviewer_agents) == 4
 
 
 # --- 來自設定檔與 CLI 的 max_files ----------------------------------------------------------
 # --- max_files from config and CLI ---------------------------------------------------------------
-
-def test_max_files_comes_from_config(tmp_path):
-    from vibeharness.core.harness import VibeHarnessCommander
-    target = tmp_path / "proj"
-    target.mkdir()
-    for i in range(4):
-        (target / f"m{i}.py").write_text(f"def f{i}(x):\n    return x\n", encoding="utf-8")
-    commander = VibeHarnessCommander(config_path=_config(tmp_path, max_files=2), execution_mode="mock")
-    summary = commander.run_full_pipeline(target_dir=str(target), output_report_path=str(tmp_path / "r.md"))
-    assert len(commander.ast_extractor.skipped_files) == 2
-    assert any("max_files limit (2)" in r for r in summary.inconclusive_reasons)
 
 
 def test_cli_limit_flags_override_the_config(monkeypatch, tmp_path):
@@ -451,10 +422,8 @@ def test_oversized_files_are_skipped_and_disclosed(tmp_path):
     ex.parse_directory(str(root), max_file_bytes=1000)
     assert [os.path.basename(p) for p in ex.oversized_files] == ["bundle.min.js"]
     assert "bundle.min.js" not in {os.path.basename(p) for p in ex.analyzed_files}
+    # 缺口本身由 test_quality_gate.py 的接線測試涵蓋 ／ the gap itself is covered by the wiring test in test_quality_gate.py
     from vibeharness.core.harness import VibeHarnessCommander
-    commander = VibeHarnessCommander(config_path=_config(tmp_path, max_file_bytes=1000), execution_mode="mock")
-    summary = commander.run_full_pipeline(target_dir=str(root), output_report_path=str(tmp_path / "r.md"))
-    assert any("exceed max_file_bytes" in r and "bundle.min.js" in r for r in summary.inconclusive_reasons)
     with pytest.raises(ConfigError, match="max_file_bytes"):
         VibeHarnessCommander(config_path=_config(tmp_path, max_file_bytes=-5), execution_mode="mock")
 

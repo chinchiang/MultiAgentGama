@@ -470,20 +470,6 @@ def test_disabled_by_default_changes_nothing(tmp_path, monkeypatch):
     assert "Mutation" not in (tmp_path / "r.md").read_text(encoding="utf-8")
 
 
-def test_mock_mode_run_reports_why_nothing_was_mutated(tmp_path):
-    """真的跑一次 mock 管線並開啟突變測試：沒有通過的模型測試，所以回報原因（缺口），不編造分數。
-    A real mock-mode run with mutation testing on: no passed model tests, so a reason is reported (a gap), not an invented score."""
-    target = tmp_path / "t"
-    target.mkdir()
-    (target / "ok.py").write_text("def greet(name):\n    return 'hi ' + name\n", encoding="utf-8")
-    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
-    commander.set_mutation(True)
-    summary = commander.run_full_pipeline(target_dir=str(target), base_url="http://localhost:59999",
-                                          output_report_path=str(tmp_path / "r.md"))
-    assert summary.mutation is not None and summary.mutation.score is None and summary.mutation.skipped_reason
-    assert any("requested but has no conclusion" in r for r in summary.inconclusive_reasons)
-
-
 def test_a_crash_inside_mutation_testing_becomes_a_gap_not_a_failed_audit(tmp_path, monkeypatch):
     """突變測試內部出錯不會讓整個稽核失敗：揭露為證據缺口。
     An error inside mutation testing does not fail the whole audit: it is disclosed as an evidence gap."""

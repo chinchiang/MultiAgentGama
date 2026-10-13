@@ -261,7 +261,7 @@ MultiAgentGama/
 │   ├── test_parallel_and_budgets.py    # Parallel test generation, model-call budget, file / worker caps
 │   ├── test_prompt_context.py          # Live mode: prompts carry real code and import paths, gateway call robustness
 │   ├── test_quality_fixes.py           # Packaging, model-output robustness, execution and SARIF fix regressions
-│   ├── test_quality_gate.py            # The quality gate through evaluate() only: verdict rungs, every evidence-gap code, gap order, baseline split, recommendations
+│   ├── test_quality_gate.py            # The quality gate through evaluate(): verdict rungs, every evidence-gap code, gap order, baseline split, recommendations; one pipeline wiring test
 │   ├── test_r2_cli_gateway.py          # Second review round: null confirmed count without verification, exit 5 on a broken install, reserved keys, call-log order, --target default, --init-config, config discovery
 │   ├── test_r2_executor_sandbox.py     # Target-load attribution, per-file size cap, non-dumpable switch, JS batch budgets, assertions in same-module helpers, Windows fake home
 │   ├── test_r2_extractor_scanner.py    # JS/TS lexer recursion and time bounds, JSX scan budget, VH-AI-006 argv program resolution, root / wildcard route matching

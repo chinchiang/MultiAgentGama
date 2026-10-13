@@ -1,8 +1,12 @@
-"""品質閘門（core/gate.py）：只透過 evaluate() 測試，不需要 pipeline、閘道或沙盒。
-The quality gate (core/gate.py): tested only through evaluate(), with no pipeline, gateway or sandbox."""
+"""品質閘門（core/gate.py）：只透過 evaluate() 測試，不需要 pipeline、閘道或沙盒；最後一個測試跑一次 mock
+pipeline，確認各來源的事實確實送進閘門。
+The quality gate (core/gate.py): tested only through evaluate(), with no pipeline, gateway or sandbox; the last
+test runs one mock pipeline to check that each source's facts actually reach the gate."""
+import os
 from dataclasses import replace
 
 import pytest
+import yaml
 
 from vibeharness.core.baseline import Baseline, breach_key, finding_key, static_key
 from vibeharness.core.gate import (
@@ -14,6 +18,8 @@ from vibeharness.core.models import (
     StaticFinding, TestExecutionResult, TestStatus, ThreatItem, ThreatModelReport,
 )
 from vibeharness.core.verdict import Verdict
+
+CONFIG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vibeharness", "config", "agents_config.yaml")
 
 TARGET = "/srv/app"
 
@@ -203,6 +209,44 @@ def test_gap_messages_quote_the_limits():
     assert "max_file_bytes (1000)" in reasons and "big.py" in reasons and "max_files limit (200)" in reasons
 
 
+def test_gap_messages_name_the_budget_the_model_and_each_invalid_call():
+    evidence = _with(clean(call_log=[
+        _call("simulated", BUDGET_EXHAUSTED_REASON),
+        _call("invalid", "agent call crashed before producing output: ValueError: boom", agent="whitebox_reviewer_glm"),
+        _call("invalid", None, agent="blackbox_threat_modeler"),
+    ]), "review", reviewer_models=["gemini"])
+    result = evaluate(replace(evidence, limits=replace(evidence.limits, max_model_calls=1)))
+    reasons = {gap.code: gap.message for gap in result.gaps}
+    assert "max_model_calls budget (1) was exhausted; 1 later agent call(s)" in reasons[GapCode.BUDGET_EXHAUSTED]
+    assert "Only one distinct reviewer model (gemini)" in reasons[GapCode.SINGLE_REVIEWER_MODEL]
+    assert reasons[GapCode.INVALID_OUTPUT].endswith(
+        ": blackbox_threat_modeler; whitebox_reviewer_glm (agent call crashed before producing output: ValueError: boom)")
+
+
+def test_unsupported_language_gap_counts_per_language_in_both_languages():
+    evidence = _with(clean(), "scope", unsupported_count=3, unsupported_languages={"java": 1, "go": 2},
+                     unsupported_files=["/srv/app/a.go", "/srv/app/b.go", "/srv/app/c.java"])
+    gap = next(g for g in evaluate(evidence).gaps if g.code is GapCode.UNSUPPORTED_LANGUAGES)
+    assert "3 source file(s) in unsupported languages (go: 2, java: 1) were not analyzed: a.go, b.go, c.java" in gap.message
+    assert "不支援語言" in gap.message
+
+
+def test_no_js_gap_when_no_js_was_detected():
+    evidence = _with(clean(), "scope", detected_langs=["Python", "Go"], unsupported_count=1, unsupported_languages={"go": 1})
+    assert not any("JS/TS" in reason for reason in evaluate(evidence).reasons)
+
+
+def test_modeled_critical_threats_alone_never_block():
+    """建模出的威脅是假設：只有已確認的突破能阻擋 ／ Modeled threats are hypotheses: only a confirmed breach blocks."""
+    threats = [_threat(f"THREAT-0{i}") for i in range(4)]
+    for t in threats:
+        t.severity = FindingSeverity.CRITICAL
+    result = evaluate(clean(threat_report=ThreatModelReport(system_description="app", threats=threats),
+                            call_log=[_call("invalid", "not json", agent="blackbox_threat_modeler")]))
+    assert result.verdict is Verdict.INCONCLUSIVE and result.breaches == 0
+    assert _codes(result) == [GapCode.INVALID_OUTPUT]
+
+
 def test_mutation_at_the_threshold_is_not_a_gap():
     evidence = _with(clean(), "execution", mutation_report=MutationReport(score=80.0))
     assert evaluate(evidence).verdict is Verdict.READY_TO_SHIP
@@ -263,3 +307,51 @@ def test_surviving_mutants_get_a_recommendation():
     result = evaluate(evidence)
     assert result.verdict is Verdict.READY_TO_SHIP
     assert "app.py:1, app.py:2, app.py:3 so the tests catch these 4 surviving mutant(s)" in result.recommendations[-1]
+
+
+# --- pipeline 接線 ／ pipeline wiring ------------------------------------------------------------
+
+def test_pipeline_wires_scope_limits_and_review_facts_into_the_gate(tmp_path, monkeypatch):
+    """一次 mock 執行：擷取器、掃描器、設定上限與審查名單的事實都必須出現在閘門的缺口裡（訊息規則本身由上面的測試涵蓋）。
+    One mock run: the facts of the extractor, the scanner, the configured limits and the reviewer roster must all
+    reach the gate's gaps (the message rules themselves are covered by the tests above)."""
+    from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
+    from vibeharness.core.harness import VibeHarnessCommander
+    with open(CONFIG, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    cfg["global"].update(max_files=4, max_file_bytes=1000)
+    for agent_id, meta in cfg["agents"].items():
+        if agent_id.startswith(("whitebox_reviewer_", "whitebox_verifier_")):
+            meta["model_alias"] = "gemini"
+    config = tmp_path / "single.yaml"
+    config.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    target = tmp_path / "t"
+    target.mkdir()
+    files = {"app.py": "def add(a, b):\n    return a + b\n", "bad.py": "def broken(:\n", "big.py": "x = 1\n" * 400,
+             "m1.py": "def f1(x):\n    return x\n", "m2.py": "def f2(x):\n    return x\n", "m3.py": "def f3(x):\n    return x\n",
+             "main.go": "package main\n\nfunc main() {}\n", "a.yaml": "k: v\n", "big.json": '{"k": "' + "v" * 2000 + '"}'}
+    for name, text in files.items():
+        (target / name).write_text(text, encoding="utf-8")
+    original = AISecurityStaticScanner.scan_files
+
+    def scan_files(self, paths):
+        findings = original(self, paths)
+        self.incomplete_files = [str(target / "app.py")]
+        return findings
+    monkeypatch.setattr(AISecurityStaticScanner, "scan_files", scan_files)
+
+    commander = VibeHarnessCommander(config_path=str(config), execution_mode="mock")
+    summary = commander.run_full_pipeline(target_dir=str(target), output_report_path=str(tmp_path / "r.md"))
+    assert summary.overall_status != "READY_TO_SHIP"
+    reasons = "\n".join(summary.inconclusive_reasons)
+    for expected in (
+        "Only one distinct reviewer model (gemini)",
+        "1 source file(s) could not be parsed",
+        "could not fully scan 1 source file(s)",
+        "1 source file(s) exceed max_file_bytes (1000) and were not analyzed: big.py",
+        "1 source file(s) were skipped by the max_files limit (4)",
+        "1 source file(s) in unsupported languages (go: 1) were not analyzed: main.go",
+        "1 configuration-like file(s) were not fully secret-scanned",
+    ):
+        assert expected in reasons, expected

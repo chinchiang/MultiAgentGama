@@ -261,7 +261,7 @@ MultiAgentGama/
 │   ├── test_parallel_and_budgets.py    # 測試生成並行、模型呼叫預算、檔案／worker 上限
 │   ├── test_prompt_context.py          # live 模式：提示帶入真實程式碼與 import 路徑、閘道呼叫健壯性
 │   ├── test_quality_fixes.py           # 打包、模型輸出健壯性、執行與 SARIF 修正的回歸測試
-│   ├── test_quality_gate.py            # 只透過 evaluate() 測試品質閘門：各級判定、每種證據缺口代碼、缺口順序、基準拆分、建議
+│   ├── test_quality_gate.py            # 透過 evaluate() 測試品質閘門：各級判定、每種證據缺口代碼、缺口順序、基準拆分、建議；另有一個 pipeline 接線測試
 │   ├── test_r2_cli_gateway.py          # 第二輪審查：未驗證時已確認數為 null、安裝不完整時 exit 5、保留鍵、呼叫紀錄順序、--target 預設、--init-config、設定檔探索
 │   ├── test_r2_executor_sandbox.py     # 目標載入失敗的歸因、單檔大小上限、不可 dump 的開關、JS 分批預算、同模組輔助函式的斷言、Windows 假家目錄
 │   ├── test_r2_extractor_scanner.py    # JS/TS lexer 的遞迴與時間上限、JSX 掃描預算、VH-AI-006 argv 程式解析、根路由／萬用路由比對
