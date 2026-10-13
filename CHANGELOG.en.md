@@ -24,7 +24,7 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Documentation
 
-- The design document's quality-gate chapter describes `evaluate(GateEvidence)` as the single place the verdict is decided, its evidence-gap table gives each gap's `GapCode` and `GateEvidence` field, and its line references are updated to the current code (commit `ecdb9a3`).
+- The design document's quality-gate chapter describes `evaluate(GateEvidence)` as the single place the verdict is decided, its evidence-gap table gives each gap's `GapCode` and `GateEvidence` field, and its line references are updated to the current code (commit `ab5e9a8`).
 - New `CONTEXT.md`: a bilingual glossary of the domain terms (Quality Gate, Verdict, Evidence gap, Executed evidence, Hypothesis, Breach, Baseline, Known problem, Blocking rule hit).
 - The README project trees list `core/gate.py`, `core/verdict.py` and `tests/test_quality_gate.py`.
 

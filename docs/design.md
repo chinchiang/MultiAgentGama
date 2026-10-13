@@ -2,7 +2,7 @@
 
 [English](design.en.md) ｜ 正體中文（臺灣）
 
-本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.12.0`（`CHANGELOG.md` 的 `[0.12.0]`，2026-10-12，第六輪審查：中文的威脅與發現不再被誤合併、`--changed-since` 收得到非 ASCII 檔名與 symlink 目標下的檔案、探針的基準線鍵含檔案、`--estimate` 計入未變異複本的那一批、保留名稱含 `key` 的 litellm 參數；`[0.11.0]`，2026-10-11，第五輪審查：Action 的判定只取自稽核摘要、`extra-args` 以 CLI 的解析器檢查、自動發現的設定檔只能調低花費、保留 litellm 的 callback 參數、揭露不支援語言的檔案與設定檔裡的密鑰、強化報告讀回與 Docker 輸出上限；`[0.10.1]`，2026-10-11，為修正版：Windows 的 JS/TS 涵蓋率也收得到 `node_modules` 底下的目標；`[0.10.0]` 為更嚴格的自動發現設定檔、Action 不再蓋掉設定檔的成本防護、null 保留預設值；`[0.9.0]` 為第三輪審查修正：自動發現設定檔的防護、Action 以 `exec` 執行稽核、SARIF 不收模擬項目、VH-AI-006 改寫、確定性規則的單檔時間上限、`--summary-json`；`[0.8.0]` 新增 JS/TS 行涵蓋率；`[0.7.1]` 為修正版：剩餘逾時預算不再多出一秒、`--init-config` 的提示；`[0.7.0]` 為第二輪審查修正、PyPI 打包、`--init-config` 與設定檔自動尋找；`[0.6.0]` 為依審查結果的強化並新增 `--cache-only`，`[0.5.1]` 為修正版，`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。文中的 `path:line` 引用以 commit `ecdb9a3` 的檔案為準（發布時改為 release tag）。
+本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.12.0`（`CHANGELOG.md` 的 `[0.12.0]`，2026-10-12，第六輪審查：中文的威脅與發現不再被誤合併、`--changed-since` 收得到非 ASCII 檔名與 symlink 目標下的檔案、探針的基準線鍵含檔案、`--estimate` 計入未變異複本的那一批、保留名稱含 `key` 的 litellm 參數；`[0.11.0]`，2026-10-11，第五輪審查：Action 的判定只取自稽核摘要、`extra-args` 以 CLI 的解析器檢查、自動發現的設定檔只能調低花費、保留 litellm 的 callback 參數、揭露不支援語言的檔案與設定檔裡的密鑰、強化報告讀回與 Docker 輸出上限；`[0.10.1]`，2026-10-11，為修正版：Windows 的 JS/TS 涵蓋率也收得到 `node_modules` 底下的目標；`[0.10.0]` 為更嚴格的自動發現設定檔、Action 不再蓋掉設定檔的成本防護、null 保留預設值；`[0.9.0]` 為第三輪審查修正：自動發現設定檔的防護、Action 以 `exec` 執行稽核、SARIF 不收模擬項目、VH-AI-006 改寫、確定性規則的單檔時間上限、`--summary-json`；`[0.8.0]` 新增 JS/TS 行涵蓋率；`[0.7.1]` 為修正版：剩餘逾時預算不再多出一秒、`--init-config` 的提示；`[0.7.0]` 為第二輪審查修正、PyPI 打包、`--init-config` 與設定檔自動尋找；`[0.6.0]` 為依審查結果的強化並新增 `--cache-only`，`[0.5.1]` 為修正版，`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。文中的 `path:line` 引用以 commit `ab5e9a8` 的檔案為準（發布時改為 release tag）。
 
 與其他文件的分工：
 
@@ -28,7 +28,7 @@ Vibe coding（以自然語言提示驅動的程式產生）常見的缺陷型態
 這六條原則貫穿所有模組，後面每一章都會指出它們落在哪裡：
 
 1. **以執行結果為準。** 模型的發現與威脅只是假設。只有實際執行過的測試，或者不經模型的確定性規則，才能讓閘門 fail 或 block（`vibeharness/core/gate.py:177-184`）。
-2. **證據缺口 fail closed。** 任何讓判定不可信的情況（用到模擬引擎、模型輸出無效、測試沒跑、威脅沒測、檔案沒分析）都記成 evidence gap，判定最多是 `INCONCLUSIVE`（exit 3）；未知的判定字串也以 exit 3 結束（`vibeharness/cli.py:120-130`；四種判定結果與其結束碼只在 `vibeharness/core/verdict.py:42-47` 定義一次）。
+2. **證據缺口 fail closed。** 任何讓判定不可信的情況（用到模擬引擎、模型輸出無效、測試沒跑、威脅沒測、檔案沒分析）都記成 evidence gap，判定最多是 `INCONCLUSIVE`（exit 3）；未知的判定字串也以 exit 3 結束（`vibeharness/cli.py:120-130`；四種判定結果與其結束碼只在 `vibeharness/core/verdict.py:45-50` 定義一次）。
 3. **異構模型去偏差，沒有單一仲裁者。** 四個不同模型家族各自審查；每筆發現由「沒有回報它」的模型投票，模型不評審自己的發現（`vibeharness/agents/whitebox/debater.py:83-93`）。
 4. **威脅建模先行。** 黑箱測試由 STRIDE／OWASP 威脅矩陣逐項推導，不做盲目的暴力測試。
 5. **目標程式碼是不受信任的輸入。** 送進任何模型前先去隱形字元、遮蔽密鑰，並包進來源標記通道；模型輸出進報告前再消毒（`vibeharness/core/sanitize.py`）。
@@ -944,7 +944,7 @@ DAST／fuzzing、以 hypothesis 為測試策略（Docker 沙盒映像已附 `hyp
 
 ## 18. 附錄
 
-行號對應 commit `ecdb9a3` 的程式碼（發布時改為 release tag）；核對方式為 `grep -n "def 名稱" 檔案`。
+行號對應 commit `ab5e9a8` 的程式碼（發布時改為 release tag）；核對方式為 `grep -n "def 名稱" 檔案`。
 
 ### 18.1 關鍵常數
 
@@ -1012,7 +1012,7 @@ DAST／fuzzing、以 hypothesis 為測試策略（Docker 沙盒映像已附 `hyp
 - `vibeharness/action_runner.py`：`fails_job` 42、`run_cli` 53、`_non_audit_error` 73、`given_flags` 79、`check_extra_args` 91、`config_from_extra_args` 113、`extra_args_main` 119、`_written` 141、`warnings_for` 167、`main` 189
 - `vibeharness/core/harness.py`：`_per_test_timeout` 65、`_setting_or_default` 76、`_sandbox_provider` 83、`_sandbox_node_provider` 90、`sorted_call_log` 97、`work_dir_for` 196、`select_symbols` 201、`changed_files` 254、`_mutation_settings` 287、`set_mutation` 313、`_sandbox_settings` 320、`_validate_node_settings` 371、`_build_node_sandbox` 388、`_docker_node_version` 441、`_build_sandbox` 465、`run_full_pipeline` 489、`GateEvidence` 組成 750-788、`_write_partial_report` 894
 - `vibeharness/core/gate.py`：`GapCode` 26、`EvidenceGap` 61、`GateLimits` 69、`ReviewEvidence` 79、`ScopeDisclosure` 90、`ExecutionEvidence` 106、`GateEvidence` 119、`GateResult` 133、`evaluate` 148、baseline 比對 164-175、判定 177-184、`_evidence_gaps` 210、`_recommendations` 394
-- `vibeharness/core/verdict.py`：`Verdict` 9、`exit_code` 23、`from_exit_code` 27、`parse` 33
+- `vibeharness/core/verdict.py`：`Verdict` 9、`exit_code` 26、`from_exit_code` 30、`parse` 36
 - `vibeharness/core/llm_gateway.py`：`_is_reserved_param_name` 170、`is_reserved_extra_param` 180、`load_config_file` 214、`_builtin_cost_default` 310、`_effective_cost_limit` 324、`_raises_limit` 334、`discovered_config_violations` 357、`check_discovered_config` 428、`relative_executable_warnings` 456、`budget_exhausted_calls`／`cache_miss_calls`／`simulated_calls`／`invalid_calls`（呼叫紀錄的分類）479-494、`_validate_endpoints` 554、`set_cache_dir` 580、`_cache_key` 594、`_cache_read` 608、`_cache_write` 619、`_validate_settings` 636、`_global_setting` 717、`_number` 724、`_safe_reason` 735、`_positive_int` 743、`_reserve_live_call` 753、`cache_miss_calls` 767、`is_live_configured` 798、`generate` 809、`_complete` 973、`_max_output_tokens` 1049、`_validate_output` 1063、`record_failure` 1081、`_record` 1094、`_clean_and_parse_json` 1108、`_generate_simulated_response` 1177
 - `vibeharness/core/i18n.py`：`bi` 18、`_bilingual_split` 24、`en_only` 41、`zh_only` 48、`has_cjk` 55
 - `vibeharness/core/mutation.py`：`find_mutation_sites` 104、`apply_mutation` 153、`select_sites` 174、`eligible_tests` 191、`_copy_ignore` 208、`_copy_size` 224、`run_mutation_testing` 247

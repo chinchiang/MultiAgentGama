@@ -24,7 +24,7 @@
 
 ### 文件
 
-- 設計文件的品質閘門一章說明 `evaluate(GateEvidence)` 是唯一決定判定結果的地方，證據缺口表列出每一項的 `GapCode` 與 `GateEvidence` 欄位，行號引用也更新為目前的程式碼（commit `ecdb9a3`）。
+- 設計文件的品質閘門一章說明 `evaluate(GateEvidence)` 是唯一決定判定結果的地方，證據缺口表列出每一項的 `GapCode` 與 `GateEvidence` 欄位，行號引用也更新為目前的程式碼（commit `ab5e9a8`）。
 - 新增 `CONTEXT.md`：領域用語的中英雙語詞彙表（品質閘門、判定結果、證據缺口、已執行的證據、假設、資安突破、基準、已知問題、阻擋性規則命中）。
 - README 的專案結構列出 `core/gate.py`、`core/verdict.py` 與 `tests/test_quality_gate.py`。
 
