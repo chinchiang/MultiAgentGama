@@ -307,7 +307,7 @@ def test_reask_after_a_fallback_answer_tries_the_primary_again(tmp_path, monkeyp
     When a fallback answer is re-asked, the primary is tried first; the fallback is not called twice in a row."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     fake = _PrimaryDownLiteLLM()
-    monkeypatch.setattr("vibeharness.core.llm_gateway.litellm", fake)
+    monkeypatch.setattr("vibeharness.core.transport.litellm", fake)
     text = (
         "global: {execution_mode: live, max_retries: 0, retry_invalid_output: 1}\n"
         "models:\n  a: {model: primary-model, fallback_model: fallback-model, api_key_env: ANTHROPIC_API_KEY}\n"

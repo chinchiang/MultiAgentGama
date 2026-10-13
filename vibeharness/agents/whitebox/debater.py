@@ -3,7 +3,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
 from vibeharness.core.models import ReviewFinding, MultiModelDebateResult, VerificationVote, CodeSymbol
-from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError, UNCONFIGURED_ALIAS
+from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
 from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import render_symbols, truncate_to_tokens
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
@@ -57,8 +57,7 @@ class MultiModelDebater:
         for agent_id in sorted(gateway.agents_config):
             if not agent_id.startswith(VERIFIER_PREFIX):
                 continue
-            meta = gateway.agents_config[agent_id]
-            alias = str((meta if isinstance(meta, dict) else {}).get("model_alias") or UNCONFIGURED_ALIAS)
+            alias = gateway.settings.alias_for(agent_id)
             duplicate_of = next((a for a, m in self.verifiers.items() if m == alias), None)
             if duplicate_of:
                 logger.warning(bi(f"驗證者 {agent_id} 與 {duplicate_of} 使用同一模型「{alias}」；已略過，讓該模型只投一票。",
@@ -219,7 +218,11 @@ class MultiModelDebater:
         # goes into the untrusted channel too
         user_prompt = (f"{self._code_context(findings, idxs, symbols, root_dir)}Findings to verify:\n\n"
                        f"{untrusted_block(listing)}")
-        resp = self.gateway.generate(agent_id, system_prompt, user_prompt, json_output=True, required_keys=["verdicts"])
+        # 模擬輸出沒有裁決：樣板無法評判針對目標的發現，辯論者會略過模擬的裁決
+        # The Simulated output holds no verdicts: a template cannot judge target-specific findings, and the debater
+        # ignores simulated verdicts
+        resp = self.gateway.generate(agent_id, system_prompt, user_prompt, json_output=True, required_keys=["verdicts"],
+                                     simulated=lambda alias: {"verdicts": []})
         simulated = self.gateway.is_simulated(resp)
         if simulated or not self.gateway.is_usable(resp):
             return [], simulated

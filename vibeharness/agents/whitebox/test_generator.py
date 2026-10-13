@@ -164,9 +164,11 @@ class WhiteboxTestGenerator:
         # 其他任何形式都記為無效呼叫，而不是默默產生零個測試。
         # The model may answer with a batch ({"tests": [...]}) or a single object ({"code": ...});
         # anything else is recorded as an invalid call instead of silently producing zero tests.
+        # 模擬輸出沒有測試：模擬引擎無法撰寫針對目標的測試，改用由目標推導的確定性探測
+        # The Simulated output holds no tests: the simulation engine cannot write target-specific tests, so deterministic, target-derived probes are used instead
         resp = self.gateway.generate(
             "whitebox_test_generator", system_prompt, user_prompt,
-            json_output=True, required_keys_any=["tests", "code"]
+            json_output=True, required_keys_any=["tests", "code"], simulated=lambda alias: {"tests": []},
         )
 
         raw_tests = resp.get("tests")
@@ -234,7 +236,8 @@ class WhiteboxTestGenerator:
                     f"Output the corrected JavaScript code only:\n\n{code_to_check}"
                 )
                 heal_system = "Fix JavaScript Test Code"
-            resp = self.gateway.generate("whitebox_test_generator", heal_system, heal_prompt, json_output=False)
+            resp = self.gateway.generate("whitebox_test_generator", heal_system, heal_prompt, json_output=False,
+                                         simulated=lambda alias: {"tests": []})
             fixed = strip_code_fences(text_or(resp.get("raw"), ""))
             if not fixed:
                 break  # 沒有可用來修復的內容（例如模擬引擎） ／ Nothing to repair with (e.g. simulation engine)

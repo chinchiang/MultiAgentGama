@@ -245,6 +245,14 @@ def test_agent_aliases_and_temperatures_are_checked(tmp_path):
         assert _load(tmp_path, agents={"whitebox_reviewer_claude": {"model_alias": alias}})
 
 
+def test_alias_for_resolves_every_agent(tmp_path):
+    g = _load(tmp_path, agents={"whitebox_reviewer_claude": {"model_alias": None},
+                                "whitebox_reviewer_glm": {"model_alias": "unconfigured"}}).gateway
+    assert g.alias_for("whitebox_reviewer_gemini") == "gemini"
+    assert g.alias_for("whitebox_reviewer_claude") == "unconfigured" == g.alias_for("whitebox_reviewer_glm")
+    assert g.alias_for("no_such_agent") == "unconfigured"
+
+
 def test_cache_dir_is_created_and_must_be_writable(tmp_path):
     cache = tmp_path / "nested" / "cache"
     assert _load(tmp_path, global_={"cache_dir": str(cache)}).gateway.cache_dir == str(cache) and cache.is_dir()

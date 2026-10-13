@@ -75,27 +75,20 @@ def _threat():
     )
 
 
-def test_agent_system_prompts_contain_no_cjk(fake_live, tmp_path):
+def test_agent_system_prompts_contain_no_cjk(scripted, tmp_path):
     # 審查者的預設值（名稱／焦點）是雙語：提示詞仍必須只含英文
     # Reviewer defaults (name / focus) are bilingual: the prompt must still carry English only
-    prompts = []
-
-    def responder(system, user):
-        prompts.append((system, user))
-        if '"verdicts"' in system:
-            return json.dumps({"verdicts": []})
-        if '"threats"' in system:
-            return json.dumps({"threats": []})
-        if '"findings"' in system:
-            return json.dumps({"findings": []})
-        return json.dumps({"tests": [], "code": "def test_x():\n    assert True\n"})
-
-    fake_live(responder)
+    transport = scripted({
+        "whitebox_verifier_*": {"verdicts": []},
+        "blackbox_threat_modeler": {"threats": []},
+        "whitebox_reviewer_*": {"findings": []},
+        "*": {"tests": [], "code": "def test_x():\n    assert True\n"},
+    })
     (tmp_path / "svc.py").write_text("def f(x):\n    return x.y\n", encoding="utf-8")
     symbols = [CodeSymbol(name="f", symbol_type="function", file_path=str(tmp_path / "svc.py"),
                           line_start=1, line_end=2, signature="def f(x)", source_code="def f(x):\n    return x.y\n")]
 
-    gw = LLMGateway(CONFIG, execution_mode="live")
+    gw = LLMGateway(CONFIG, execution_mode="live", transport=transport)
     reviewer = HeterogeneousReviewerEnsemble(gw)
     for r in reviewer.reviewer_agents:  # 強制讓雙語預設值走進提示詞路徑 ／ force the bilingual defaults into the prompt path
         r["name"] = "審查者（x） ／ Reviewer (x)"
@@ -106,6 +99,7 @@ def test_agent_system_prompts_contain_no_cjk(fake_live, tmp_path):
     AutomatedThreatModeler(gw).model_system("desc", ["/api/users"], symbols=symbols, root_dir=str(tmp_path))
     ThreatScenarioBuilder(gw).build_test_cases_from_threats([_threat()], base_url=None)
 
+    prompts = transport.prompts()
     assert len(prompts) >= 5
     kinds = {"findings", "verdicts", "threats", "tests", "code"}
     seen = {k for system, _ in prompts for k in kinds if f'"{k}"' in system}
@@ -113,7 +107,7 @@ def test_agent_system_prompts_contain_no_cjk(fake_live, tmp_path):
     for system, user in prompts:
         assert not has_cjk(system), system[:200]
         assert not has_cjk(user), user[:200]
-    reviewer_prompts = [s for s, _ in prompts if "white-box AI code auditor" in s]
+    reviewer_prompts = [s for s, _ in transport.prompts("whitebox_reviewer_*")]
     assert reviewer_prompts and all("You are Reviewer (x)," in s for s in reviewer_prompts)
     assert all("Your primary focus: General correctness and security defects." in s for s in reviewer_prompts)
 
@@ -223,11 +217,10 @@ def test_assertion_fallback_and_js_runner_reasons_are_bilingual(tmp_path):
     assert fallback.failure_reason == "於 my case 期間斷言失敗 ／ Assertion failed during my case"
 
 
-def test_bilingual_data_fields_reach_live_prompts_in_english_only(fake_live, tmp_path):
+def test_bilingual_data_fields_reach_live_prompts_in_english_only(scripted, tmp_path):
     """hybrid 模式下模擬引擎的雙語發現／威脅會當作資料進入 live 的驗證者、測試生成與攻擊合成提示詞：只送英文半。
     In hybrid mode the simulation engine's bilingual findings / threats reach the live verifier, test-generation and
     attack-synthesis prompts as data: only the English half is sent."""
-    import json
     from vibeharness.agents.whitebox.debater import MultiModelDebater
     from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
     from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
@@ -236,15 +229,11 @@ def test_bilingual_data_fields_reach_live_prompts_in_english_only(fake_live, tmp
 
     (tmp_path / "svc.py").write_text("def login(user, password):\n    return user\n", encoding="utf-8")
     symbols = ASTExtractor().parse_file(str(tmp_path / "svc.py"))
-    prompts = []
-
-    def responder(system, user):
-        prompts.append(user)
-        if "verdicts" in system:
-            return json.dumps({"verdicts": [{"index": 0, "verdict": "confirm", "reason": "ok"}]})
-        return json.dumps({"tests": []})
-    fake_live(responder)
-    gateway = LLMGateway(CONFIG, execution_mode="live")
+    transport = scripted({
+        "whitebox_verifier_*": {"verdicts": [{"index": 0, "verdict": "confirm", "reason": "ok"}]},
+        "*": {"tests": []},
+    })
+    gateway = LLMGateway(CONFIG, execution_mode="live", transport=transport)
     finding = ReviewFinding(
         finding_id="WB-SIM-01", reviewer_name="r", model_alias="claude", file_path=str(tmp_path / "svc.py"),
         symbol_name="login", severity=FindingSeverity.HIGH, title=SEP.join(["密碼回傳", "Password echoed"]),
@@ -261,7 +250,8 @@ def test_bilingual_data_fields_reach_live_prompts_in_english_only(fake_live, tmp
     )
     ThreatScenarioBuilder(gateway).build_test_cases_from_threats([threat], base_url=None, symbols=symbols,
                                                                   root_dir=str(tmp_path))
+    prompts = transport.prompts()
     assert len(prompts) >= 3
-    for user in prompts:
+    for _, user in prompts:
         assert not has_cjk(user), user[:200]
         assert "Password echoed" in user or "attack login" in user or "login" in user

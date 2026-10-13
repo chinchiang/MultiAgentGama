@@ -53,6 +53,23 @@ _Avoid_: auto-config, workspace config, local config
 A config file passed with `--config`; fully trusted, not subject to the Discovered config restrictions.
 _Avoid_: custom config, user config
 
+### 模型回答 ／ Model answers
+
+**執行模式 ／ Execution mode**:
+整次執行何時呼叫真實模型的政策：`live`（只用真實模型，失敗即中止）、`hybrid`（能呼叫就呼叫，否則用模擬輸出）、`mock`（只用模擬輸出）。
+The run-wide policy for when real models are called: `live` (real models only, a failure aborts), `hybrid` (a real model when possible, otherwise Simulated output), `mock` (Simulated output only).
+_Avoid_: mock (for a test double), offline mode
+
+**真實呼叫 ／ Live call**:
+真實模型給出的回答，或由這類回答填入的回應快取取出的回答。
+An answer from a real model, or from the response cache that such answers filled.
+_Avoid_: real response, API call (for a cached answer)
+
+**模擬輸出 ／ Simulated output**:
+代理在不呼叫模型時給出的固定備援回答；一律在報告中揭露，絕不算已執行的證據。
+An agent's fixed fallback answer, given without calling a model; it is always disclosed in the reports and never counts as Executed evidence.
+_Avoid_: mock output, fake response, canned answer
+
 ### 基準 ／ Baseline
 
 **基準 ／ Baseline**:

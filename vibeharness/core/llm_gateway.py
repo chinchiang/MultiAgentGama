@@ -6,7 +6,7 @@ import tempfile
 import logging
 import re
 import threading
-from typing import Dict, Any, Optional, List
+from typing import Callable, Dict, Any, Optional, List
 # 設定檔的 yaml 在 core/settings.py 才延遲匯入；這裡仍在匯入時載入它，缺少 yaml 的安裝才會在 main() 的防護內被認出是
 # 安裝不完整（exit 5 並說明如何重新安裝），而不是在讀設定檔時才當掉
 # yaml is imported lazily in core/settings.py; it is still loaded here at import time so an install without yaml is
@@ -14,6 +14,8 @@ from typing import Dict, Any, Optional, List
 import yaml  # noqa: F401
 
 from vibeharness.core.models import AgentCallRecord
+# 模型呼叫走 core/transport.py 的接縫；只有那裡知道 litellm ／ model calls go through the seam in core/transport.py; only it knows litellm
+from vibeharness.core.transport import LiteLLMTransport, ModelRequest, ModelTransport
 # 設定檔的預設值、載入與政策都在 core/settings.py；這裡以同名重新匯出 ／ the config defaults, loading and policy live in
 # core/settings.py; re-exported here under the same names
 from vibeharness.core.settings import (
@@ -29,7 +31,7 @@ from vibeharness.core.settings import (
     DEFAULT_MAX_RETRIES as DEFAULT_MAX_RETRIES,
     DEFAULT_RETRY_INVALID_OUTPUT as DEFAULT_RETRY_INVALID_OUTPUT,
     DEFAULT_TEMPERATURE,
-    UNCONFIGURED_ALIAS,
+    UNCONFIGURED_ALIAS as UNCONFIGURED_ALIAS,
     _LOOPBACK_HOSTS as _LOOPBACK_HOSTS,
     is_reserved_extra_param,
     _TOKEN_CAP_PARAMS as _TOKEN_CAP_PARAMS,
@@ -64,17 +66,6 @@ from vibeharness.core.settings import (
 from vibeharness.core.i18n import bi, en_only, zh_only
 from vibeharness.core.sanitize import clean_model_text, redact_secrets
 
-# litellm 在匯入時就會以 HTTPS 從 GitHub 抓取模型價格表（失敗還會重試、拖慢啟動），即使是 mock 或 --estimate
-# 這種完全不呼叫模型的執行也一樣。改用 litellm 套件內附的本機價格表；使用者自己設定的環境變數優先（setdefault）
-# litellm fetches its model cost map from GitHub over HTTPS at import time (and retries on failure, slowing start-up),
-# even for a mock or --estimate run that never calls a model. Use the cost map bundled with litellm instead; a value
-# the user set in the environment wins (setdefault)
-os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
-
-try:
-    import litellm
-except ImportError:  # pragma: no cover - litellm 是選用的執行期相依套件 ／ litellm is an optional runtime dependency
-    litellm = None  # type: ignore[assignment]
 
 logger = logging.getLogger("VibeHarness.LLMGateway")
 
@@ -154,10 +145,13 @@ class LLMGateway:
     """
 
     def __init__(self, config_path: str = DEFAULT_CONFIG_PATH, execution_mode: Optional[str] = None, *,
-                 settings: Optional[Settings] = None):
+                 settings: Optional[Settings] = None, transport: Optional[ModelTransport] = None):
         """`settings` 是 load_settings 驗證過的設定；省略時以 `config_path`（視為指定的設定檔）與 `execution_mode` 載入。
+        `transport` 是模型呼叫的接縫（core/transport.py）；省略時是 LiteLLMTransport。
         `settings` are the settings load_settings validated; when omitted they are loaded from `config_path` (as an
-        Explicit config) and `execution_mode`."""
+        Explicit config) and `execution_mode`. `transport` is the model-call seam (core/transport.py); LiteLLMTransport
+        when omitted."""
+        self.transport: ModelTransport = transport if transport is not None else LiteLLMTransport()
         if settings is None:
             settings = load_settings(config_path, origin="explicit", overrides=Overrides(execution_mode=execution_mode))
         self.settings: GatewaySettings = settings.gateway
@@ -300,7 +294,8 @@ class LLMGateway:
         user_prompt: str,
         json_output: bool = True,
         required_keys: Optional[List[str]] = None,
-        required_keys_any: Optional[List[str]] = None
+        required_keys_any: Optional[List[str]] = None,
+        simulated: Optional[Callable[[str], Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         針對指定代理所設定的 LLM 執行提示。
@@ -313,9 +308,14 @@ class LLMGateway:
         present) or `required_keys_any` (at least one must be present) is recorded with
         mode "invalid" and returned as a dict holding only PROVENANCE_KEY (mode "invalid", model, reason), so
         callers and the quality gate never mistake an unusable answer for a genuine empty result (check is_usable()).
+        `simulated(model_alias)` 是代理自己的模擬輸出（不呼叫模型時回傳的固定備援回答，每次呼叫都是新的 dict）；
+        省略時回傳一個通用的狀態 dict。閘道一律加上 PROVENANCE_KEY 並登記為 simulated。
+        `simulated(model_alias)` is the agent's own Simulated output (the fixed fallback answer given without calling a
+        model, a new dict on every call); when omitted a generic status dict is returned. The gateway always adds
+        PROVENANCE_KEY and books the call as simulated.
         """
         agent_meta = self.agents_config.get(agent_id) or {}
-        model_alias = agent_meta.get("model_alias") or UNCONFIGURED_ALIAS
+        model_alias = self.settings.alias_for(agent_id)
         # null 與省略相同（預設值）：None 絕不會送進 litellm 或快取鍵 ／ null means omitted (the default): None never reaches litellm or the cache key
         raw_temperature = agent_meta.get("temperature")
         temperature = DEFAULT_TEMPERATURE if raw_temperature is None else raw_temperature
@@ -337,8 +337,8 @@ class LLMGateway:
             # 只讀快取不需要 litellm 或金鑰：命中直接取用，未命中在下方登記為 CACHE_MISS_REASON
             # Reading the cache needs neither litellm nor a key: a hit is served, a miss is booked below as CACHE_MISS_REASON
             pass
-        elif litellm is None:
-            fallback_reason = bi("未安裝 litellm", "litellm is not installed")
+        elif self.transport.unavailable_reason is not None:
+            fallback_reason = self.transport.unavailable_reason
         elif not self.is_live_configured(model_alias):
             env_var = model_info.get("api_key_env") or "<no api_key_env configured>"
             fallback_reason = bi(f"未設定 API 金鑰環境變數 {env_var}", f"API key env var {env_var} is not set")
@@ -381,7 +381,8 @@ class LLMGateway:
                         logger.info(bi(f"[{agent_id}] 回答取自回應快取（{model_name}）",
                                        f"[{agent_id}] answer served from the response cache ({model_name})"))
                     else:
-                        raw_text, model_name, finish_reason = self._complete(model_info, primary_model, messages, temperature)
+                        raw_text, model_name, finish_reason = self._complete(agent_id, model_alias, model_info, primary_model,
+                                                                             messages, temperature)
                 except Exception as e:
                     fallback_reason = f"{bi('線上呼叫失敗', 'live invocation failed')}: {self._safe_reason(str(e))}"
                     if self.execution_mode == "live":
@@ -453,11 +454,15 @@ class LLMGateway:
         logger.info(bi(f"將 [{agent_id}] 派送至模擬引擎（模型別名：{model_alias}；原因：{fallback_reason}）",
                        f"Dispatching [{agent_id}] to Simulation Engine (Model Alias: {model_alias}; reason: {fallback_reason})"))
         self._record(agent_id, model_alias, model_name, "simulated", fallback_reason, prompt_sha256=prompt_hash, attempt=attempt)
-        result = self._generate_simulated_response(agent_id, model_alias, user_prompt)
+        if simulated is not None:
+            result = simulated(model_alias)
+        else:
+            result = {"status": "ok", "message": bi(f"{agent_id} 的模擬輸出", f"Simulated output for {agent_id}")}
         result[PROVENANCE_KEY] = {"mode": "simulated", "model": model_name, "reason": fallback_reason}
         return result
 
-    def _complete(self, model_info: Dict[str, Any], model_name: str, messages: List[Dict[str, str]], temperature: float):
+    def _complete(self, agent_id: str, model_alias: str, model_info: Dict[str, Any], model_name: str,
+                  messages: List[Dict[str, str]], temperature: float):
         """
         呼叫主要模型（含 litellm 自身的重試），主要模型失敗時再呼叫一次 `fallback_model`。
         API 金鑰會明確傳入，因此 litellm 預設環境變數與 `api_key_env` 不同的供應商
@@ -484,7 +489,6 @@ class LLMGateway:
                 "set it in the models section of the agents config to make live calls."
             ))
         kwargs: Dict[str, Any] = {
-            "messages": messages,
             "temperature": temperature,
             # 較新的模型會拒絕取樣參數（Bedrock 上的 Claude Opus 5.5 只接受 temperature=1；
             # Gemini 3 正在棄用它們）：捨棄模型不支援的參數，而不是讓呼叫失敗
@@ -518,10 +522,9 @@ class LLMGateway:
         last_error: Optional[Exception] = None
         for candidate in candidates:
             try:
-                response = litellm.completion(model=candidate, **kwargs)
-                choice = response.choices[0]
-                finish_reason = getattr(choice, "finish_reason", None)
-                return choice.message.content or "", candidate, finish_reason if isinstance(finish_reason, str) else None
+                reply = self.transport.complete(ModelRequest(
+                    agent_id=agent_id, model_alias=model_alias, model=candidate, messages=messages, params=dict(kwargs)))
+                return reply.text, candidate, reply.finish_reason
             except Exception as e:
                 last_error = e
                 logger.warning(bi(f"模型 {candidate} 失敗：{self._safe_reason(str(e))}",
@@ -572,8 +575,7 @@ class LLMGateway:
         Books an agent call that crashed before the gateway could answer (e.g. an exception in
         the caller's thread-pool batch). Recorded as an `invalid` call so the quality gate sees the
         missing result as an evidence gap instead of mistaking silence for "nothing found"."""
-        agent_meta = self.agents_config.get(agent_id) or {}
-        model_alias = agent_meta.get("model_alias") or UNCONFIGURED_ALIAS
+        model_alias = self.settings.alias_for(agent_id)
         model_info = self.models_config.get(model_alias) or {}
         model_name = model_info.get("model") or f"(no model configured for alias '{model_alias}')"
         self._record(agent_id, model_alias, model_name, "invalid", f"{REASON_CALL_CRASHED}: {reason}")
@@ -660,156 +662,3 @@ class LLMGateway:
         # None (not a sentinel dict): a model could legitimately echo such a dict, which would
         # have been indistinguishable from a parse failure.
         return None
-
-    def _generate_simulated_response(self, agent_id: str, model_alias: str, prompt: str) -> Dict[str, Any]:
-        """
-        反映各審查者關注重點的高擬真領域專屬退回邏輯：
-        - Claude：狀態轉換、缺少的 null 檢查、邊界情況邏輯。
-        - DeepSeek：邊界限制、輸入消毒、防禦性守衛。
-        - GLM：合約規格、API 合規性、參數驗證。
-        - Gemini：AI/LLM 整合（OWASP Top 10 for LLM Applications 2026）。
-        審查者樣板依模型別名選取，退而以代理 id 的字尾選取。
-        注意：回應是與目標程式碼無關的固定樣板；它們的存在是為了讓
-        流程能離線演練，且在報告中一律標示為 simulated。
-        High-fidelity domain-specific fallback logic reflecting each reviewer's focus:
-        - Claude: state transitions, missing null checks, edge-case logic.
-        - DeepSeek: boundary limits, input sanitization, defensive guards.
-        - GLM: contract specifications, API compliance, parameter validation.
-        - Gemini: AI/LLM integration (OWASP Top 10 for LLM Applications 2026).
-        Reviewer templates are chosen by model alias, falling back to the agent id's suffix.
-        NOTE: responses are fixed templates independent of the target code; they exist so the
-        pipeline can be exercised offline and are always flagged as simulated in reports.
-        """
-        if "reviewer_" in agent_id:
-            template = _SIMULATED_REVIEWS.get(model_alias) or _SIMULATED_REVIEWS.get(agent_id.rsplit("_", 1)[-1])
-            return {"findings": [dict(template)] if template else []}
-
-        if "verifier" in agent_id:
-            # 樣板無法評判針對目標的發現；辯論者會略過模擬的裁決
-            # A template cannot judge target-specific findings; the debater ignores simulated verdicts
-            return {"verdicts": []}
-
-        elif "threat_modeler" in agent_id:
-            return {
-                "system_description": bi("Vibe coding 產出的網頁應用程式與 API 服務。", "Vibe-coded web application and API service."),
-                "entrypoints": [bi("REST API 路由", "REST API routes"), bi("驗證標頭", "Auth headers"),
-                                bi("使用者註冊／管理端點", "User registration / management endpoints")],
-                "trust_boundaries": [bi("用戶端／網際網路到公開閘道", "Client / Internet to Public Gateway"),
-                                     bi("公開閘道到內部資料庫", "Public Gateway to Internal DB")],
-                "assets": [bi("使用者憑證", "User credentials"), bi("客戶資料紀錄", "Customer data records"),
-                           bi("資料庫連線字串", "Database connection strings")],
-                "threats": [
-                    {
-                        "threat_id": "THREAT-01",
-                        "stride_category": "Elevation of Privilege",
-                        "owasp_mapping": "API1:2023 - Broken Object Level Authorization (BOLA)",
-                        "title": bi("資源更新的 BOLA / IDOR", "BOLA / IDOR on Resource Updates"),
-                        "description": bi("已驗證的使用者只要竄改 URL 路徑或酬載中的物件 ID，就能修改其他使用者的物件。",
-                                          "An authenticated user can modify other users' objects by simply tampering with the object ID in the URL path or payload."),
-                        "asset_at_risk": bi("使用者帳號與私人紀錄", "User accounts & private records"),
-                        "attack_vector": "HTTP PUT/PATCH /api/users/{foreign_id}",
-                        "trust_boundary_crossed": bi("使用者 A 的邊界跨入使用者 B 的資料領域", "User A boundary into User B data domain"),
-                        "severity": "CRITICAL",
-                        "attack_scenario": bi("以使用者 A 登入，對使用者 B 的資源 ID 發出 PUT 請求。",
-                                              "Login as User A, issue a PUT request targeting User B's resource ID."),
-                        "test_verification_goal": bi("確認狀態碼為 403 Forbidden 或 404 Not Found，絕不可為 200 OK。",
-                                                     "Ensure status code is 403 Forbidden or 404 Not Found, never 200 OK.")
-                    },
-                    {
-                        "threat_id": "THREAT-02",
-                        "stride_category": "Tampering",
-                        "owasp_mapping": "API3:2023 - Broken Object Property Level Authorization",
-                        "title": bi("管理員／敏感欄位的大量指派", "Mass Assignment of Admin / Sensitive Fields"),
-                        "description": bi("更新端點接受原始 JSON 本文並直接套用到資料庫模型，沒有嚴格的允許清單，使用者因此能注入 is_admin=true。",
-                                          "The update endpoint accepts raw JSON body and applies it to the DB model without a strict whitelist, allowing users to inject is_admin=true."),
-                        "asset_at_risk": bi("系統授權完整性", "System authorization integrity"),
-                        "attack_vector": "HTTP POST/PUT with extra 'is_admin': true in payload",
-                        "trust_boundary_crossed": bi("無特權用戶端到特權角色", "Unprivileged client to privileged role"),
-                        "severity": "HIGH",
-                        "attack_scenario": bi("在更新個人資料時送出酬載 {'name': 'test', 'is_admin': true}。",
-                                              "Send payload {'name': 'test', 'is_admin': true} during profile update."),
-                        "test_verification_goal": bi("確認 is_admin 維持 false，且無法透過公開端點更改。",
-                                                     "Ensure is_admin remains false and cannot be altered through public endpoint.")
-                    },
-                    {
-                        "threat_id": "THREAT-03",
-                        "stride_category": "Information Disclosure",
-                        "owasp_mapping": "API8:2023 - Security Misconfiguration",
-                        "title": bi("格式錯誤輸入導致堆疊追蹤與資料庫錯誤外洩", "Stack Trace & Database Error Leakage on Malformed Input"),
-                        "description": bi("送出無效的 JSON 或語法字元會造成未處理的 500 錯誤，外洩內部資料庫細節與檔案路徑。",
-                                          "Sending invalid JSON or syntax characters causes unhandled 500 error leaking internal database details and file paths."),
-                        "asset_at_risk": bi("內部系統架構細節", "Internal system architecture details"),
-                        "attack_vector": "HTTP POST with malformed syntax / SQL injection characters",
-                        "trust_boundary_crossed": bi("內部錯誤日誌流到外部 HTTP 回應", "Internal error logs to external HTTP response"),
-                        "severity": "MEDIUM",
-                        "attack_scenario": bi("送出格式錯誤的酬載，並檢查 HTTP 回應本文是否含有追蹤記錄。",
-                                              "Send malformed payload and inspect HTTP response body for tracebacks."),
-                        "test_verification_goal": bi("確認回應只含一般性的錯誤訊息，沒有檔案路徑或 SQL 關鍵字。",
-                                                     "Ensure response contains generic error message without file paths or SQL keywords.")
-                    }
-                ]
-            }
-
-        elif "test_synthesizer" in agent_id or "test_generator" in agent_id:
-            # 模擬引擎無法撰寫針對目標的測試；呼叫端會退回
-            # 確定性、由目標推導的探測（白箱），或把威脅記為未測試（黑箱）。
-            # The simulation engine cannot write target-specific tests; callers fall back to
-            # deterministic, target-derived probes (whitebox) or mark the threat as untested (blackbox).
-            return {"tests": []}
-
-        return {"status": "ok", "message": bi(f"{agent_id} 的模擬輸出", f"Simulated output for {agent_id}")}
-
-
-# 逐模型別名的固定離線審查樣板（見 LLMGateway._generate_simulated_response）
-# Fixed offline review templates per model alias (see LLMGateway._generate_simulated_response)
-_SIMULATED_REVIEWS: Dict[str, Dict[str, str]] = {
-    "claude": {
-        "severity": "HIGH",
-        "title": bi("處理函式中未檢查的空值／隱含的狀態假設", "Unchecked Null / Implicit State Assumption in Handler"),
-        "description": bi("Vibe coding 產出的邏輯假設實體存在且狀態轉換有效，卻未驗證資料庫查詢結果，導致未處理的 NoneType / NullPointer 例外。",
-                          "The vibe-coded logic assumes entities exist and state transitions are valid without verifying database fetch outcomes, leading to unhandled NoneType / NullPointer exceptions."),
-        "root_cause": bi("存取屬性前缺少防禦性的空值檢查。", "Absence of defensive null-check before property traversal."),
-        "suspected_vibe_flaw": bi("Vibe coding 常假設一定找得到紀錄的「理想路徑」。",
-                                  "Vibe coding commonly assumes the 'happy path' where records are always found."),
-        "suggested_test_scenario": bi("以不存在的 ID 或空酬載呼叫端點／函式，並斷言回傳正確的錯誤狀態（404/400）而不是 500 當機。",
-                                      "Invoke the endpoint/function with a non-existent ID or empty payload and assert proper error status (404/400) instead of a 500 crash."),
-    },
-    "deepseek": {
-        "severity": "CRITICAL",
-        "title": bi("缺少輸入清理與無上限的資源配置", "Missing Input Sanitization & Unbounded Resource Allocation"),
-        "description": bi("邏輯未對查詢或資料陣列限制輸入長度與數值範圍，可能造成記憶體耗盡、ReDoS 或未驗證的大量酬載。",
-                          "The logic lacks input length and numerical range clamping on queries or data arrays, allowing memory exhaustion and ReDoS or unvalidated bulk payloads."),
-        "root_cause": bi("直接把不可信的輸入餵入下游的迭代與記憶體結構。",
-                         "Directly feeding untrusted input into downstream iteration and memory structures."),
-        "suspected_vibe_flaw": bi("AI 程式助理常略過明確的大小檢查與分頁上限。",
-                                  "AI coding assistants frequently skip explicit size checks and pagination limits."),
-        "suggested_test_scenario": bi("提供 10MB 的酬載或超過 1,000,000 的整數值，確認以 HTTP 413 或 422 妥善拒絕。",
-                                      "Supply a 10MB payload or integer values exceeding 1,000,000 and verify graceful rejection with HTTP 413 or 422."),
-    },
-    "glm": {
-        "severity": "MEDIUM",
-        "title": bi("API 契約規格漂移與結構描述不一致", "API Contract Specification Drift & Schema Inconsistency"),
-        "description": bi("缺少參數型別強制檢查，且預期的回應結構描述與實際序列化的字典欄位不一致。",
-                          "Missing parameter type enforcement and inconsistency between expected response schema and actual serialized dictionary fields."),
-        "root_cause": bi("隱含的結構描述轉型，沒有嚴格的 Pydantic/dataclass 結構描述驗證。",
-                         "Implicit schema casting without strict Pydantic/dataclass schema validation."),
-        "suspected_vibe_flaw": bi("Vibe coding 的快速原型常臨時更改回應結構，卻未更新契約定義。",
-                                  "Quick prototyping in vibe coding often changes response structures on the fly without updating contract definitions."),
-        "suggested_test_scenario": bi("斷言回應結構描述在所有欄位型別上都與預期的 OpenAPI/JSON 契約完全一致。",
-                                      "Assert response schema matches the expected OpenAPI/JSON contract exactly across all field types."),
-    },
-    "gemini": {
-        "severity": "HIGH",
-        "title": bi("不可信的輸入進入提示詞，且模型輸出未經驗證就被使用",
-                    "Untrusted Input Reaches the Prompt and Model Output Is Used Unvalidated"),
-        "description": bi("使用者控制或擷取的文字被串接進模型提示詞，而模型輸出未經嚴格的結構描述檢查就驅動決策或下游呼叫。",
-                          "User-controlled or retrieved text is concatenated into model prompts, and model output drives decisions or downstream calls without a strict schema check."),
-        "root_cause": bi("指令與資料之間沒有信任邊界，模型輸出也沒有確定性的驗證（OWASP LLM01:2026 / LLM10:2026）。",
-                         "No trust boundary between instructions and data, and no deterministic validation of model output (OWASP LLM01:2026 / LLM10:2026)."),
-        "suspected_vibe_flaw": bi("Vibe coding 產出的 AI 功能因為示範提示詞看起來正常，就把模型直接接進業務邏輯。",
-                                  "Vibe-coded AI features wire the model straight into business logic because the demo prompt behaved."),
-        "suggested_test_scenario": bi("餵入含有指令覆寫與不可見 Unicode 的輸入，並斷言輸出經過結構描述驗證，絕不會進入 eval/SQL/HTML 或特權操作。",
-                                      "Feed input containing an instruction override and invisible Unicode, and assert the output is schema-validated and never reaches eval/SQL/HTML or a privileged action."),
-        "owasp_mapping": "LLM01:2026",
-    },
-}

@@ -41,30 +41,25 @@ def test_ast_extractor_js_ts_heuristic(tmp_path):
     assert "TypeScript/JavaScript" in extractor.detected_languages
 
 
-def test_llm_gateway_heterogeneous_personas():
+def test_reviewer_personas_in_simulated_output():
+    """每個審查者的模擬輸出反映它的關注重點（審查者自己的樣板，不是閘道的）。
+    Each reviewer's Simulated output reflects its focus (the reviewer's own template, not the gateway's)."""
     gateway = LLMGateway(execution_mode="mock")
-    # 測試 Claude 的邏輯人設
-    # Test Claude logic persona
-    claude_resp = gateway.generate("whitebox_reviewer_claude", "sys", "prompt")
-    assert "findings" in claude_resp
-    assert any("Null" in f["title"] or "State" in f["title"] for f in claude_resp["findings"])
-
-    # 測試 DeepSeek 的防護人設
-    # Test DeepSeek guardrail persona
-    deepseek_resp = gateway.generate("whitebox_reviewer_deepseek", "sys", "prompt")
-    assert "findings" in deepseek_resp
-    assert any("Sanitization" in f["title"] or "Resource" in f["title"] for f in deepseek_resp["findings"])
-
-    # 測試 GLM 的規格人設
-    # Test GLM spec persona
-    glm_resp = gateway.generate("whitebox_reviewer_glm", "sys", "prompt")
-    assert "findings" in glm_resp
-    assert any("Contract" in f["title"] or "Specification" in f["title"] for f in glm_resp["findings"])
-
-    # 測試 Gemini 的 AI 整合人設（OWASP LLM Top 10 2026）
-    # Test Gemini AI-integration persona (OWASP LLM Top 10 2026)
-    gemini_resp = gateway.generate("whitebox_reviewer_gemini", "sys", "prompt")
-    assert any(f.get("owasp_mapping") == "LLM01:2026" for f in gemini_resp["findings"])
+    examples = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples")
+    symbols = ASTExtractor().parse_directory(examples)
+    findings = HeterogeneousReviewerEnsemble(gateway).review_symbols(symbols, root_dir=examples)
+    by_alias = {}
+    for f in findings:
+        by_alias.setdefault(f.model_alias, []).append(f)
+    assert all(f.is_simulated for f in findings)
+    # Claude 的邏輯人設 ／ Claude logic persona
+    assert any("Null" in f.title or "State" in f.title for f in by_alias["claude"])
+    # DeepSeek 的防護人設 ／ DeepSeek guardrail persona
+    assert any("Sanitization" in f.title or "Resource" in f.title for f in by_alias["deepseek"])
+    # GLM 的規格人設 ／ GLM spec persona
+    assert any("Contract" in f.title or "Specification" in f.title for f in by_alias["glm"])
+    # Gemini 的 AI 整合人設（OWASP LLM Top 10 2026）／ Gemini AI-integration persona (OWASP LLM Top 10 2026)
+    assert any(f.owasp_mapping == "LLM01:2026" for f in by_alias["gemini"])
 
 
 def test_debater_consensus_resolution():

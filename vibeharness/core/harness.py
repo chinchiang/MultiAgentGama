@@ -32,6 +32,7 @@ from vibeharness.core.gate import (
     ExecutionEvidence, GateEvidence, GateLimits, ReviewEvidence, ScopeDisclosure, evaluate,
 )
 from vibeharness.core.settings import Overrides, SandboxSettings, Settings, load_settings
+from vibeharness.core.transport import ModelTransport
 from vibeharness.core.verdict import Verdict
 from vibeharness.core.mutation import run_mutation_testing
 from vibeharness.core.i18n import bi
@@ -103,10 +104,12 @@ class VibeHarnessCommander:
     """
 
     def __init__(self, config_path: str = DEFAULT_CONFIG_PATH, execution_mode: Optional[str] = None, *,
-                 settings: Optional[Settings] = None):
+                 settings: Optional[Settings] = None, transport: Optional[ModelTransport] = None):
         """`settings` 是 load_settings 驗證過的設定；省略時以 `config_path`（視為指定的設定檔）與 `execution_mode` 載入。
+        `transport` 原樣交給閘道（模型呼叫的接縫，省略時是 LiteLLMTransport）。
         `settings` are the settings load_settings validated; when omitted they are loaded from `config_path` (as an
-        Explicit config) and `execution_mode`."""
+        Explicit config) and `execution_mode`. `transport` is handed to the gateway as is (the model-call seam;
+        LiteLLMTransport when omitted)."""
         # 即使 harness 作為函式庫使用，也要保護主控台輸出（vibeharness/cli.py 也會這麼做）
         # Protect console output even when the harness is used as a library (vibeharness/cli.py does this too)
         force_utf8_stdio()
@@ -114,7 +117,7 @@ class VibeHarnessCommander:
         if settings is None:
             settings = load_settings(config_path, origin="explicit", overrides=Overrides(execution_mode=execution_mode))
         self.settings = settings
-        self.gateway = LLMGateway(settings=settings)
+        self.gateway = LLMGateway(settings=settings, transport=transport)
         self.sandbox = self._build_sandbox(settings.sandbox)
         self.ast_extractor = ASTExtractor()
         self.static_scanner = AISecurityStaticScanner()

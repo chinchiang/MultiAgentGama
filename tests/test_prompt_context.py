@@ -129,25 +129,25 @@ def test_max_files_truncation_is_recorded(tmp_path):
 # --- 審查者集成 -----------------------------------------------------------------
 # --- Reviewer ensemble ----------------------------------------------------------
 
-def test_reviewers_see_every_symbol_and_findings_are_attributed(fake_live, tmp_path):
+def test_reviewers_see_every_symbol_and_findings_are_attributed(scripted, tmp_path):
     files = []
     for i in range(20):
         f = tmp_path / f"mod{i}.py"
         f.write_text(f"def handler_{i}(req):\n    return req['id']\n", encoding="utf-8")
         files.append(str(f))
     symbols = ASTExtractor().parse_directory(str(tmp_path))
-    seen_by_reviewer = {}
+    def review(request):
+        if "handler_17" in request.messages[1]["content"]:
+            return {"findings": [{"symbol_name": "handler_17", "severity": "HIGH", "title": "KeyError"}]}
+        return {"findings": []}
+    transport = scripted({"whitebox_reviewer_*": review})
 
-    def responder(system, user):
-        seen_by_reviewer.setdefault(system.split(",")[0], set()).update(re.findall(r"handler_\d+", user))
-        if "handler_17" in user:
-            return json.dumps({"findings": [{"symbol_name": "handler_17", "severity": "HIGH", "title": "KeyError"}]})
-        return '{"findings": []}'
-    fake_live(responder)
-
-    findings = HeterogeneousReviewerEnsemble(LLMGateway(CONFIG, execution_mode="live")).review_symbols(
+    findings = HeterogeneousReviewerEnsemble(LLMGateway(CONFIG, execution_mode="live", transport=transport)).review_symbols(
         symbols, root_dir=str(tmp_path)
     )
+    seen_by_reviewer = {}
+    for r in transport.requests:
+        seen_by_reviewer.setdefault(r.agent_id, set()).update(re.findall(r"handler_\d+", r.messages[1]["content"]))
     assert len(seen_by_reviewer) == 4
     assert all(names == {f"handler_{i}" for i in range(20)} for names in seen_by_reviewer.values())
     assert len(findings) == 4
@@ -218,7 +218,7 @@ def test_gateway_passes_call_options_and_uses_fallback_model(fake_live, monkeypa
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"findings": []}'))])
 
     fake_live(lambda s, u: "")
-    monkeypatch.setattr("vibeharness.core.llm_gateway.litellm", SimpleNamespace(completion=completion))
+    monkeypatch.setattr("vibeharness.core.transport.litellm", SimpleNamespace(completion=completion))
     gateway = LLMGateway(CONFIG, execution_mode="live")
     resp = gateway.generate("whitebox_reviewer_claude", "sys", "prompt", required_keys=["findings"])
 

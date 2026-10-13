@@ -401,7 +401,7 @@ def test_invalid_execution_mode_rejected():
 def test_completion_without_api_key_env_fails_with_actionable_error():
     gateway = LLMGateway(CONFIG, execution_mode="mock")
     with pytest.raises(LLMGatewayError, match="api_key_env"):
-        gateway._complete({}, "some-model", [{"role": "user", "content": "hi"}], 0.2)
+        gateway._complete("some_agent", "some_alias", {}, "some-model", [{"role": "user", "content": "hi"}], 0.2)
 
 
 def test_null_config_sections_are_treated_as_empty(tmp_path):

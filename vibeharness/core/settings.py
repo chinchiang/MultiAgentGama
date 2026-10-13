@@ -580,6 +580,14 @@ class GatewaySettings:
     models: Mapping[str, Any]  # 唯讀，形狀與設定檔相同 ／ read-only, the same shape as the config file
     agents: Mapping[str, Any]
 
+    def alias_for(self, agent_id: str) -> str:
+        """代理的模型別名；沒有 model_alias（或為 null）的代理是 UNCONFIGURED_ALIAS（hybrid 模擬、live 失敗）。
+        The agent's model alias; an agent without a model_alias (or a null one) is UNCONFIGURED_ALIAS (simulated in
+        hybrid, a failure in live)."""
+        meta = self.agents.get(agent_id)
+        alias = meta.get("model_alias") if isinstance(meta, dict) else None
+        return str(alias or UNCONFIGURED_ALIAS)
+
 
 @dataclass(frozen=True)
 class DockerSettings:

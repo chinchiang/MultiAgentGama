@@ -368,8 +368,11 @@ class ThreatScenarioBuilder:
             f"{closing}"
         )
 
+        # 模擬輸出沒有測試：模擬引擎無法撰寫針對目標的測試，這個威脅記為未測試
+        # The Simulated output holds no tests: the simulation engine cannot write target-specific tests, so the threat is marked untested
         resp = self.gateway.generate(
-            "blackbox_test_synthesizer", system_prompt, user_prompt, json_output=True, required_keys=["code"]
+            "blackbox_test_synthesizer", system_prompt, user_prompt, json_output=True, required_keys=["code"],
+            simulated=lambda alias: {"tests": []},
         )
 
         raw_code = resp.get("code")
