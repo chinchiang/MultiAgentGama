@@ -37,13 +37,13 @@
 ### 文件
 
 - 設計文件的品質閘門一章說明 `evaluate(GateEvidence)` 是唯一決定判定結果的地方，證據缺口表列出每一項的 `GapCode` 與 `GateEvidence` 欄位，行號引用也更新為目前的程式碼（commit `ab5e9a8`）。
-- 新增 `CONTEXT.md`：領域用語的中英雙語詞彙表（品質閘門、判定結果、證據缺口、已執行的證據、假設、資安突破、基準、已知問題、阻擋性規則命中）。
+- 新增 `GLOSSARY.md`：領域用語的中英雙語詞彙表（品質閘門、判定結果、證據缺口、已執行的證據、假設、資安突破、基準、已知問題、阻擋性規則命中）。
 - README 的專案結構列出 `core/gate.py`、`core/verdict.py` 與 `tests/test_quality_gate.py`。
 - 設計文件改以 `load_settings` 說明設定的流程（模組表、設定的載入與驗證、探索到的設定檔檢查、CLI 覆寫值、沙盒設定），常數表指向 `vibeharness/core/settings.py`，重要函式索引新增 `settings.py` 一行，行號引用也更新為 commit `e5e95e4`。
-- `CONTEXT.md` 新增設定檔來源：內建設定檔、探索到的設定檔與指定的設定檔。
+- `GLOSSARY.md` 新增設定檔來源：內建設定檔、探索到的設定檔與指定的設定檔。
 - README 的專案結構列出 `core/settings.py` 與 `tests/test_settings.py`。
 - 設計文件說明模型呼叫的接縫（模組表、第 5 章的決策順序與真實呼叫細節）與由代理提供的模擬輸出（第 5.7 節），測試章節說明 `scripted` fixture，重要函式索引新增 `transport.py` 一行，行號引用也更新為 commit `c46d9b3`；回應快取一節原本誤指 `settings.py` 的四個行號引用改為指向 `llm_gateway.py`。
-- `CONTEXT.md` 新增模型回答：執行模式、真實呼叫與模擬輸出。
+- `GLOSSARY.md` 新增模型回答：執行模式、真實呼叫與模擬輸出。
 - README 的專案結構列出 `core/transport.py` 與 `tests/test_transport.py`。
 - 設計文件說明 `vibeharness/core/fanout.py`（模組表、失敗處理的共同模式、各代理一節與並行一節），並行一節的表格改列每個代理當掉時的 fallback，重要函式索引新增 `fanout.py` 一行並移除 `common.py`，行號引用也更新為 commit `c8d1e26`。
 - README 的專案結構列出 `core/fanout.py` 與 `tests/test_fanout.py`，並移除 `agents/whitebox/common.py`。
