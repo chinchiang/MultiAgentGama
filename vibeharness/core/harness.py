@@ -1,9 +1,7 @@
 import datetime as _dt
 import json
 import logging
-import math
 import os
-import re
 import subprocess
 import tempfile
 import sys
@@ -26,17 +24,18 @@ from vibeharness.core.models import (
 )
 from vibeharness.core.llm_gateway import LLMGateway, DEFAULT_CONFIG_PATH
 from vibeharness.core.sandbox import (
-    LocalSubprocessSandbox, DockerSandbox, DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_NODE_IMAGE, MIN_NODE_VERSION_TS,
+    LocalSubprocessSandbox, DockerSandbox, DEFAULT_DOCKER_IMAGE as DEFAULT_DOCKER_IMAGE, MIN_NODE_VERSION_TS,
     NodeDockerSandbox, NodeSubprocessSandbox, detect_node, parse_node_version,
 )
 from vibeharness.core.baseline import Baseline, annotate_report_payload
 from vibeharness.core.gate import (
     ExecutionEvidence, GateEvidence, GateLimits, ReviewEvidence, ScopeDisclosure, evaluate,
 )
+from vibeharness.core.settings import Overrides, SandboxSettings, Settings, load_settings
 from vibeharness.core.verdict import Verdict
-from vibeharness.core.mutation import DEFAULT_MAX_COPY_MB, run_mutation_testing
+from vibeharness.core.mutation import run_mutation_testing
 from vibeharness.core.i18n import bi
-from vibeharness.agents.whitebox.ast_extractor import ASTExtractor, DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES
+from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
 from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
 from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
 from vibeharness.agents.whitebox.debater import MultiModelDebater
@@ -59,38 +58,6 @@ from vibeharness.core.settings import (  # noqa: E402
     DEFAULT_SANDBOX_PROVIDER as DEFAULT_SANDBOX_PROVIDER,
     DEFAULT_SANDBOX_TIMEOUT_SECONDS as DEFAULT_SANDBOX_TIMEOUT_SECONDS,
 )
-
-
-def _per_test_timeout(global_cfg: dict) -> int:
-    """`per_test_timeout_seconds`，與 sandbox_timeout_seconds 同一套規則：null／0 保留預設值，負數或非整數是
-    ConfigError（exit 5）。執行器與突變測試都從這裡取值，兩者不會各自解讀。
-    `per_test_timeout_seconds` under the same rule as sandbox_timeout_seconds: null / 0 keep the default, a
-    negative or non-integer value is a ConfigError (exit 5). The executor and mutation testing both read it from
-    here, so they never interpret the value differently."""
-    return LLMGateway._positive_int(
-        global_cfg.get("per_test_timeout_seconds"), "per_test_timeout_seconds"
-    ) or DEFAULT_PER_TEST_TIMEOUT_SECONDS
-
-
-def _setting_or_default(global_cfg: dict, key: str, default: Any) -> Any:
-    """`global.<key>`；省略或為 null 時是 `default`（與其他鍵一致，null 保留預設值）。
-    `global.<key>`; `default` when it is omitted or null (like the other keys, null keeps the default)."""
-    value = global_cfg.get(key)
-    return default if value is None else value
-
-
-def _sandbox_provider(global_cfg: dict) -> str:
-    """`sandbox_provider`；省略或為 null 時是 local_subprocess（與其他鍵一致，null 保留預設值）。
-    `sandbox_provider`; local_subprocess when omitted or null (like the other keys, null keeps the default)."""
-    value = global_cfg.get("sandbox_provider")
-    return DEFAULT_SANDBOX_PROVIDER if value is None else str(value)
-
-
-def _sandbox_node_provider(global_cfg: dict) -> str:
-    """`sandbox_node_provider`；省略或為 null 時跟隨 sandbox_provider。
-    `sandbox_node_provider`; follows sandbox_provider when omitted or null."""
-    value = global_cfg.get("sandbox_node_provider")
-    return _sandbox_provider(global_cfg) if value is None else str(value)
 
 
 def sorted_call_log(call_log: List[AgentCallRecord]) -> List[AgentCallRecord]:
@@ -135,17 +102,20 @@ class VibeHarnessCommander:
     and synchronizes sub-agents across White-Box and Black-Box testing phases.
     """
 
-    def __init__(self, config_path: str = DEFAULT_CONFIG_PATH, execution_mode: Optional[str] = None):
+    def __init__(self, config_path: str = DEFAULT_CONFIG_PATH, execution_mode: Optional[str] = None, *,
+                 settings: Optional[Settings] = None):
+        """`settings` 是 load_settings 驗證過的設定；省略時以 `config_path`（視為指定的設定檔）與 `execution_mode` 載入。
+        `settings` are the settings load_settings validated; when omitted they are loaded from `config_path` (as an
+        Explicit config) and `execution_mode`."""
         # 即使 harness 作為函式庫使用，也要保護主控台輸出（vibeharness/cli.py 也會這麼做）
         # Protect console output even when the harness is used as a library (vibeharness/cli.py does this too)
         force_utf8_stdio()
         self.console = Console(force_terminal=False)
-        self.gateway = LLMGateway(config_path, execution_mode=execution_mode)
-        global_cfg = self.gateway.config.get("global") or {}
-        node_provider = _sandbox_node_provider(global_cfg)
-        need_docker = _sandbox_provider(global_cfg) == "docker" or node_provider == "docker"
-        self._sandbox_cfg = self._sandbox_settings(global_cfg, need_docker)
-        self.sandbox = self._build_sandbox(global_cfg, self._sandbox_cfg)
+        if settings is None:
+            settings = load_settings(config_path, origin="explicit", overrides=Overrides(execution_mode=execution_mode))
+        self.settings = settings
+        self.gateway = LLMGateway(settings=settings)
+        self.sandbox = self._build_sandbox(settings.sandbox)
         self.ast_extractor = ASTExtractor()
         self.static_scanner = AISecurityStaticScanner()
         self.multi_reviewer = HeterogeneousReviewerEnsemble(self.gateway)
@@ -154,39 +124,32 @@ class VibeHarnessCommander:
         self.threat_modeler = AutomatedThreatModeler(self.gateway)
         self.scenario_builder = ThreatScenarioBuilder(self.gateway)
         self.executor = TestSuiteExecutor(
-            self.sandbox, per_test_timeout_seconds=_per_test_timeout(global_cfg),
+            self.sandbox, per_test_timeout_seconds=settings.sandbox.per_test_timeout,
             js_sandbox_factory=self._build_node_sandbox,
         )
-        # JS/TS 測試以 Node 內建的執行器執行；沙盒採延遲建立，在第一次需要時才建立
+        # JS/TS 測試以 Node 內建的執行器執行；沙盒採延遲建立，在第一次需要時才建立（它的設定在載入時就驗證過）
         # JS/TS tests run with Node's built-in runner; the sandbox is built lazily, the first time one is needed
-        self._global_cfg = global_cfg
-        self.node_bin = str(global_cfg.get("node_bin") or "node")
-        self.sandbox_node_provider = node_provider
-        # Node 沙盒是延遲建立的，它用到的每個設定都在這裡（啟動時）驗證一次，之後直接取用；錯誤值 exit 5，不會在第一個 JS 測試時才炸
-        # The Node sandbox is built lazily, so every setting it uses is validated once here (start-up) and reused;
-        # a bad value exits 5 instead of surfacing at the first JS test
-        self._node_cfg = self._validate_node_settings(global_cfg, self.sandbox_node_provider, self._sandbox_cfg)
+        # (its settings were validated at load time)
+        self.node_bin = settings.node.node_bin
+        self.sandbox_node_provider = settings.node.provider
         # 突變測試：開關優先順序為 CLI（set_mutation）> global.mutation_testing > 預設關閉，來源記進 RunMetadata
         # Mutation testing: the switch precedence is CLI (set_mutation) > global.mutation_testing > off by default,
         # and the source is recorded in RunMetadata
-        self._mutation_cfg = self._mutation_settings(global_cfg)
-        self.mutation_testing: bool = self._mutation_cfg["enabled"]
-        self.mutation_source: str = "config" if global_cfg.get("mutation_testing") is not None else "default"
+        self.mutation_testing: bool = settings.mutation.enabled
+        self.mutation_source: str = settings.sources["mutation_testing"]
         self.node_runtime: Optional[str] = None
         self.node_runtime_problem: Optional[str] = None
         self.node_typescript_problem: Optional[str] = None
         self.reporter = ReportGenerator()
-        # 與其他限制一樣經過驗證（負數或非整數值會是 ConfigError）；0/null 保留預設值
-        # Validated like the other limits (a negative or non-integer value is a ConfigError); 0/null keep the default
-        self.max_files = LLMGateway._positive_int(global_cfg.get("max_files"), "max_files") or DEFAULT_MAX_FILES
-        self.max_file_bytes = LLMGateway._positive_int(global_cfg.get("max_file_bytes"), "max_file_bytes") or DEFAULT_MAX_FILE_BYTES
-        self.config_path = os.path.abspath(config_path)
-        self.sandbox_provider = _sandbox_provider(global_cfg)
+        self.max_files = settings.scope.max_files
+        self.max_file_bytes = settings.scope.max_file_bytes
+        self.config_path = os.path.abspath(settings.path)
+        self.sandbox_provider = settings.sandbox.provider
         # 檔案選取（CLI 的 --include/--exclude 會覆寫設定檔中的清單；--changed-since 會加入 only_files）
         # File selection (CLI --include/--exclude override the config lists; --changed-since adds only_files)
-        self.include_patterns: List[str] = self._pattern_list(global_cfg.get("include"), "include")
-        self.exclude_patterns: List[str] = self._pattern_list(global_cfg.get("exclude"), "exclude")
-        self.changed_since: Optional[str] = None
+        self.include_patterns: List[str] = list(settings.scope.include)
+        self.exclude_patterns: List[str] = list(settings.scope.exclude)
+        self.changed_since: Optional[str] = settings.scope.changed_since
         # --baseline：先前的 JSON 報告；其中已包含的問題仍會列出，但不計入
         # --baseline: a previous JSON report; problems it already contains are reported but not counted
         self.baseline: Optional[Baseline] = None
@@ -216,17 +179,6 @@ class VibeHarnessCommander:
             exclude=self.exclude_patterns or None, only_files=only_files, max_file_bytes=self.max_file_bytes
         )
         return symbols, filters
-
-    @staticmethod
-    def _pattern_list(value: Any, key: str) -> List[str]:
-        if value is None:
-            return []
-        if isinstance(value, str):
-            value = [value]
-        if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
-            raise ValueError(bi(f"global.{key} 必須是 glob 樣式的清單，實際得到 {value!r}",
-                                f"global.{key} must be a list of glob patterns, got {value!r}"))
-        return [v.strip() for v in value]
 
     @staticmethod
     def _git(args: List[str], cwd: str) -> Optional[str]:
@@ -282,107 +234,11 @@ class VibeHarnessCommander:
             paths.add(real if rel.startswith("..") else os.path.normpath(os.path.join(shown, rel)))
         return sorted(p for p in paths if os.path.isfile(p))
 
-    @staticmethod
-    def _mutation_settings(global_cfg: dict) -> Dict[str, Any]:
-        """突變測試的設定，啟動時驗證一次（錯誤值 exit 5）。與其他鍵一致：null 保留預設值（max_mutants 20、
-        min_score 70）；mutation_timeout_seconds／mutation_max_copy_mb 的 null 或 0 保留預設值，負數是 ConfigError。
-        The mutation-testing settings, validated once at start-up (a bad value exits 5). Like the other keys, null
-        keeps the default (max_mutants 20, min_score 70); null or 0 for mutation_timeout_seconds /
-        mutation_max_copy_mb keeps the default, a negative value is a ConfigError."""
-        enabled = global_cfg.get("mutation_testing")
-        if enabled is not None and not isinstance(enabled, bool):
-            raise ValueError(bi(f"global.mutation_testing 必須是 true 或 false，目前為 {enabled!r}",
-                                f"global.mutation_testing must be true or false, got {enabled!r}"))
-        max_mutants = global_cfg.get("mutation_max_mutants")
-        if max_mutants is None:
-            max_mutants = DEFAULT_MUTATION_MAX_MUTANTS
-        if isinstance(max_mutants, bool) or not isinstance(max_mutants, int) or max_mutants < 1:
-            raise ValueError(bi(f"global.mutation_max_mutants 必須是至少 1 的整數，目前為 {max_mutants!r}",
-                                f"global.mutation_max_mutants must be an integer >= 1, got {max_mutants!r}"))
-        per_test = _per_test_timeout(global_cfg)
-        timeout = LLMGateway._positive_int(global_cfg.get("mutation_timeout_seconds"), "mutation_timeout_seconds") or per_test
-        min_score = global_cfg.get("mutation_min_score")
-        if min_score is None:
-            min_score = DEFAULT_MUTATION_MIN_SCORE
-        LLMGateway._number(min_score, "global.mutation_min_score", 0, 100)
-        max_copy_mb = LLMGateway._positive_int(global_cfg.get("mutation_max_copy_mb"), "mutation_max_copy_mb") or DEFAULT_MAX_COPY_MB
-        return {"enabled": bool(enabled), "max_mutants": max_mutants, "timeout": timeout, "min_score": float(min_score),
-                "max_copy_mb": max_copy_mb}
-
     def set_mutation(self, enabled: bool, source: str = "cli") -> None:
         """依 CLI 旗標開啟或關閉突變測試（優先於設定檔）。
         Turns mutation testing on or off from a CLI flag (it wins over the config file)."""
         self.mutation_testing = enabled
         self.mutation_source = source
-
-    @staticmethod
-    def _sandbox_settings(global_cfg: dict, need_docker: bool = True) -> Dict[str, Any]:
-        """Python 與 Node 沙盒共用的設定，啟動時驗證一次（同一組規則，兩個沙盒不會各自解讀）。docker_* 只在任一
-        沙盒用 docker 時才驗證：純本機的設定檔裡殘留的 docker 鍵不會擋住啟動。
-        The settings shared by the Python and Node sandboxes, validated once at start-up (one set of rules, so the
-        two sandboxes never interpret a value differently). docker_* keys are validated only when either sandbox
-        uses docker: stale docker keys in a local-only config never block start-up."""
-        timeout = LLMGateway._positive_int(
-            global_cfg.get("sandbox_timeout_seconds"), "sandbox_timeout_seconds"
-        ) or DEFAULT_SANDBOX_TIMEOUT_SECONDS
-        # null（或沒寫）保留預設上限；只有明確的 0 才關閉 RLIMIT_AS，留空的鍵不會悄悄拿掉記憶體上限
-        # null (or absent) keeps the default cap; only an explicit 0 disables RLIMIT_AS, so an empty key never
-        # silently removes the memory cap
-        raw_memory = global_cfg.get("sandbox_memory_mb")
-        memory_mb = DEFAULT_SANDBOX_MEMORY_MB if raw_memory is None else (
-            LLMGateway._positive_int(raw_memory, "sandbox_memory_mb") or 0
-        )
-        settings: Dict[str, Any] = {"timeout": timeout, "memory_mb": memory_mb, "pids_limit": DEFAULT_DOCKER_PIDS_LIMIT, "network": "none",
-                                    "memory": "1g", "cpus": "2", "docker_bin": "docker"}
-        if not need_docker:
-            return settings
-        pids = global_cfg.get("docker_pids_limit")
-        if isinstance(pids, bool) or not (pids is None or isinstance(pids, int)) or (pids or 0) < -1:
-            raise ValueError(bi(f"global.docker_pids_limit 必須是整數（-1 = 不限制），目前為 {pids!r}",
-                                f"global.docker_pids_limit must be an integer (-1 = unlimited), got {pids!r}"))
-        # Docker 把 `--pids-limit 0` 當成不限制：null／0 改用預設值，只有明確的 -1 才是不限制
-        # Docker treats `--pids-limit 0` as unlimited: null / 0 map to the default, only an explicit -1 means unlimited
-        pids = pids or DEFAULT_DOCKER_PIDS_LIMIT
-        network = _setting_or_default(global_cfg, "docker_network", "none")
-        if not isinstance(network, str) or not network.strip():
-            raise ValueError(bi("global.docker_network 必須是非空字串（例如 \"none\"、\"host\"）",
-                                "global.docker_network must be a non-empty string (e.g. \"none\", \"host\")"))
-        memory = _setting_or_default(global_cfg, "docker_memory", "1g")
-        # Docker 接受的格式：數字 + b/k/m/g/t（可帶 b 或 ib，例如 512m、512mb、1GiB）／ what docker run --memory accepts
-        if not isinstance(memory, str) or not re.fullmatch(r"\d+(?:\.\d+)?\s*(?:[bkmgt]|[kmgt]i?b)?", memory.strip(), re.IGNORECASE):
-            raise ValueError(bi(f"global.docker_memory 必須是 Docker 記憶體字串（例如 \"1g\"、\"512m\"），目前為 {memory!r}",
-                                f"global.docker_memory must be a Docker memory string (e.g. \"1g\", \"512m\"), got {memory!r}"))
-        cpus = _setting_or_default(global_cfg, "docker_cpus", "2")
-        try:
-            cpus_value = float(cpus) if not isinstance(cpus, bool) else float("nan")
-        except (TypeError, ValueError):
-            cpus_value = float("nan")
-        if not math.isfinite(cpus_value) or cpus_value <= 0:
-            raise ValueError(bi(f"global.docker_cpus 必須是正數，目前為 {cpus!r}", f"global.docker_cpus must be a positive number, got {cpus!r}"))
-        docker_bin = _setting_or_default(global_cfg, "docker_bin", "docker")
-        if not isinstance(docker_bin, str) or not docker_bin.strip():
-            raise ValueError(bi("global.docker_bin 必須是非空字串", "global.docker_bin must be a non-empty string"))
-        settings.update({"pids_limit": pids, "network": network.strip(), "memory": memory.strip(),
-                         "cpus": str(cpus).strip(), "docker_bin": docker_bin.strip()})
-        return settings
-
-    @staticmethod
-    def _validate_node_settings(global_cfg: dict, provider: str, settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Node 沙盒用到的設定，啟動時驗證過的值 ／ The Node sandbox's settings, validated at start-up."""
-        if provider not in ("local_subprocess", "docker"):
-            raise ValueError(bi(
-                f"sandbox_node_provider '{provider}' 尚未實作；支援：'local_subprocess'、'docker'",
-                f"sandbox_node_provider '{provider}' is not implemented; supported: 'local_subprocess', 'docker'"
-            ))
-        node = dict(settings if settings is not None else VibeHarnessCommander._sandbox_settings(global_cfg, provider == "docker"))
-        # docker_node_image 只有 Node 沙盒用 docker 時才讀：純本機的設定檔裡殘留的空值不會擋住啟動
-        # docker_node_image is read only when the Node sandbox uses docker: a stale empty value in a local-only config
-        # never blocks start-up
-        image = _setting_or_default(global_cfg, "docker_node_image", DEFAULT_DOCKER_NODE_IMAGE)
-        if provider == "docker" and (not isinstance(image, str) or not image.strip()):
-            raise ValueError(bi("docker_node_image 必須是非空字串", "docker_node_image must be a non-empty string"))
-        node["image"] = image.strip() if isinstance(image, str) else DEFAULT_DOCKER_NODE_IMAGE
-        return node
 
     def _build_node_sandbox(self) -> Optional[LocalSubprocessSandbox]:
         """供 `node:test` 模組使用的沙盒；沒有可用的 Node 執行環境時為 None（並設定 `node_runtime_problem`）：
@@ -391,7 +247,8 @@ class VibeHarnessCommander:
         The sandbox for `node:test` modules, or None (with `node_runtime_problem` set) when no usable
         Node runtime exists: a missing runtime is an evidence gap for the JS/TS tests, never a start-up failure.
         The docker provider uses the image's own Node and needs no node binary on the host."""
-        cfg = self._node_cfg
+        sandbox_cfg, docker_cfg = self.settings.sandbox, self.settings.sandbox.docker
+        image = self.settings.node.image
         has_ts = any(f.lower().endswith((".ts", ".tsx", ".mts", ".cts")) for f in self.ast_extractor.analyzed_files)
         sandbox: LocalSubprocessSandbox
         version: Optional[Tuple[int, int, int]]
@@ -402,11 +259,11 @@ class VibeHarnessCommander:
             # same docker run prefix as the tests: it is the runtime provenance in RunMetadata and decides TypeScript
             # type stripping; no guessing when it cannot be read
             docker_sandbox = NodeDockerSandbox(
-                timeout_seconds=cfg["timeout"], image=cfg["image"], network=cfg["network"], memory=cfg["memory"],
-                cpus=cfg["cpus"], pids_limit=cfg["pids_limit"], docker_bin=cfg["docker_bin"],
+                timeout_seconds=sandbox_cfg.timeout, image=image, network=docker_cfg.network, memory=docker_cfg.memory,
+                cpus=docker_cfg.cpus, pids_limit=docker_cfg.pids_limit, docker_bin=docker_cfg.bin,
             )
             version = self._docker_node_version(docker_sandbox)
-            runtime = f"docker {cfg['image']}" + (f" (node v{'.'.join(map(str, version))})" if version else "")
+            runtime = f"docker {image}" + (f" (node v{'.'.join(map(str, version))})" if version else "")
             supports_ts = version is not None and version >= MIN_NODE_VERSION_TS
             docker_sandbox.supports_typescript = supports_ts
             docker_sandbox.node_version = version  # 決定 JS/TS 涵蓋率旗標；未知時不收集 ／ decides the JS/TS coverage flags; unknown means none
@@ -420,7 +277,7 @@ class VibeHarnessCommander:
             runtime = f"node v{'.'.join(map(str, version))}"
             supports_ts = version >= MIN_NODE_VERSION_TS
             sandbox = NodeSubprocessSandbox(
-                timeout_seconds=cfg["timeout"], memory_mb=cfg["memory_mb"], node_bin=self.node_bin,
+                timeout_seconds=sandbox_cfg.timeout, memory_mb=sandbox_cfg.memory_mb, node_bin=self.node_bin,
                 strip_types=has_ts and supports_ts, supports_typescript=supports_ts, node_version=version,
             )
         if has_ts and not supports_ts:
@@ -461,29 +318,22 @@ class VibeHarnessCommander:
         return parse_node_version(result.stdout) if result.returncode == 0 else None
 
     @staticmethod
-    def _build_sandbox(global_cfg: dict, settings: Optional[Dict[str, Any]] = None) -> LocalSubprocessSandbox:
-        provider = _sandbox_provider(global_cfg)
-        if settings is None:
-            settings = VibeHarnessCommander._sandbox_settings(global_cfg, provider == "docker")
-        if provider == "local_subprocess":
-            return LocalSubprocessSandbox(timeout_seconds=settings["timeout"], memory_mb=settings["memory_mb"])
-        if provider == "docker":
-            image = _setting_or_default(global_cfg, "docker_image", DEFAULT_DOCKER_IMAGE)
-            if not isinstance(image, str) or not image.strip():
-                raise ValueError(bi("docker_image 必須是非空字串", "docker_image must be a non-empty string"))
+    def _build_sandbox(sandbox: SandboxSettings) -> LocalSubprocessSandbox:
+        """執行 Python 測試的沙盒；provider 與 docker_* 已在載入時驗證，docker 是否可用則在這裡檢查（SandboxUnavailableError）。
+        The sandbox for the Python tests; the provider and docker_* were validated at load time, whether docker is
+        available is checked here (SandboxUnavailableError)."""
+        if sandbox.provider == "docker":
+            docker = sandbox.docker
             return DockerSandbox(
-                timeout_seconds=settings["timeout"],
-                image=image.strip(),
-                network=settings["network"],
-                memory=settings["memory"],
-                cpus=settings["cpus"],
-                pids_limit=settings["pids_limit"],
-                docker_bin=settings["docker_bin"],
+                timeout_seconds=sandbox.timeout,
+                image=docker.image,
+                network=docker.network,
+                memory=docker.memory,
+                cpus=docker.cpus,
+                pids_limit=docker.pids_limit,
+                docker_bin=docker.bin,
             )
-        raise ValueError(bi(
-            f"sandbox_provider '{provider}' 尚未實作；支援：'local_subprocess'、'docker'",
-            f"sandbox_provider '{provider}' is not implemented; supported: 'local_subprocess', 'docker'"
-        ))
+        return LocalSubprocessSandbox(timeout_seconds=sandbox.timeout, memory_mb=sandbox.memory_mb)
 
     def run_full_pipeline(
         self,
@@ -662,8 +512,8 @@ class VibeHarnessCommander:
                 try:
                     mutation_report = run_mutation_testing(
                         self.executor.run_mutant_batch, wb_tests, wb_results, debate_result.confirmed_findings, symbols,
-                        work_dir, self._mutation_cfg["max_mutants"], self._mutation_cfg["timeout"],
-                        self._mutation_cfg["max_copy_mb"],
+                        work_dir, self.settings.mutation.max_mutants, self.settings.mutation.timeout,
+                        self.settings.mutation.max_copy_mb,
                     )
                 except Exception as e:  # 突變測試出錯不能拖垮整個稽核：揭露為證據缺口 ／ a mutation failure must not sink the audit: disclosed as an evidence gap
                     logger.error(bi(f"突變測試失敗：{type(e).__name__}", f"Mutation testing failed: {type(e).__name__}") + f": {self.gateway._safe_reason(str(e))}")
@@ -752,7 +602,7 @@ class VibeHarnessCommander:
                 baseline=self.baseline,
                 limits=GateLimits(
                     max_model_calls=self.gateway.max_model_calls, max_files=self.max_files,
-                    max_file_bytes=self.max_file_bytes, mutation_min_score=self._mutation_cfg["min_score"],
+                    max_file_bytes=self.max_file_bytes, mutation_min_score=self.settings.mutation.min_score,
                 ),
                 call_log=self.gateway.call_log,
                 review=ReviewEvidence(

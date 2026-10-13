@@ -7,6 +7,7 @@ dependency-free vibeharness modules are imported: the harness itself (pydantic, 
 is imported lazily inside main()'s guard, so a broken install or a missing dependency exits 5 with an
 explanation instead of crashing before main() with Python's default 1 (= NEEDS_FIXES)."""
 import argparse
+import dataclasses
 import importlib
 import logging
 import sys
@@ -605,7 +606,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         if args.mutation is not None:
             commander.set_mutation(args.mutation, "cli")
         if args.mutation_max_mutants is not None:
-            commander._mutation_cfg["max_mutants"] = args.mutation_max_mutants
+            mutation = dataclasses.replace(commander.settings.mutation, max_mutants=args.mutation_max_mutants)
+            commander.settings = dataclasses.replace(commander.settings, mutation=mutation)
         if args.include is not None:
             commander.include_patterns = args.include
         if args.exclude is not None:

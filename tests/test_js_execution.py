@@ -761,7 +761,6 @@ def test_harness_node_sandbox_provider_selection(tmp_path, monkeypatch):
     monkeypatch.setattr("vibeharness.core.harness.detect_node", lambda node_bin: (None, None, "no usable Node runtime found"))
     monkeypatch.setattr(VibeHarnessCommander, "_docker_node_version", staticmethod(lambda sandbox: (22, 9, 0)))
     commander.sandbox_node_provider = "docker"
-    commander._node_cfg = VibeHarnessCommander._validate_node_settings(commander._global_cfg, "docker")
     commander.ast_extractor.analyzed_files = ["/app/x.ts"]
     monkeypatch.setattr(NodeDockerSandbox, "_verify_available", lambda self: None)
     sandbox = commander._build_node_sandbox()
@@ -785,7 +784,6 @@ def test_harness_node_sandbox_provider_selection(tmp_path, monkeypatch):
     assert commander.node_runtime is None
     monkeypatch.setattr("vibeharness.core.harness.detect_node", lambda node_bin: ("/usr/bin/node", (20, 5, 0), None))
     commander.sandbox_node_provider = "local_subprocess"
-    commander._node_cfg = VibeHarnessCommander._validate_node_settings(commander._global_cfg, "local_subprocess")
     commander.ast_extractor.analyzed_files = ["/app/x.ts"]
     sandbox = commander._build_node_sandbox()
     assert isinstance(sandbox, NodeSubprocessSandbox) and not sandbox.supports_typescript and not sandbox.strip_types
@@ -874,33 +872,12 @@ def test_file_level_load_failure_is_never_a_breach_even_with_noisy_stdout():
     assert result.status == TestStatus.ERROR and not result.is_security_exploit_confirmed
 
 
-def test_sandbox_settings_are_validated_once_for_both_sandboxes():
-    """Python 與 Node 沙盒共用同一組驗證過的設定，不會各自解讀（例如逾時 0 一邊是 0、一邊是 120）。
-    The Python and Node sandboxes share one validated set of settings, so a value is never interpreted differently
-    (e.g. a timeout of 0 becoming 0 on one side and 120 on the other)."""
-    settings = VibeHarnessCommander._sandbox_settings({"sandbox_timeout_seconds": 0, "docker_memory": " 512m ", "docker_cpus": " 1.5 "})
-    assert settings["timeout"] == 120 and settings["memory"] == "512m" and settings["cpus"] == "1.5"
-    # Docker 接受的記憶體寫法都過得了；-1 的 pids 表示不限制 ／ every memory form Docker accepts passes; pids -1 means unlimited
-    for memory in ("512mb", "1GiB", "2g", "1073741824"):
-        assert VibeHarnessCommander._sandbox_settings({"docker_memory": memory})["memory"] == memory
-    assert VibeHarnessCommander._sandbox_settings({"docker_pids_limit": -1})["pids_limit"] == -1
-    # 純本機設定檔裡殘留的 docker 鍵不擋啟動 ／ stale docker keys in a local-only config never block start-up
-    assert VibeHarnessCommander._sandbox_settings({"docker_memory": 1, "docker_network": None}, need_docker=False)["memory"] == "1g"
-    with pytest.raises(ValueError, match="docker_image"):
-        VibeHarnessCommander._build_sandbox({"sandbox_provider": "docker", "docker_image": 123})
-    sandbox = VibeHarnessCommander._build_sandbox({"sandbox_provider": "local_subprocess", "sandbox_timeout_seconds": 0})
-    assert sandbox.timeout_seconds == 120
-    node = VibeHarnessCommander._validate_node_settings({"sandbox_timeout_seconds": 0}, "docker")
-    assert node["timeout"] == 120 and node["image"] == DEFAULT_DOCKER_NODE_IMAGE
-
-
 def test_docker_node_version_is_recorded_for_js_only_targets_too(monkeypatch):
     """純 JS 目標也讀映像檔內的 Node 版本：它是 RunMetadata.node_runtime 的來源；型別剝除只在有 TypeScript 時開。
     A JS-only target reads the image's Node version too (it is RunMetadata.node_runtime's provenance); type stripping
     is enabled only when TypeScript exists."""
     commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
     commander.sandbox_node_provider = "docker"
-    commander._node_cfg = VibeHarnessCommander._validate_node_settings(commander._global_cfg, "docker")
     monkeypatch.setattr(NodeDockerSandbox, "_verify_available", lambda self: None)
     monkeypatch.setattr(VibeHarnessCommander, "_docker_node_version", staticmethod(lambda sandbox: (22, 9, 0)))
     commander.ast_extractor.analyzed_files = ["/app/x.mjs"]
@@ -966,7 +943,7 @@ def test_stale_docker_keys_do_not_block_a_local_only_run(tmp_path):
     path = tmp_path / "local.yaml"
     path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
     commander = VibeHarnessCommander(config_path=str(path), execution_mode="mock")
-    assert commander._sandbox_cfg["memory"] == "1g" and commander._node_cfg["network"] == "none"
+    assert commander.settings.sandbox.docker.memory == "1g" and commander.settings.sandbox.docker.network == "none"
 
 
 def test_js_cause_class_names_may_contain_digits():

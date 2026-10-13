@@ -6,7 +6,6 @@ import tempfile
 import logging
 import re
 import threading
-import urllib.parse
 from typing import Dict, Any, Optional, List
 # 設定檔的 yaml 在 core/settings.py 才延遲匯入；這裡仍在匯入時載入它，缺少 yaml 的安裝才會在 main() 的防護內被認出是
 # 安裝不完整（exit 5 並說明如何重新安裝），而不是在讀設定檔時才當掉
@@ -18,19 +17,24 @@ from vibeharness.core.models import AgentCallRecord
 # 設定檔的預設值、載入與政策都在 core/settings.py；這裡以同名重新匯出 ／ the config defaults, loading and policy live in
 # core/settings.py; re-exported here under the same names
 from vibeharness.core.settings import (
+    GatewaySettings,
+    Overrides,
+    Settings,
+    load_settings,
+    prepare_cache_dir,
     DEFAULT_CONFIG_PATH,
-    DEFAULT_MAX_CONCURRENT_CALLS,
-    DEFAULT_MAX_OUTPUT_TOKENS,
-    DEFAULT_TIMEOUT_SECONDS,
-    DEFAULT_MAX_RETRIES,
-    DEFAULT_RETRY_INVALID_OUTPUT,
+    DEFAULT_MAX_CONCURRENT_CALLS as DEFAULT_MAX_CONCURRENT_CALLS,
+    DEFAULT_MAX_OUTPUT_TOKENS as DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_TIMEOUT_SECONDS as DEFAULT_TIMEOUT_SECONDS,
+    DEFAULT_MAX_RETRIES as DEFAULT_MAX_RETRIES,
+    DEFAULT_RETRY_INVALID_OUTPUT as DEFAULT_RETRY_INVALID_OUTPUT,
     DEFAULT_TEMPERATURE,
     UNCONFIGURED_ALIAS,
-    _LOOPBACK_HOSTS,
+    _LOOPBACK_HOSTS as _LOOPBACK_HOSTS,
     is_reserved_extra_param,
-    _TOKEN_CAP_PARAMS,
-    ConfigError,
-    load_config_file,
+    _TOKEN_CAP_PARAMS as _TOKEN_CAP_PARAMS,
+    ConfigError as ConfigError,
+    load_config_file as load_config_file,
     RESERVED_EXTRA_PARAMS as RESERVED_EXTRA_PARAMS,
     _RESERVED_EXTRA_PARAM_RE as _RESERVED_EXTRA_PARAM_RE,
     _TOKEN_NAME_PART_RE as _TOKEN_NAME_PART_RE,
@@ -149,86 +153,43 @@ class LLMGateway:
     Every call is recorded in `call_log` so reports can disclose which results are simulated.
     """
 
-    def __init__(self, config_path: str = DEFAULT_CONFIG_PATH, execution_mode: Optional[str] = None):
-        self.config = self._load_config(config_path)
-        # 空的 `global:` 會載入成 None：當成空對應表，而不是在 .get() 時拋出 AttributeError
-        # An empty `global:` loads as None: treat it as an empty mapping instead of raising AttributeError on .get()
-        global_cfg = self.config.get("global") or {}
-        self.execution_mode = execution_mode or global_cfg.get("execution_mode") or "hybrid"
-        if self.execution_mode not in ("live", "hybrid", "mock"):
-            raise ValueError(bi(f"未知的 execution_mode '{self.execution_mode}'（應為 live、hybrid 或 mock）",
-                                   f"Unknown execution_mode '{self.execution_mode}' (expected live, hybrid or mock)"))
-        self.models_config = self.config.get("models") or {}
-        self.agents_config = self.config.get("agents") or {}
+    def __init__(self, config_path: str = DEFAULT_CONFIG_PATH, execution_mode: Optional[str] = None, *,
+                 settings: Optional[Settings] = None):
+        """`settings` 是 load_settings 驗證過的設定；省略時以 `config_path`（視為指定的設定檔）與 `execution_mode` 載入。
+        `settings` are the settings load_settings validated; when omitted they are loaded from `config_path` (as an
+        Explicit config) and `execution_mode`."""
+        if settings is None:
+            settings = load_settings(config_path, origin="explicit", overrides=Overrides(execution_mode=execution_mode))
+        self.settings: GatewaySettings = settings.gateway
+        self.execution_mode = self.settings.execution_mode
+        # 唯讀，形狀與設定檔相同 ／ read-only, the same shape as the config file
+        self.models_config = self.settings.models
+        self.agents_config = self.settings.agents
         self.call_log: List[AgentCallRecord] = []
         # 成本防護：每次執行允許的線上模型呼叫次數（單次呼叫的 litellm 重試／fallback_model
-        # 不另外計算）。None 或 0 表示不限制。
+        # 不另外計算）。None 表示不限制。
         # Cost guard: live model invocations allowed per run (litellm retries / fallback_model of one
-        # invocation are not counted separately). None or 0 means unlimited.
-        self.max_model_calls = self._positive_int(global_cfg.get("max_model_calls"), "max_model_calls")
+        # invocation are not counted separately). None means unlimited.
+        self.max_model_calls = self.settings.max_model_calls
         # 代理把呼叫分散到最多這麼多個工作者的執行緒池上
         # Agents fan their calls out on a thread pool of at most this many workers
-        self.max_concurrent_calls = self._positive_int(
-            global_cfg.get("max_concurrent_calls", DEFAULT_MAX_CONCURRENT_CALLS), "max_concurrent_calls"
-        ) or DEFAULT_MAX_CONCURRENT_CALLS
+        self.max_concurrent_calls = self.settings.max_concurrent_calls
         self.live_calls_attempted = 0
         self._budget_lock = threading.Lock()
-        # null 與未設定相同，都用預設值（與 timeout_seconds、max_retries 一致）；只有明確的 0 才關閉
-        # null means the same as unset, the default (consistent with timeout_seconds, max_retries); only an explicit 0 disables
-        retries = global_cfg.get("retry_invalid_output")
-        self.retry_invalid_output = DEFAULT_RETRY_INVALID_OUTPUT if retries is None else retries
+        self.retry_invalid_output = self.settings.retry_invalid_output
         # 以模型 + 提示為鍵、存放可用線上回答的磁碟快取：以相同設定重新執行相同目標
         # 不需任何花費，且得到相同的回答。None 表示停用。
         # On-disk cache of usable live answers keyed by model + prompt: a re-run of the same target with
         # the same config costs nothing and gives the same answers. None disables it.
-        self.cache_dir: Optional[str] = None
+        self.cache_dir: Optional[str] = self.settings.cache_dir
         # --cache-only：每次模型呼叫都只從回應快取取用，未命中時絕不呼叫供應商（見 CACHE_MISS_REASON）
         # --cache-only: every model call is served from the response cache only; a miss never calls a provider (see CACHE_MISS_REASON)
-        self.cache_only = False
-        if global_cfg.get("cache_dir"):
-            self.set_cache_dir(str(global_cfg["cache_dir"]))
-        self._validate_endpoints()
-        self._validate_settings()
-
-    def _validate_endpoints(self) -> None:
-        """每個自訂的 api_base 都必須是 https（純 http 只允許連到 loopback）：目標原始碼與
-        提示會傳送到這些端點，因此打錯字或惡意設定不得把它們以明文送到任意主機
-        （OWASP LLM04:2026；允許清單內的模型端點）。
-        Every custom api_base must be https (plain http only to loopback): target source code and
-        prompts travel to these endpoints, so a typo or a hostile config must not send them in clear
-        text to an arbitrary host (OWASP LLM04:2026; allow-listed model endpoints)."""
-        for alias, info in self.models_config.items():
-            base = info.get("api_base") if isinstance(info, dict) else None
-            if not base:
-                continue
-            try:
-                parts = urllib.parse.urlsplit(str(base))
-                host = (parts.hostname or "").lower()
-            except ValueError as e:
-                raise ConfigError(bi(f"models.{alias}.api_base 不是有效的 URL：{base!r}",
-                                     f"models.{alias}.api_base is not a valid URL: {base!r}")) from e
-            if parts.scheme == "https" and host:
-                continue
-            if parts.scheme == "http" and host in _LOOPBACK_HOSTS:
-                continue
-            raise ConfigError(bi(
-                f"models.{alias}.api_base 必須是 https:// URL（只有回送位址可用 http://），目前為 {base!r}",
-                f"models.{alias}.api_base must be an https:// URL (http:// only for loopback hosts), got {base!r}"
-            ))
+        self.cache_only = self.settings.cache_only
 
     def set_cache_dir(self, path: str) -> None:
-        """在 `path` 啟用回應快取（不存在時會建立）。該目錄存放原始的模型回答，
-        其中可能引用受稽核的程式碼：請把它當成報告一樣看待。
-        Enables the response cache in `path` (created if missing). The directory holds raw model
-        answers, which can quote the audited code: treat it like the reports."""
-        target = os.path.abspath(path)
-        try:
-            os.makedirs(target, exist_ok=True)
-        except OSError as e:
-            raise ConfigError(bi(f"cache_dir {path!r} 無法建立：{e}", f"cache_dir {path!r} cannot be created: {e}")) from e
-        if not os.access(target, os.W_OK):
-            raise ConfigError(bi(f"cache_dir {path!r} 不可寫入", f"cache_dir {path!r} is not writable"))
-        self.cache_dir = target
+        """在 `path` 啟用回應快取（不存在時會建立；見 prepare_cache_dir）。
+        Enables the response cache in `path` (created if missing; see prepare_cache_dir)."""
+        self.cache_dir = prepare_cache_dir(path)
 
     def _cache_key(self, model_alias: str, model_info: Dict[str, Any], temperature: float, system_prompt: str, user_prompt: str) -> str:
         # 端點身分（api_base、AWS 區域／設定檔、金鑰環境變數）也在鍵內：同一個模型字串
@@ -272,104 +233,6 @@ class LLMGateway:
         except OSError as e:
             logger.warning(bi(f"無法寫入回應快取項目：{e}", f"Could not write the response cache entry: {e}"))
 
-    def _validate_settings(self) -> None:
-        """數值設定在啟動時檢查一次。過去它們只在發出呼叫時才被讀取，
-        因此像 `timeout_seconds: "abc"` 這樣的錯字會傳到 litellm、在那裡失敗，而在 hybrid
-        模式下被登記為「線上呼叫失敗」並悄悄地由模擬引擎取代。
-        Numeric settings are checked once at start-up. They used to be read only when a call was
-        made, so a typo such as `timeout_seconds: "abc"` reached litellm, failed there, and in hybrid
-        mode was booked as "live invocation failed" and silently replaced by the simulation engine."""
-        # null 與省略相同，都採用預設值（與其他數值設定一致）；0 或負數仍是 ConfigError
-        # null means the same as omitted, the default (consistent with the other numeric settings); 0 or a negative value is still a ConfigError
-        self._number(self._global_setting("timeout_seconds", DEFAULT_TIMEOUT_SECONDS), "global.timeout_seconds", minimum=1)
-        self._number(self._global_setting("max_retries", DEFAULT_MAX_RETRIES), "global.max_retries", minimum=0, integer=True)
-        self._number(self._global_setting("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS), "global.max_output_tokens",
-                     minimum=1, integer=True)
-        for alias, info in self.models_config.items():
-            # 每個模型項目都必須有 litellm 模型字串：否則指向它的 agent 會悄悄改用模擬（hybrid）或在 live 中途失敗
-            # Every model entry needs a litellm model string: otherwise an agent pointing at it silently simulates
-            # (hybrid) or fails mid-run (live)
-            info = info if isinstance(info, dict) else {}
-            model = info.get("model")
-            if not isinstance(model, str) or not model.strip():
-                raise ConfigError(bi(f"models.{alias}.model 必須是非空的 litellm 模型字串，目前為 {model!r}",
-                                     f"models.{alias}.model must be a non-empty litellm model string, got {model!r}"))
-            fallback = info.get("fallback_model")
-            if fallback is not None and (not isinstance(fallback, str) or not fallback.strip()):
-                raise ConfigError(bi(f"models.{alias}.fallback_model 必須是非空字串或 null，目前為 {fallback!r}",
-                                     f"models.{alias}.fallback_model must be a non-empty string or null, got {fallback!r}"))
-            # 檢查的是去掉前後空白的值，保存的也必須是它：否則 " claude-sonnet-5-5" 會原樣送進 litellm 與快取鍵
-            # The check is on the stripped value, so the stripped value is what is kept: otherwise " claude-sonnet-5-5"
-            # would reach litellm and the cache key as written
-            info["model"] = model.strip()
-            if fallback is not None:
-                info["fallback_model"] = fallback.strip()
-            # base_url 不會被讀取（端點是 api_base）：留著它會讓使用者以為呼叫送到了自訂端點
-            # base_url is never read (the endpoint is api_base): keeping it would make users think calls go to a custom endpoint
-            if info.get("base_url") is not None:
-                raise ConfigError(bi(f"models.{alias}.base_url 不會被讀取；自訂端點請改用 models.{alias}.api_base",
-                                     f"models.{alias}.base_url is not read; use models.{alias}.api_base for a custom endpoint"))
-            if info.get("max_output_tokens") is not None:
-                self._number(info["max_output_tokens"], f"models.{alias}.max_output_tokens", minimum=1, integer=True)
-        for agent_id, meta in self.agents_config.items():
-            # 打錯字的 model_alias 過去會悄悄解析成 unconfigured：hybrid 改用模擬，live 則在已付費的呼叫之後才中途失敗。
-            # 省略或 null 仍是刻意的 unconfigured；明確寫出的別名必須存在於 models
-            # A misspelled model_alias used to resolve silently to unconfigured: hybrid simulated it, live failed mid-run
-            # after paid calls. Omitted or null is still a deliberate unconfigured; an alias that is written must exist in models
-            alias = meta.get("model_alias") if isinstance(meta, dict) else None
-            if alias is not None and alias != UNCONFIGURED_ALIAS and (not isinstance(alias, str) or alias not in self.models_config):
-                known = ", ".join(sorted(str(a) for a in self.models_config)) or "-"
-                raise ConfigError(bi(
-                    f"agents.{agent_id}.model_alias {alias!r} 不在 models 區段中（已定義：{known}）",
-                    f"agents.{agent_id}.model_alias {alias!r} is not defined in the models section (defined: {known})",
-                ))
-            if isinstance(meta, dict) and meta.get("temperature") is not None:
-                self._number(meta["temperature"], f"agents.{agent_id}.temperature", minimum=0, maximum=2)
-        self._number(self.retry_invalid_output, "global.retry_invalid_output", minimum=0, maximum=5, integer=True)
-        for alias, info in self.models_config.items():
-            for key in ("price_per_million_input", "price_per_million_output"):
-                if isinstance(info, dict) and info.get(key) is not None:
-                    self._number(info[key], f"models.{alias}.{key}", minimum=0)
-            extra = info.get("extra_params") if isinstance(info, dict) else None
-            if extra is not None and (not isinstance(extra, dict) or not all(isinstance(k, str) for k in extra)):
-                raise ConfigError(bi(f"models.{alias}.extra_params 必須是 litellm 參數名稱的對應表，目前為 {extra!r}",
-                                     f"models.{alias}.extra_params must be a mapping of litellm parameter names, got {extra!r}"))
-            reserved = sorted(k for k in (extra or {}) if is_reserved_extra_param(k))
-            if reserved and set(reserved) <= _TOKEN_CAP_PARAMS:
-                names = ", ".join(reserved)
-                raise ConfigError(bi(
-                    f"models.{alias}.extra_params 不可設定輸出 token 上限：{names}"
-                    f"（請改用 models.{alias}.max_output_tokens 或 global.max_output_tokens）",
-                    f"models.{alias}.extra_params must not set the output-token cap: {names} "
-                    f"(use models.{alias}.max_output_tokens or global.max_output_tokens instead)"
-                ))
-            if reserved:
-                names = ", ".join(reserved)
-                raise ConfigError(bi(
-                    f"models.{alias}.extra_params 不可設定保留的 litellm 參數：{names}"
-                    "（端點、憑證、逾時與重試請用 models.<alias> 或 global 的專用設定鍵；輸出 token 上限請用 max_output_tokens）",
-                    f"models.{alias}.extra_params must not set reserved litellm parameter(s): {names} "
-                    "(use the dedicated models.<alias> / global settings for endpoints, credentials, timeouts and "
-                    "retries, and max_output_tokens for the output-token cap)"
-                ))
-
-    def _global_setting(self, key: str, default: Any) -> Any:
-        """`global.<key>` 的值；省略或為 null 時回傳 `default`，因此絕不會把 None 傳給 litellm。
-        The value of `global.<key>`; `default` when it is omitted or null, so None never reaches litellm."""
-        value = (self.config.get("global") or {}).get(key)
-        return default if value is None else value
-
-    @staticmethod
-    def _number(value: Any, key: str, minimum: float, maximum: Optional[float] = None, integer: bool = False) -> None:
-        ok = isinstance(value, (int, float)) and not isinstance(value, bool) and (not integer or isinstance(value, int))
-        if not ok or value < minimum or (maximum is not None and value > maximum):
-            kind = "an integer" if integer else "a number"
-            kind_zh = "整數" if integer else "數值"
-            bounds = f">= {minimum}" if maximum is None else f"between {minimum} and {maximum}"
-            bounds_zh = f">= {minimum}" if maximum is None else f"介於 {minimum} 與 {maximum} 之間"
-            raise ConfigError(bi(f"{key} 必須是 {bounds_zh} 的{kind_zh}，目前為 {value!r}",
-                                 f"{key} must be {kind} {bounds}, got {value!r}"))
-
     @staticmethod
     def _safe_reason(text: str) -> str:
         """可供記錄或列入報告的供應商錯誤文字：憑證已遮蔽（HTTP 用戶端
@@ -377,17 +240,6 @@ class LLMGateway:
         Provider error text as it may be logged or reported: credentials redacted (an HTTP client
         can echo a request URL or header carrying the API key), control characters removed."""
         return clean_model_text(redact_secrets(str(text)))
-
-    @staticmethod
-    def _positive_int(value: Any, key: str) -> Optional[int]:
-        """選用的正整數設定；None/0 表示「未設定」。
-        An optional positive integer setting; None/0 mean "not set"."""
-        if value is None or value == 0:
-            return None
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ConfigError(bi(f"global.{key} 必須是非負整數，目前為 {value!r}",
-                                 f"global.{key} must be a non-negative integer, got {value!r}"))
-        return value
 
     def _reserve_live_call(self) -> bool:
         """從預算中認領一次線上呼叫（執行緒安全）；預算用盡時為 False。
@@ -429,10 +281,6 @@ class LLMGateway:
         """模型有回答但其輸出無法使用時為 False。
         False when the model answered but its output could not be used."""
         return resp.get(PROVENANCE_KEY, {}).get("mode") != "invalid"
-
-    def _load_config(self, path: str) -> Dict[str, Any]:
-        """見 load_config_file ／ See load_config_file."""
-        return load_config_file(path)
 
     def is_live_configured(self, model_alias: str) -> bool:
         """檢查所要求的模型是否具備憑證：其 API 金鑰，或 AWS 設定檔
@@ -643,10 +491,10 @@ class LLMGateway:
             # Newer models reject sampling knobs (Claude Opus 5.5 on Bedrock accepts only temperature=1;
             # Gemini 3 is deprecating them): drop what a model does not support rather than failing the call
             "drop_params": True,
-            # null 已由 _global_setting 換成預設值：timeout=None 對 litellm 代表不限時，絕不傳出
-            # null is already replaced by the default in _global_setting: timeout=None means no limit to litellm and is never passed
-            "timeout": self._global_setting("timeout_seconds", DEFAULT_TIMEOUT_SECONDS),
-            "num_retries": self._global_setting("max_retries", DEFAULT_MAX_RETRIES),
+            # null 已在載入設定時換成預設值：timeout=None 對 litellm 代表不限時，絕不傳出
+            # null was already replaced by the default when the settings were loaded: timeout=None means no limit to litellm and is never passed
+            "timeout": self.settings.timeout_seconds,
+            "num_retries": self.settings.max_retries,
             "max_tokens": self._max_output_tokens(model_info),
         }
         if env_var:
@@ -695,7 +543,7 @@ class LLMGateway:
         value falls back to DEFAULT_MAX_OUTPUT_TOKENS."""
         value = model_info.get("max_output_tokens")
         if value is None:
-            value = self._global_setting("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)
+            value = self.settings.max_output_tokens
         return int(value)
 
     @staticmethod

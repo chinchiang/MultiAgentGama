@@ -50,6 +50,32 @@ def _load(tmp_path, origin="explicit", overrides=None, **sections):
     return load_settings(_write(tmp_path, _config(**sections)), origin=origin, overrides=overrides)
 
 
+def test_null_docker_keys_keep_their_defaults(tmp_path):
+    """重現：null 的 docker_network／docker_memory／docker_cpus／docker_bin 過去是錯誤；現在保留預設值。
+    Reproduction: a null docker_network / docker_memory / docker_cpus / docker_bin used to be an error; it now keeps the default."""
+    nulls = {key: None for key in ("docker_network", "docker_memory", "docker_cpus", "docker_bin", "docker_pids_limit",
+                                   "docker_image", "docker_node_image")}
+    s = _load(tmp_path, global_={"sandbox_provider": "docker", **nulls})
+    d = s.sandbox.docker
+    assert (d.network, d.memory, d.cpus, d.bin, d.pids_limit, d.image) == ("none", "1g", "2", "docker", 256, "vibeharness-sandbox:latest")
+    assert s.node.image == "vibeharness-sandbox-node:latest"
+
+
+def test_null_mutation_settings_keep_the_defaults(tmp_path):
+    """mutation_* 的 null（以及 timeout／copy 的 0）保留預設值 ／ null mutation_* (and 0 for timeout / copy) keep the defaults."""
+    m = _load(tmp_path, global_={"mutation_max_mutants": None, "mutation_min_score": None, "mutation_timeout_seconds": 0,
+                                 "mutation_max_copy_mb": None, "per_test_timeout_seconds": 45}).mutation
+    assert (m.max_mutants, m.min_score, m.timeout, m.max_copy_mb) == (20, 70.0, 45, 200)
+
+
+def test_the_python_and_node_sandboxes_share_one_validated_timeout(tmp_path):
+    """兩個沙盒共用同一組驗證過的設定，不會各自解讀（例如逾時 0 一邊是 0、一邊是 120）。
+    Both sandboxes share one validated set of settings, so a value is never interpreted differently (e.g. a timeout
+    of 0 becoming 0 on one side and 120 on the other)."""
+    s = _load(tmp_path, global_={"sandbox_timeout_seconds": 0, "sandbox_node_provider": "docker"})
+    assert s.sandbox.timeout == 120 and s.node.image == "vibeharness-sandbox-node:latest"
+
+
 def test_bundled_config_resolves_to_the_documented_defaults():
     s = load_settings(DEFAULT_CONFIG_PATH, origin="bundled")
     assert isinstance(s, Settings) and s.origin == "bundled" and s.warnings == ()
@@ -112,6 +138,8 @@ RULES = [
     # null 保留預設值，只有明確的 0 停用上限 ／ null keeps the default, only an explicit 0 disables the cap
     ({"sandbox_memory_mb": None}, "sandbox.memory_mb", 2048),
     ({"sandbox_memory_mb": 0}, "sandbox.memory_mb", 0),
+    ({"sandbox_memory_mb": ...}, "sandbox.memory_mb", 2048),
+    ({"sandbox_memory_mb": 512}, "sandbox.memory_mb", 512),
     ({"sandbox_memory_mb": -5}, None, "global.sandbox_memory_mb must be a non-negative integer, got -5"),
     ({"sandbox_provider": None}, "sandbox.provider", "local_subprocess"),
     ({"sandbox_provider": "k8s"}, None, "sandbox_provider 'k8s' is not implemented; supported: 'local_subprocess', 'docker'"),
@@ -122,11 +150,20 @@ RULES = [
     ({**DOCKER, "docker_pids_limit": None}, "sandbox.docker.pids_limit", 256),
     ({**DOCKER, "docker_pids_limit": 0}, "sandbox.docker.pids_limit", 256),
     ({**DOCKER, "docker_pids_limit": -1}, "sandbox.docker.pids_limit", -1),
+    ({**DOCKER, "docker_pids_limit": 64}, "sandbox.docker.pids_limit", 64),
+    ({**DOCKER, "docker_pids_limit": "lots"}, None, "global.docker_pids_limit must be an integer (-1 = unlimited), got 'lots'"),
+    ({**DOCKER, "docker_pids_limit": True}, None, "global.docker_pids_limit must be an integer (-1 = unlimited), got True"),
     ({**NODE_DOCKER, "docker_pids_limit": -2}, None, "global.docker_pids_limit must be an integer (-1 = unlimited), got -2"),
     ({**DOCKER, "docker_network": " host "}, "sandbox.docker.network", "host"),
     ({**DOCKER, "docker_network": ""}, None, "global.docker_network must be a non-empty string"),
     ({**DOCKER, "docker_memory": "512m"}, "sandbox.docker.memory", "512m"),
     ({**DOCKER, "docker_memory": "lots"}, None, "global.docker_memory must be a Docker memory string"),
+    *[({**DOCKER, "docker_memory": m}, "sandbox.docker.memory", m) for m in ("512mb", "1GiB", "2g", "1073741824")],
+    ({**DOCKER, "docker_memory": " 512m "}, "sandbox.docker.memory", "512m"),
+    ({**DOCKER, "docker_cpus": " 1.5 "}, "sandbox.docker.cpus", "1.5"),
+    # 純本機設定檔裡殘留的 docker 鍵不擋啟動 ／ stale docker keys in a local-only config never block start-up
+    ({"docker_memory": 1, "docker_network": None, "docker_cpus": "two"}, "sandbox.docker.memory", "1g"),
+    ({**DOCKER, "docker_image": 123}, None, "docker_image must be a non-empty string"),
     ({**DOCKER, "docker_cpus": 1.5}, "sandbox.docker.cpus", "1.5"),
     ({**DOCKER, "docker_cpus": 0}, None, "global.docker_cpus must be a positive number, got 0"),
     ({**DOCKER, "docker_bin": " "}, None, "global.docker_bin must be a non-empty string"),
@@ -134,6 +171,9 @@ RULES = [
     ({**DOCKER, "docker_image": ""}, None, "docker_image must be a non-empty string"),
     ({"docker_image": ""}, "sandbox.docker.image", "vibeharness-sandbox:latest"),
     ({**NODE_DOCKER, "docker_node_image": ""}, None, "docker_node_image must be a non-empty string"),
+    # 只有 Node 沙盒用 docker 時才驗證 ／ validated only when the Node sandbox uses docker
+    ({"docker_node_image": ""}, "node.image", ""),
+    ({**NODE_DOCKER, "docker_node_image": None}, "node.image", "vibeharness-sandbox-node:latest"),
     ({"node_bin": None}, "node.node_bin", "node"),
     ({"node_bin": "/opt/node/bin/node"}, "node.node_bin", "/opt/node/bin/node"),
     ({"mutation_testing": None}, "mutation.enabled", False),
@@ -147,6 +187,7 @@ RULES = [
     ({"mutation_min_score": 101}, None, "global.mutation_min_score must be a number between 0 and 100, got 101"),
     ({"mutation_max_copy_mb": 0}, "mutation.max_copy_mb", 200),
     ({"mutation_max_copy_mb": -1}, None, "global.mutation_max_copy_mb must be a non-negative integer, got -1"),
+    ({"mutation_timeout_seconds": -1}, None, "global.mutation_timeout_seconds must be a non-negative integer, got -1"),
     ({"max_files": 0}, "scope.max_files", 50),
     ({"max_files": None}, "scope.max_files", 50),
     ({"max_files": -3}, None, "global.max_files must be a non-negative integer, got -3"),

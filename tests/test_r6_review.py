@@ -148,7 +148,7 @@ def test_estimate_counts_the_unmutated_baseline_batch():
     commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
     commander.set_mutation(True, "cli")
     est = estimate_run(commander, EXAMPLES)
-    assert est.mutation_sandbox_runs_max == commander._mutation_cfg["max_mutants"] + 1 == 21
+    assert est.mutation_sandbox_runs_max == commander.settings.mutation.max_mutants + 1 == 21
     assert any("up to 20 mutant(s)" in line and "21 sandbox batch" in line for line in estimate_lines(est))
 
 

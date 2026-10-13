@@ -1,10 +1,12 @@
 """回歸測試：去重不得串連不同缺陷，且票必須來自不同的裁決。
 Regression tests: deduplication must not chain distinct defects, and votes must come from distinct rulings."""
+import dataclasses
 import json
 import os
 import re
 
 from vibeharness.core.llm_gateway import LLMGateway
+from vibeharness.core.settings import Overrides, freeze, load_settings
 from vibeharness.core.models import ReviewFinding, FindingSeverity
 from vibeharness.agents.whitebox.debater import MultiModelDebater
 from vibeharness.agents.whitebox.deduplicator import deduplicate_findings
@@ -68,9 +70,9 @@ def test_short_identical_findings_still_merge():
 # --- 跨模型驗證 ／ Cross-model verification ------------------------------------------------------
 
 def _gateway_with_duplicate_verifier():
-    gw = LLMGateway(CONFIG, execution_mode="live")
-    gw.agents_config["whitebox_verifier_zz_second_glm"] = dict(gw.agents_config["whitebox_verifier_glm"])
-    return gw
+    settings = load_settings(CONFIG, origin="explicit", overrides=Overrides(execution_mode="live"))
+    agents = {**settings.gateway.agents, "whitebox_verifier_zz_second_glm": settings.gateway.agents["whitebox_verifier_glm"]}
+    return LLMGateway(settings=dataclasses.replace(settings, gateway=dataclasses.replace(settings.gateway, agents=freeze(agents))))
 
 
 def test_a_model_configured_twice_as_verifier_votes_once(fake_live):
