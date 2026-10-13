@@ -35,7 +35,7 @@ def fake_live(monkeypatch):
 
     def install(responder):
         fake = _FakeLiteLLM(responder)
-        monkeypatch.setattr("vibeharness.core.llm_gateway.litellm", fake)
+        monkeypatch.setattr("vibeharness.core.transport.litellm", fake)
         return fake
     return install
 

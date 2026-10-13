@@ -515,7 +515,7 @@ def _fake_completion(monkeypatch, calls, content, finish_reason):
         calls.append(kwargs)
         choice = SimpleNamespace(message=SimpleNamespace(content=content), finish_reason=finish_reason)
         return SimpleNamespace(choices=[choice])
-    monkeypatch.setattr("vibeharness.core.llm_gateway.litellm", SimpleNamespace(completion=completion))
+    monkeypatch.setattr("vibeharness.core.transport.litellm", SimpleNamespace(completion=completion))
 
 
 def test_per_model_output_limit_overrides_the_global_one(fake_live, monkeypatch, tmp_path):

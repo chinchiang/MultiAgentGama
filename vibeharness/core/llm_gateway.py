@@ -14,6 +14,8 @@ from typing import Dict, Any, Optional, List
 import yaml  # noqa: F401
 
 from vibeharness.core.models import AgentCallRecord
+# 模型呼叫走 core/transport.py 的接縫；只有那裡知道 litellm ／ model calls go through the seam in core/transport.py; only it knows litellm
+from vibeharness.core.transport import LiteLLMTransport, ModelRequest, ModelTransport
 # 設定檔的預設值、載入與政策都在 core/settings.py；這裡以同名重新匯出 ／ the config defaults, loading and policy live in
 # core/settings.py; re-exported here under the same names
 from vibeharness.core.settings import (
@@ -64,17 +66,6 @@ from vibeharness.core.settings import (
 from vibeharness.core.i18n import bi, en_only, zh_only
 from vibeharness.core.sanitize import clean_model_text, redact_secrets
 
-# litellm 在匯入時就會以 HTTPS 從 GitHub 抓取模型價格表（失敗還會重試、拖慢啟動），即使是 mock 或 --estimate
-# 這種完全不呼叫模型的執行也一樣。改用 litellm 套件內附的本機價格表；使用者自己設定的環境變數優先（setdefault）
-# litellm fetches its model cost map from GitHub over HTTPS at import time (and retries on failure, slowing start-up),
-# even for a mock or --estimate run that never calls a model. Use the cost map bundled with litellm instead; a value
-# the user set in the environment wins (setdefault)
-os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
-
-try:
-    import litellm
-except ImportError:  # pragma: no cover - litellm 是選用的執行期相依套件 ／ litellm is an optional runtime dependency
-    litellm = None  # type: ignore[assignment]
 
 logger = logging.getLogger("VibeHarness.LLMGateway")
 
@@ -154,10 +145,13 @@ class LLMGateway:
     """
 
     def __init__(self, config_path: str = DEFAULT_CONFIG_PATH, execution_mode: Optional[str] = None, *,
-                 settings: Optional[Settings] = None):
+                 settings: Optional[Settings] = None, transport: Optional[ModelTransport] = None):
         """`settings` 是 load_settings 驗證過的設定；省略時以 `config_path`（視為指定的設定檔）與 `execution_mode` 載入。
+        `transport` 是模型呼叫的接縫（core/transport.py）；省略時是 LiteLLMTransport。
         `settings` are the settings load_settings validated; when omitted they are loaded from `config_path` (as an
-        Explicit config) and `execution_mode`."""
+        Explicit config) and `execution_mode`. `transport` is the model-call seam (core/transport.py); LiteLLMTransport
+        when omitted."""
+        self.transport: ModelTransport = transport if transport is not None else LiteLLMTransport()
         if settings is None:
             settings = load_settings(config_path, origin="explicit", overrides=Overrides(execution_mode=execution_mode))
         self.settings: GatewaySettings = settings.gateway
@@ -337,8 +331,8 @@ class LLMGateway:
             # 只讀快取不需要 litellm 或金鑰：命中直接取用，未命中在下方登記為 CACHE_MISS_REASON
             # Reading the cache needs neither litellm nor a key: a hit is served, a miss is booked below as CACHE_MISS_REASON
             pass
-        elif litellm is None:
-            fallback_reason = bi("未安裝 litellm", "litellm is not installed")
+        elif self.transport.unavailable_reason is not None:
+            fallback_reason = self.transport.unavailable_reason
         elif not self.is_live_configured(model_alias):
             env_var = model_info.get("api_key_env") or "<no api_key_env configured>"
             fallback_reason = bi(f"未設定 API 金鑰環境變數 {env_var}", f"API key env var {env_var} is not set")
@@ -381,7 +375,8 @@ class LLMGateway:
                         logger.info(bi(f"[{agent_id}] 回答取自回應快取（{model_name}）",
                                        f"[{agent_id}] answer served from the response cache ({model_name})"))
                     else:
-                        raw_text, model_name, finish_reason = self._complete(model_info, primary_model, messages, temperature)
+                        raw_text, model_name, finish_reason = self._complete(agent_id, model_alias, model_info, primary_model,
+                                                                             messages, temperature)
                 except Exception as e:
                     fallback_reason = f"{bi('線上呼叫失敗', 'live invocation failed')}: {self._safe_reason(str(e))}"
                     if self.execution_mode == "live":
@@ -457,7 +452,8 @@ class LLMGateway:
         result[PROVENANCE_KEY] = {"mode": "simulated", "model": model_name, "reason": fallback_reason}
         return result
 
-    def _complete(self, model_info: Dict[str, Any], model_name: str, messages: List[Dict[str, str]], temperature: float):
+    def _complete(self, agent_id: str, model_alias: str, model_info: Dict[str, Any], model_name: str,
+                  messages: List[Dict[str, str]], temperature: float):
         """
         呼叫主要模型（含 litellm 自身的重試），主要模型失敗時再呼叫一次 `fallback_model`。
         API 金鑰會明確傳入，因此 litellm 預設環境變數與 `api_key_env` 不同的供應商
@@ -484,7 +480,6 @@ class LLMGateway:
                 "set it in the models section of the agents config to make live calls."
             ))
         kwargs: Dict[str, Any] = {
-            "messages": messages,
             "temperature": temperature,
             # 較新的模型會拒絕取樣參數（Bedrock 上的 Claude Opus 5.5 只接受 temperature=1；
             # Gemini 3 正在棄用它們）：捨棄模型不支援的參數，而不是讓呼叫失敗
@@ -518,10 +513,9 @@ class LLMGateway:
         last_error: Optional[Exception] = None
         for candidate in candidates:
             try:
-                response = litellm.completion(model=candidate, **kwargs)
-                choice = response.choices[0]
-                finish_reason = getattr(choice, "finish_reason", None)
-                return choice.message.content or "", candidate, finish_reason if isinstance(finish_reason, str) else None
+                reply = self.transport.complete(ModelRequest(
+                    agent_id=agent_id, model_alias=model_alias, model=candidate, messages=messages, params=dict(kwargs)))
+                return reply.text, candidate, reply.finish_reason
             except Exception as e:
                 last_error = e
                 logger.warning(bi(f"模型 {candidate} 失敗：{self._safe_reason(str(e))}",

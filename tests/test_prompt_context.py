@@ -218,7 +218,7 @@ def test_gateway_passes_call_options_and_uses_fallback_model(fake_live, monkeypa
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"findings": []}'))])
 
     fake_live(lambda s, u: "")
-    monkeypatch.setattr("vibeharness.core.llm_gateway.litellm", SimpleNamespace(completion=completion))
+    monkeypatch.setattr("vibeharness.core.transport.litellm", SimpleNamespace(completion=completion))
     gateway = LLMGateway(CONFIG, execution_mode="live")
     resp = gateway.generate("whitebox_reviewer_claude", "sys", "prompt", required_keys=["findings"])
 
