@@ -31,10 +31,8 @@ logger = logging.getLogger("VibeHarness.Mutation")
 # Only white-box unit tests are used: probes (whitebox_probe) swallow exceptions, pass almost always and carry no
 # signal; black-box tests do not map to a single function
 ELIGIBLE_TEST_TYPES = ("whitebox_unit",)
-# 複本大小上限（MB）：單一檔案目標會以所在目錄為工作目錄，可能很大；超過就略過並記原因
-# Size cap (MB) of the scratch copy: a single-file target uses its whole directory, which may be large;
-# above it the step is skipped with a reason
-DEFAULT_MAX_COPY_MB = 200
+# 複本大小上限（MB）的預設值定義在 core/settings.py ／ the scratch copy's size cap (MB) default is defined in core/settings.py
+from vibeharness.core.settings import DEFAULT_MAX_COPY_MB as DEFAULT_MAX_COPY_MB  # noqa: E402
 
 _ARITHMETIC = {ast.Add: ("+", "-"), ast.Sub: ("-", "+"), ast.Mult: ("*", "/"), ast.Div: ("/", "*")}
 _COMPARISON = {

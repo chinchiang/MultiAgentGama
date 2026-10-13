@@ -49,17 +49,16 @@ from vibeharness.reports.report_generator import JSON_SCHEMA_VERSION, ReportGene
 
 logger = logging.getLogger("VibeHarness.Commander")
 
-# local_subprocess 沙盒的位址空間上限（MB）；0 表示停用
-# Address-space cap for the local_subprocess sandbox (MB); 0 disables
-DEFAULT_SANDBOX_MEMORY_MB = 2048
-# 突變測試的預設值：變異體上限與低於幾分（百分比）算證據缺口 ／ mutation-testing defaults: the mutant cap and the score (percent) below which an evidence gap is added
-DEFAULT_MUTATION_MAX_MUTANTS = 20
-DEFAULT_MUTATION_MIN_SCORE = 70.0
-# 沙盒逾時與 docker 程序數上限的預設值 ／ defaults for the sandbox timeouts and the docker process limit
-DEFAULT_SANDBOX_TIMEOUT_SECONDS = 120
-DEFAULT_PER_TEST_TIMEOUT_SECONDS = 30
-DEFAULT_DOCKER_PIDS_LIMIT = 256
-DEFAULT_SANDBOX_PROVIDER = "local_subprocess"
+# 預設值定義在 core/settings.py，這裡以同名重新匯出 ／ the defaults are defined in core/settings.py and re-exported here
+from vibeharness.core.settings import (  # noqa: E402
+    DEFAULT_DOCKER_PIDS_LIMIT as DEFAULT_DOCKER_PIDS_LIMIT,
+    DEFAULT_MUTATION_MAX_MUTANTS as DEFAULT_MUTATION_MAX_MUTANTS,
+    DEFAULT_MUTATION_MIN_SCORE as DEFAULT_MUTATION_MIN_SCORE,
+    DEFAULT_PER_TEST_TIMEOUT_SECONDS as DEFAULT_PER_TEST_TIMEOUT_SECONDS,
+    DEFAULT_SANDBOX_MEMORY_MB as DEFAULT_SANDBOX_MEMORY_MB,
+    DEFAULT_SANDBOX_PROVIDER as DEFAULT_SANDBOX_PROVIDER,
+    DEFAULT_SANDBOX_TIMEOUT_SECONDS as DEFAULT_SANDBOX_TIMEOUT_SECONDS,
+)
 
 
 def _per_test_timeout(global_cfg: dict) -> int:

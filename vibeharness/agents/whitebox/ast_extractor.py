@@ -10,12 +10,9 @@ from vibeharness.core.i18n import bi
 
 logger = logging.getLogger("VibeHarness.ASTExtractor")
 
-DEFAULT_MAX_FILES = 50
-# 單一原始碼檔案超過此大小就略過（回報為證據缺口）：壓縮過的 bundle 與
-# 產生的程式碼無法審查，而且 JS/TS 詞法分析器是逐字元的 Python 迴圈
-# A single source file above this size is skipped (reported as an evidence gap): minified bundles and
-# generated code are not reviewable, and the JS/TS lexer is a character-by-character Python loop
-DEFAULT_MAX_FILE_BYTES = 1_000_000
+# max_files 與 max_file_bytes 的預設值定義在 core/settings.py（該模組匯入時不載入第三方套件）
+# The max_files and max_file_bytes defaults are defined in core/settings.py (which loads no third-party package on import)
+from vibeharness.core.settings import DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_FILES  # noqa: E402
 # 絕不進入的目錄名稱（再加上任何以 '.' 開頭的名稱）
 # Directory names never descended into (plus any name starting with '.')
 SKIPPED_DIRS = {"venv", "__pycache__", "node_modules", "dist", "build", "site-packages"}
