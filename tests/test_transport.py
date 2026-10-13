@@ -97,3 +97,17 @@ def test_simulated_output_comes_from_the_caller():
     assert first["findings"] == [] and gw.is_simulated(first) and first["_provenance"]["mode"] == "simulated"
     default = gw.generate("whitebox_reviewer_claude", "s", "u")
     assert set(default) == {"status", "message", "_provenance"} and "whitebox_reviewer_claude" in default["message"]
+
+
+def test_scripted_answers_by_agent_and_raises_like_a_provider(scripted):
+    """`scripted` 夾具：完全相符的代理 id 優先於 glob；腳本裡的例外在那次嘗試中拋出，閘道改試備援模型。
+    The `scripted` fixture: an exact agent id wins over a glob; an exception in the script is raised in that attempt and
+    the gateway tries the fallback model."""
+    attempts = iter([RuntimeError("primary is down"), {"ok": 2}])
+    transport = scripted({"whitebox_reviewer_*": {"ok": 1}, "whitebox_reviewer_glm": lambda request: next(attempts)})
+    gw = LLMGateway(CONFIG, execution_mode="live", transport=transport)
+    assert gw.generate("whitebox_reviewer_claude", "s", "u", required_keys=["ok"])["ok"] == 1
+    assert gw.generate("whitebox_reviewer_glm", "s", "u", required_keys=["ok"])["ok"] == 2
+    glm = gw.models_config["glm"]
+    assert [r.model for r in transport.requests[1:]] == [glm["model"], glm["fallback_model"]]
+    assert transport.prompts("whitebox_reviewer_glm") == [(transport.requests[1].messages[0]["content"], "u")] * 2

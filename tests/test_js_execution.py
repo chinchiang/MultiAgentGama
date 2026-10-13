@@ -4,7 +4,6 @@
 JavaScript / TypeScript dynamic execution: the JS code gate, module-kind detection and import
 instructions, Node JUnit parsing and classification, the Node sandboxes (real `node` when available,
 forced with VIBEHARNESS_REQUIRE_NODE=1), the executor's language split and the harness evidence gaps."""
-import json
 import os
 import pathlib
 import shutil
@@ -684,43 +683,46 @@ _JS_TARGET = ("export function login(user, password) {\n  if (!user) return { st
               "  return { status: 'ok', token: user + ':' + password };\n}\n")
 
 
-def _js_responder(expected_status):
+def _js_script(expected_status):
     """假模型：對 login 的一個發現、每位驗證者都確認、對應的一個 node:test、一個威脅
     及其行程內攻擊測試。產生的測試會匯入提示詞給它們的 URL。
     A fake model: one finding on login, confirmed by every verifier, a node:test for it, one threat
     with an in-process attack test. The generated tests import the URL the prompt gives them."""
-    def responder(system, user):
-        if "QA Engineer" in system:
-            assert "JavaScript/TypeScript QA Engineer" in system, "a JS finding must get the JS test prompt"
-            url = [line.split(": ", 1)[1] for line in user.splitlines() if line.startswith("Import URL")][0]
-            body = 'test("empty user is rejected", () => { assert.equal(login("", "p").status, "error"); });'
-            return json.dumps({"test_id": "WB-TEST-01", "title": "login", "rationale": "", "expected_outcome": "",
-                               "code": _esm_test(f'import {{ login }} from "{url}";', body)})
-        if "Offensive Security" in system:
-            assert "node:test" in system
-            url = [line.split(": ", 1)[1] for line in user.splitlines() if line.startswith("Import URL")][0]
-            body = ('test("token must not echo the password", () => { '
-                    f'assert.equal(login("u", "pw").token.includes("pw"), {"false" if expected_status != "BLOCKED_CRITICAL_RISK" else "false"}); }});')
-            return json.dumps({"test_id": "BB-TEST-1", "title": "token leak", "rationale": "", "expected_outcome": "",
-                               "code": _esm_test(f'import {{ login }} from "{url}";', body)})
-        if "Threat Modeling Specialist" in system:
-            return json.dumps({"threats": [{"threat_id": "T1", "stride_category": "Information Disclosure",
-                                            "title": "password in token", "severity": "HIGH",
-                                            "attack_vector": "call login", "attack_scenario": "login returns the password"}]})
-        if "verdicts" in system:
-            return json.dumps({"verdicts": [{"index": 0, "verdict": "confirm", "reason": "yes"}]})
-        return json.dumps({"findings": [{"symbol_name": "login", "severity": "HIGH", "title": "password echoed in token",
-                                         "description": "d", "root_cause": "r", "suggested_test_scenario": "s"}]})
-    return responder
+    def import_url(request):
+        return [line.split(": ", 1)[1] for line in request.messages[1]["content"].splitlines()
+                if line.startswith("Import URL")][0]
+
+    def whitebox_test(request):
+        assert "JavaScript/TypeScript QA Engineer" in request.messages[0]["content"], "a JS finding must get the JS test prompt"
+        body = 'test("empty user is rejected", () => { assert.equal(login("", "p").status, "error"); });'
+        return {"test_id": "WB-TEST-01", "title": "login", "rationale": "", "expected_outcome": "",
+                "code": _esm_test(f'import {{ login }} from "{import_url(request)}";', body)}
+
+    def attack_test(request):
+        assert "node:test" in request.messages[0]["content"]
+        body = ('test("token must not echo the password", () => { '
+                f'assert.equal(login("u", "pw").token.includes("pw"), {"false" if expected_status != "BLOCKED_CRITICAL_RISK" else "false"}); }});')
+        return {"test_id": "BB-TEST-1", "title": "token leak", "rationale": "", "expected_outcome": "",
+                "code": _esm_test(f'import {{ login }} from "{import_url(request)}";', body)}
+
+    return {
+        "whitebox_test_generator": whitebox_test,
+        "blackbox_test_synthesizer": attack_test,
+        "blackbox_threat_modeler": {"threats": [{"threat_id": "T1", "stride_category": "Information Disclosure",
+                                                 "title": "password in token", "severity": "HIGH",
+                                                 "attack_vector": "call login", "attack_scenario": "login returns the password"}]},
+        "whitebox_verifier_*": {"verdicts": [{"index": 0, "verdict": "confirm", "reason": "yes"}]},
+        "whitebox_reviewer_*": {"findings": [{"symbol_name": "login", "severity": "HIGH", "title": "password echoed in token",
+                                              "description": "d", "root_cause": "r", "suggested_test_scenario": "s"}]},
+    }
 
 
 @node_only
-def test_js_target_is_dynamically_verified_end_to_end(tmp_path, fake_live):
+def test_js_target_is_dynamically_verified_end_to_end(tmp_path, scripted):
     target = tmp_path / "app"
     target.mkdir()
     (target / "auth.mjs").write_text(_JS_TARGET, encoding="utf-8")
-    fake_live(_js_responder("BLOCKED_CRITICAL_RISK"))
-    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="live")
+    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="live", transport=scripted(_js_script("BLOCKED_CRITICAL_RISK")))
     report = tmp_path / "r.md"
     summary = commander.run_full_pipeline(target_dir=str(target), base_url="http://localhost:59999",
                                           output_report_path=str(report))
@@ -739,12 +741,11 @@ def test_js_target_is_dynamically_verified_end_to_end(tmp_path, fake_live):
     assert f"JS/TS {summary.js_line_coverage_pct:.1f}%" in text
 
 
-def test_js_target_without_a_node_runtime_is_an_evidence_gap(tmp_path, fake_live):
+def test_js_target_without_a_node_runtime_is_an_evidence_gap(tmp_path, scripted):
     target = tmp_path / "app"
     target.mkdir()
     (target / "auth.mjs").write_text(_JS_TARGET, encoding="utf-8")
-    fake_live(_js_responder("INCONCLUSIVE"))
-    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="live")
+    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="live", transport=scripted(_js_script("INCONCLUSIVE")))
     commander.node_bin = "definitely-not-a-node-binary-xyz"
     summary = commander.run_full_pipeline(target_dir=str(target), base_url="http://localhost:59999",
                                           output_report_path=str(tmp_path / "r.md"))

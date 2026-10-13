@@ -166,21 +166,16 @@ def test_missing_threat_id_gets_a_positional_default():
 # --- 審查者／辯論者／情境建構器：同一類的格式錯誤輸出 --------------------------------------
 # --- Reviewer / debater / scenario builder: same class of malformed output ------------------------
 
-def test_malformed_reviewer_findings_are_skipped(fake_live, tmp_path):
+def test_malformed_reviewer_findings_are_skipped(scripted, tmp_path):
     (tmp_path / "svc.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
     symbols = ASTExtractor().parse_file(str(tmp_path / "svc.py"))
-
-    def responder(system, user):
-        if "(Claude)" in system:
-            return '{"findings": 5}'
-        if "DeepSeek" in system:
-            return '{"findings": ["not a dict", {"symbol_name": "f", "title": 42, "severity": "HIGH"}]}'
-        if "GLM" in system:
-            return '{"findings": [{"symbol_name": "f", "title": "ok", "severity": "HIGH"}]}'
-        return '{"findings": []}'
-
-    fake_live(responder)
-    findings = HeterogeneousReviewerEnsemble(LLMGateway(CONFIG, execution_mode="live")).review_symbols(
+    transport = scripted({
+        "whitebox_reviewer_claude": '{"findings": 5}',
+        "whitebox_reviewer_deepseek": '{"findings": ["not a dict", {"symbol_name": "f", "title": 42, "severity": "HIGH"}]}',
+        "whitebox_reviewer_glm": '{"findings": [{"symbol_name": "f", "title": "ok", "severity": "HIGH"}]}',
+        "*": '{"findings": []}',
+    })
+    findings = HeterogeneousReviewerEnsemble(LLMGateway(CONFIG, execution_mode="live", transport=transport)).review_symbols(
         symbols, root_dir=str(tmp_path)
     )
     assert [f.title for f in findings] == ["ok"]
@@ -231,7 +226,7 @@ def test_generator_tracks_findings_with_and_without_model_tests(fake_live, tmp_p
 # --- 測試框架：探針退回是證據缺口，絕不是通往 READY_TO_SHIP 的無聲捷徑 ---------------------
 # --- Harness: probe fallback is an evidence gap, never a silent path to READY_TO_SHIP -------------
 
-def test_probe_fallback_is_disclosed_and_blocks_ready_to_ship(fake_live, tmp_path):
+def test_probe_fallback_is_disclosed_and_blocks_ready_to_ship(scripted, tmp_path):
     target = tmp_path / "app"
     target.mkdir()
     (target / "app.py").write_text(
@@ -244,27 +239,21 @@ def test_probe_fallback_is_disclosed_and_blocks_ready_to_ship(fake_live, tmp_pat
         "severity": "HIGH", "attack_scenario": "s", "test_verification_goal": "g",
     }
 
-    def responder(system, user):
-        if "(Claude)" in system:
-            return json.dumps({"findings": [{
-                "symbol_name": "greet", "severity": "HIGH", "title": "None crash", "description": "d",
-                "root_cause": "r", "suspected_vibe_flaw": "v", "suggested_test_scenario": "call greet(None)",
-            }]})
-        if "code-review verifier" in system:
-            return json.dumps({"verdicts": [{"index": 0, "verdict": "confirm", "reason": "real"}]})
-        if "QA Engineer" in system:
-            return '{"unrelated": true}'  # 合法的 JSON，但沒有可用的測試 ／ valid JSON, but no usable test
-        if "Threat Modeling Specialist" in system:
-            return json.dumps({"threats": [threat]})
-        if "Offensive Security" in system:
-            return json.dumps({"code": (
-                "import pytest\nfrom app import greet\n\ndef test_defense():\n"
-                "    with pytest.raises(ValueError):\n        greet(None)\n"
-            )})
-        return "{}"
-
-    fake_live(responder)
-    summary = VibeHarnessCommander(config_path=CONFIG, execution_mode="live").run_full_pipeline(
+    transport = scripted({
+        "whitebox_reviewer_claude": {"findings": [{
+            "symbol_name": "greet", "severity": "HIGH", "title": "None crash", "description": "d",
+            "root_cause": "r", "suspected_vibe_flaw": "v", "suggested_test_scenario": "call greet(None)",
+        }]},
+        "whitebox_verifier_*": {"verdicts": [{"index": 0, "verdict": "confirm", "reason": "real"}]},
+        "whitebox_test_generator": {"unrelated": True},  # 合法的 JSON，但沒有可用的測試 ／ valid JSON, but no usable test
+        "blackbox_threat_modeler": {"threats": [threat]},
+        "blackbox_test_synthesizer": {"code": (
+            "import pytest\nfrom app import greet\n\ndef test_defense():\n"
+            "    with pytest.raises(ValueError):\n        greet(None)\n"
+        )},
+        "*": "{}",
+    })
+    summary = VibeHarnessCommander(config_path=CONFIG, execution_mode="live", transport=transport).run_full_pipeline(
         target_dir=str(target), base_url="http://localhost:59999", output_report_path=str(tmp_path / "r.md"),
         output_sarif_path=str(tmp_path / "r.sarif")
     )

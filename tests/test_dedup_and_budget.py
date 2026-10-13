@@ -1,6 +1,5 @@
 """重複發現的合併與受 token 預算限制的提示詞脈絡。
 Duplicate-finding merging and token-budgeted prompt context."""
-import json
 import os
 import re
 
@@ -155,20 +154,15 @@ def test_oversized_symbol_gets_its_own_truncated_batch(tmp_path):
     assert "(truncated)" in rendered
 
 
-def test_reviewer_batches_by_tokens_and_reviews_every_symbol(fake_live, tmp_path, monkeypatch):
+def test_reviewer_batches_by_tokens_and_reviews_every_symbol(scripted, tmp_path, monkeypatch):
     f = tmp_path / "mod.py"
     f.write_text("".join(f"def handler_{i}(req):\n" + "    req = dict(req)\n" * 30 + "    return req\n\n" for i in range(8)), encoding="utf-8")
     symbols = ASTExtractor().parse_file(str(f))
     monkeypatch.setattr(HeterogeneousReviewerEnsemble, "BATCH_MAX_TOKENS", 500)
-    seen, prompts = set(), []
-
-    def responder(system, user):
-        if "(Claude)" in system:
-            prompts.append(user)
-            seen.update(re.findall(r"Symbol: (handler_\d+)", user))
-        return json.dumps({"findings": []})
-    fake_live(responder)
-    HeterogeneousReviewerEnsemble(LLMGateway(CONFIG, execution_mode="live")).review_symbols(symbols, root_dir=str(tmp_path))
+    transport = scripted({"*": {"findings": []}})
+    HeterogeneousReviewerEnsemble(LLMGateway(CONFIG, execution_mode="live", transport=transport)).review_symbols(symbols, root_dir=str(tmp_path))
+    prompts = [user for _, user in transport.prompts("whitebox_reviewer_claude")]
+    seen = {name for p in prompts for name in re.findall(r"Symbol: (handler_\d+)", p)}
     assert len(prompts) > 1
     assert seen == {f"handler_{i}" for i in range(8)}
     assert not any("omitted" in p for p in prompts)

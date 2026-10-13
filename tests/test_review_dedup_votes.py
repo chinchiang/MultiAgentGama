@@ -1,7 +1,6 @@
 """回歸測試：去重不得串連不同缺陷，且票必須來自不同的裁決。
 Regression tests: deduplication must not chain distinct defects, and votes must come from distinct rulings."""
 import dataclasses
-import json
 import os
 import re
 
@@ -69,26 +68,23 @@ def test_short_identical_findings_still_merge():
 
 # --- 跨模型驗證 ／ Cross-model verification ------------------------------------------------------
 
-def _gateway_with_duplicate_verifier():
+def _gateway_with_duplicate_verifier(transport):
     settings = load_settings(CONFIG, origin="explicit", overrides=Overrides(execution_mode="live"))
     agents = {**settings.gateway.agents, "whitebox_verifier_zz_second_glm": settings.gateway.agents["whitebox_verifier_glm"]}
-    return LLMGateway(settings=dataclasses.replace(settings, gateway=dataclasses.replace(settings.gateway, agents=freeze(agents))))
+    return LLMGateway(settings=dataclasses.replace(settings, gateway=dataclasses.replace(settings.gateway, agents=freeze(agents))),
+                      transport=transport)
 
 
-def test_a_model_configured_twice_as_verifier_votes_once(fake_live):
-    asked = []
+def test_a_model_configured_twice_as_verifier_votes_once(scripted):
+    def rule(request):
+        n = len(re.findall(r"^\[\d+\]", request.messages[1]["content"], re.MULTILINE))
+        return {"verdicts": [{"index": i, "verdict": "confirm" if request.model_alias == "glm" else "unsure"} for i in range(n)]}
+    transport = scripted({"whitebox_verifier_*": rule})
 
-    def responder(system, user):
-        alias = re.search(r"\(model: (\w+)\)", system).group(1)
-        asked.append(alias)
-        n = len(re.findall(r"^\[\d+\]", user, re.MULTILINE))
-        return json.dumps({"verdicts": [{"index": i, "verdict": "confirm" if alias == "glm" else "unsure"} for i in range(n)]})
-    fake_live(responder)
-
-    debater = MultiModelDebater(_gateway_with_duplicate_verifier())
+    debater = MultiModelDebater(_gateway_with_duplicate_verifier(transport))
     assert sorted(debater.verifiers.values()) == sorted(set(debater.verifiers.values()))
     result = debater.arbitrate([_finding("A", "claude", "SQL injection via search term")])
-    assert asked.count("glm") == 1
+    assert [r.model_alias for r in transport.requests].count("glm") == 1
     glm_votes = [v for v in result.confirmed_findings[0].verification_votes if v.model_alias == "glm"]
     assert len(glm_votes) == 1
 

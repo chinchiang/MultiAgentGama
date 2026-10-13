@@ -22,40 +22,36 @@ def _finding(fid, model, corroborating=(), symbol="get_order"):
     )
 
 
-def _verifier(system):
-    return re.search(r"\(model: (\w+)\)", system).group(1)
-
-
-def _install(fake_live, rulings):
-    """rulings：{驗證者別名: {發現 id: 判定}}；記錄每個驗證者看到了哪些發現。
-    rulings: {verifier_alias: {finding_id: verdict}}; records which findings each verifier was shown."""
+def _gateway(scripted, rulings):
+    """rulings：{驗證者別名: {發現 id: 判定}}；回傳 live 閘道，以及每個驗證者看到了哪些發現。
+    rulings: {verifier_alias: {finding_id: verdict}}; returns a live gateway and which findings each verifier was
+    shown."""
     shown = {}
 
-    def responder(system, user):
-        alias = _verifier(system)
-        ids = re.findall(r"Title: title (\w+)", user)
+    def rule(request):
+        alias = request.model_alias
+        ids = re.findall(r"Title: title (\w+)", request.messages[1]["content"])
         shown.setdefault(alias, []).extend(ids)
         verdicts = [
             {"index": i, "verdict": rulings.get(alias, {}).get(fid, "unsure"), "reason": f"{alias} on {fid}"}
             for i, fid in enumerate(ids)
         ]
-        return json.dumps({"verdicts": verdicts})
-    fake_live(responder)
-    return shown
+        return {"verdicts": verdicts}
+    return LLMGateway(CONFIG, execution_mode="live", transport=scripted({"whitebox_verifier_*": rule})), shown
 
 
-def test_no_model_verifies_its_own_or_a_corroborated_finding(fake_live):
-    shown = _install(fake_live, {})
+def test_no_model_verifies_its_own_or_a_corroborated_finding(scripted):
+    gateway, shown = _gateway(scripted, {})
     findings = [_finding("A", "claude"), _finding("B", "deepseek", corroborating=["glm"])]
-    MultiModelDebater(LLMGateway(CONFIG, execution_mode="live")).arbitrate(findings)
+    MultiModelDebater(gateway).arbitrate(findings)
     assert sorted(shown["claude"]) == ["B"]
     assert sorted(shown["deepseek"]) == ["A"]
     assert sorted(shown["glm"]) == ["A"]  # glm 已經回報過 B，因此不會再問它 B ／ glm already reported B, so it is not asked about B
     assert sorted(shown["gemini"]) == ["A", "B"]
 
 
-def test_majority_decides_and_ties_are_kept(fake_live):
-    _install(fake_live, {
+def test_majority_decides_and_ties_are_kept(scripted):
+    gateway, _ = _gateway(scripted, {
         "deepseek": {"A": "reject", "B": "confirm", "C": "reject"},
         "glm": {"A": "reject", "B": "reject", "C": "unsure"},
         "claude": {"D": "reject"},
@@ -67,7 +63,7 @@ def test_majority_decides_and_ties_are_kept(fake_live):
         _finding("C", "claude"),                               # 0 對 1 -> 有爭議 ／ 0 vs 1 -> disputed
         _finding("D", "deepseek", corroborating=["glm"]),  # 佐證對 claude 駁回 -> 平手，保留 ／ corroborated vs claude reject -> tie, kept
     ]
-    result = MultiModelDebater(LLMGateway(CONFIG, execution_mode="live")).arbitrate(findings)
+    result = MultiModelDebater(gateway).arbitrate(findings)
     assert result.arbitration_applied
     assert [f.finding_id for f in result.confirmed_findings] == ["B", "D"]
     assert [f.finding_id for f in result.disputed_findings] == ["A", "C"]
@@ -82,9 +78,9 @@ def test_majority_decides_and_ties_are_kept(fake_live):
     assert votes_a == {"deepseek": "reject", "glm": "reject", "gemini": "unsure"}
 
 
-def test_corroborated_finding_with_confirming_verifier_is_confirmed_unanimously(fake_live):
-    _install(fake_live, {"claude": {"D": "confirm"}})
-    result = MultiModelDebater(LLMGateway(CONFIG, execution_mode="live")).arbitrate(
+def test_corroborated_finding_with_confirming_verifier_is_confirmed_unanimously(scripted):
+    gateway, _ = _gateway(scripted, {"claude": {"D": "confirm"}})
+    result = MultiModelDebater(gateway).arbitrate(
         [_finding("D", "deepseek", corroborating=["glm"])]
     )
     assert [f.finding_id for f in result.confirmed_findings] == ["D"]
@@ -103,9 +99,9 @@ def test_bogus_rulings_are_ignored(fake_live):
     assert len(result.disputed_findings[0].verification_votes) == 3
 
 
-def test_unusable_or_unsure_verifiers_leave_findings_unfiltered(fake_live):
-    fake_live(lambda s, u: "not json" if "deepseek" in s else json.dumps({"verdicts": [{"index": 0, "verdict": "unsure"}]}))
-    gateway = LLMGateway(CONFIG, execution_mode="live")
+def test_unusable_or_unsure_verifiers_leave_findings_unfiltered(scripted):
+    transport = scripted({"whitebox_verifier_deepseek": "not json", "*": {"verdicts": [{"index": 0, "verdict": "unsure"}]}})
+    gateway = LLMGateway(CONFIG, execution_mode="live", transport=transport)
     result = MultiModelDebater(gateway).arbitrate([_finding("A", "claude")])
     assert not result.arbitration_applied
     assert [f.finding_id for f in result.confirmed_findings] == ["A"]
@@ -124,10 +120,10 @@ def test_verifiers_see_the_code_of_the_finding(fake_live, tmp_path):
     assert prompts and all("return o['id']" in p for p in prompts)
 
 
-def test_report_shows_votes_and_agreement(fake_live):
+def test_report_shows_votes_and_agreement(scripted):
     from vibeharness.core.models import ThreatModelReport, VibeHarnessSummary
-    _install(fake_live, {"deepseek": {"A": "reject"}, "glm": {"A": "reject"}})
-    result = MultiModelDebater(LLMGateway(CONFIG, execution_mode="live")).arbitrate([_finding("A", "claude")])
+    gateway, _ = _gateway(scripted, {"deepseek": {"A": "reject"}, "glm": {"A": "reject"}})
+    result = MultiModelDebater(gateway).arbitrate([_finding("A", "claude")])
     summary = VibeHarnessSummary(
         overall_status="INCONCLUSIVE", total_whitebox_findings=1, confirmed_whitebox_bugs=0,
         whitebox_tests_passed=0, whitebox_tests_failed=0, total_threats_modeled=0,
