@@ -64,6 +64,38 @@ def test_distinct_chinese_threats_are_not_merged():
     assert [t.threat_id for t in again] == ["THREAT-01"]
 
 
+def test_simulated_threats_with_the_same_english_half_merge_like_their_breach_keys():
+    """威脅合併與 breach_key 用同一個威脅身分：模擬的雙語標題只看英文半，所以中文半不同、英文半相同的兩個模擬威脅
+    是同一威脅（基準線早就把它們的突破視為同一個），合併時保留較高的嚴重度。
+    The threat merge and breach_key share one threat identity: a simulated bilingual title counts by its English half,
+    so two simulated threats with the same English half and different Chinese halves are one threat (the baseline
+    already treats their breaches as one), and the merge keeps the higher severity."""
+    from vibeharness.core.i18n import bi
+    first = _threat("THREAT-01", bi("越權存取", "IDOR")).model_copy(update={"is_simulated": True})
+    second = _threat("THREAT-02", bi("越權", "IDOR")).model_copy(
+        update={"is_simulated": True, "severity": FindingSeverity.CRITICAL})
+    merged = AutomatedThreatModeler._merge_duplicate_threats([first, second])
+    assert [(t.threat_id, t.severity) for t in merged] == [("THREAT-01", FindingSeverity.CRITICAL)]
+    result = TestExecutionResult(test_id="BB-TEST-1", test_type="blackbox_security", status=TestStatus.FAILED)
+    assert bl.breach_key(result, first) == bl.breach_key(result, second)
+
+
+def test_a_simulated_and_a_real_threat_with_the_same_bilingual_title_stay_apart():
+    """真實模型的文字原樣進鍵、模擬的只取英文半：標題字面相同的一個模擬威脅與一個真實威脅不是同一威脅（breach_key 也不同），
+    所以不會合併，真實威脅不會被模擬範本吞掉。
+    Real model text enters the key as is and simulated text by its English half: a simulated and a real threat with
+    the same literal bilingual title are not the same threat (their breach_keys differ too), so they are not merged
+    and the real threat is not swallowed by a simulated template."""
+    from vibeharness.core.i18n import bi
+    title = bi("越權存取", "IDOR")
+    simulated = _threat("THREAT-01", title).model_copy(update={"is_simulated": True})
+    real = _threat("THREAT-02", title)
+    merged = AutomatedThreatModeler._merge_duplicate_threats([simulated, real])
+    assert [t.threat_id for t in merged] == ["THREAT-01", "THREAT-02"]
+    result = TestExecutionResult(test_id="BB-TEST-1", test_type="blackbox_security", status=TestStatus.FAILED)
+    assert bl.breach_key(result, simulated) != bl.breach_key(result, real)
+
+
 # --- 2. --changed-since 不會漏掉非 ASCII 檔名 ---------------------------------------------------
 # --- 2. --changed-since keeps non-ASCII file names --------------------------------------------------------
 

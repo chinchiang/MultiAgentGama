@@ -7,7 +7,7 @@ from pydantic import ValidationError
 from typing import Any, Dict, List, Optional
 from vibeharness.core.models import ThreatItem, ThreatModelReport, STRIDECategory, FindingSeverity, CodeSymbol
 from vibeharness.core.fanout import Call, fan_out
-from vibeharness.core.identity import normalize, severity_rank
+from vibeharness.core.identity import severity_rank, threat_identity
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.i18n import bi
 from vibeharness.core.codecontext import render_symbols, batch_symbols
@@ -301,12 +301,13 @@ class AutomatedThreatModeler:
         Merges the same threat reported by several batches (same STRIDE category, title and
         attack vector after normalization). The first report is kept, with the highest severity
         any batch gave it; otherwise every batch would synthesize and run the same attack again."""
-        # 任何文字的字母與數字都算（core/identity.py 的 normalize），中文標題才不會塌成空字串而被合併
-        # Letters and digits of any script count (normalize in core/identity.py), so Chinese titles do not collapse
-        # to "" and merge
+        # 同一威脅的判斷與 breach_key 相同（core/identity.py 的 threat_identity）：任何文字的字母與數字都算，中文標題才不會
+        # 塌成空字串而被合併；模擬的雙語文字只取英文半
+        # The same-threat rule is breach_key's (threat_identity in core/identity.py): letters and digits of any script
+        # count, so Chinese titles do not collapse to "" and merge; simulated bilingual text counts by its English half
         merged: Dict[Any, ThreatItem] = {}
         for t in threats:
-            key = (t.stride_category, normalize(t.title), normalize(t.attack_vector))
+            key = threat_identity(t)
             kept = merged.get(key)
             if kept is None:
                 merged[key] = t
