@@ -211,6 +211,7 @@ MultiAgentGama/
 │   │   ├── mutation.py              # Optional mutation testing (Python)
 │   │   ├── sanitize.py              # Trust-boundary hygiene: invisible chars, secret redaction, untrusted-code / model-output channels, output sanitizing
 │   │   ├── sandbox.py               # Sandboxes: local subprocess (not a security boundary) and Docker containers; a Node flavour of each (node --test)
+│   │   ├── settings.py              # Settings: the config file loaded, defaulted and validated once (Discovered config policy, CLI overrides)
 │   │   └── verdict.py               # The four verdicts and their exit codes (no third-party imports)
 │   ├── agents/
 │   │   ├── __init__.py
@@ -289,7 +290,8 @@ MultiAgentGama/
 │   ├── test_review_sandbox_executor.py # Fake home, non-dumpable harness, stray children, NameError attribution, JS budgets
 │   ├── test_review_sanitize.py         # Credential formats, invisible characters, injection markers, channel tags
 │   ├── test_review_sanitize_blackbox_fixes.py # Placeholder credentials, VH-AI-008/009 precision, port check, aborting calls
-│   └── test_review_whitebox_fixes.py   # Routes, nested Python definitions, scanner rules, severity, untrusted finding text
+│   ├── test_review_whitebox_fixes.py   # Routes, nested Python definitions, scanner rules, severity, untrusted finding text
+│   └── test_settings.py                # Settings through load_settings: every key's null / 0 rule, validation order, Discovered config policy, overrides
 ├── .pre-commit-config.yaml      # pre-commit: ruff (pinned to a commit SHA) and mypy before every commit
 ├── CHANGELOG.md                 # Changelog (Traditional Chinese); CHANGELOG.en.md is the English version
 ├── CONTRIBUTING.md              # Contributing guide: setup, pre-push checks, principles, release steps

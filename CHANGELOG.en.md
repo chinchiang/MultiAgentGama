@@ -31,6 +31,9 @@ All notable changes to this project are documented in this file. The format foll
 - The design document's quality-gate chapter describes `evaluate(GateEvidence)` as the single place the verdict is decided, its evidence-gap table gives each gap's `GapCode` and `GateEvidence` field, and its line references are updated to the current code (commit `ab5e9a8`).
 - New `CONTEXT.md`: a bilingual glossary of the domain terms (Quality Gate, Verdict, Evidence gap, Executed evidence, Hypothesis, Breach, Baseline, Known problem, Blocking rule hit).
 - The README project trees list `core/gate.py`, `core/verdict.py` and `tests/test_quality_gate.py`.
+- The design document describes the config path through `load_settings` (the module table, configuration loading and validation, the Discovered config check, the CLI overrides, the sandbox settings), its constants table points at `vibeharness/core/settings.py`, its key-function index has a `settings.py` line, and its line references are updated to commit `e5e95e4`.
+- `CONTEXT.md` adds the config origins: Bundled config, Discovered config and Explicit config.
+- The README project trees list `core/settings.py` and `tests/test_settings.py`.
 
 ## [0.12.0] - 2026-10-12
 

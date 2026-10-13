@@ -31,6 +31,9 @@
 - 設計文件的品質閘門一章說明 `evaluate(GateEvidence)` 是唯一決定判定結果的地方，證據缺口表列出每一項的 `GapCode` 與 `GateEvidence` 欄位，行號引用也更新為目前的程式碼（commit `ab5e9a8`）。
 - 新增 `CONTEXT.md`：領域用語的中英雙語詞彙表（品質閘門、判定結果、證據缺口、已執行的證據、假設、資安突破、基準、已知問題、阻擋性規則命中）。
 - README 的專案結構列出 `core/gate.py`、`core/verdict.py` 與 `tests/test_quality_gate.py`。
+- 設計文件改以 `load_settings` 說明設定的流程（模組表、設定的載入與驗證、探索到的設定檔檢查、CLI 覆寫值、沙盒設定），常數表指向 `vibeharness/core/settings.py`，重要函式索引新增 `settings.py` 一行，行號引用也更新為 commit `e5e95e4`。
+- `CONTEXT.md` 新增設定檔來源：內建設定檔、探索到的設定檔與指定的設定檔。
+- README 的專案結構列出 `core/settings.py` 與 `tests/test_settings.py`。
 
 ## [0.12.0] - 2026-10-12
 
