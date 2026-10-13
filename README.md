@@ -199,7 +199,7 @@ MultiAgentGama/
 │   ├── core/
 │   │   ├── __init__.py
 │   │   ├── harness.py               # 指揮官：六個階段加上選用的階段 3.5；把本次執行的證據交給品質閘門
-│   │   ├── llm_gateway.py           # 統一 LiteLLM 閘道：路由、fallback、模擬回退、呼叫預算與 call_log
+│   │   ├── llm_gateway.py           # 統一模型閘道：路由、fallback、模擬回退、呼叫預算與 call_log（模型呼叫經 transport.py）
 │   │   ├── models.py                # Pydantic 數據模型
 │   │   ├── baseline.py              # --baseline：與執行次序無關的指紋，已知問題不計入
 │   │   ├── codecheck.py             # 生成測試的靜態檢查（每個 test_ 函式／方法都要有斷言；拒絕安裝套件）
@@ -212,6 +212,7 @@ MultiAgentGama/
 │   │   ├── sanitize.py              # 信任邊界：去隱形字元、遮蔽密鑰、不受信任程式碼／模型輸出通道、報告消毒
 │   │   ├── sandbox.py               # 沙盒：本機子程序（非安全邊界）與 Docker 容器；Node 版本各一（node --test）
 │   │   ├── settings.py              # 設定：設定檔只載入、套用預設值並驗證一次（探索到的設定檔政策、CLI 覆寫值）
+│   │   ├── transport.py             # 模型呼叫接縫 ModelTransport；預設的 LiteLLMTransport 是唯一 import litellm 的地方
 │   │   └── verdict.py               # 四種判定結果與其結束碼（不匯入第三方套件）
 │   ├── agents/
 │   │   ├── __init__.py
@@ -291,7 +292,8 @@ MultiAgentGama/
 │   ├── test_review_sanitize.py         # 憑證格式、隱形字元、注入標記、通道標籤
 │   ├── test_review_sanitize_blackbox_fixes.py # 佔位憑證、VH-AI-008/009 精確度、連接埠檢查、中止呼叫
 │   ├── test_review_whitebox_fixes.py   # 路由、Python 巢狀定義、掃描規則、嚴重度、不可信的發現文字
-│   └── test_settings.py                # 透過 load_settings 測試設定：每個鍵的 null／0 規則、驗證順序、探索到的設定檔政策、覆寫值
+│   ├── test_settings.py                # 透過 load_settings 測試設定：每個鍵的 null／0 規則、驗證順序、探索到的設定檔政策、覆寫值
+│   └── test_transport.py               # 模型呼叫接縫：每次嘗試一個 ModelRequest、fallback、轉接器不可用、scripted fixture
 ├── .pre-commit-config.yaml      # pre-commit：提交前執行 ruff（釘在 commit SHA）與 mypy
 ├── CHANGELOG.md                 # 變更紀錄（正體中文）；CHANGELOG.en.md 為英文版
 ├── CONTRIBUTING.md              # 貢獻指南：開發環境、提交前檢查、修改原則、發布步驟

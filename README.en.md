@@ -199,7 +199,7 @@ MultiAgentGama/
 │   ├── core/
 │   │   ├── __init__.py
 │   │   ├── harness.py               # Commander: six phases plus optional Phase 3.5; hands the run's evidence to the quality gate
-│   │   ├── llm_gateway.py           # Unified LiteLLM gateway: routing, fallback, simulation fallback, call budget and call_log
+│   │   ├── llm_gateway.py           # Unified model gateway: routing, fallback, simulation fallback, call budget and call_log (model calls go through transport.py)
 │   │   ├── models.py                # Pydantic data models
 │   │   ├── baseline.py              # --baseline: run-independent fingerprints, known problems not counted
 │   │   ├── codecheck.py             # Static checks on generated tests (every test_ function / method asserts; refuses package installs)
@@ -212,6 +212,7 @@ MultiAgentGama/
 │   │   ├── sanitize.py              # Trust-boundary hygiene: invisible chars, secret redaction, untrusted-code / model-output channels, output sanitizing
 │   │   ├── sandbox.py               # Sandboxes: local subprocess (not a security boundary) and Docker containers; a Node flavour of each (node --test)
 │   │   ├── settings.py              # Settings: the config file loaded, defaulted and validated once (Discovered config policy, CLI overrides)
+│   │   ├── transport.py             # The ModelTransport model-call seam; the default LiteLLMTransport is the only place that imports litellm
 │   │   └── verdict.py               # The four verdicts and their exit codes (no third-party imports)
 │   ├── agents/
 │   │   ├── __init__.py
@@ -291,7 +292,8 @@ MultiAgentGama/
 │   ├── test_review_sanitize.py         # Credential formats, invisible characters, injection markers, channel tags
 │   ├── test_review_sanitize_blackbox_fixes.py # Placeholder credentials, VH-AI-008/009 precision, port check, aborting calls
 │   ├── test_review_whitebox_fixes.py   # Routes, nested Python definitions, scanner rules, severity, untrusted finding text
-│   └── test_settings.py                # Settings through load_settings: every key's null / 0 rule, validation order, Discovered config policy, overrides
+│   ├── test_settings.py                # Settings through load_settings: every key's null / 0 rule, validation order, Discovered config policy, overrides
+│   └── test_transport.py               # The model-call seam: one ModelRequest per attempt, fallback, an unavailable transport, the scripted fixture
 ├── .pre-commit-config.yaml      # pre-commit: ruff (pinned to a commit SHA) and mypy before every commit
 ├── CHANGELOG.md                 # Changelog (Traditional Chinese); CHANGELOG.en.md is the English version
 ├── CONTRIBUTING.md              # Contributing guide: setup, pre-push checks, principles, release steps

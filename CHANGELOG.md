@@ -15,6 +15,8 @@
 - 品質閘門的判定改在單一位置 `vibeharness/core/gate.py`（`evaluate(GateEvidence) -> GateResult`）決定，不再寫在 `run_full_pipeline` 裡；四種判定結果與其結束碼只在 `vibeharness/core/verdict.py` 定義一次，由 CLI 與 Action runner 共用。僅為內部變更：報告、`--summary-json`、結束碼與終端機輸出都不變。
 - 設定檔改由新的 `vibeharness/core/settings.py` 裡的 `load_settings` 只載入、套用預設值並驗證一次，產生凍結的設定樹，供閘道、harness 與 `--estimate` 讀取；CLI 的旗標以覆寫值傳給它，不再於 harness 建構之後修改它。每個預設值都定義在那裡，並以舊名稱重新匯出；探索到的設定檔檢查在載入時一併執行。每個鍵都維持文件所寫的 null／0 規則、訊息與結束碼。
 - 同一次執行同時有設定問題與目標或旗標問題時（例如 `--config` 的值錯誤又缺少 `--target`），現在先回報設定問題；過去要到建構 harness 時才回報，排在目標與旗標的檢查之後。兩種情況的結束碼都是 5。`--cache-dir` 現在在檢查目標與旗標之前就建立，無法使用的 Docker 沙盒則在所有設定問題之後才回報。
+- 模型呼叫改經新的 `vibeharness/core/transport.py` 接縫：閘道對每次模型嘗試送出一個 `ModelRequest`（帶 `agent_id`、模型別名、候選模型字串、messages 與原樣的 litellm 參數），由 `ModelTransport` 回一個 `ModelReply`。預設的 `LiteLLMTransport` 是唯一 import litellm 的地方；`LLMGateway` 與 `VibeHarnessCommander` 接受 `transport=`。模式、預算、回應快取、fallback 順序、重問與來源紀錄都留在閘道。僅為內部變更：報告、呼叫紀錄與結束碼都不變。
+- 模擬輸出改由各代理以 `generate(..., simulated=fn)` 提供（審查者、威脅建模者、驗證者、測試生成器與攻擊合成器各自的範本），閘道不再依代理名稱編造回答；代理的模型別名統一由 `GatewaySettings.alias_for` 解析。模擬的內容不變。
 
 ### 修正
 
@@ -25,6 +27,8 @@
 - 新增 `tests/test_quality_gate.py`，只透過 `evaluate()` 測試閘門：每一級判定結果、每一種證據缺口代碼、缺口順序、基準的新／已知拆分與建議順序。
 - 十二個只檢查判定或證據缺口規則的端到端 `run_full_pipeline` 測試與超大檔案測試的 pipeline 部分，改為透過 `evaluate()` 的測試，加上一個 mock pipeline 接線測試，確認擷取器、掃描器、設定的上限與審查名單的事實送進閘門。各來源仍保有自己的測試（新增一個測試鎖定哪些符號會做 None 探測）；模擬引擎、`--baseline`、沒有 Node 執行環境、未分類的黑箱失敗與突變測試中途當掉的端到端測試保留為接線測試。
 - 新增 `tests/test_settings.py`，只透過 `load_settings` 測試設定：每個鍵的 null／0／負數／錯誤型別規則、驗證順序、探索到的設定檔政策、CLI 覆寫值與其來源、警告，以及唯讀的 models／agents。它取代已刪除的私有驗證函式的測試。
+- `tests/conftest.py` 新增 `scripted({代理 glob: 回答})` fixture：一個依 `request.agent_id` 回答、記錄每個 `ModelRequest` 的 `ModelTransport`，腳本裡的例外在那次嘗試中拋出，就像供應商錯誤。十一個原本從提示詞文字猜測是哪個代理在呼叫的測試改用它。
+- 新增 `tests/test_transport.py`：每次嘗試一個帶 `agent_id` 的請求、主要模型失敗改試 fallback、轉接器不可用時的 hybrid／live 行為、litellm 轉接器讀回覆、模擬輸出由呼叫端提供，以及 `scripted` fixture 本身。
 
 ### 文件
 
@@ -34,6 +38,9 @@
 - 設計文件改以 `load_settings` 說明設定的流程（模組表、設定的載入與驗證、探索到的設定檔檢查、CLI 覆寫值、沙盒設定），常數表指向 `vibeharness/core/settings.py`，重要函式索引新增 `settings.py` 一行，行號引用也更新為 commit `e5e95e4`。
 - `CONTEXT.md` 新增設定檔來源：內建設定檔、探索到的設定檔與指定的設定檔。
 - README 的專案結構列出 `core/settings.py` 與 `tests/test_settings.py`。
+- 設計文件說明模型呼叫的接縫（模組表、第 5 章的決策順序與真實呼叫細節）與由代理提供的模擬輸出（第 5.7 節），測試章節說明 `scripted` fixture，重要函式索引新增 `transport.py` 一行，行號引用也更新為 commit `c46d9b3`；回應快取一節原本誤指 `settings.py` 的四個行號引用改為指向 `llm_gateway.py`。
+- `CONTEXT.md` 新增模型回答：執行模式、真實呼叫與模擬輸出。
+- README 的專案結構列出 `core/transport.py` 與 `tests/test_transport.py`。
 
 ## [0.12.0] - 2026-10-12
 
