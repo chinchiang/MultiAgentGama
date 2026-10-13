@@ -2,15 +2,12 @@ import logging
 import re
 from typing import List, Set
 
-from vibeharness.core.models import ReviewFinding, FindingSeverity
+from vibeharness.core.models import ReviewFinding
 from vibeharness.core.i18n import bi
+from vibeharness.core.identity import UNKNOWN_FILE, severity_rank
 
 logger = logging.getLogger("VibeHarness.Deduplicator")
 
-_SEVERITY_RANK = {
-    FindingSeverity.CRITICAL: 0, FindingSeverity.HIGH: 1, FindingSeverity.MEDIUM: 2,
-    FindingSeverity.LOW: 3, FindingSeverity.INFO: 4,
-}
 _STOPWORDS = {
     "the", "and", "for", "with", "without", "from", "that", "this", "when", "into", "can", "may", "are",
     "not", "missing", "lack", "lacks", "potential", "possible", "issue", "bug", "defect", "function",
@@ -101,7 +98,7 @@ def _terse_subset(a: ReviewFinding, b: ReviewFinding, ta: Set[str], tb: Set[str]
 def _same_location(a: ReviewFinding, b: ReviewFinding) -> bool:
     # 無法對應到符號的發現只在標題完全相同時合併
     # Findings that could not be tied to a symbol only merge on an identical title
-    if a.file_path == "unknown" or b.file_path == "unknown" or not a.symbol_name or not b.symbol_name:
+    if a.file_path == UNKNOWN_FILE or b.file_path == UNKNOWN_FILE or not a.symbol_name or not b.symbol_name:
         return a.file_path == b.file_path and a.title.strip().lower() == b.title.strip().lower()
     return a.file_path == b.file_path and a.symbol_name == b.symbol_name
 
@@ -126,7 +123,7 @@ def deduplicate_findings(findings: List[ReviewFinding]) -> List[ReviewFinding]:
     """
     order = sorted(
         range(len(findings)),
-        key=lambda i: (_SEVERITY_RANK.get(findings[i].severity, len(_SEVERITY_RANK)), findings[i].finding_id),
+        key=lambda i: (severity_rank(findings[i].severity), findings[i].finding_id),
     )
     groups: List[List[int]] = []
     for i in order:
@@ -150,7 +147,7 @@ def deduplicate_findings(findings: List[ReviewFinding]) -> List[ReviewFinding]:
     for cluster in clusters:
         # 最嚴重者勝出；finding_id 用來確定地打破平手，而不是依輸入順序
         # Most severe wins; finding_id breaks ties deterministically instead of input order
-        primary = min(cluster, key=lambda f: (_SEVERITY_RANK.get(f.severity, len(_SEVERITY_RANK)), f.finding_id))
+        primary = min(cluster, key=lambda f: (severity_rank(f.severity), f.finding_id))
         others = [f for f in cluster if f is not primary]
         if not others:
             merged.append(primary)

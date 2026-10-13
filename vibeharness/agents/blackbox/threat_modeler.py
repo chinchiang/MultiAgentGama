@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from typing import Any, Dict, List, Optional
 from vibeharness.core.models import ThreatItem, ThreatModelReport, STRIDECategory, FindingSeverity, CodeSymbol
 from vibeharness.core.fanout import Call, fan_out
+from vibeharness.core.identity import normalize, severity_rank
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.i18n import bi
 from vibeharness.core.codecontext import render_symbols, batch_symbols
@@ -47,10 +48,6 @@ def _stride_category(value: str) -> Optional[STRIDECategory]:
     return _STRIDE_BY_KEY.get(_category_key(value))
 
 
-_SEVERITY_RANK = {
-    FindingSeverity.CRITICAL: 0, FindingSeverity.HIGH: 1, FindingSeverity.MEDIUM: 2,
-    FindingSeverity.LOW: 3, FindingSeverity.INFO: 4,
-}
 
 DEFAULT_TRUST_BOUNDARIES = ["Internet to Public Gateway", "Gateway to Database"]
 DEFAULT_ASSETS = ["User Credentials", "Business Records"]
@@ -304,18 +301,16 @@ class AutomatedThreatModeler:
         Merges the same threat reported by several batches (same STRIDE category, title and
         attack vector after normalization). The first report is kept, with the highest severity
         any batch gave it; otherwise every batch would synthesize and run the same attack again."""
-        # 任何文字的字母與數字都算（與 baseline.normalize 相同），中文標題才不會塌成空字串而被合併
-        # Letters and digits of any script count (as in baseline.normalize), so Chinese titles do not collapse to "" and merge
-        def norm(text: str) -> str:
-            return " ".join(re.findall(r"[^\W_]+", text.lower()))
-
+        # 任何文字的字母與數字都算（core/identity.py 的 normalize），中文標題才不會塌成空字串而被合併
+        # Letters and digits of any script count (normalize in core/identity.py), so Chinese titles do not collapse
+        # to "" and merge
         merged: Dict[Any, ThreatItem] = {}
         for t in threats:
-            key = (t.stride_category, norm(t.title), norm(t.attack_vector))
+            key = (t.stride_category, normalize(t.title), normalize(t.attack_vector))
             kept = merged.get(key)
             if kept is None:
                 merged[key] = t
-            elif _SEVERITY_RANK[t.severity] < _SEVERITY_RANK[kept.severity]:
+            elif severity_rank(t.severity) < severity_rank(kept.severity):
                 merged[key] = kept.model_copy(update={"severity": t.severity})
         if len(merged) < len(threats):
             logger.info(bi(f"已將所有批次的 {len(threats)} 個威脅合併為 {len(merged)} 個不重複的威脅。",

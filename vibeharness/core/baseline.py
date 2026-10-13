@@ -17,108 +17,24 @@ machine still compares), the rule / symbol / threat identity and a case- and pun
 form of the model's title. They are stored in the JSON report (``fingerprint`` fields) and recomputed
 from older reports that lack them.
 """
-import hashlib
 import json
 import os
-import re
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 from pydantic import BaseModel, Field
 
-from vibeharness.core.i18n import bi, en_only
+from vibeharness.core.i18n import bi
+# 鍵與其組成（正規化、位置、雜湊）在 core/identity.py；以舊名稱重新匯出
+# The keys and their parts (normalization, location, hash) live in core/identity.py; re-exported under the old names
+from vibeharness.core.identity import (  # noqa: F401
+    breach_key, finding_key, fingerprint, key_text, normalize, probe_key, static_key, target_relative,
+    whitebox_failure_key,
+)
 from vibeharness.core.models import (
     BaselineSuppressedItem, ReviewFinding, StaticFinding, TestExecutionResult, ThreatItem,
 )
 
 TOOL_NAME = "vibeharness-mas"
-
-
-def normalize(text: Optional[str]) -> str:
-    """模型文字的不分大小寫與標點形式，讓鍵在表面措辭改寫後仍存活。任何文字的字母與數字都算
-    （中文標題各自不同，不會塌成空字串）；純 ASCII 文字的結果與 0.3.0 相同。
-    Case/punctuation-insensitive form of model text, so keys survive cosmetic rewording. Letters and digits of
-    any script count (Chinese titles stay distinct instead of collapsing to ""); ASCII text keys exactly as in 0.3.0."""
-    return " ".join(re.findall(r"[^\W_]+", (text or "").lower()))
-
-
-def key_text(text: Optional[str], simulated: bool) -> str:
-    """進鍵的文字：模擬引擎的項目是 `bi()` 雙語字串，只取英文半（鍵與 0.3.0 相同）；真實模型的文字原樣使用，
-    即使含有全形斜線。
-    The text that enters a key: simulated items are bilingual `bi()` strings and contribute their English half
-    only (keys as in 0.3.0); real model text is used as is, even when it contains a full-width slash."""
-    return en_only(text or "") if simulated else (text or "")
-
-
-def fingerprint(*parts: str) -> str:
-    """SARIF partialFingerprints 與基準線鍵共用的雜湊 ／ The hash shared by SARIF partialFingerprints and baseline keys."""
-    return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
-
-
-def target_relative(file_path: Optional[str], target_path: str) -> str:
-    """`file_path` 相對於受稽核目標的正斜線字串形式；無法關聯時（「unknown」佔位字、
-    不同磁碟機）則為純檔名。純字串運算：來自另一個簽出或機器的基準線
-    對同一檔案必須產生相同的鍵。
-    `file_path` relative to the audited target as a forward-slash string, or the bare name when it
-    cannot be related (an "unknown" placeholder, a different drive). Pure string work: a baseline from
-    another checkout or machine must yield the same key for the same file."""
-    if not file_path or file_path.strip() == "unknown":
-        return ""
-    base = os.path.abspath(target_path)
-    path = os.path.abspath(file_path)
-    try:
-        rel = os.path.relpath(path, base)
-        # 檔案位於目標之下時目標必定是目錄，即使它在這台機器上不存在且名稱含點（另一台機器的 app.v2）；
-        # 只有不在其下時，存在的檔案或帶副檔名的不存在路徑才改以其所在目錄為基準
-        # A file under the target means the target is a directory, even one that does not exist on this machine and
-        # has a dot in its name (another machine's app.v2); only when it is not under it is an existing file, or a
-        # missing path with an extension, related to its directory instead
-        if rel.startswith("..") and (os.path.isfile(base) or (not os.path.isdir(base) and os.path.splitext(base)[1])):
-            rel = os.path.relpath(path, os.path.dirname(base))
-    except ValueError:
-        return os.path.basename(file_path)
-    if rel == "." or rel.startswith(".."):
-        return os.path.basename(file_path)
-    return rel.replace(os.sep, "/")
-
-
-def static_key(sf: StaticFinding, target_path: str) -> str:
-    """規則 + 檔案 + 證據，不含行號（命中處上方無關的編輯不得
-    把已知命中變成新命中；SARIF 指紋則保留行號供 Code Scanning 使用）。
-    Rule + file + evidence, without the line number (an unrelated edit above the hit must not
-    turn a known hit into a new one; the SARIF fingerprint keeps the line for Code Scanning)."""
-    return fingerprint("static", target_relative(sf.file_path, target_path), sf.rule_id, normalize(sf.evidence))
-
-
-def finding_key(f: ReviewFinding, target_path: str) -> str:
-    return fingerprint("finding", target_relative(f.file_path, target_path), f.symbol_name or "",
-                       normalize(key_text(f.title, f.is_simulated)))
-
-
-def probe_key(result: TestExecutionResult) -> str:
-    """確定性探測以它所演練的符號（其 source_ref）識別。
-    A deterministic probe is identified by the symbol it exercised (its source_ref)."""
-    return fingerprint("probe", result.source_ref or result.test_id)
-
-
-def whitebox_failure_key(result: TestExecutionResult, finding: Optional[ReviewFinding], target_path: str) -> Optional[str]:
-    """FAILED 白箱結果的鍵：它所對應產生的發現，或探測的符號；
-    當結果的發現無法解析時為 None（此時它一律是新的）。
-    Key of a FAILED white-box result: the finding it was generated for, or the probe's symbol;
-    None when the result's finding cannot be resolved (then it is always new)."""
-    if result.test_type == "whitebox_probe":
-        return probe_key(result)
-    return finding_key(finding, target_path) if finding else None
-
-
-def breach_key(result: TestExecutionResult, threat: Optional[ThreatItem]) -> str:
-    """已確認的突破以其威脅（類別、標題、攻擊向量）識別，而非
-    逐次執行的測試 id；沒有可解析的威脅時，測試 id 就是僅有的依據。
-    A confirmed breach is identified by its threat (category, title, attack vector), not by the
-    per-run test id; without a resolvable threat the test id is all there is."""
-    if threat is not None:
-        return fingerprint("breach", threat.stride_category.value, normalize(key_text(threat.title, threat.is_simulated)),
-                           normalize(key_text(threat.attack_vector, threat.is_simulated)))
-    return fingerprint("breach", result.test_id, result.source_ref or "")
 
 
 class Baseline(BaseModel):

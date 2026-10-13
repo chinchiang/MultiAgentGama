@@ -10,6 +10,7 @@ from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import render_symbols, batch_symbols
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
 from vibeharness.core.fanout import Call, fan_out
+from vibeharness.core.identity import UNKNOWN_FILE
 
 logger = logging.getLogger("VibeHarness.MultiReviewer")
 
@@ -141,7 +142,7 @@ class HeterogeneousReviewerEnsemble:
                         finding_id=f"WB-{model_alias[:3].upper()}-{counters[reviewer['agent_id']]:02d}",
                         reviewer_name=reviewer["name"],
                         model_alias=model_alias,
-                        file_path=symbol.file_path if symbol else "unknown",
+                        file_path=symbol.file_path if symbol else UNKNOWN_FILE,
                         symbol_name=symbol.name if symbol else reported_symbol,
                         line_number=symbol.line_start if symbol else None,
                         severity=severity,

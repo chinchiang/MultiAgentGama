@@ -20,7 +20,9 @@ from vibeharness.core.models import (
     FindingSeverity,
     StaticFinding
 )
-from vibeharness.core.baseline import fingerprint, key_text, normalize
+from vibeharness.core.identity import (
+    UNKNOWN_FILE, sarif_breach_fingerprint, sarif_finding_fingerprint, sarif_static_fingerprint,
+)
 from vibeharness.core.i18n import bi
 from vibeharness.core.sanitize import clean_model_text, markdown_safe
 
@@ -499,7 +501,7 @@ class ReportGenerator:
                 "ruleIndex": idx,
                 "level": self._sarif_level(sf.severity),
                 "message": {"text": f"{sf.title}: {clean_model_text(sf.evidence)}" if sf.evidence else sf.title},
-                "partialFingerprints": {"vibeharness/v1": fingerprint(uri or "", sf.rule_id, str(sf.line_number))},
+                "partialFingerprints": {"vibeharness/v1": sarif_static_fingerprint(sf, uri)},
                 "properties": {"severity": sf.severity.value, "owasp": sf.owasp_mapping or "",
                                "atlas": sf.atlas_mapping or "", "cwe": sf.cwe or "", "deterministic": True},
             }
@@ -547,9 +549,7 @@ class ReportGenerator:
                 "ruleIndex": rule_index[SARIF_RULE_WHITEBOX],
                 "level": level,
                 "message": {"text": desc},
-                "partialFingerprints": {"vibeharness/v1": fingerprint(
-                    uri or "", f.symbol_name or "", normalize(key_text(f.title, f.is_simulated))
-                )},
+                "partialFingerprints": {"vibeharness/v1": sarif_finding_fingerprint(f, uri)},
                 "properties": {
                     "findingId": f.finding_id,
                     "severity": f.severity.value,
@@ -602,11 +602,7 @@ class ReportGenerator:
                 "ruleIndex": rule_index[SARIF_RULE_BLACKBOX],
                 "level": "error",
                 "message": {"text": clean_model_text(text)},
-                "partialFingerprints": {"vibeharness/v1": fingerprint(
-                    *((threat.stride_category.value, normalize(key_text(threat.title, threat.is_simulated)),
-                       normalize(key_text(threat.attack_vector, threat.is_simulated)))
-                      if threat else (r.test_id, r.source_ref or ""))
-                )},
+                "partialFingerprints": {"vibeharness/v1": sarif_breach_fingerprint(r, threat)},
                 "properties": {"testId": r.test_id, "threatId": r.source_ref or "", "security_breach": True,
                                "simulated": False},
             }
@@ -736,7 +732,7 @@ class ReportGenerator:
         Best-effort repo-root-relative URI with forward slashes; None when unknown."""
         # "unknown" 是審查者無法歸屬發現時的佔位符，不是檔案
         # "unknown" is the reviewer's placeholder for a finding it could not attribute, not a file
-        if not file_path or not file_path.strip() or file_path.strip() == "unknown":
+        if not file_path or not file_path.strip() or file_path.strip() == UNKNOWN_FILE:
             return None
         path = file_path.strip()
         drive = _WINDOWS_DRIVE_RE.match(path)

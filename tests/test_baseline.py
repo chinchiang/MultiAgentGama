@@ -239,10 +239,15 @@ def test_keys_distinguish_cjk_titles_and_ignore_the_chinese_half_of_bilingual_te
 
 
 def test_sarif_fingerprints_use_the_same_helpers_as_the_baseline():
-    """SARIF 的 partialFingerprints 與基準線鍵共用同一套 normalize／fingerprint，不會各自漂移。
-    SARIF partialFingerprints and baseline keys share one normalize / fingerprint pair, so they cannot drift apart."""
+    """SARIF 的 partialFingerprints 與基準線鍵都定義在 core/identity.py、共用同一套 normalize／fingerprint，不會各自漂移。
+    SARIF partialFingerprints and baseline keys are both defined in core/identity.py and share one normalize /
+    fingerprint pair, so they cannot drift apart."""
+    from vibeharness.core import identity
     from vibeharness.reports import report_generator as rg
-    assert rg.normalize is bl.normalize and rg.fingerprint is bl.fingerprint
+    assert rg.sarif_finding_fingerprint is identity.sarif_finding_fingerprint
+    assert rg.sarif_static_fingerprint is identity.sarif_static_fingerprint
+    assert rg.sarif_breach_fingerprint is identity.sarif_breach_fingerprint
+    assert bl.normalize is identity.normalize and bl.fingerprint is identity.fingerprint
     assert not hasattr(rg.ReportGenerator, "_normalize") and not hasattr(rg.ReportGenerator, "_fingerprint")
 
 
