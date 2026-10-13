@@ -1,0 +1,265 @@
+"""品質閘門（core/gate.py）：只透過 evaluate() 測試，不需要 pipeline、閘道或沙盒。
+The quality gate (core/gate.py): tested only through evaluate(), with no pipeline, gateway or sandbox."""
+from dataclasses import replace
+
+import pytest
+
+from vibeharness.core.baseline import Baseline, breach_key, finding_key, static_key
+from vibeharness.core.gate import (
+    ExecutionEvidence, GapCode, GateEvidence, GateLimits, ReviewEvidence, ScopeDisclosure, evaluate,
+)
+from vibeharness.core.llm_gateway import BUDGET_EXHAUSTED_REASON, CACHE_MISS_REASON
+from vibeharness.core.models import (
+    AgentCallRecord, FindingSeverity, GeneratedTest, MutantResult, MutationReport, ReviewFinding, STRIDECategory,
+    StaticFinding, TestExecutionResult, TestStatus, ThreatItem, ThreatModelReport,
+)
+from vibeharness.core.verdict import Verdict
+
+TARGET = "/srv/app"
+
+
+def _threat(tid="THREAT-01", title="Mass assignment"):
+    return ThreatItem(
+        threat_id=tid, stride_category=STRIDECategory.TAMPERING, title=title, description="d", asset_at_risk="a",
+        attack_vector="POST /users", trust_boundary_crossed="t", severity=FindingSeverity.HIGH,
+        attack_scenario="s", test_verification_goal="g",
+    )
+
+
+def _result(tid, status=TestStatus.PASSED, exploit=False, source_ref=None, test_type="whitebox_unit"):
+    return TestExecutionResult(test_id=tid, test_type=test_type, status=status, is_security_exploit_confirmed=exploit,
+                               source_ref=source_ref, failure_reason=f"{tid} failed" if status == TestStatus.FAILED else None)
+
+
+def _test(tid, language="python"):
+    return GeneratedTest(test_id=tid, test_type="whitebox_unit", target_component="c", title="t", code="",
+                         rationale="r", expected_outcome="e", language=language)
+
+
+def _rule_hit(severity=FindingSeverity.HIGH, integrity=False, evidence="pickle.load(f)"):
+    return StaticFinding(rule_id="VH-AI-001", title="Unsafe load", severity=severity, file_path=f"{TARGET}/app.py",
+                         line_number=3, evidence=evidence, remediation="use safetensors", owasp_mapping="LLM05",
+                         affects_review_integrity=integrity)
+
+
+def _finding(fid="WB-GPT-01"):
+    return ReviewFinding(finding_id=fid, reviewer_name="r", model_alias="gpt", file_path=f"{TARGET}/app.py",
+                         symbol_name="update_user", severity=FindingSeverity.HIGH, title="No null check",
+                         description="d", root_cause="rc", suspected_vibe_flaw="f", suggested_test_scenario="s")
+
+
+def _call(mode="live", reason=None, agent="whitebox_reviewer_gpt"):
+    return AgentCallRecord(agent_id=agent, model_alias="gpt", model_name="gpt-x", mode=mode, reason=reason)
+
+
+def clean(**changes):
+    """一次沒有任何缺口、也沒有任何已執行缺陷的執行：判定結果是 READY_TO_SHIP。
+    A run with no gap and no executed defect: the verdict is READY_TO_SHIP."""
+    evidence = GateEvidence(
+        target_dir=TARGET,
+        threat_report=ThreatModelReport(system_description="app", threats=[_threat()]),
+        limits=GateLimits(max_model_calls=10, max_files=200, max_file_bytes=1000, mutation_min_score=80.0),
+        call_log=[_call()],
+        review=ReviewEvidence(reviewers_configured=True, reviewer_models=["gpt", "claude"]),
+        scope=ScopeDisclosure(symbols_found=True, detected_langs=["Python"]),
+        execution=ExecutionEvidence(wb_tests=[_test("WB-T-01")], wb_results=[_result("WB-T-01")],
+                                    bb_tests=[_test("BB-T-01")], bb_results=[_result("BB-T-01", test_type="blackbox_security")]),
+    )
+    return replace(evidence, **changes)
+
+
+def _with(evidence, part, **changes):
+    return replace(evidence, **{part: replace(getattr(evidence, part), **changes)})
+
+
+def _codes(result):
+    return [gap.code for gap in result.gaps]
+
+
+# --- 判定階梯 ／ the verdict ladder ---------------------------------------------------------------
+
+def test_clean_run_is_ready_to_ship():
+    result = evaluate(clean())
+    assert result.verdict is Verdict.READY_TO_SHIP
+    assert result.gaps == [] and result.reasons == []
+    assert result.whitebox_failed == 0 and result.breaches == 0 and result.blocking_rule_hits == []
+    assert len(result.recommendations) == 1 and "regression guards" in result.recommendations[0]
+
+
+def test_a_breach_blocks_even_with_failures_and_gaps():
+    evidence = _with(clean(untested_threats=["THREAT-09"]), "execution",
+                     wb_results=[_result("WB-T-01", TestStatus.FAILED)],
+                     bb_results=[_result("BB-T-01", TestStatus.FAILED, exploit=True, source_ref="THREAT-01")])
+    result = evaluate(evidence)
+    assert result.verdict is Verdict.BLOCKED_CRITICAL_RISK
+    assert result.breaches == 1 and result.whitebox_failed == 1
+
+
+def test_a_failed_whitebox_test_needs_fixes():
+    result = evaluate(_with(clean(), "execution", wb_results=[_result("WB-T-01", TestStatus.FAILED)]))
+    assert result.verdict is Verdict.NEEDS_FIXES and result.whitebox_failed == 1
+
+
+@pytest.mark.parametrize("severity, verdict", [
+    (FindingSeverity.CRITICAL, Verdict.NEEDS_FIXES),
+    (FindingSeverity.HIGH, Verdict.NEEDS_FIXES),
+    (FindingSeverity.MEDIUM, Verdict.READY_TO_SHIP),
+    (FindingSeverity.LOW, Verdict.READY_TO_SHIP),
+])
+def test_only_high_or_critical_rule_hits_block(severity, verdict):
+    result = evaluate(clean(static_findings=[_rule_hit(severity)]))
+    assert result.verdict is verdict
+    assert len(result.blocking_rule_hits) == (1 if verdict is Verdict.NEEDS_FIXES else 0)
+
+
+def test_model_findings_alone_never_fail_the_gate():
+    """沒有測試確認的模型發現只是假設 ／ A model finding no test confirmed is a hypothesis."""
+    result = evaluate(_with(clean(), "review", confirmed_findings=[_finding()]))
+    assert result.verdict is Verdict.READY_TO_SHIP
+
+
+# --- 證據缺口 ／ evidence gaps ---------------------------------------------------------------------
+
+GAP_CASES = {
+    GapCode.BUDGET_EXHAUSTED: lambda e: replace(e, call_log=[_call("simulated", BUDGET_EXHAUSTED_REASON)]),
+    GapCode.CACHE_MISS: lambda e: replace(e, call_log=[_call("simulated", CACHE_MISS_REASON)]),
+    GapCode.SIMULATED: lambda e: replace(e, call_log=[_call("simulated", "mock")]),
+    GapCode.INVALID_OUTPUT: lambda e: replace(e, call_log=[_call("invalid", "missing keys")]),
+    GapCode.FINDINGS_WITHOUT_MODEL_TESTS: lambda e: _with(e, "review", findings_without_model_tests=["WB-GPT-01"]),
+    GapCode.REVIEW_INTEGRITY: lambda e: replace(e, static_findings=[_rule_hit(FindingSeverity.MEDIUM, integrity=True)]),
+    GapCode.NO_REVIEWERS: lambda e: _with(e, "review", reviewers_configured=False, reviewer_models=[]),
+    GapCode.SINGLE_REVIEWER_MODEL: lambda e: _with(e, "review", reviewer_models=["gpt"]),
+    GapCode.NO_SYMBOLS: lambda e: _with(e, "scope", symbols_found=False),
+    GapCode.PARSE_FAILURES: lambda e: _with(e, "scope", parse_failures=["bad.py"]),
+    GapCode.INCOMPLETE_SCAN: lambda e: _with(e, "scope", incomplete_files=["huge.py"]),
+    GapCode.OVERSIZED_FILES: lambda e: _with(e, "scope", oversized_files=["/srv/app/big.py"]),
+    GapCode.MAX_FILES_SKIPPED: lambda e: _with(e, "scope", skipped_files=["z.py"]),
+    GapCode.TESTS_NOT_RUN: lambda e: _with(e, "execution", wb_results=[_result("WB-T-01", TestStatus.ERROR)]),
+    GapCode.MUTATION_NO_CONCLUSION: lambda e: _with(e, "execution", mutation_report=MutationReport(skipped_reason="no tests")),
+    GapCode.MUTATION_BELOW_THRESHOLD: lambda e: _with(e, "execution", mutation_report=MutationReport(score=50.0, survived=1)),
+    GapCode.MUTATION_TRUNCATED: lambda e: _with(e, "execution", mutation_report=MutationReport(score=100.0, truncated=True)),
+    GapCode.JS_NO_TESTS: lambda e: _with(e, "scope", detected_langs=["Python", "TypeScript/JavaScript"]),
+    GapCode.JS_TESTS_NOT_RUN: lambda e: _with(_with(e, "scope", detected_langs=["TypeScript/JavaScript"]), "execution",
+                                              wb_tests=[_test("WB-T-01", "javascript")], js_runner_problem="no node"),
+    GapCode.TS_TESTS_NOT_RUN: lambda e: _with(_with(e, "scope", detected_langs=["TypeScript/JavaScript"]), "execution",
+                                              wb_tests=[_test("WB-T-01", "typescript")], ts_problem="node 20"),
+    GapCode.UNSUPPORTED_LANGUAGES: lambda e: _with(e, "scope", unsupported_count=3, unsupported_languages={"Go": 3},
+                                                   unsupported_files=["a.go"]),
+    GapCode.CONFIG_FILES_NOT_SCANNED: lambda e: _with(e, "scope", config_files_not_fully_scanned=[".env"]),
+    GapCode.UNCLASSIFIED_BLACKBOX_FAILURES: lambda e: _with(e, "execution", bb_results=[
+        _result("BB-T-01", TestStatus.FAILED, test_type="blackbox_security")]),
+    GapCode.NO_WHITEBOX_TESTS: lambda e: _with(e, "execution", wb_results=[]),
+    GapCode.NO_THREATS: lambda e: replace(e, threat_report=ThreatModelReport(system_description="app")),
+    GapCode.UNTESTED_THREATS: lambda e: replace(e, untested_threats=["THREAT-01"]),
+}
+
+
+def test_every_gap_code_has_a_case():
+    assert set(GAP_CASES) == set(GapCode)
+
+
+@pytest.mark.parametrize("code", list(GapCode), ids=lambda c: c.value)
+def test_each_gap_makes_an_otherwise_clean_run_inconclusive(code):
+    result = evaluate(GAP_CASES[code](clean()))
+    assert code in _codes(result)
+    assert result.verdict is Verdict.INCONCLUSIVE
+    assert result.reasons == [gap.message for gap in result.gaps]
+    assert "Close the evidence gaps" in result.recommendations[-1]
+
+
+def test_gaps_come_in_declaration_order():
+    evidence = clean()
+    for code in reversed(list(GapCode)):
+        evidence = GAP_CASES[code](evidence)
+    order = list(GapCode)
+    codes = _codes(evaluate(evidence))
+    assert len(codes) > 10
+    assert codes == sorted(codes, key=order.index)
+
+
+def test_js_gaps_are_exclusive():
+    """沒有 JS 測試、無法執行、TS 不支援三者只報最先成立的一個 ／ Only the first of no tests / cannot run / no TS is reported."""
+    evidence = _with(_with(clean(), "scope", detected_langs=["TypeScript/JavaScript"]), "execution",
+                     wb_tests=[_test("WB-T-01", "typescript")], js_runner_problem="no node", ts_problem="node 20")
+    codes = _codes(evaluate(evidence))
+    assert GapCode.JS_TESTS_NOT_RUN in codes and GapCode.TS_TESTS_NOT_RUN not in codes
+
+
+def test_no_reviewers_is_not_also_reported_as_a_single_model():
+    codes = _codes(evaluate(GAP_CASES[GapCode.NO_REVIEWERS](clean())))
+    assert GapCode.NO_REVIEWERS in codes and GapCode.SINGLE_REVIEWER_MODEL not in codes
+
+
+@pytest.mark.parametrize("arbitration, word", [(True, "confirmed"), (False, "unverified")])
+def test_findings_without_model_tests_say_whether_they_were_verified(arbitration, word):
+    evidence = _with(clean(), "review", findings_without_model_tests=["WB-GPT-01"], arbitration_applied=arbitration)
+    gap = next(g for g in evaluate(evidence).gaps if g.code is GapCode.FINDINGS_WITHOUT_MODEL_TESTS)
+    assert f"1 {word} finding(s)" in gap.message
+
+
+def test_gap_messages_quote_the_limits():
+    evidence = _with(clean(), "scope", oversized_files=["/srv/app/big.py"], skipped_files=["z.py"])
+    reasons = " ".join(evaluate(evidence).reasons)
+    assert "max_file_bytes (1000)" in reasons and "big.py" in reasons and "max_files limit (200)" in reasons
+
+
+def test_mutation_at_the_threshold_is_not_a_gap():
+    evidence = _with(clean(), "execution", mutation_report=MutationReport(score=80.0))
+    assert evaluate(evidence).verdict is Verdict.READY_TO_SHIP
+
+
+# --- 基準 ／ baseline -----------------------------------------------------------------------------
+
+def test_known_breach_and_new_blocking_rule_hit_needs_fixes():
+    threat = _threat()
+    breach = _result("BB-T-01", TestStatus.FAILED, exploit=True, source_ref=threat.threat_id, test_type="blackbox_security")
+    baseline = Baseline(path="old.json", breaches={breach_key(breach, threat)})
+    evidence = _with(clean(baseline=baseline, static_findings=[_rule_hit()]), "execution", bb_results=[breach])
+    result = evaluate(evidence)
+    assert result.verdict is Verdict.NEEDS_FIXES
+    assert result.breaches == 0 and len(result.blocking_rule_hits) == 1
+    assert [(s.kind, s.id) for s in result.suppressed] == [("breach", "BB-T-01")]
+    assert not any("Fix confirmed security breach" in r for r in result.recommendations)
+    assert "already in the baseline" in result.recommendations[-1] and "`BB-T-01`" in result.recommendations[-1]
+
+
+def test_a_known_whitebox_failure_and_rule_hit_do_not_count():
+    finding, hit = _finding(), _rule_hit()
+    failed = _result("WB-T-01", TestStatus.FAILED, source_ref=finding.finding_id)
+    baseline = Baseline(path="old.json", findings={finding_key(finding, TARGET)}, static={static_key(hit, TARGET)})
+    evidence = _with(_with(clean(baseline=baseline, static_findings=[hit]), "review", confirmed_findings=[finding]),
+                     "execution", wb_results=[failed])
+    result = evaluate(evidence)
+    assert result.verdict is Verdict.READY_TO_SHIP
+    assert result.whitebox_failed == 0 and result.blocking_rule_hits == []
+    assert sorted(s.kind for s in result.suppressed) == ["static", "whitebox_failure"]
+
+
+def test_a_new_problem_still_counts_under_a_baseline():
+    baseline = Baseline(path="old.json", static={"something-else"})
+    result = evaluate(clean(baseline=baseline, static_findings=[_rule_hit()]))
+    assert result.verdict is Verdict.NEEDS_FIXES and result.suppressed == []
+
+
+# --- 建議 ／ recommendations ---------------------------------------------------------------------
+
+def test_recommendations_are_most_urgent_first():
+    evidence = _with(clean(static_findings=[_rule_hit()], untested_threats=["THREAT-02"]), "execution",
+                     wb_results=[_result("WB-T-01", TestStatus.FAILED)],
+                     bb_results=[_result("BB-T-02", TestStatus.FAILED, test_type="blackbox_security"),
+                                 _result("BB-T-01", TestStatus.FAILED, exploit=True, source_ref="THREAT-01")])
+    recs = evaluate(evidence).recommendations
+    prefixes = ["Fix confirmed security breach", "Fix `VH-AI-001`", "Fix defect exposed by", "Investigate black-box crash",
+                "Write or synthesize tests", "Close the evidence gaps"]
+    for rec, prefix in zip(recs, prefixes, strict=True):
+        assert prefix in rec
+    assert "THREAT-01 Mass assignment" in recs[0]
+
+
+def test_surviving_mutants_get_a_recommendation():
+    mutants = [MutantResult(file="app.py", line=n, operator="comparison", original="a", mutated="b", status="survived")
+               for n in (1, 2, 3, 4)]
+    evidence = _with(clean(), "execution", mutation_report=MutationReport(score=90.0, survived=4, mutants=mutants))
+    result = evaluate(evidence)
+    assert result.verdict is Verdict.READY_TO_SHIP
+    assert "app.py:1, app.py:2, app.py:3 so the tests catch these 4 surviving mutant(s)" in result.recommendations[-1]

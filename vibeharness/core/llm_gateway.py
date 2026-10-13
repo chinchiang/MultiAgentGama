@@ -473,6 +473,27 @@ def relative_executable_warnings(config: Dict[str, Any]) -> List[str]:
     return warnings
 
 
+# 呼叫紀錄的分類：閘道的屬性與品質閘門都用這些函式，原因字串只在這裡比對
+# Call-log classification: both the gateway's properties and the quality gate use these, so the reason strings are
+# matched in one place
+def budget_exhausted_calls(call_log: List[AgentCallRecord]) -> List[AgentCallRecord]:
+    return [rec for rec in call_log if rec.reason == BUDGET_EXHAUSTED_REASON]
+
+
+def cache_miss_calls(call_log: List[AgentCallRecord]) -> List[AgentCallRecord]:
+    """--cache-only 模式下快取沒有答案的呼叫（證據缺口；hybrid 改用模擬）。
+    Calls the cache could not answer in --cache-only mode (an evidence gap; simulated in hybrid)."""
+    return [rec for rec in call_log if rec.reason == CACHE_MISS_REASON]
+
+
+def simulated_calls(call_log: List[AgentCallRecord]) -> List[AgentCallRecord]:
+    return [rec for rec in call_log if rec.mode == "simulated"]
+
+
+def invalid_calls(call_log: List[AgentCallRecord]) -> List[AgentCallRecord]:
+    return [rec for rec in call_log if rec.mode == "invalid"]
+
+
 class LLMGateway:
     """
     統一閘道，負責協調對異質 LLM 的呼叫（預設為 Claude、GLM、DeepSeek 與 Gemini）。
@@ -740,21 +761,19 @@ class LLMGateway:
 
     @property
     def budget_exhausted_calls(self) -> List[AgentCallRecord]:
-        return [rec for rec in self.call_log if rec.reason == BUDGET_EXHAUSTED_REASON]
+        return budget_exhausted_calls(self.call_log)
 
     @property
     def cache_miss_calls(self) -> List[AgentCallRecord]:
-        """--cache-only 模式下快取沒有答案的呼叫（證據缺口；hybrid 改用模擬）。
-        Calls the cache could not answer in --cache-only mode (an evidence gap; simulated in hybrid)."""
-        return [rec for rec in self.call_log if rec.reason == CACHE_MISS_REASON]
+        return cache_miss_calls(self.call_log)
 
     @property
     def used_simulation(self) -> bool:
-        return any(rec.mode == "simulated" for rec in self.call_log)
+        return bool(simulated_calls(self.call_log))
 
     @property
     def invalid_calls(self) -> List[AgentCallRecord]:
-        return [rec for rec in self.call_log if rec.mode == "invalid"]
+        return invalid_calls(self.call_log)
 
     @property
     def retried_calls(self) -> List[AgentCallRecord]:
