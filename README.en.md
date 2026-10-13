@@ -201,13 +201,14 @@ MultiAgentGama/
 │   │   ├── harness.py               # Commander: six phases plus optional Phase 3.5; hands the run's evidence to the quality gate
 │   │   ├── llm_gateway.py           # Unified model gateway: routing, fallback, simulation fallback, call budget and call_log (model calls go through transport.py)
 │   │   ├── models.py                # Pydantic data models
-│   │   ├── baseline.py              # --baseline: run-independent fingerprints, known problems not counted
+│   │   ├── baseline.py              # --baseline: loading, comparison and fingerprint annotation, known problems not counted (keys in identity.py)
 │   │   ├── codecheck.py             # Static checks on generated tests (every test_ function / method asserts; refuses package installs)
 │   │   ├── codecontext.py           # Source code and import guidance handed to the models (through the untrusted-code channel)
 │   │   ├── estimate.py              # --estimate: calls, tokens and cost without calling a model
 │   │   ├── fanout.py                # Fan-out: runs an agent's model calls in parallel, in call order, booking crashed calls as evidence gaps
 │   │   ├── gate.py                  # Quality gate: evidence gaps, --baseline new/known split, verdict and recommendations (pure)
 │   │   ├── i18n.py                  # bilingual "中文 ／ English" output helpers (bi / en_only)
+│   │   ├── identity.py              # Identity: text normalization, the location rule, severity order, --baseline keys next to SARIF fingerprints (hashes must not change)
 │   │   ├── jscoverage.py            # JS/TS line coverage: Node coverage flags, lcov parsing, union across modules
 │   │   ├── mutation.py              # Optional mutation testing (Python)
 │   │   ├── sanitize.py              # Trust-boundary hygiene: invisible chars, secret redaction, untrusted-code / model-output channels, output sanitizing
@@ -246,7 +247,7 @@ MultiAgentGama/
 ├── tests/                       # The toolkit's own tests (offline, no API keys needed)
 │   ├── conftest.py              # Shared fixtures: a fake litellm so the live paths run offline
 │   ├── test_ai_security.py      # OWASP LLM Top 10 2026 / ATLAS controls and the deterministic AI-security rules
-│   ├── test_baseline.py                # --baseline: run-independent keys, known problems not counted, action.yml structure
+│   ├── test_baseline.py                # --baseline: loading and recomputing, known problems not counted, action.yml structure
 │   ├── test_cross_verification.py      # Cross-verification: models never judge their own findings, vote tallies
 │   ├── test_dedup_and_budget.py        # Duplicate-finding merge and prompt context within the token budget
 │   ├── test_docker_sandbox.py          # Docker sandbox: path mapping, hardening flags, real execution (when Docker is present)
@@ -255,6 +256,7 @@ MultiAgentGama/
 │   ├── test_harness_components.py      # Component integration tests in mock mode
 │   ├── test_i18n.py                    # Bilingual helpers, report / console / CLI strings, bilingual docstrings and comments
 │   ├── test_i18n_output.py             # Prompts stay English, bilingual rule titles, executor reasons and PoCs
+│   ├── test_identity.py                # Identity: normalization of any script, key properties, unknown locations, and a golden hash table from master
 │   ├── test_js_execution.py            # JS/TS execution: code gate, ESM/CJS detection, Node JUnit classification, Node sandboxes (real runs when node exists), end to end
 │   ├── test_js_coverage.py             # JS/TS line coverage: lcov parsing, path filtering, union across modules, version gate, executor wiring, report fields, real Node and Docker runs
 │   ├── test_js_ts_extractor.py         # JS/TS extractor: brace matching, literal/comment masking, arrow functions, routes

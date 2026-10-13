@@ -201,13 +201,14 @@ MultiAgentGama/
 │   │   ├── harness.py               # 指揮官：六個階段加上選用的階段 3.5；把本次執行的證據交給品質閘門
 │   │   ├── llm_gateway.py           # 統一模型閘道：路由、fallback、模擬回退、呼叫預算與 call_log（模型呼叫經 transport.py）
 │   │   ├── models.py                # Pydantic 數據模型
-│   │   ├── baseline.py              # --baseline：與執行次序無關的指紋，已知問題不計入
+│   │   ├── baseline.py              # --baseline：載入、比對與加註指紋，已知問題不計入（鍵在 identity.py）
 │   │   ├── codecheck.py             # 生成測試的靜態檢查（每個 test_ 函式／方法都要有斷言；拒絕安裝套件）
 │   │   ├── codecontext.py           # 提供給模型的原始碼與 import 指引（經不受信任程式碼通道）
 │   │   ├── estimate.py              # --estimate：不呼叫模型即估算呼叫數、token 與花費
 │   │   ├── fanout.py                # 扇出：並行執行代理的模型呼叫、依呼叫順序收集、當掉的呼叫記成證據缺口
 │   │   ├── gate.py                  # 品質閘門：證據缺口、--baseline 的新／已知拆分、判定與建議（純函式）
 │   │   ├── i18n.py                  # 「中文 ／ English」雙語輸出的工具（bi／en_only）
+│   │   ├── identity.py              # 身分識別：模型文字正規化、位置規則、嚴重度順序，--baseline 鍵與 SARIF 指紋並排（雜湊必須不變）
 │   │   ├── jscoverage.py            # JS/TS 行涵蓋率：Node 涵蓋率旗標、lcov 解析、跨模組聯集
 │   │   ├── mutation.py              # 選用的突變測試（Python）
 │   │   ├── sanitize.py              # 信任邊界：去隱形字元、遮蔽密鑰、不受信任程式碼／模型輸出通道、報告消毒
@@ -246,7 +247,7 @@ MultiAgentGama/
 ├── tests/                       # 工具包本身之測試（離線、不需 API 金鑰）
 │   ├── conftest.py              # 共用 fixture：以假 litellm 讓 live 路徑離線執行
 │   ├── test_ai_security.py      # OWASP LLM Top 10 2026／ATLAS 控制與確定性 AI 安全規則
-│   ├── test_baseline.py                # --baseline：與執行次序無關的 key、已知問題不計入、action.yml 結構
+│   ├── test_baseline.py                # --baseline：載入與重算、已知問題不計入、action.yml 結構
 │   ├── test_cross_verification.py      # 交叉驗證：模型不評審自己的發現、依票數判定
 │   ├── test_dedup_and_budget.py        # 重複發現合併與 token 預算內的提示上下文
 │   ├── test_docker_sandbox.py          # Docker 沙盒：路徑映射、容器強化參數、實際執行（有 Docker 時）
@@ -255,6 +256,7 @@ MultiAgentGama/
 │   ├── test_harness_components.py      # 各元件於 mock 模式下的整合測試
 │   ├── test_i18n.py                    # 雙語工具、報告／console／CLI 字串、雙語的 docstring 與註解
 │   ├── test_i18n_output.py             # 提示詞維持英文、雙語的規則標題、執行器原因與 PoC
+│   ├── test_identity.py                # 身分識別：任何文字的正規化、鍵的性質、未知位置，以及取自 master 的 golden 雜湊表
 │   ├── test_js_execution.py            # JS/TS 執行：程式碼閘門、ESM/CJS 偵測、Node JUnit 分類、Node 沙盒（有 node 時實跑）、端對端
 │   ├── test_js_coverage.py             # JS/TS 行涵蓋率：lcov 解析、路徑篩選、模組聯集、版本門檻、執行器串接、報告欄位、實際 Node 與 Docker 執行
 │   ├── test_js_ts_extractor.py         # JS/TS 擷取器：括號配對、字面值／註解遮蔽、箭頭函式、路由
