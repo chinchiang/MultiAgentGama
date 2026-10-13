@@ -175,6 +175,26 @@ def test_strict_live_failures_still_propagate_from_the_pool(tmp_path):
         builder.build_test_cases_from_threats([_threat(0)])
 
 
+def test_a_crashed_test_generation_is_booked_as_an_invalid_call(tmp_path):
+    """測試生成在閘道之外當掉時，與其他代理一樣記成一次無效呼叫（證據缺口），而不只是「沒有模型測試」。
+    A test generation that crashes outside the gateway is booked as an invalid call (an evidence gap), like the other
+    agents, not only as "no model test"."""
+    from vibeharness.core.llm_gateway import REASON_CALL_CRASHED
+    gen = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="mock"))
+    generate = gen.gateway.generate
+
+    def crash_on_f0(agent_id, system, user, **kwargs):
+        if "defect 0" in user:
+            raise RuntimeError("parser exploded")
+        return generate(agent_id, system, user, **kwargs)
+    gen.gateway.generate = crash_on_f0
+    gen.generate_tests_for_findings([_finding(0), _finding(1)], [], root_dir=str(tmp_path))
+    (record,) = gen.gateway.invalid_calls
+    assert record.agent_id == "whitebox_test_generator"
+    assert record.reason.startswith(REASON_CALL_CRASHED) and "RuntimeError: parser exploded" in record.reason
+    assert "F0" in gen.findings_without_model_tests
+
+
 def test_a_live_failure_starts_no_queued_reviewer_call(scripted, tmp_path):
     """白箱代理在 live 失敗的那個工作執行緒裡就中止整批：主執行緒還在等前面較慢的呼叫時，
     佇列中的審查呼叫不會開始，也不會付費。

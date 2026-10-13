@@ -22,6 +22,7 @@ All notable changes to this project are documented in this file. The format foll
 
 - With `--baseline`, the report's "Deterministic AI-Security Rule Hits" row counted every HIGH+ hit, including the known ones the verdict ignored, so a `READY_TO_SHIP` or `INCONCLUSIVE` report could show "2 HIGH+" against a target of "0 HIGH+". It now shows the new and known hits separately (e.g. "0 HIGH+ new, 2 known from baseline", target "0 new HIGH+"). Without `--baseline` the row is unchanged.
 - When a live call of the reviewers, the verifiers or the test generator failed, the calls not started yet were cancelled only once the main thread, collecting results in order, reached that failure; while it still waited on an earlier, slower call, queued calls kept starting and were paid for. Like the threat modeler and the attack synthesizer, they now abort the batch right in the failing worker thread, so no queued call starts. Only runs that already end with exit 4 are affected.
+- A test generation that crashed outside the gateway (e.g. an exception while handling the model's answer) used to log one error line, and its finding only showed up as having no model-generated test; like the other agents, it is now booked as an invalid `whitebox_test_generator` call (reason "代理呼叫在產生輸出前就當掉 ／ agent call crashed before producing output"), so the report and the JSON `agent_calls` carry one more record and the invalid-model-output evidence gap is listed. The verdict is unchanged: that finding already capped it at `INCONCLUSIVE`.
 
 ### Tests
 

@@ -58,16 +58,17 @@ class WhiteboxTestGenerator:
         root = root_dir or os.path.dirname(os.path.abspath(target_file))
 
         # 發現彼此獨立，所以它們的產生—驗證—修復迴圈並行執行；
-        # 結果依發現順序收集，讓 id、報告與探測維持確定性。嚴格的 live 模式會大聲地失敗。
+        # 結果依發現順序收集，讓 id、報告與探測維持確定性。當掉的發現由 fan_out 記成無效呼叫（證據缺口），
+        # 嚴格的 live 模式會大聲地失敗。
         # Findings are independent, so their generate-validate-heal loops run concurrently;
-        # results are collected in finding order so ids, reports and probes stay deterministic. Strict live mode
-        # fails loudly.
+        # results are collected in finding order so ids, reports and probes stay deterministic. fan_out books a
+        # crashed finding as an invalid call (an evidence gap); strict live mode fails loudly.
         calls = [
             Call("whitebox_test_generator", (f"{finding.finding_id} 的測試產生", f"Test generation for {finding.finding_id}"),
                  functools.partial(self._tests_for_finding, idx, finding, symbols, root, target_file))
             for idx, finding in enumerate(findings)
         ]
-        outcomes = fan_out(self.gateway, calls, fallback=([], False), logger=logger, _book_failures=False)
+        outcomes = fan_out(self.gateway, calls, fallback=([], False), logger=logger)
 
         generated_tests: List[GeneratedTest] = []
         for finding, (tests, has_valid_test) in zip(findings, outcomes, strict=True):
