@@ -1,19 +1,19 @@
 import ast
+import functools
 import logging
 import os
 import re
 import textwrap
-from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional, Set, Tuple
 from vibeharness.core.models import ReviewFinding, GeneratedTest, CodeSymbol, text_or
-from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
+from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.codecheck import check_test_code_for, strip_code_fences
 from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import (
     file_source, fence_language, import_instructions, language_for_file, module_import_name, truncate_to_tokens,
 )
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, prepare_untrusted_code, untrusted_block
-from vibeharness.agents.whitebox.common import cancel_pending
+from vibeharness.core.fanout import Call, fan_out
 
 logger = logging.getLogger("VibeHarness.TestGenerator")
 
@@ -58,30 +58,17 @@ class WhiteboxTestGenerator:
         root = root_dir or os.path.dirname(os.path.abspath(target_file))
 
         # 發現彼此獨立，所以它們的產生—驗證—修復迴圈並行執行；
-        # 結果依發現順序收集，讓 id、報告與探測維持確定性。
+        # 結果依發現順序收集，讓 id、報告與探測維持確定性。當掉的發現由 fan_out 記成無效呼叫（證據缺口），
+        # 嚴格的 live 模式會大聲地失敗。
         # Findings are independent, so their generate-validate-heal loops run concurrently;
-        # results are collected in finding order so ids, reports and probes stay deterministic.
-        with ThreadPoolExecutor(max_workers=min(self.gateway.max_concurrent_calls, len(findings))) as pool:
-            futures = [
-                pool.submit(self._tests_for_finding, idx, finding, symbols, root, target_file)
-                for idx, finding in enumerate(findings)
-            ]
-            outcomes = []
-            try:
-                for finding, future in zip(findings, futures, strict=True):
-                    try:
-                        outcomes.append(future.result())
-                    except LLMGatewayError:
-                        raise  # 嚴格的 live 模式會大聲地失敗 ／ strict live mode fails loudly
-                    except Exception as e:
-                        logger.error(bi(f"{finding.finding_id} 的測試產生失敗：{type(e).__name__}: {e}",
-                                        f"Test generation for {finding.finding_id} failed: {type(e).__name__}: {e}"))
-                        outcomes.append(([], False))
-            except BaseException:
-                # live 失敗或 Ctrl-C：尚未開始的發現不再產生測試（也不再付費）
-                # A live failure or Ctrl-C: findings not started yet get no tests generated (and are not paid for)
-                cancel_pending(futures)
-                raise
+        # results are collected in finding order so ids, reports and probes stay deterministic. fan_out books a
+        # crashed finding as an invalid call (an evidence gap); strict live mode fails loudly.
+        calls = [
+            Call("whitebox_test_generator", (f"{finding.finding_id} 的測試產生", f"Test generation for {finding.finding_id}"),
+                 functools.partial(self._tests_for_finding, idx, finding, symbols, root, target_file))
+            for idx, finding in enumerate(findings)
+        ]
+        outcomes = fan_out(self.gateway, calls, fallback=([], False), logger=logger)
 
         generated_tests: List[GeneratedTest] = []
         for finding, (tests, has_valid_test) in zip(findings, outcomes, strict=True):

@@ -464,34 +464,30 @@ def test_verifier_accepts_quoted_indices_and_rejects_booleans(fake_live):
     assert votes == {"A": ["confirm", "confirm", "confirm"], "B": []}
 
 
-def test_one_crashed_verifier_batch_does_not_abort_arbitration(fake_live, monkeypatch):
-    """某位驗證者批次中的非 LLM 當機不得從執行緒池傳播出去並丟掉其他驗證者的
-    所有票；live 模式的 LLM 失敗仍會大聲地讓執行失敗。
-    A non-LLM crash in one verifier's batch must not propagate out of the thread pool and
-    discard every other verifier's votes; live-mode LLM failures still fail the run loudly."""
-    import json
+def test_one_crashed_verifier_batch_does_not_abort_arbitration(scripted):
+    """某位驗證者批次中的非 LLM 當機不得丟掉其他驗證者的所有票，並記在該驗證者名下（接線測試；
+    扇出本身見 test_fanout.py）。
+    A non-LLM crash in one verifier's batch must not discard every other verifier's votes, and is booked under that
+    verifier (a wiring test; the fan-out itself is in test_fanout.py)."""
     from vibeharness.core.llm_gateway import LLMGateway
     from vibeharness.agents.whitebox.debater import MultiModelDebater
     findings = [_finding(finding_id="A", file_path="app.py")]
-    fake_live(lambda s, u: json.dumps({"verdicts": [{"index": 0, "verdict": "confirm"}]}))
-    debater = MultiModelDebater(LLMGateway(CONFIG, execution_mode="live"))
-    real_verify = debater._verify
+    gateway = LLMGateway(CONFIG, execution_mode="live", transport=scripted({"*": {"verdicts": [{"index": 0, "verdict": "confirm"}]}}))
+    generate = gateway.generate
 
-    def flaky_verify(agent_id, *args, **kwargs):
+    def crash_deepseek(agent_id, *args, **kwargs):
         if agent_id == "whitebox_verifier_deepseek":
             raise RuntimeError("simulated thread crash")
-        return real_verify(agent_id, *args, **kwargs)
-
-    monkeypatch.setattr(debater, "_verify", flaky_verify)
-    result = debater.arbitrate(findings)
+        return generate(agent_id, *args, **kwargs)
+    gateway.generate = crash_deepseek
+    result = MultiModelDebater(gateway).arbitrate(findings)
     votes = [v.verdict for f in result.confirmed_findings for v in f.verification_votes]
     assert votes == ["confirm", "confirm"]  # glm 與 gemini 的票在 deepseek 當機後仍保留 ／ glm's and gemini's votes survived deepseek's crash
     # 當機已登記，因此關卡把缺少的票視為證據缺口，而不是「unsure」
     # The crash is booked, so the gate sees the missing votes as an evidence gap, not as "unsure"
-    crashed = [rec for rec in debater.gateway.invalid_calls if rec.agent_id == "whitebox_verifier_deepseek"]
-    assert len(crashed) == 1 and crashed[0].model_alias == "deepseek"
-    assert "crashed" in (crashed[0].reason or "") and "RuntimeError: simulated thread crash" in (crashed[0].reason or "")
-
+    (crashed,) = gateway.invalid_calls
+    assert crashed.agent_id == "whitebox_verifier_deepseek" and crashed.model_alias == "deepseek"
+    assert "crashed" in (crashed.reason or "") and "RuntimeError: simulated thread crash" in (crashed.reason or "")
 
 # --- 覆蓋率補強：審查者集成與威脅建模器的降級與退回路徑 ------------------------------------
 # --- Coverage push: degradation and fallback paths of the reviewer ensemble and threat modeler ----
@@ -508,33 +504,30 @@ def test_reviewer_ensemble_skips_empty_symbols_without_model_calls():
     assert HeterogeneousReviewerEnsemble(gw).review_symbols([]) == []
 
 
-def test_one_crashed_reviewer_batch_does_not_abort_the_review(fake_live, tmp_path, monkeypatch):
-    """某位審查者批次中的非 LLM 當機不得丟掉其他審查者的發現；
-    live 模式的 LLM 失敗仍會傳播（會被重新拋出，不會被吞掉）。
-    A non-LLM crash in one reviewer's batch must not discard the other reviewers' findings;
-    live-mode LLM failures still propagate (they are re-raised, not swallowed)."""
-    import json
+def test_one_crashed_reviewer_batch_does_not_abort_the_review(scripted, tmp_path):
+    """某位審查者批次中的非 LLM 當機不得丟掉其他審查者的發現，並記在該審查者名下（接線測試；
+    扇出本身見 test_fanout.py）。
+    A non-LLM crash in one reviewer's batch must not discard the other reviewers' findings, and is booked under that
+    reviewer (a wiring test; the fan-out itself is in test_fanout.py)."""
     from vibeharness.core.llm_gateway import LLMGateway
     from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
     from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
     (tmp_path / "svc.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
     symbols = ASTExtractor().parse_file(str(tmp_path / "svc.py"))
-    fake_live(lambda s, u: json.dumps({"findings": [{"symbol_name": "f", "title": "ok", "severity": "HIGH"}]}))
-    ensemble = HeterogeneousReviewerEnsemble(LLMGateway(CONFIG, execution_mode="live"))
-    real_batch = ensemble._review_batch
+    transport = scripted({"*": {"findings": [{"symbol_name": "f", "title": "ok", "severity": "HIGH"}]}})
+    gateway = LLMGateway(CONFIG, execution_mode="live", transport=transport)
+    generate = gateway.generate
 
-    def flaky_batch(reviewer, batch, root):
-        if reviewer["agent_id"] == "whitebox_reviewer_deepseek":
+    def crash_deepseek(agent_id, *args, **kwargs):
+        if agent_id == "whitebox_reviewer_deepseek":
             raise RuntimeError("simulated thread crash")
-        return real_batch(reviewer, batch, root)
-
-    monkeypatch.setattr(ensemble, "_review_batch", flaky_batch)
-    findings = ensemble.review_symbols(symbols, root_dir=str(tmp_path))
+        return generate(agent_id, *args, **kwargs)
+    gateway.generate = crash_deepseek
+    findings = HeterogeneousReviewerEnsemble(gateway).review_symbols(symbols, root_dir=str(tmp_path))
     assert [f.title for f in findings] == ["ok", "ok", "ok"]  # claude、glm 與 gemini 仍保留 ／ claude, glm and gemini survived
     assert all(not f.is_simulated for f in findings)
-    crashed = [rec for rec in ensemble.gateway.invalid_calls if rec.agent_id == "whitebox_reviewer_deepseek"]
-    assert len(crashed) == 1 and "RuntimeError: simulated thread crash" in (crashed[0].reason or "")
-
+    (crashed,) = gateway.invalid_calls
+    assert crashed.agent_id == "whitebox_reviewer_deepseek" and "RuntimeError: simulated thread crash" in (crashed.reason or "")
 
 def test_unknown_reviewer_severity_falls_back_to_medium(fake_live, tmp_path):
     import json

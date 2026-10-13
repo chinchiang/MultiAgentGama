@@ -4,8 +4,6 @@ Regression tests for the white-box review fixes: route detection, JS lexing, nes
 VH-AI-004/005/006, deduplication, severity parsing, cancelling queued calls, and the untrusted channel in
 verifier / test-generator prompts."""
 import functools
-import threading
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -14,11 +12,10 @@ from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanne
 from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
 from vibeharness.agents.whitebox.debater import MultiModelDebater
 from vibeharness.agents.whitebox.deduplicator import deduplicate_findings
-from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble, parse_severity
+from vibeharness.agents.whitebox.multi_reviewer import parse_severity
 from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
 from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.settings import GatewaySettings
-from vibeharness.core.llm_gateway import LLMGatewayError
 from vibeharness.core.models import CodeSymbol, FindingSeverity, ReviewFinding
 from vibeharness.core.sanitize import UNTRUSTED_CODE_CLOSE, UNTRUSTED_CODE_OPEN
 
@@ -348,37 +345,26 @@ def test_severity_strings_are_normalized(raw, expected):
     assert parse_severity(raw) == expected
 
 
-# --- 取消排隊中的呼叫 ---
-# --- Cancelling queued calls --------------------------------------------------------------------------
+# --- 不可信通道中的發現文字 ---
+# --- Finding text in the untrusted channel -------------------------------------------------------------
 
 class _StubGateway:
-    """只記錄呼叫的閘道替身：第一次呼叫以 LLMGatewayError 失敗，之後每次呼叫都慢一點，讓取消有時間生效。
-    A gateway stand-in that records calls: the first call fails with LLMGatewayError, every later call is slow
-    so cancellation has time to take effect."""
+    """記錄每個使用者提示詞、以 `responder(system, user)` 回答的閘道替身。
+    A gateway stand-in that records each user prompt and answers with `responder(system, user)`."""
 
-    def __init__(self, agents, responder=None):
+    def __init__(self, agents, responder):
         self.agents_config = agents
         # 代理以 gateway.settings.alias_for 解析別名：沿用真正的實作 ／ agents resolve aliases with
         # gateway.settings.alias_for: reuse the real implementation
         self.settings = SimpleNamespace(agents=agents)
         self.settings.alias_for = functools.partial(GatewaySettings.alias_for, self.settings)
         self.max_concurrent_calls = 1
-        self.calls = []
         self.prompts = []
         self.responder = responder
-        self._lock = threading.Lock()
 
     def generate(self, agent_id, system_prompt, user_prompt, **kwargs):
-        with self._lock:
-            self.calls.append(agent_id)
-            self.prompts.append(user_prompt)
-            first = len(self.calls) == 1
-        if self.responder is not None:
-            return self.responder(system_prompt, user_prompt)
-        if first:
-            raise LLMGatewayError("live call failed")
-        time.sleep(0.2)
-        return {}
+        self.prompts.append(user_prompt)
+        return self.responder(system_prompt, user_prompt)
 
     @staticmethod
     def is_simulated(resp):
@@ -398,33 +384,6 @@ def _symbol(tmp_path):
     return CodeSymbol(name="login", symbol_type="function", file_path=str(path), line_start=1, line_end=2,
                       signature="login(user)", source_code="def login(user):\n    return user", parameters=["user"])
 
-
-def test_reviewer_calls_still_queued_after_a_live_failure_are_not_made(tmp_path):
-    agents = {f"whitebox_reviewer_{i}": {"model_alias": f"m{i}"} for i in range(6)}
-    gw = _StubGateway(agents)
-    with pytest.raises(LLMGatewayError):
-        HeterogeneousReviewerEnsemble(gw).review_symbols([_symbol(tmp_path)], root_dir=str(tmp_path))
-    assert len(gw.calls) <= 2
-
-
-def test_verifier_calls_still_queued_after_a_live_failure_are_not_made():
-    agents = {f"whitebox_verifier_{i}": {"model_alias": f"v{i}"} for i in range(6)}
-    gw = _StubGateway(agents)
-    with pytest.raises(LLMGatewayError):
-        MultiModelDebater(gw).arbitrate([_finding("1", "claude", "SQL injection")])
-    assert len(gw.calls) <= 2
-
-
-def test_test_generation_calls_still_queued_after_a_live_failure_are_not_made(tmp_path):
-    gw = _StubGateway({})
-    findings = [_finding(str(i), "claude", f"Defect {i}") for i in range(6)]
-    with pytest.raises(LLMGatewayError):
-        WhiteboxTestGenerator(gw).generate_tests_for_findings(findings, [_symbol(tmp_path)], root_dir=str(tmp_path))
-    assert len(gw.calls) <= 2
-
-
-# --- 不可信通道中的發現文字 ---
-# --- Finding text in the untrusted channel -------------------------------------------------------------
 
 def _inside_channel(prompt, text):
     start = prompt.rfind(UNTRUSTED_CODE_OPEN, 0, prompt.index(text))

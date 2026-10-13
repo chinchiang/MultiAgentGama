@@ -205,6 +205,7 @@ MultiAgentGama/
 │   │   ├── codecheck.py             # Static checks on generated tests (every test_ function / method asserts; refuses package installs)
 │   │   ├── codecontext.py           # Source code and import guidance handed to the models (through the untrusted-code channel)
 │   │   ├── estimate.py              # --estimate: calls, tokens and cost without calling a model
+│   │   ├── fanout.py                # Fan-out: runs an agent's model calls in parallel, in call order, booking crashed calls as evidence gaps
 │   │   ├── gate.py                  # Quality gate: evidence gaps, --baseline new/known split, verdict and recommendations (pure)
 │   │   ├── i18n.py                  # bilingual "中文 ／ English" output helpers (bi / en_only)
 │   │   ├── jscoverage.py            # JS/TS line coverage: Node coverage flags, lcov parsing, union across modules
@@ -220,7 +221,6 @@ MultiAgentGama/
 │   │   │   ├── __init__.py
 │   │   │   ├── ast_extractor.py     # Symbol parsing and route extraction (AST for Python; dependency-free lexer for JS/TS)
 │   │   │   ├── ai_static_scanner.py # Deterministic AI-security rules VH-AI-001..009 (no model involved)
-│   │   │   ├── common.py            # Shared helper: cancels queued model calls on a live failure or Ctrl-C
 │   │   │   ├── multi_reviewer.py    # Heterogeneous model ensemble review (built from the whitebox_reviewer_* entries)
 │   │   │   ├── deduplicator.py      # Merges the same defect reported by multiple models (complete-linkage)
 │   │   │   ├── debater.py           # Cross-verification: ruled on by non-author models
@@ -251,6 +251,7 @@ MultiAgentGama/
 │   ├── test_dedup_and_budget.py        # Duplicate-finding merge and prompt context within the token budget
 │   ├── test_docker_sandbox.py          # Docker sandbox: path mapping, hardening flags, real execution (when Docker is present)
 │   ├── test_estimate.py                # --estimate: exact and scenario figures, prices, no model call
+│   ├── test_fanout.py                  # The fan-out through fan_out: order, a crash replaced by the fallback and booked, no queued call after a live failure or Ctrl-C
 │   ├── test_harness_components.py      # Component integration tests in mock mode
 │   ├── test_i18n.py                    # Bilingual helpers, report / console / CLI strings, bilingual docstrings and comments
 │   ├── test_i18n_output.py             # Prompts stay English, bilingual rule titles, executor reasons and PoCs

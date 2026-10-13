@@ -136,43 +136,48 @@ def test_max_concurrent_calls_bounds_the_worker_pool(tmp_path):
     assert probe.peak == 1
 
 
-def test_one_crashed_synthesis_does_not_discard_the_others(tmp_path, monkeypatch):
+def test_a_crashed_test_generation_is_booked_as_an_invalid_call(tmp_path):
+    """測試生成在閘道之外當掉時，與其他代理一樣記成一次無效呼叫（證據缺口），而不只是「沒有模型測試」；
+    其他發現的測試保留（接線測試；扇出本身見 test_fanout.py）。
+    A test generation that crashes outside the gateway is booked as an invalid call (an evidence gap), like the other
+    agents, not only as "no model test"; the other findings keep their tests (a wiring test; the fan-out itself is in
+    test_fanout.py)."""
+    from vibeharness.core.llm_gateway import REASON_CALL_CRASHED
     gen = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="mock"))
-    real = gen._tests_for_finding
 
-    def flaky(idx, finding, *args):
-        if idx == 1:
-            raise RuntimeError("boom")
-        return real(idx, finding, *args)
-
-    monkeypatch.setattr(gen, "_tests_for_finding", flaky)
-    gen.gateway.generate = lambda *a, **k: {"code": "def test_ok():\n    assert True\n"}
+    def crash_on_f1(agent_id, system, user, **kwargs):
+        if "defect 1" in user:
+            raise RuntimeError("parser exploded")
+        return {"code": "def test_ok():\n    assert True\n"}
+    gen.gateway.generate = crash_on_f1
     tests = gen.generate_tests_for_findings([_finding(i) for i in range(3)], [], root_dir=str(tmp_path))
     assert [t.source_ref for t in tests if t.test_type == "whitebox_unit"] == ["F0", "F2"]
+    (record,) = gen.gateway.invalid_calls
+    assert record.agent_id == "whitebox_test_generator"
+    assert record.reason.startswith(REASON_CALL_CRASHED) and "RuntimeError: parser exploded" in record.reason
     assert gen.findings_without_model_tests == ["F1"]
 
-    builder = ThreatScenarioBuilder(LLMGateway(CONFIG, execution_mode="mock"))
-    real_bb = builder._test_for_threat
-    monkeypatch.setattr(builder, "_test_for_threat",
-                        lambda threat, *a: (_ for _ in ()).throw(RuntimeError("boom")) if threat.threat_id == "T1"
-                        else real_bb(threat, *a))
-    builder.gateway.generate = lambda *a, **k: {"code": "def test_ok():\n    assert True\n"}
-    assert [t.source_ref for t in builder.build_test_cases_from_threats([_threat(i) for i in range(3)])] == ["T0", "T2"]
 
-
-def test_strict_live_failures_still_propagate_from_the_pool(tmp_path):
-    gen = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="mock"))
-
-    def fail(*a, **k):
-        raise LLMGatewayError("no key")
-
-    gen.gateway.generate = fail
+def test_a_live_failure_starts_no_queued_reviewer_call(scripted, tmp_path):
+    """白箱代理在 live 失敗的那個工作執行緒裡就中止整批：主執行緒還在等前面較慢的呼叫時，
+    佇列中的審查呼叫不會開始，也不會付費。
+    A white-box agent aborts the batch right in the worker whose live call failed: while the main thread still
+    waits on an earlier, slower call, the queued reviewer calls never start and are never paid for."""
+    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
+    from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
+    (tmp_path / "svc.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
+    symbols = ASTExtractor().parse_file(str(tmp_path / "svc.py"))
+    transport = scripted({
+        "whitebox_reviewer_claude": lambda request: time.sleep(0.5) or {"findings": []},
+        "whitebox_reviewer_deepseek": RuntimeError("provider down"),
+        "*": {"findings": []},
+    })
+    gateway = LLMGateway(_config(tmp_path, max_concurrent_calls=2), execution_mode="live", transport=transport)
+    ensemble = HeterogeneousReviewerEnsemble(gateway)
+    assert [r["agent_id"] for r in ensemble.reviewer_agents][:2] == ["whitebox_reviewer_claude", "whitebox_reviewer_deepseek"]
     with pytest.raises(LLMGatewayError):
-        gen.generate_tests_for_findings([_finding(0), _finding(1)], [], root_dir=str(tmp_path))
-    builder = ThreatScenarioBuilder(LLMGateway(CONFIG, execution_mode="mock"))
-    builder.gateway.generate = fail
-    with pytest.raises(LLMGatewayError):
-        builder.build_test_cases_from_threats([_threat(0)])
+        ensemble.review_symbols(symbols, root_dir=str(tmp_path))
+    assert {r.agent_id for r in transport.requests} == {"whitebox_reviewer_claude", "whitebox_reviewer_deepseek"}
 
 
 # --- live 模型呼叫預算 ----------------------------------------------------------------------

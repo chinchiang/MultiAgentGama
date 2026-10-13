@@ -17,10 +17,13 @@
 - 同一次執行同時有設定問題與目標或旗標問題時（例如 `--config` 的值錯誤又缺少 `--target`），現在先回報設定問題；過去要到建構 harness 時才回報，排在目標與旗標的檢查之後。兩種情況的結束碼都是 5。`--cache-dir` 現在在檢查目標與旗標之前就建立，無法使用的 Docker 沙盒則在所有設定問題之後才回報。
 - 模型呼叫改經新的 `vibeharness/core/transport.py` 接縫：閘道對每次模型嘗試送出一個 `ModelRequest`（帶 `agent_id`、模型別名、候選模型字串、messages 與原樣的 litellm 參數），由 `ModelTransport` 回一個 `ModelReply`。預設的 `LiteLLMTransport` 是唯一 import litellm 的地方；`LLMGateway` 與 `VibeHarnessCommander` 接受 `transport=`。模式、預算、回應快取、fallback 順序、重問與來源紀錄都留在閘道。僅為內部變更：報告、呼叫紀錄與結束碼都不變。
 - 模擬輸出改由各代理以 `generate(..., simulated=fn)` 提供（審查者、威脅建模者、驗證者、測試生成器與攻擊合成器各自的範本），閘道不再依代理名稱編造回答；代理的模型別名統一由 `GatewaySettings.alias_for` 解析。模擬的內容不變。
+- 審查者、驗證者、測試生成器、威脅建模者與攻擊合成器並行的模型呼叫改由新的 `vibeharness/core/fanout.py` 執行：代理只交出呼叫清單（`Call(agent_id, label, run)`）與當掉時的 fallback，執行緒池大小、依呼叫順序收集、取消、live 失敗時的中止、錯誤 log 與 `record_failure` 都在這一個模組裡。刪除 `vibeharness/agents/whitebox/common.py`。這一步本身不改變行為；修正一節的兩個條目是隨後在同一個模組上做的修正。
 
 ### 修正
 
 - 使用 `--baseline` 時，報告的「確定性 AI 資安規則命中」列會計入所有 HIGH 以上的命中，包括判定已忽略的已知命中，因此 `READY_TO_SHIP` 或 `INCONCLUSIVE` 的報告可能顯示「2 HIGH+」而目標是「0 HIGH+」。現在新的與已知的命中分開列出（例如「0 個新的 HIGH+，2 個基準中已知」，目標為「0 個新的 HIGH+」）。沒有 `--baseline` 時該列不變。
+- 審查者、驗證者與測試生成器在 live 模式的呼叫失敗時，過去要等主執行緒依序收集到那個失敗才取消尚未開始的呼叫；主執行緒還在等前面較慢的呼叫時，佇列中的呼叫會繼續開始並付費。現在與威脅建模者、攻擊合成器相同，在失敗的那個工作執行緒裡就中止整批，佇列中的呼叫不會開始。只影響已經會以 exit 4 結束的執行。
+- 測試生成在閘道之外當掉時（例如處理模型回答時拋出例外），過去只寫一行錯誤，該發現只顯示為「沒有模型產生的測試」；現在與其他代理相同，記成一筆 `whitebox_test_generator` 的無效呼叫（原因為「代理呼叫在產生輸出前就當掉 ／ agent call crashed before producing output」），報告與 JSON 的 `agent_calls` 多一筆紀錄，並列出無效模型輸出的證據缺口。判定結果不變：該發現原本就讓判定最多是 `INCONCLUSIVE`。
 
 ### 測試
 
@@ -29,6 +32,7 @@
 - 新增 `tests/test_settings.py`，只透過 `load_settings` 測試設定：每個鍵的 null／0／負數／錯誤型別規則、驗證順序、探索到的設定檔政策、CLI 覆寫值與其來源、警告，以及唯讀的 models／agents。它取代已刪除的私有驗證函式的測試。
 - `tests/conftest.py` 新增 `scripted({代理 glob: 回答})` fixture：一個依 `request.agent_id` 回答、記錄每個 `ModelRequest` 的 `ModelTransport`，腳本裡的例外在那次嘗試中拋出，就像供應商錯誤。十一個原本從提示詞文字猜測是哪個代理在呼叫的測試改用它。
 - 新增 `tests/test_transport.py`：每次嘗試一個帶 `agent_id` 的請求、主要模型失敗改試 fallback、轉接器不可用時的 hybrid／live 行為、litellm 轉接器讀回覆、模擬輸出由呼叫端提供，以及 `scripted` fixture 本身。
+- 新增 `tests/test_fanout.py`，只透過 `fan_out` 測試扇出：呼叫順序、當掉換成 fallback 並以代理的 logger 與 `agent_id` 記錄、live 失敗與 Ctrl-C 時佇列中的呼叫不會開始、並行數上限、空清單不開執行緒池。十個重複的測試案例改由它涵蓋；各代理只保留一個接線測試，確認當機記在自己的 `agent_id` 名下，並改經公開的 `gateway.generate` 觸發，不再替換代理的私有批次函式。覆蓋率沒有任何一行下降。
 
 ### 文件
 
@@ -41,6 +45,8 @@
 - 設計文件說明模型呼叫的接縫（模組表、第 5 章的決策順序與真實呼叫細節）與由代理提供的模擬輸出（第 5.7 節），測試章節說明 `scripted` fixture，重要函式索引新增 `transport.py` 一行，行號引用也更新為 commit `c46d9b3`；回應快取一節原本誤指 `settings.py` 的四個行號引用改為指向 `llm_gateway.py`。
 - `CONTEXT.md` 新增模型回答：執行模式、真實呼叫與模擬輸出。
 - README 的專案結構列出 `core/transport.py` 與 `tests/test_transport.py`。
+- 設計文件說明 `vibeharness/core/fanout.py`（模組表、失敗處理的共同模式、各代理一節與並行一節），並行一節的表格改列每個代理當掉時的 fallback，重要函式索引新增 `fanout.py` 一行並移除 `common.py`，行號引用也更新為 commit `c8d1e26`。
+- README 的專案結構列出 `core/fanout.py` 與 `tests/test_fanout.py`，並移除 `agents/whitebox/common.py`。
 
 ## [0.12.0] - 2026-10-12
 

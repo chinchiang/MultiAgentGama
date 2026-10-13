@@ -1,13 +1,13 @@
+import functools
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
 from vibeharness.core.models import ReviewFinding, MultiModelDebateResult, VerificationVote, CodeSymbol
-from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
+from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import render_symbols, truncate_to_tokens
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
-from vibeharness.agents.whitebox.common import cancel_pending
+from vibeharness.core.fanout import Call, fan_out
 
 logger = logging.getLogger("VibeHarness.Debater")
 
@@ -99,33 +99,17 @@ class MultiModelDebater:
         }
         any_simulated = False
         if jobs:
-            # 驗證者是彼此獨立的模型，所以它們的呼叫並行執行。一個當掉的
-            # 批次不能丟掉其他所有批次（已經付費的）票；live 模式的
-            # 失敗仍會往上傳遞，讓執行大聲地失敗。
-            # Verifiers are independent models, so their calls run concurrently. A crashed
-            # batch must not discard every other batch's (already paid-for) votes; live-mode
-            # failures still propagate so the run fails loudly.
-            with ThreadPoolExecutor(max_workers=min(self.gateway.max_concurrent_calls, len(jobs))) as pool:
-                futures = [pool.submit(self._verify, job[0], findings, job[1], symbols, root_dir) for job in jobs]
-                results = []
-                try:
-                    for job, future in zip(jobs, futures, strict=True):
-                        try:
-                            results.append(future.result())
-                        except LLMGatewayError:
-                            raise
-                        except Exception as e:
-                            logger.error(bi(f"{job[0]} 的驗證批次失敗：{type(e).__name__}: {e}",
-                                            f"Verifier batch for {job[0]} failed: {type(e).__name__}: {e}"))
-                            # 記為一次無效呼叫：這些票是缺漏，而不是 "unsure"
-                            # Booked as an invalid call: these votes are missing, not "unsure"
-                            self.gateway.record_failure(job[0], f"{type(e).__name__}: {e}")
-                            results.append(([], False))
-                except BaseException:
-                    # live 失敗或 Ctrl-C：尚未開始的驗證呼叫不再送出
-                    # A live failure or Ctrl-C: verifier calls that have not started are not sent
-                    cancel_pending(futures)
-                    raise
+            # 驗證者是彼此獨立的模型，所以它們的呼叫並行執行。一個當掉的批次不能丟掉其他所有批次（已經付費的）票：
+            # fan_out 把它記成無效呼叫（這些票是缺漏，而不是 "unsure"）；live 模式的失敗仍會往上傳遞，讓執行大聲地失敗。
+            # Verifiers are independent models, so their calls run concurrently. A crashed batch must not discard every
+            # other batch's (already paid-for) votes: fan_out books it as an invalid call (these votes are missing, not
+            # "unsure"); live-mode failures still propagate so the run fails loudly.
+            calls = [
+                Call(job[0], (f"{job[0]} 的驗證批次", f"Verifier batch for {job[0]}"),
+                     functools.partial(self._verify, job[0], findings, job[1], symbols, root_dir))
+                for job in jobs
+            ]
+            results = fan_out(self.gateway, calls, fallback=([], False), logger=logger)
             for job_votes, simulated in results:
                 any_simulated = any_simulated or simulated
                 for idx, vote in job_votes:

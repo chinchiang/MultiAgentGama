@@ -5,9 +5,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Callable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 import os
 from vibeharness.core.models import ThreatItem, GeneratedTest, CodeSymbol, text_or
+from vibeharness.core.fanout import Call, fan_out
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.codecheck import check_test_code_for, strip_code_fences
 from vibeharness.core.i18n import bi, en_only
@@ -15,7 +16,6 @@ from vibeharness.core.codecontext import render_symbols, import_instructions, la
 from vibeharness.core.sanitize import (
     UNTRUSTED_CODE_POLICY, UNTRUSTED_MODEL_POLICY, untrusted_block, untrusted_model_block,
 )
-from vibeharness.agents.blackbox.threat_modeler import run_ordered
 
 logger = logging.getLogger("VibeHarness.ScenarioBuilder")
 
@@ -261,25 +261,17 @@ class ThreatScenarioBuilder:
         # 與 KeyboardInterrupt 會在取消尚未開始的合成之後大聲地失敗
         # Threats are independent: synthesize their attack tests concurrently, keeping threat order; strict
         # live mode (LLMGatewayError) and KeyboardInterrupt fail loudly after the syntheses not yet started are cancelled
-        calls: List[Callable[[], Optional[GeneratedTest]]] = [
-            functools.partial(self._test_for_threat, threat, base_url, server_is_live, mode_label, mode_rules,
-                              symbols, root_dir)
+        # 當掉的合成讓該威脅回報為未測試（fan_out 記成證據缺口），而不是中止其他的合成
+        # A crashed synthesis reports that threat as untested (fan_out books it as an evidence gap) rather than
+        # aborting the other syntheses
+        calls: List[Call[Optional[GeneratedTest]]] = [
+            Call("blackbox_test_synthesizer",
+                 (f"[{threat.threat_id}] 的攻擊合成", f"Attack synthesis for [{threat.threat_id}]"),
+                 functools.partial(self._test_for_threat, threat, base_url, server_is_live, mode_label, mode_rules,
+                                   symbols, root_dir))
             for threat in threats
         ]
-        tests: List[GeneratedTest] = []
-        for threat, (test, error) in zip(threats, run_ordered(calls, self.gateway.max_concurrent_calls), strict=True):
-            if error is not None:
-                # 該威脅回報為未測試，而不是中止其他的合成
-                # The threat is reported as untested rather than aborting the other syntheses
-                logger.error(bi(f"[{threat.threat_id}] 的攻擊合成失敗：{type(error).__name__}: {error}",
-                                f"Attack synthesis for [{threat.threat_id}] failed: {type(error).__name__}: {error}"))
-                # 記入 call_log，讓品質閘門把未測試的威脅視為證據缺口
-                # Booked in call_log so the quality gate sees the untested threat as an evidence gap
-                self.gateway.record_failure("blackbox_test_synthesizer", f"{type(error).__name__}: {error}")
-                continue
-            if test is not None:
-                tests.append(test)
-        return tests
+        return [test for test in fan_out(self.gateway, calls, fallback=None, logger=logger) if test is not None]
 
     def _test_for_threat(
         self,
