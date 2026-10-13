@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any, Optional
 from pydantic import ValidationError
 from vibeharness.core.models import CodeSymbol, ReviewFinding, FindingSeverity, text_or
-from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError, UNCONFIGURED_ALIAS
+from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
 from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import render_symbols, batch_symbols
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
@@ -67,7 +67,7 @@ class HeterogeneousReviewerEnsemble:
             # （hybrid 模式下模擬、live 模式下報錯），報告才能顯示它的呼叫實際去了哪裡
             # Same resolution as the gateway: a reviewer without a model_alias is `unconfigured`
             # (simulated in hybrid, an error in live), so the report shows where its calls really went
-            alias = meta.get("model_alias") or UNCONFIGURED_ALIAS
+            alias = gateway.settings.alias_for(agent_id)
             self.reviewer_agents.append({
                 "agent_id": agent_id,
                 "model_alias": str(alias),
@@ -222,8 +222,10 @@ class HeterogeneousReviewerEnsemble:
         )
         logger.info(bi(f"以審查者 {name} 執行白箱稽核（{len(batch)} 個符號）",
                        f"Running white-box audit with reviewer: {name} ({len(batch)} symbols)"))
+        agent_id = reviewer["agent_id"]
         resp = self.gateway.generate(
-            reviewer["agent_id"], system_prompt, user_prompt, json_output=True, required_keys=["findings"]
+            agent_id, system_prompt, user_prompt, json_output=True, required_keys=["findings"],
+            simulated=lambda alias: _simulated_review(agent_id, alias),
         )
         return resp, self.gateway.is_simulated(resp)
 
@@ -247,3 +249,76 @@ class HeterogeneousReviewerEnsemble:
                 if sym.name.split(".")[-1] == name:
                     return sym
         return None
+
+
+# 逐模型別名的固定離線審查樣板：審查者的模擬輸出（見 _simulated_review）
+# Fixed offline review templates per model alias: the reviewers' Simulated output (see _simulated_review)
+_SIMULATED_REVIEWS: Dict[str, Dict[str, str]] = {
+    "claude": {
+        "severity": "HIGH",
+        "title": bi("處理函式中未檢查的空值／隱含的狀態假設", "Unchecked Null / Implicit State Assumption in Handler"),
+        "description": bi("Vibe coding 產出的邏輯假設實體存在且狀態轉換有效，卻未驗證資料庫查詢結果，導致未處理的 NoneType / NullPointer 例外。",
+                          "The vibe-coded logic assumes entities exist and state transitions are valid without verifying database fetch outcomes, leading to unhandled NoneType / NullPointer exceptions."),
+        "root_cause": bi("存取屬性前缺少防禦性的空值檢查。", "Absence of defensive null-check before property traversal."),
+        "suspected_vibe_flaw": bi("Vibe coding 常假設一定找得到紀錄的「理想路徑」。",
+                                  "Vibe coding commonly assumes the 'happy path' where records are always found."),
+        "suggested_test_scenario": bi("以不存在的 ID 或空酬載呼叫端點／函式，並斷言回傳正確的錯誤狀態（404/400）而不是 500 當機。",
+                                      "Invoke the endpoint/function with a non-existent ID or empty payload and assert proper error status (404/400) instead of a 500 crash."),
+    },
+    "deepseek": {
+        "severity": "CRITICAL",
+        "title": bi("缺少輸入清理與無上限的資源配置", "Missing Input Sanitization & Unbounded Resource Allocation"),
+        "description": bi("邏輯未對查詢或資料陣列限制輸入長度與數值範圍，可能造成記憶體耗盡、ReDoS 或未驗證的大量酬載。",
+                          "The logic lacks input length and numerical range clamping on queries or data arrays, allowing memory exhaustion and ReDoS or unvalidated bulk payloads."),
+        "root_cause": bi("直接把不可信的輸入餵入下游的迭代與記憶體結構。",
+                         "Directly feeding untrusted input into downstream iteration and memory structures."),
+        "suspected_vibe_flaw": bi("AI 程式助理常略過明確的大小檢查與分頁上限。",
+                                  "AI coding assistants frequently skip explicit size checks and pagination limits."),
+        "suggested_test_scenario": bi("提供 10MB 的酬載或超過 1,000,000 的整數值，確認以 HTTP 413 或 422 妥善拒絕。",
+                                      "Supply a 10MB payload or integer values exceeding 1,000,000 and verify graceful rejection with HTTP 413 or 422."),
+    },
+    "glm": {
+        "severity": "MEDIUM",
+        "title": bi("API 契約規格漂移與結構描述不一致", "API Contract Specification Drift & Schema Inconsistency"),
+        "description": bi("缺少參數型別強制檢查，且預期的回應結構描述與實際序列化的字典欄位不一致。",
+                          "Missing parameter type enforcement and inconsistency between expected response schema and actual serialized dictionary fields."),
+        "root_cause": bi("隱含的結構描述轉型，沒有嚴格的 Pydantic/dataclass 結構描述驗證。",
+                         "Implicit schema casting without strict Pydantic/dataclass schema validation."),
+        "suspected_vibe_flaw": bi("Vibe coding 的快速原型常臨時更改回應結構，卻未更新契約定義。",
+                                  "Quick prototyping in vibe coding often changes response structures on the fly without updating contract definitions."),
+        "suggested_test_scenario": bi("斷言回應結構描述在所有欄位型別上都與預期的 OpenAPI/JSON 契約完全一致。",
+                                      "Assert response schema matches the expected OpenAPI/JSON contract exactly across all field types."),
+    },
+    "gemini": {
+        "severity": "HIGH",
+        "title": bi("不可信的輸入進入提示詞，且模型輸出未經驗證就被使用",
+                    "Untrusted Input Reaches the Prompt and Model Output Is Used Unvalidated"),
+        "description": bi("使用者控制或擷取的文字被串接進模型提示詞，而模型輸出未經嚴格的結構描述檢查就驅動決策或下游呼叫。",
+                          "User-controlled or retrieved text is concatenated into model prompts, and model output drives decisions or downstream calls without a strict schema check."),
+        "root_cause": bi("指令與資料之間沒有信任邊界，模型輸出也沒有確定性的驗證（OWASP LLM01:2026 / LLM10:2026）。",
+                         "No trust boundary between instructions and data, and no deterministic validation of model output (OWASP LLM01:2026 / LLM10:2026)."),
+        "suspected_vibe_flaw": bi("Vibe coding 產出的 AI 功能因為示範提示詞看起來正常，就把模型直接接進業務邏輯。",
+                                  "Vibe-coded AI features wire the model straight into business logic because the demo prompt behaved."),
+        "suggested_test_scenario": bi("餵入含有指令覆寫與不可見 Unicode 的輸入，並斷言輸出經過結構描述驗證，絕不會進入 eval/SQL/HTML 或特權操作。",
+                                      "Feed input containing an instruction override and invisible Unicode, and assert the output is schema-validated and never reaches eval/SQL/HTML or a privileged action."),
+        "owasp_mapping": "LLM01:2026",
+    },
+}
+
+
+def _simulated_review(agent_id: str, model_alias: str) -> Dict[str, Any]:
+    """審查者的模擬輸出：反映各審查者關注重點的固定樣板，依模型別名選取，退而以代理 id 的字尾選取。
+    樣板與目標程式碼無關；它們讓流程能離線演練，且在報告中一律標示為 simulated。
+    - Claude：狀態轉換、缺少的 null 檢查、邊界情況邏輯。
+    - DeepSeek：邊界限制、輸入消毒、防禦性守衛。
+    - GLM：合約規格、API 合規性、參數驗證。
+    - Gemini：AI/LLM 整合（OWASP Top 10 for LLM Applications 2026）。
+    A reviewer's Simulated output: a fixed template reflecting each reviewer's focus, chosen by model alias, falling
+    back to the agent id's suffix. The templates are independent of the target code; they let the pipeline be
+    exercised offline and are always flagged as simulated in reports.
+    - Claude: state transitions, missing null checks, edge-case logic.
+    - DeepSeek: boundary limits, input sanitization, defensive guards.
+    - GLM: contract specifications, API compliance, parameter validation.
+    - Gemini: AI/LLM integration (OWASP Top 10 for LLM Applications 2026)."""
+    template = _SIMULATED_REVIEWS.get(model_alias) or _SIMULATED_REVIEWS.get(agent_id.rsplit("_", 1)[-1])
+    return {"findings": [dict(template)] if template else []}

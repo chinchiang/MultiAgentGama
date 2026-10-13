@@ -265,7 +265,8 @@ class AutomatedThreatModeler:
             f"Only include threats that are plausible for the code shown, and name the concrete function/route in attack_vector."
         )
         return self.gateway.generate(
-            "blackbox_threat_modeler", system_prompt, user_prompt, json_output=True, required_keys=["threats"]
+            "blackbox_threat_modeler", system_prompt, user_prompt, json_output=True, required_keys=["threats"],
+            simulated=_simulated_threat_model,
         )
 
     def model_system(
@@ -469,3 +470,68 @@ class AutomatedThreatModeler:
                 logger.warning(bi(f"略過無法使用的威脅項目 #{position}：{e}", f"Skipping unusable threat entry #{position}: {e}"))
 
         return threat_items
+
+
+def _simulated_threat_model(model_alias: str) -> Dict[str, Any]:
+    """威脅建模者的模擬輸出：與目標無關的固定 STRIDE 威脅模型（BOLA、大量指派、錯誤外洩），每次呼叫都是新的 dict。
+    The threat modeler's Simulated output: a fixed STRIDE threat model independent of the target (BOLA, mass
+    assignment, error leakage), a new dict on every call."""
+    return {
+        "system_description": bi("Vibe coding 產出的網頁應用程式與 API 服務。", "Vibe-coded web application and API service."),
+        "entrypoints": [bi("REST API 路由", "REST API routes"), bi("驗證標頭", "Auth headers"),
+                        bi("使用者註冊／管理端點", "User registration / management endpoints")],
+        "trust_boundaries": [bi("用戶端／網際網路到公開閘道", "Client / Internet to Public Gateway"),
+                             bi("公開閘道到內部資料庫", "Public Gateway to Internal DB")],
+        "assets": [bi("使用者憑證", "User credentials"), bi("客戶資料紀錄", "Customer data records"),
+                   bi("資料庫連線字串", "Database connection strings")],
+        "threats": [
+            {
+                "threat_id": "THREAT-01",
+                "stride_category": "Elevation of Privilege",
+                "owasp_mapping": "API1:2023 - Broken Object Level Authorization (BOLA)",
+                "title": bi("資源更新的 BOLA / IDOR", "BOLA / IDOR on Resource Updates"),
+                "description": bi("已驗證的使用者只要竄改 URL 路徑或酬載中的物件 ID，就能修改其他使用者的物件。",
+                                  "An authenticated user can modify other users' objects by simply tampering with the object ID in the URL path or payload."),
+                "asset_at_risk": bi("使用者帳號與私人紀錄", "User accounts & private records"),
+                "attack_vector": "HTTP PUT/PATCH /api/users/{foreign_id}",
+                "trust_boundary_crossed": bi("使用者 A 的邊界跨入使用者 B 的資料領域", "User A boundary into User B data domain"),
+                "severity": "CRITICAL",
+                "attack_scenario": bi("以使用者 A 登入，對使用者 B 的資源 ID 發出 PUT 請求。",
+                                      "Login as User A, issue a PUT request targeting User B's resource ID."),
+                "test_verification_goal": bi("確認狀態碼為 403 Forbidden 或 404 Not Found，絕不可為 200 OK。",
+                                             "Ensure status code is 403 Forbidden or 404 Not Found, never 200 OK.")
+            },
+            {
+                "threat_id": "THREAT-02",
+                "stride_category": "Tampering",
+                "owasp_mapping": "API3:2023 - Broken Object Property Level Authorization",
+                "title": bi("管理員／敏感欄位的大量指派", "Mass Assignment of Admin / Sensitive Fields"),
+                "description": bi("更新端點接受原始 JSON 本文並直接套用到資料庫模型，沒有嚴格的允許清單，使用者因此能注入 is_admin=true。",
+                                  "The update endpoint accepts raw JSON body and applies it to the DB model without a strict whitelist, allowing users to inject is_admin=true."),
+                "asset_at_risk": bi("系統授權完整性", "System authorization integrity"),
+                "attack_vector": "HTTP POST/PUT with extra 'is_admin': true in payload",
+                "trust_boundary_crossed": bi("無特權用戶端到特權角色", "Unprivileged client to privileged role"),
+                "severity": "HIGH",
+                "attack_scenario": bi("在更新個人資料時送出酬載 {'name': 'test', 'is_admin': true}。",
+                                      "Send payload {'name': 'test', 'is_admin': true} during profile update."),
+                "test_verification_goal": bi("確認 is_admin 維持 false，且無法透過公開端點更改。",
+                                             "Ensure is_admin remains false and cannot be altered through public endpoint.")
+            },
+            {
+                "threat_id": "THREAT-03",
+                "stride_category": "Information Disclosure",
+                "owasp_mapping": "API8:2023 - Security Misconfiguration",
+                "title": bi("格式錯誤輸入導致堆疊追蹤與資料庫錯誤外洩", "Stack Trace & Database Error Leakage on Malformed Input"),
+                "description": bi("送出無效的 JSON 或語法字元會造成未處理的 500 錯誤，外洩內部資料庫細節與檔案路徑。",
+                                  "Sending invalid JSON or syntax characters causes unhandled 500 error leaking internal database details and file paths."),
+                "asset_at_risk": bi("內部系統架構細節", "Internal system architecture details"),
+                "attack_vector": "HTTP POST with malformed syntax / SQL injection characters",
+                "trust_boundary_crossed": bi("內部錯誤日誌流到外部 HTTP 回應", "Internal error logs to external HTTP response"),
+                "severity": "MEDIUM",
+                "attack_scenario": bi("送出格式錯誤的酬載，並檢查 HTTP 回應本文是否含有追蹤記錄。",
+                                      "Send malformed payload and inspect HTTP response body for tracebacks."),
+                "test_verification_goal": bi("確認回應只含一般性的錯誤訊息，沒有檔案路徑或 SQL 關鍵字。",
+                                             "Ensure response contains generic error message without file paths or SQL keywords.")
+            }
+        ]
+    }

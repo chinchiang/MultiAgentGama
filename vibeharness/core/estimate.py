@@ -28,6 +28,7 @@ from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnse
 from vibeharness.core.codecontext import batch_symbols, estimate_tokens, render_symbols
 from vibeharness.core.i18n import bi
 from vibeharness.core.models import CodeSymbol
+from vibeharness.core.settings import UNCONFIGURED_ALIAS
 
 # 程式碼清單以外的提示額外負擔（系統提示、結構描述、指引）與典型回答大小，
 # 以估計的 token 計。回答大小是線上執行的平均產出；真正的上限是
@@ -86,8 +87,7 @@ class RunEstimate(BaseModel):
 
 
 def _alias(gateway, agent_id: str) -> str:
-    meta = gateway.agents_config.get(agent_id) or {}
-    return str(meta.get("model_alias") or "unconfigured")
+    return gateway.settings.alias_for(agent_id)
 
 
 def estimate_run(
@@ -217,7 +217,7 @@ def estimate_run(
             row["cost_usd"] = round(row["prompt_tokens"] / 1e6 * p_in + row["output_tokens"] / 1e6 * p_out, 4)
             total_cost += row["cost_usd"]
             priced = True
-        elif alias != "unconfigured":
+        elif alias != UNCONFIGURED_ALIAS:
             est.warnings.append(bi(
                 f"模型別名 '{alias}' 沒有設定價格（models.{alias}.price_per_million_input/_output）：只列 token",
                 f"No price configured for model alias '{alias}' (models.{alias}.price_per_million_input/_output): tokens only"

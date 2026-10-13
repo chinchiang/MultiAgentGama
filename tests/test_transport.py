@@ -79,3 +79,21 @@ def test_litellm_adapter_reads_the_reply(monkeypatch):
     assert LiteLLMTransport().unavailable_reason is None
     monkeypatch.setattr("vibeharness.core.transport.litellm", None)
     assert "litellm is not installed" in LiteLLMTransport().unavailable_reason
+
+
+def test_simulated_output_comes_from_the_caller():
+    """閘道不再依代理名稱編造模擬輸出：由呼叫端提供，省略時是通用的狀態 dict。
+    The gateway no longer makes up Simulated output by agent name: the caller provides it, and a generic status dict
+    is used when it is omitted."""
+    gw = LLMGateway(CONFIG, execution_mode="mock")
+    seen = []
+
+    def simulated(alias):
+        seen.append(alias)
+        return {"findings": []}
+    first = gw.generate("whitebox_reviewer_claude", "s", "u", simulated=simulated)
+    second = gw.generate("whitebox_reviewer_claude", "s", "u", simulated=simulated)
+    assert seen == ["claude", "claude"] and first is not second
+    assert first["findings"] == [] and gw.is_simulated(first) and first["_provenance"]["mode"] == "simulated"
+    default = gw.generate("whitebox_reviewer_claude", "s", "u")
+    assert set(default) == {"status", "message", "_provenance"} and "whitebox_reviewer_claude" in default["message"]

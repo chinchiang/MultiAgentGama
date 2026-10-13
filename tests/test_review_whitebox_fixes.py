@@ -3,8 +3,10 @@
 Regression tests for the white-box review fixes: route detection, JS lexing, nested Python definitions,
 VH-AI-004/005/006, deduplication, severity parsing, cancelling queued calls, and the untrusted channel in
 verifier / test-generator prompts."""
+import functools
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +17,7 @@ from vibeharness.agents.whitebox.deduplicator import deduplicate_findings
 from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble, parse_severity
 from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
 from vibeharness.core.i18n import bi, en_only
+from vibeharness.core.settings import GatewaySettings
 from vibeharness.core.llm_gateway import LLMGatewayError
 from vibeharness.core.models import CodeSymbol, FindingSeverity, ReviewFinding
 from vibeharness.core.sanitize import UNTRUSTED_CODE_CLOSE, UNTRUSTED_CODE_OPEN
@@ -355,6 +358,10 @@ class _StubGateway:
 
     def __init__(self, agents, responder=None):
         self.agents_config = agents
+        # 代理以 gateway.settings.alias_for 解析別名：沿用真正的實作 ／ agents resolve aliases with
+        # gateway.settings.alias_for: reuse the real implementation
+        self.settings = SimpleNamespace(agents=agents)
+        self.settings.alias_for = functools.partial(GatewaySettings.alias_for, self.settings)
         self.max_concurrent_calls = 1
         self.calls = []
         self.prompts = []
