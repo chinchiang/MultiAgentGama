@@ -39,13 +39,13 @@ All notable changes to this project are documented in this file. The format foll
 ### Documentation
 
 - The design document's quality-gate chapter describes `evaluate(GateEvidence)` as the single place the verdict is decided, its evidence-gap table gives each gap's `GapCode` and `GateEvidence` field, and its line references are updated to the current code (commit `ab5e9a8`).
-- New `CONTEXT.md`: a bilingual glossary of the domain terms (Quality Gate, Verdict, Evidence gap, Executed evidence, Hypothesis, Breach, Baseline, Known problem, Blocking rule hit).
+- New `GLOSSARY.md`: a bilingual glossary of the domain terms (Quality Gate, Verdict, Evidence gap, Executed evidence, Hypothesis, Breach, Baseline, Known problem, Blocking rule hit).
 - The README project trees list `core/gate.py`, `core/verdict.py` and `tests/test_quality_gate.py`.
 - The design document describes the config path through `load_settings` (the module table, configuration loading and validation, the Discovered config check, the CLI overrides, the sandbox settings), its constants table points at `vibeharness/core/settings.py`, its key-function index has a `settings.py` line, and its line references are updated to commit `e5e95e4`.
-- `CONTEXT.md` adds the config origins: Bundled config, Discovered config and Explicit config.
+- `GLOSSARY.md` adds the config origins: Bundled config, Discovered config and Explicit config.
 - The README project trees list `core/settings.py` and `tests/test_settings.py`.
 - The design document describes the model-call seam (the module table, chapter 5's decision order and real-call details) and agent-provided Simulated output (section 5.7), its testing chapter describes the `scripted` fixture, its key-function index has a `transport.py` line, and its line references are updated to commit `c46d9b3`; four response-cache references that pointed at `settings.py` by mistake now point at `llm_gateway.py`.
-- `CONTEXT.md` adds the model answers: Execution mode, Live call and Simulated output.
+- `GLOSSARY.md` adds the model answers: Execution mode, Live call and Simulated output.
 - The README project trees list `core/transport.py` and `tests/test_transport.py`.
 - The design document describes `vibeharness/core/fanout.py` (the module table, the shared failure-handling pattern, the agent sections and the concurrency section), the concurrency table lists each agent's fallback for a crash, the key-function index gains a `fanout.py` line and drops `common.py`, and its line references are updated to commit `c8d1e26`.
 - The README project trees list `core/fanout.py` and `tests/test_fanout.py` and drop `agents/whitebox/common.py`.
