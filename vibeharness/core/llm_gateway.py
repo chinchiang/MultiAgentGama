@@ -17,7 +17,9 @@ from vibeharness.core.models import AgentCallRecord
 from vibeharness.core.transport import LiteLLMTransport, ModelRequest, ModelTransport
 # 回答的解析與形狀檢查在 core/model_output.py；REASON_NOT_VALID_JSON 以舊名稱重新匯出
 # Parsing and shape checking of answers live in core/model_output.py; REASON_NOT_VALID_JSON is re-exported under its old name
-from vibeharness.core.model_output import REASON_NOT_VALID_JSON, OutputSchema, check_output, parse_json_object  # noqa: F401
+from vibeharness.core.model_output import (  # noqa: F401
+    REASON_NOT_VALID_JSON, OutputSchema, check_output, mark_cached, parse_json_object,
+)
 # 設定檔的預設值、載入與政策都在 core/settings.py；這裡以同名重新匯出 ／ the config defaults, loading and policy live in
 # core/settings.py; re-exported here under the same names
 from vibeharness.core.settings import (
@@ -430,22 +432,26 @@ class LLMGateway:
                         f"output truncated at the max_output_tokens limit ({limit}); "
                         f"{en_only(reason)}. Raise max_output_tokens for this model (reasoning tokens count against it)"
                     )
+                # 取自回應快取的回答（舊版本存下、現在形狀已不合）在登記的原因中標明來源；重新詢問的提示仍只帶原因本身
+                # An answer from the response cache (stored by an older version, no longer the right shape) names its
+                # source in the booked reason; a re-ask prompt still carries only the reason itself
+                booked = mark_cached(reason) if cached is not None and attempt == 0 else reason
                 # --cache-only 絕不重新詢問：重新詢問是網路呼叫
                 # --cache-only never re-asks: a re-ask is a network call
                 if (not self.cache_only and json_output and attempt < self.retry_invalid_output
                         and self._reserve_live_call()):
-                    self._record(agent_id, model_alias, model_name, "retried", reason, prompt_sha256=prompt_hash, attempt=attempt)
+                    self._record(agent_id, model_alias, model_name, "retried", booked, prompt_sha256=prompt_hash, attempt=attempt)
                     attempt += 1
-                    logger.warning(bi(f"[{agent_id}] {model_name} 回傳無法使用的輸出（{reason}）；重新詢問（{attempt}/{self.retry_invalid_output}）",
-                                      f"[{agent_id}] {model_name} returned unusable output ({reason}); re-asking ({attempt}/{self.retry_invalid_output})"))
+                    logger.warning(bi(f"[{agent_id}] {model_name} 回傳無法使用的輸出（{booked}）；重新詢問（{attempt}/{self.retry_invalid_output}）",
+                                      f"[{agent_id}] {model_name} returned unusable output ({booked}); re-asking ({attempt}/{self.retry_invalid_output})"))
                     # 提示維持英文：只有原因的英文部分會送達模型
                     # The prompt stays English: only the English half of the reason reaches the model
                     prompt_text = user_prompt + _RETRY_SUFFIX.format(reason=en_only(reason))
                     continue
-                logger.error(bi(f"[{agent_id}] {model_name} 回傳無法使用的輸出：{reason}",
-                                f"[{agent_id}] {model_name} returned unusable output: {reason}"))
-                self._record(agent_id, model_alias, model_name, "invalid", reason, prompt_sha256=prompt_hash, attempt=attempt)
-                return {PROVENANCE_KEY: {"mode": "invalid", "model": model_name, "reason": reason}}
+                logger.error(bi(f"[{agent_id}] {model_name} 回傳無法使用的輸出：{booked}",
+                                f"[{agent_id}] {model_name} returned unusable output: {booked}"))
+                self._record(agent_id, model_alias, model_name, "invalid", booked, prompt_sha256=prompt_hash, attempt=attempt)
+                return {PROVENANCE_KEY: {"mode": "invalid", "model": model_name, "reason": booked}}
         elif self.execution_mode == "live":
             raise LLMGatewayError(f"[{agent_id}] {bi(f'無法以 {model_name} 執行線上模式', f'cannot run live with {model_name}')}: {fallback_reason}")
 

@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 from vibeharness.core.models import ThreatItem, ThreatModelReport, STRIDECategory, FindingSeverity, CodeSymbol
 from vibeharness.core.fanout import Call, fan_out
 from vibeharness.core.identity import severity_rank, threat_identity
-from vibeharness.core.model_output import ANY, OutputSchema
+from vibeharness.core.model_output import LIST_OF_OBJECTS, OutputSchema
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.i18n import bi
 from vibeharness.core.codecontext import render_symbols, batch_symbols
@@ -18,9 +18,12 @@ DEFAULT_RULES_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirnam
 
 logger = logging.getLogger("VibeHarness.ThreatModeler")
 
-# 威脅建模回答的形狀（core/model_output.py）
-# The shape of a threat-modeling answer (core/model_output.py)
-THREATS_SCHEMA = OutputSchema(required={"threats": ANY})
+# 威脅建模回答的形狀（core/model_output.py）：`threats` 是物件清單；任何物件都可用（缺的欄位與無效的 id、類別、嚴重度
+# 由 _parse_threats 補上或替換，不會丟掉）
+# The shape of a threat-modeling answer (core/model_output.py): `threats` is a list of objects; any object is usable
+# (missing fields and invalid ids, categories and severities are filled in or replaced by _parse_threats, not dropped)
+THREATS_SCHEMA = OutputSchema(required={"threats": LIST_OF_OBJECTS(
+    usable=lambda item: True, requirement=bi("每一項都要是物件", "each item must be an object"))})
 
 # 威脅模型驅動所有黑箱測試，所以每個符號都必須讓它看到：如同白箱審查者，
 # 符號會切成程式碼清單放得進 token 預算的批次，

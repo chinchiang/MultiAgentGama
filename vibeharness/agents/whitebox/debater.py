@@ -8,13 +8,9 @@ from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import render_symbols, truncate_to_tokens
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
 from vibeharness.core.fanout import Call, fan_out
-from vibeharness.core.model_output import ANY, OutputSchema
+from vibeharness.core.model_output import LIST_OF_OBJECTS, OutputSchema
 
 logger = logging.getLogger("VibeHarness.Debater")
-
-# 驗證者回答的形狀（core/model_output.py）
-# The shape of a verifier's answer (core/model_output.py)
-VERDICTS_SCHEMA = OutputSchema(required={"verdicts": ANY})
 
 VERIFIER_PREFIX = "whitebox_verifier_"
 _VERDICTS = {"confirm", "reject", "unsure"}
@@ -210,7 +206,7 @@ class MultiModelDebater:
         # 模擬輸出沒有裁決：樣板無法評判針對目標的發現，辯論者會略過模擬的裁決
         # The Simulated output holds no verdicts: a template cannot judge target-specific findings, and the debater
         # ignores simulated verdicts
-        resp = self.gateway.generate(agent_id, system_prompt, user_prompt, json_output=True, schema=VERDICTS_SCHEMA,
+        resp = self.gateway.generate(agent_id, system_prompt, user_prompt, json_output=True, schema=verdicts_schema(len(idxs)),
                                      simulated=lambda alias: {"verdicts": []})
         simulated = self.gateway.is_simulated(resp)
         if simulated or not self.gateway.is_usable(resp):
@@ -226,10 +222,10 @@ class MultiModelDebater:
         for item in raw_verdicts:
             if not isinstance(item, dict):
                 continue
-            local, verdict = self._parse_index(item.get("index")), str(item.get("verdict", "")).strip().lower()
             # 超出範圍、重複或未知的裁決會被忽略，而不是猜測
             # Out-of-range, duplicate or unknown rulings are ignored rather than guessed at
-            if local is None or not 0 <= local < len(idxs) or local in seen or verdict not in _VERDICTS:
+            local, verdict = self._parse_index(item.get("index")), str(item.get("verdict", "")).strip().lower()
+            if local is None or not is_usable_verdict(item, len(idxs)) or local in seen:
                 continue
             seen.add(local)
             votes.append((idxs[local], VerificationVote(
@@ -290,3 +286,26 @@ class MultiModelDebater:
         root = root_dir or os.path.dirname(os.path.abspath(relevant[0].file_path))
         listing = render_symbols(relevant, root, max_tokens=self.CODE_CONTEXT_TOKENS)
         return f"Code the findings refer to:\n{untrusted_block(listing)}\n\n"
+
+
+def is_usable_verdict(item: Dict[str, object], count: int) -> bool:
+    """驗證者的一項裁決可以使用：`index` 能解析成 0 到 `count`（這次列出的發現數）之間的整數，`verdict` 是
+    confirm、reject 或 unsure（不分大小寫）。辯論者略過其他項目，閘道的形狀檢查也用同一個判斷。
+    A verifier's ruling is usable: its `index` parses to an integer from 0 to `count` (the findings listed in this
+    call) and its `verdict` is confirm, reject or unsure (any case). The debater skips the others, and the gateway's
+    shape check uses the same rule."""
+    local = MultiModelDebater._parse_index(item.get("index"))
+    return local is not None and 0 <= local < count and str(item.get("verdict", "")).strip().lower() in _VERDICTS
+
+
+def verdicts_schema(count: int) -> OutputSchema:
+    """驗證者回答的形狀（core/model_output.py）：`verdicts` 是物件清單，不為空時至少要有一項可用的裁決；
+    index 的範圍取決於這次呼叫列出幾個發現，所以每次呼叫各建一份。
+    The shape of a verifier's answer (core/model_output.py): `verdicts` is a list of objects, with at least one
+    usable ruling when it is not empty; the index range depends on how many findings this call lists, so each call
+    builds its own."""
+    return OutputSchema(required={"verdicts": LIST_OF_OBJECTS(
+        usable=lambda item: is_usable_verdict(item, count),
+        requirement=bi(f"每一項都要有 0 到 {count - 1} 之間的 index，以及 confirm、reject 或 unsure 的 verdict",
+                       f"each item needs an index from 0 to {count - 1} and a verdict of confirm, reject or unsure"),
+    )})

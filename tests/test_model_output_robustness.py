@@ -4,8 +4,10 @@ import json
 import os
 import threading
 
+import pytest
+
 from vibeharness.core.llm_gateway import LLMGateway, PROVENANCE_KEY, REASON_NOT_VALID_JSON
-from vibeharness.core.i18n import bi, en_only
+from vibeharness.core.i18n import bi, en_only, has_cjk
 from vibeharness.core.models import (
     AgentCallRecord,
     CodeSymbol,
@@ -542,3 +544,109 @@ def test_agreement_display_covers_every_state():
     assert "verification not applied" in agreement_display(MultiModelDebateResult(consensus_summary="c"))
     assert agreement_display(MultiModelDebateResult(consensus_summary="c", arbitration_applied=True, model_agreement_ratio=0.75)) == "75.0%"
     assert "no decisive votes" in agreement_display(MultiModelDebateResult(consensus_summary="c", arbitration_applied=True))
+
+
+# --- 形狀錯誤：重新詢問一次，仍不合就記為 invalid（不再當成「什麼都沒找到」）----------------------------------
+# --- Shape errors: re-asked once, booked as invalid if still wrong (no longer read as "nothing found") ---------
+
+def _shape_cases():
+    from vibeharness.agents.blackbox.scenario_builder import CODE_SCHEMA
+    from vibeharness.agents.blackbox.threat_modeler import THREATS_SCHEMA
+    from vibeharness.agents.whitebox.debater import verdicts_schema
+    from vibeharness.agents.whitebox.multi_reviewer import FINDINGS_SCHEMA
+    from vibeharness.agents.whitebox.test_generator import TESTS_SCHEMA
+    return [
+        ("whitebox_reviewer_claude", FINDINGS_SCHEMA, {"findings": 5}, "field 'findings' must be a list of objects (got int)"),
+        ("whitebox_reviewer_claude", FINDINGS_SCHEMA, {"findings": ["x", 1]}, "field 'findings' has no usable item (2 item(s))"),
+        ("whitebox_reviewer_claude", FINDINGS_SCHEMA, {"findings": [{"symbol_name": "f"}]},
+         "each item needs a non-empty title or description"),
+        ("whitebox_verifier_glm", verdicts_schema(1), {"verdicts": [{"index": 9, "verdict": "confirm"}]},
+         "each item needs an index from 0 to 0 and a verdict of confirm, reject or unsure"),
+        ("whitebox_verifier_glm", verdicts_schema(1), {"verdicts": [{"index": 0, "verdict": "maybe"}]}, "has no usable item"),
+        ("blackbox_threat_modeler", THREATS_SCHEMA, {"threats": "x"}, "field 'threats' must be a list of objects (got str)"),
+        ("blackbox_threat_modeler", THREATS_SCHEMA, {"threats": [1, 2]}, "each item must be an object"),
+        ("whitebox_test_generator", TESTS_SCHEMA, {"tests": [{"title": "t"}]}, "each item needs non-empty code"),
+        ("whitebox_test_generator", TESTS_SCHEMA, {"code": 42}, "field 'code' must be a string (got int)"),
+        ("blackbox_test_synthesizer", CODE_SCHEMA, {"code": None}, "field 'code' must be a string (got null)"),
+    ]
+
+
+@pytest.mark.parametrize("case", range(10))
+def test_a_shape_error_is_reasked_with_the_reason_then_booked_invalid(scripted, case):
+    """鍵在、形狀不對的回答（`findings: 5`、沒有任何可用項目的清單、`code: 42`）過去被當成可用的回答，代理再把它讀成
+    「什麼都沒找到」；現在與缺鍵一樣：以指名欄位的原因重新詢問一次，仍不合就記為 invalid（證據缺口）。
+    An answer with the keys but the wrong shape (`findings: 5`, a list with no usable item, `code: 42`) used to be
+    a usable answer the agent then read as "nothing found"; now it is treated like a missing key: re-asked once with
+    a reason naming the field, and booked as invalid (an evidence gap) if it still does not fit."""
+    agent_id, schema, answer, reason = _shape_cases()[case]
+    transport = scripted({"*": answer})
+    gw = LLMGateway(CONFIG, execution_mode="live", transport=transport)
+    resp = gw.generate(agent_id, "sys", "user", schema=schema)
+    assert not gw.is_usable(resp)
+    assert [c.mode for c in gw.call_log] == ["retried", "invalid"]
+    assert reason in gw.call_log[-1].reason and reason in transport.prompts()[1][1]
+    assert not has_cjk(transport.prompts()[1][1])  # 模型只看到英文半 ／ the model sees the English half only
+
+
+@pytest.mark.parametrize("answer", [
+    {"findings": []},                                    # 什麼都沒找到是合法的回答 ／ "nothing found" is a legitimate answer
+    {"findings": [{"title": "ok"}, "x", {"symbol_name": "f"}]},  # 部分項目不能用：略過，不重問 ／ some unusable: skipped, no re-ask
+])
+def test_an_empty_or_partly_usable_list_is_not_reasked(scripted, answer):
+    from vibeharness.agents.whitebox.multi_reviewer import FINDINGS_SCHEMA
+    gw = LLMGateway(CONFIG, execution_mode="live", transport=scripted({"*": answer}))
+    assert gw.is_usable(gw.generate("whitebox_reviewer_claude", "sys", "user", schema=FINDINGS_SCHEMA))
+    assert [c.mode for c in gw.call_log] == ["live"]
+
+
+def test_a_wrongly_typed_key_next_to_a_usable_one_passes_any_of(scripted):
+    """`any_of` 只要有一個鍵存在且形狀正確就合格：`tests` 型別錯、`code` 可用時不浪費一次重問。
+    `any_of` fits as soon as one key is there with the right shape: a wrongly typed `tests` next to a usable `code`
+    does not waste a re-ask."""
+    from vibeharness.agents.whitebox.test_generator import TESTS_SCHEMA
+    gw = LLMGateway(CONFIG, execution_mode="live", transport=scripted({"*": {"tests": "x", "code": "def test_x():\n    assert 1\n"}}))
+    assert gw.is_usable(gw.generate("whitebox_test_generator", "sys", "user", schema=TESTS_SCHEMA))
+    assert [c.mode for c in gw.call_log] == ["live"]
+
+
+def test_a_reviewer_answering_a_non_list_is_an_evidence_gap_not_zero_findings(scripted, tmp_path):
+    """端對端：審查者回答 `{"findings": 5}` 過去被登記為 live、讀成零個發現（fail open）；現在是一筆 invalid 呼叫，
+    品質閘門會把它列為證據缺口。
+    End to end: a reviewer answering `{"findings": 5}` used to be booked live and read as zero findings (fail open);
+    now it is an invalid call, which the quality gate lists as an evidence gap."""
+    (tmp_path / "svc.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
+    symbols = ASTExtractor().parse_file(str(tmp_path / "svc.py"))
+    gw = LLMGateway(CONFIG, execution_mode="live",
+                    transport=scripted({"whitebox_reviewer_claude": {"findings": 5}, "*": {"findings": []}}))
+    assert HeterogeneousReviewerEnsemble(gw).review_symbols(symbols, root_dir=str(tmp_path)) == []
+    assert [c.agent_id for c in gw.invalid_calls] == ["whitebox_reviewer_claude"]
+
+
+def test_a_cached_answer_that_no_longer_fits_is_invalid_under_cache_only_and_reasked_otherwise(scripted, tmp_path):
+    """舊版本存進回應快取、現在形狀已不合的回答：--cache-only 下記為 invalid，原因標明來自快取（重新詢問的提示不帶這個
+    標記）；不帶 --cache-only 時重新詢問，可用的回答覆寫那筆快取。
+    An answer an older version stored in the response cache that no longer fits: under --cache-only it is booked
+    invalid with a reason naming the cache (a re-ask prompt never carries that mark); without --cache-only it is
+    re-asked and the usable answer overwrites the cache entry."""
+    from vibeharness.agents.whitebox.multi_reviewer import FINDINGS_SCHEMA
+    from vibeharness.core.model_output import ANY, CACHED_ANSWER_PREFIX, OutputSchema
+
+    def gateway(answer, cache_only=False):
+        transport = scripted({"*": answer})
+        gw = LLMGateway(CONFIG, execution_mode="live", transport=transport)
+        gw.set_cache_dir(str(tmp_path / "cache"))
+        gw.cache_only = cache_only
+        return gw, transport
+    old, _ = gateway({"findings": 5})  # 舊版本只檢查鍵是否存在 ／ the older version only checked that the key is there
+    assert old.is_usable(old.generate("whitebox_reviewer_claude", "sys", "user", schema=OutputSchema(required={"findings": ANY})))
+    replay, transport = gateway(pytest.fail, cache_only=True)
+    assert not replay.is_usable(replay.generate("whitebox_reviewer_claude", "sys", "user", schema=FINDINGS_SCHEMA))
+    assert [c.mode for c in replay.call_log] == ["invalid"] and not transport.requests
+    assert replay.call_log[0].reason.startswith(CACHED_ANSWER_PREFIX.split(" ／ ")[0]) and en_only(CACHED_ANSWER_PREFIX) in replay.call_log[0].reason
+    fresh, transport = gateway({"findings": [{"title": "ok"}]})
+    assert fresh.is_usable(fresh.generate("whitebox_reviewer_claude", "sys", "user", schema=FINDINGS_SCHEMA))
+    assert [c.mode for c in fresh.call_log] == ["retried", "live"]
+    assert en_only(CACHED_ANSWER_PREFIX) in fresh.call_log[0].reason
+    assert en_only(CACHED_ANSWER_PREFIX) not in transport.prompts()[0][1]
+    again, _ = gateway(pytest.fail, cache_only=True)
+    assert again.generate("whitebox_reviewer_claude", "sys", "user", schema=FINDINGS_SCHEMA)["findings"] == [{"title": "ok"}]

@@ -15,22 +15,53 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Mapping, Optional
 
-from vibeharness.core.i18n import bi
+from vibeharness.core.i18n import bi, en_only, zh_only
 
 REASON_NOT_VALID_JSON = bi("回應不是有效的 JSON", "response is not valid JSON")
+# 登記取自回應快取、但已不符合現在形狀的回答時加在原因前面（只出現在 call log 與報告；重新詢問的提示不含它）
+# Put before the reason when a cached answer no longer fits the current shape (only in the call log and the reports;
+# a re-ask prompt never carries it)
+CACHED_ANSWER_PREFIX = bi("回應快取中的回答已不符合預期的形狀", "cached answer no longer matches the expected shape")
 
 
 @dataclass(frozen=True)
 class FieldType:
-    """一個欄位的型別規則：`problem(value)` 在值不合時回傳雙語原因，合格時為 None。
-    The type rule of one field: `problem(value)` returns a bilingual reason when the value does not fit, None when
-    it does."""
+    """一個欄位的型別規則：`problem(key, value)` 在值不合時回傳雙語原因（指名欄位），合格時為 None。
+    The type rule of one field: `problem(key, value)` returns a bilingual reason (naming the field) when the value
+    does not fit, None when it does."""
     name: str
-    problem: Callable[[Any], Optional[str]]
+    problem: Callable[[str, Any], Optional[str]]
+
+
+def _type_name(value: Any) -> str:
+    return "null" if value is None else type(value).__name__
 
 
 # 只要求鍵存在，不檢查型別 ／ Only the key's presence is required; its type is not checked
-ANY = FieldType("any", lambda value: None)
+ANY = FieldType("any", lambda key, value: None)
+STRING = FieldType("string", lambda key, value: None if isinstance(value, str) else bi(
+    f"欄位 '{key}' 必須是字串（收到 {_type_name(value)}）", f"field '{key}' must be a string (got {_type_name(value)})"))
+OBJECT = FieldType("object", lambda key, value: None if isinstance(value, dict) else bi(
+    f"欄位 '{key}' 必須是物件（收到 {_type_name(value)}）", f"field '{key}' must be an object (got {_type_name(value)})"))
+
+
+def LIST_OF_OBJECTS(usable: Callable[[Dict[str, Any]], bool], requirement: str) -> FieldType:  # noqa: N802
+    """物件清單：不是清單就不合；清單不為空、卻沒有任何一項是 `usable` 的物件也不合（`requirement` 是雙語的規則說明，
+    寫進原因裡，重新詢問時模型看得到英文半）。空清單合格（「什麼都沒找到」）；只有部分項目不能用時合格，由代理略過那些項目。
+    `usable` 就是代理自己過濾項目用的同一個函式。
+    A list of objects: anything but a list does not fit, and neither does a non-empty list in which no item is a
+    `usable` object (`requirement` is the bilingual rule, put in the reason so a re-ask shows the model its English
+    half). An empty list fits ("nothing found"); a list with only some unusable items fits and the agent skips them.
+    `usable` is the very function the agent filters its items with."""
+    def problem(key: str, value: Any) -> Optional[str]:
+        if not isinstance(value, list):
+            return bi(f"欄位 '{key}' 必須是物件清單（收到 {_type_name(value)}）",
+                      f"field '{key}' must be a list of objects (got {_type_name(value)})")
+        if value and not any(isinstance(item, dict) and usable(item) for item in value):
+            return bi(f"欄位 '{key}' 沒有任何可用的項目（共 {len(value)} 項）：{zh_only(requirement)}",
+                      f"field '{key}' has no usable item ({len(value)} item(s)): {en_only(requirement)}")
+        return None
+    return FieldType("list of objects", problem)
 
 
 @dataclass(frozen=True)
@@ -123,10 +154,23 @@ def check_output(result: Any, schema: Optional[OutputSchema]) -> Optional[str]:
     if missing:
         return bi(f"回應缺少必要鍵：{', '.join(missing)}", f"response is missing required key(s): {', '.join(missing)}")
     for key, kind in schema.required.items():
-        problem = kind.problem(result[key])
+        problem = kind.problem(key, result[key])
         if problem is not None:
             return problem
-    if schema.any_of and not any(k in result and schema.any_of[k].problem(result[k]) is None for k in schema.any_of):
-        return bi(f"回應沒有任何一個預期的鍵：{', '.join(schema.any_of)}",
-                  f"response has none of the expected key(s): {', '.join(schema.any_of)}")
+    if schema.any_of:
+        present = [k for k in schema.any_of if k in result]
+        if not present:
+            return bi(f"回應沒有任何一個預期的鍵：{', '.join(schema.any_of)}",
+                      f"response has none of the expected key(s): {', '.join(schema.any_of)}")
+        problems = [schema.any_of[k].problem(k, result[k]) for k in present]
+        if all(p is not None for p in problems):
+            # 每個出現的鍵都不合：逐一說明 ／ every key that is there does not fit: say why for each
+            return bi("；".join(zh_only(p) for p in problems if p), "; ".join(en_only(p) for p in problems if p))
     return None
+
+
+def mark_cached(reason: str) -> str:
+    """取自回應快取的回答不合時，登記的原因標明來源，讓使用者知道一次不帶 --cache-only 的執行會重新詢問並更新快取。
+    The booked reason of an unusable cached answer names its source, so the user knows one run without --cache-only
+    re-asks and refreshes the cache."""
+    return bi(f"{zh_only(CACHED_ANSWER_PREFIX)}：{zh_only(reason)}", f"{en_only(CACHED_ANSWER_PREFIX)}: {en_only(reason)}")
