@@ -198,18 +198,20 @@ MultiAgentGama/
 │   │   └── threat_rules.yaml        # STRIDE, OWASP API Top 10 and OWASP LLM Top 10 2026 (with ATLAS / CWE mapping)
 │   ├── core/
 │   │   ├── __init__.py
-│   │   ├── harness.py               # Commander: six phases plus optional Phase 3.5, and the quality gate
+│   │   ├── harness.py               # Commander: six phases plus optional Phase 3.5; hands the run's evidence to the quality gate
 │   │   ├── llm_gateway.py           # Unified LiteLLM gateway: routing, fallback, simulation fallback, call budget and call_log
 │   │   ├── models.py                # Pydantic data models
 │   │   ├── baseline.py              # --baseline: run-independent fingerprints, known problems not counted
 │   │   ├── codecheck.py             # Static checks on generated tests (every test_ function / method asserts; refuses package installs)
 │   │   ├── codecontext.py           # Source code and import guidance handed to the models (through the untrusted-code channel)
 │   │   ├── estimate.py              # --estimate: calls, tokens and cost without calling a model
+│   │   ├── gate.py                  # Quality gate: evidence gaps, --baseline new/known split, verdict and recommendations (pure)
 │   │   ├── i18n.py                  # bilingual "中文 ／ English" output helpers (bi / en_only)
 │   │   ├── jscoverage.py            # JS/TS line coverage: Node coverage flags, lcov parsing, union across modules
 │   │   ├── mutation.py              # Optional mutation testing (Python)
 │   │   ├── sanitize.py              # Trust-boundary hygiene: invisible chars, secret redaction, untrusted-code / model-output channels, output sanitizing
-│   │   └── sandbox.py               # Sandboxes: local subprocess (not a security boundary) and Docker containers; a Node flavour of each (node --test)
+│   │   ├── sandbox.py               # Sandboxes: local subprocess (not a security boundary) and Docker containers; a Node flavour of each (node --test)
+│   │   └── verdict.py               # The four verdicts and their exit codes (no third-party imports)
 │   ├── agents/
 │   │   ├── __init__.py
 │   │   ├── whitebox/
@@ -259,6 +261,7 @@ MultiAgentGama/
 │   ├── test_parallel_and_budgets.py    # Parallel test generation, model-call budget, file / worker caps
 │   ├── test_prompt_context.py          # Live mode: prompts carry real code and import paths, gateway call robustness
 │   ├── test_quality_fixes.py           # Packaging, model-output robustness, execution and SARIF fix regressions
+│   ├── test_quality_gate.py            # The quality gate through evaluate() only: verdict rungs, every evidence-gap code, gap order, baseline split, recommendations
 │   ├── test_r2_cli_gateway.py          # Second review round: null confirmed count without verification, exit 5 on a broken install, reserved keys, call-log order, --target default, --init-config, config discovery
 │   ├── test_r2_executor_sandbox.py     # Target-load attribution, per-file size cap, non-dumpable switch, JS batch budgets, assertions in same-module helpers, Windows fake home
 │   ├── test_r2_extractor_scanner.py    # JS/TS lexer recursion and time bounds, JSX scan budget, VH-AI-006 argv program resolution, root / wildcard route matching

@@ -198,18 +198,20 @@ MultiAgentGama/
 │   │   └── threat_rules.yaml        # STRIDE、OWASP API Top 10 與 OWASP LLM Top 10 2026（含 ATLAS／CWE 對應）
 │   ├── core/
 │   │   ├── __init__.py
-│   │   ├── harness.py               # 指揮官：六個階段加上選用的階段 3.5，以及品質閘門
+│   │   ├── harness.py               # 指揮官：六個階段加上選用的階段 3.5；把本次執行的證據交給品質閘門
 │   │   ├── llm_gateway.py           # 統一 LiteLLM 閘道：路由、fallback、模擬回退、呼叫預算與 call_log
 │   │   ├── models.py                # Pydantic 數據模型
 │   │   ├── baseline.py              # --baseline：與執行次序無關的指紋，已知問題不計入
 │   │   ├── codecheck.py             # 生成測試的靜態檢查（每個 test_ 函式／方法都要有斷言；拒絕安裝套件）
 │   │   ├── codecontext.py           # 提供給模型的原始碼與 import 指引（經不受信任程式碼通道）
 │   │   ├── estimate.py              # --estimate：不呼叫模型即估算呼叫數、token 與花費
+│   │   ├── gate.py                  # 品質閘門：證據缺口、--baseline 的新／已知拆分、判定與建議（純函式）
 │   │   ├── i18n.py                  # 「中文 ／ English」雙語輸出的工具（bi／en_only）
 │   │   ├── jscoverage.py            # JS/TS 行涵蓋率：Node 涵蓋率旗標、lcov 解析、跨模組聯集
 │   │   ├── mutation.py              # 選用的突變測試（Python）
 │   │   ├── sanitize.py              # 信任邊界：去隱形字元、遮蔽密鑰、不受信任程式碼／模型輸出通道、報告消毒
-│   │   └── sandbox.py               # 沙盒：本機子程序（非安全邊界）與 Docker 容器；Node 版本各一（node --test）
+│   │   ├── sandbox.py               # 沙盒：本機子程序（非安全邊界）與 Docker 容器；Node 版本各一（node --test）
+│   │   └── verdict.py               # 四種判定結果與其結束碼（不匯入第三方套件）
 │   ├── agents/
 │   │   ├── __init__.py
 │   │   ├── whitebox/
@@ -259,6 +261,7 @@ MultiAgentGama/
 │   ├── test_parallel_and_budgets.py    # 測試生成並行、模型呼叫預算、檔案／worker 上限
 │   ├── test_prompt_context.py          # live 模式：提示帶入真實程式碼與 import 路徑、閘道呼叫健壯性
 │   ├── test_quality_fixes.py           # 打包、模型輸出健壯性、執行與 SARIF 修正的回歸測試
+│   ├── test_quality_gate.py            # 只透過 evaluate() 測試品質閘門：各級判定、每種證據缺口代碼、缺口順序、基準拆分、建議
 │   ├── test_r2_cli_gateway.py          # 第二輪審查：未驗證時已確認數為 null、安裝不完整時 exit 5、保留鍵、呼叫紀錄順序、--target 預設、--init-config、設定檔探索
 │   ├── test_r2_executor_sandbox.py     # 目標載入失敗的歸因、單檔大小上限、不可 dump 的開關、JS 分批預算、同模組輔助函式的斷言、Windows 假家目錄
 │   ├── test_r2_extractor_scanner.py    # JS/TS lexer 的遞迴與時間上限、JSX 掃描預算、VH-AI-006 argv 程式解析、根路由／萬用路由比對

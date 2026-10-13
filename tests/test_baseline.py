@@ -280,3 +280,34 @@ def test_container_level_simulated_flag_never_overrides_an_items_own_flag():
                "blackbox_test_results": [breach.model_dump()]}
     loaded = bl._keys_from_report(payload)
     assert bl.breach_key(breach, live_threat) in loaded.breaches
+
+
+# --- 報告的規則命中列與判定結果一致 ---------------------------------------------------------------
+# --- The report's rule-hit row agrees with the verdict -------------------------------------------
+
+def _rule_row(**summary_fields):
+    from vibeharness.core.models import MultiModelDebateResult, ThreatModelReport, VibeHarnessSummary
+    from vibeharness.reports.report_generator import ReportGenerator
+    hits = [StaticFinding(rule_id=f"VH-AI-00{n}", title="t", severity=FindingSeverity.HIGH, file_path="app.py", line_number=n)
+            for n in (1, 2, 3)]
+    summary = VibeHarnessSummary(
+        overall_status="READY_TO_SHIP", total_whitebox_findings=0, confirmed_whitebox_bugs=0, whitebox_tests_passed=0,
+        whitebox_tests_failed=0, total_threats_modeled=0, critical_threats_count=0, blackbox_tests_passed=0,
+        blackbox_security_breaches=0, static_findings=hits, **summary_fields,
+    )
+    md = ReportGenerator().generate_markdown_report(summary, MultiModelDebateResult(consensus_summary=""),
+                                                    ThreatModelReport(system_description=""), [], [], "app")
+    return next(line for line in md.splitlines() if "Deterministic AI-Security Rule Hits" in line)
+
+
+def test_report_rule_hit_row_counts_only_new_hits_under_a_baseline():
+    """--baseline 下判定只計入新的命中，報告列也必須如此（過去會顯示全部 HIGH+，與 READY_TO_SHIP 矛盾）。
+    Under --baseline the verdict counts only new hits, and so must the report row (it used to show every HIGH+
+    hit, contradicting READY_TO_SHIP)."""
+    row = _rule_row(baseline_path="old.json", new_blocking_rule_hits=1)
+    assert "`3` (" in row and "1 HIGH+ new, 2 known from baseline" in row and "0 new HIGH+" in row
+
+
+@pytest.mark.parametrize("fields", [{}, {"new_blocking_rule_hits": 3}, {"baseline_path": "old.json"}])
+def test_report_rule_hit_row_without_a_baseline_is_unchanged(fields):
+    assert _rule_row(**fields).endswith("| `3` (3 HIGH+) | 0 HIGH+ |")

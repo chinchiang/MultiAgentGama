@@ -269,7 +269,10 @@ class MutationReport(BaseModel):
 class VibeHarnessSummary(BaseModel):
     """由 Commander Harness 產出的最上層評估摘要。
     Top-level assessment summary produced by the Commander Harness."""
-    overall_status: str  # 四種狀態之一："READY_TO_SHIP"、"NEEDS_FIXES"、"BLOCKED_CRITICAL_RISK"、"INCONCLUSIVE" ／ "READY_TO_SHIP", "NEEDS_FIXES", "BLOCKED_CRITICAL_RISK", "INCONCLUSIVE"
+    # Verdict 的值之一（core/verdict.py）；維持 str，無法辨識的狀態才能由 cli 以失敗收場，而不是在建構時就被拒絕
+    # One of the Verdict values (core/verdict.py); kept a str so the cli can fail closed on an unrecognized status
+    # instead of rejecting it at construction
+    overall_status: str
     run: Optional[RunMetadata] = None
     total_whitebox_findings: int  # 審查者的原始回報數，合併重複之前 ／ raw reviewer reports, before duplicates are merged
     distinct_whitebox_findings: Optional[int] = None
@@ -308,10 +311,14 @@ class VibeHarnessSummary(BaseModel):
     ai_components: List[str] = Field(default_factory=list)
     reviewer_models: List[str] = Field(default_factory=list)
     key_recommendations: List[str] = Field(default_factory=list)
-    # --baseline：先前報告已包含的問題列在這裡，且不計入
-    # 判定（whitebox_tests_failed／blackbox_security_breaches／靜態 HIGH+ 只含新的問題）
+    # 計入判定結果的阻擋性規則命中（HIGH 以上）數；有 --baseline 時只算新的。不是品質閘門產生的摘要為 None
+    # Blocking rule hits (HIGH and above) counted toward the verdict; only the new ones with --baseline. None for a
+    # summary the quality gate did not produce
+    new_blocking_rule_hits: Optional[int] = None
+    # --baseline：先前報告已包含的問題列在這裡，且不計入判定（whitebox_tests_failed／
+    # blackbox_security_breaches／new_blocking_rule_hits 只含新的問題）
     # --baseline: problems the previous report already contained are listed here and not counted
-    # in the verdict (whitebox_tests_failed / blackbox_security_breaches / static HIGH+ hold new ones only)
+    # in the verdict (whitebox_tests_failed / blackbox_security_breaches / new_blocking_rule_hits hold new ones only)
     baseline_path: Optional[str] = None
     baseline_suppressed: List["BaselineSuppressedItem"] = Field(default_factory=list)
 

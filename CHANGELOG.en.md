@@ -6,6 +6,28 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Added
+
+- `summary.new_blocking_rule_hits` in the JSON report: the number of HIGH+ deterministic rule hits that counted toward the verdict (with `--baseline`, only the ones the baseline does not contain). An addition, so `schema_version` stays "2".
+
+### Changed
+
+- The quality-gate verdict is decided in one place, `vibeharness/core/gate.py` (`evaluate(GateEvidence) -> GateResult`), instead of inside `run_full_pipeline`; the four verdicts and their exit codes are defined once in `vibeharness/core/verdict.py`, shared by the CLI and the Action runner. Internal only: reports, `--summary-json`, exit codes and console output are unchanged.
+
+### Fixed
+
+- With `--baseline`, the report's "Deterministic AI-Security Rule Hits" row counted every HIGH+ hit, including the known ones the verdict ignored, so a `READY_TO_SHIP` or `INCONCLUSIVE` report could show "2 HIGH+" against a target of "0 HIGH+". It now shows the new and known hits separately (e.g. "0 HIGH+ new, 2 known from baseline", target "0 new HIGH+"). Without `--baseline` the row is unchanged.
+
+### Tests
+
+- New `tests/test_quality_gate.py` tests the gate through `evaluate()` only: every verdict rung, a case for every evidence-gap code, gap order, the baseline new/known split and recommendation order.
+
+### Documentation
+
+- The design document's quality-gate chapter describes `evaluate(GateEvidence)` as the single place the verdict is decided, its evidence-gap table gives each gap's `GapCode` and `GateEvidence` field, and its line references are updated to the current code (commit `ab5e9a8`).
+- New `CONTEXT.md`: a bilingual glossary of the domain terms (Quality Gate, Verdict, Evidence gap, Executed evidence, Hypothesis, Breach, Baseline, Known problem, Blocking rule hit).
+- The README project trees list `core/gate.py`, `core/verdict.py` and `tests/test_quality_gate.py`.
+
 ## [0.12.0] - 2026-10-12
 
 Sixth review round: Chinese threats and findings are no longer merged by mistake; `--changed-since` no longer drops non-ASCII file names or the files under a symlinked target; baseline keys tell same-named functions in different files apart and do not take a dotted directory for a file when replayed on another machine; the `--estimate` mutation ceiling and the failure reason of a per-test rerun are fixed too.

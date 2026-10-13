@@ -22,8 +22,6 @@ from vibeharness.core.models import (
     TestStatus,
     MultiModelDebateResult,
     ThreatModelReport,
-    TestExecutionResult,
-    StaticFinding,
     AgentCallRecord,
 )
 from vibeharness.core.llm_gateway import LLMGateway, DEFAULT_CONFIG_PATH
@@ -31,7 +29,11 @@ from vibeharness.core.sandbox import (
     LocalSubprocessSandbox, DockerSandbox, DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_NODE_IMAGE, MIN_NODE_VERSION_TS,
     NodeDockerSandbox, NodeSubprocessSandbox, detect_node, parse_node_version,
 )
-from vibeharness.core.baseline import Baseline, annotate_report_payload, compare_with_baseline
+from vibeharness.core.baseline import Baseline, annotate_report_payload
+from vibeharness.core.gate import (
+    ExecutionEvidence, GateEvidence, GateLimits, ReviewEvidence, ScopeDisclosure, evaluate,
+)
+from vibeharness.core.verdict import Verdict
 from vibeharness.core.mutation import DEFAULT_MAX_COPY_MB, run_mutation_testing
 from vibeharness.core.i18n import bi
 from vibeharness.agents.whitebox.ast_extractor import ASTExtractor, DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES
@@ -743,237 +745,58 @@ class VibeHarnessCommander:
             self.console.print(f"\n[bold blue]=== {bi('第 6 階段：Commander 品質閘門綜合判定', 'Phase 6: Commander Quality Gate Synthesis')} ===[/bold blue]")
             critical_threats = sum(1 for t in threat_report.threats if t.severity == FindingSeverity.CRITICAL)
 
-            # 使 READY_TO_SHIP 判定結果不成立的證據缺口
-            # Evidence gaps that forbid a READY_TO_SHIP verdict
-            inconclusive_reasons: List[str] = []
-            budget_hits = self.gateway.budget_exhausted_calls
-            if budget_hits:
-                inconclusive_reasons.append(bi(
-                    f"max_model_calls 預算（{self.gateway.max_model_calls}）已用盡；之後的 {len(budget_hits)} 次代理呼叫改用模擬引擎而非真實模型",
-                    f"The max_model_calls budget ({self.gateway.max_model_calls}) was exhausted; "
-                    f"{len(budget_hits)} later agent call(s) used the simulation engine instead of a real model"
-                ))
-            cache_misses = self.gateway.cache_miss_calls
-            if cache_misses:
-                inconclusive_reasons.append(bi(
-                    f"--cache-only：{len(cache_misses)} 次代理呼叫在回應快取中沒有答案，未呼叫任何模型，改用模擬引擎",
-                    f"--cache-only: {len(cache_misses)} agent call(s) had no answer in the response cache; no model "
-                    "was called and the simulation engine was used instead"
-                ))
-            if self.gateway.used_simulation:
-                simulated_agents = sorted({rec.agent_id for rec in self.gateway.call_log if rec.mode == "simulated"})
-                inconclusive_reasons.append(
-                    bi("以下代理使用了模擬引擎（非真實模型）", "Simulation engine (not real models) was used for")
-                    + f": {', '.join(simulated_agents)}"
+            ast = self.ast_extractor
+            js_reason = self.executor.js_runner_unavailable_reason
+            gate = evaluate(GateEvidence(
+                target_dir=target_dir,
+                threat_report=threat_report,
+                baseline=self.baseline,
+                limits=GateLimits(
+                    max_model_calls=self.gateway.max_model_calls, max_files=self.max_files,
+                    max_file_bytes=self.max_file_bytes, mutation_min_score=self._mutation_cfg["min_score"],
+                ),
+                call_log=self.gateway.call_log,
+                review=ReviewEvidence(
+                    reviewers_configured=bool(self.multi_reviewer.reviewer_agents),
+                    reviewer_models=reviewer_models,
+                    arbitration_applied=debate_result.arbitration_applied,
+                    confirmed_findings=debate_result.confirmed_findings,
+                    findings_without_model_tests=self.whitebox_test_gen.findings_without_model_tests,
+                ),
+                scope=ScopeDisclosure(
+                    symbols_found=bool(symbols),
+                    detected_langs=detected_langs,
+                    parse_failures=ast.parse_failures,
+                    oversized_files=ast.oversized_files,
+                    skipped_files=ast.skipped_files,
+                    unsupported_count=ast.unsupported_count,
+                    unsupported_languages=ast.unsupported_languages,
+                    unsupported_files=ast.unsupported_files,
+                    incomplete_files=self.static_scanner.incomplete_files,
+                    config_files_not_fully_scanned=[
+                        *ast.skipped_config_files, *ast.oversized_config_files, *self.static_scanner.incomplete_config_files
+                    ],
+                ),
+                static_findings=static_findings,
+                execution=ExecutionEvidence(
+                    wb_tests=wb_tests, bb_tests=bb_tests, wb_results=wb_results, bb_results=bb_results,
+                    js_runner_problem=(self.node_runtime_problem or js_reason) if js_reason else None,
+                    ts_problem=self.node_typescript_problem,
+                    mutation_report=mutation_report,
+                ),
+                untested_threats=untested_threats,
+            ))
+            overall_status, inconclusive_reasons, recommendations = gate.verdict, gate.reasons, gate.recommendations
+            wb_failed, bb_breaches, suppressed = gate.whitebox_failed, gate.breaches, gate.suppressed
+            if suppressed and self.baseline is not None:
+                self.console.print(
+                    f"[yellow][!] {bi('基準', 'Baseline')}: "
+                    + bi(f"來自 {escape(self.baseline.path)} 的 {len(suppressed)} 個已知問題已列出但不計入",
+                         f"{len(suppressed)} known problem(s) from {escape(self.baseline.path)} are reported but not counted")
+                    + f" ({escape(', '.join(s.id for s in suppressed))})[/yellow]"
                 )
-            invalid_calls = self.gateway.invalid_calls
-            if invalid_calls:
-                # 每個代理與原因各一筆：當機的批次與格式錯誤的回答讀起來不同
-                # One entry per agent and reason: a crashed batch reads differently from a malformed answer
-                invalid_details = sorted({f"{rec.agent_id} ({rec.reason})" if rec.reason else rec.agent_id for rec in invalid_calls})
-                inconclusive_reasons.append(bi(
-                    f"{len(invalid_calls)} 次模型呼叫回傳了無法使用的輸出，或在回答前就崩潰（無效的 JSON／欄位缺漏，或批次中發生例外）",
-                    f"{len(invalid_calls)} model call(s) returned unusable output or crashed before answering "
-                    f"(invalid JSON / missing fields, or an exception in the batch)"
-                ) + f": {'; '.join(invalid_details)}")
-            unmodeled_findings = self.whitebox_test_gen.findings_without_model_tests
-            if unmodeled_findings:
-                # 沒有套用跨模型驗證時，這些發現只是未經驗證的假設，不能稱為「已確認」
-                # Without cross-model verification these findings are unverified hypotheses and must not be called "confirmed"
-                kind_zh, kind_en = ("已確認", "confirmed") if debate_result.arbitration_applied else ("未經驗證", "unverified")
-                inconclusive_reasons.append(bi(
-                    f"{len(unmodeled_findings)} 筆{kind_zh}的發現沒有可用的模型產生測試，只由確定性探針涵蓋，而非針對該缺陷的測試",
-                    f"{len(unmodeled_findings)} {kind_en} finding(s) had no usable model-generated test and were only "
-                    f"covered by deterministic probes, not by a test targeting the defect"
-                ) + f": {', '.join(unmodeled_findings)}")
-            integrity_hits = [f for f in static_findings if f.affects_review_integrity]
-            if integrity_hits:
-                integrity_rules = ', '.join(sorted({f.rule_id for f in integrity_hits}))
-                inconclusive_reasons.append(bi(
-                    f"目標中發現 {len(integrity_hits)} 處針對審查者的指示或不可見字元序列（{integrity_rules}）；"
-                    "以模型為基礎的審查、驗證與威脅建模可能遭到操弄（OWASP LLM01:2026），請人工檢視那些位置",
-                    f"{len(integrity_hits)} reviewer-directed instruction(s) or invisible-character sequence(s) were found in "
-                    f"the target ({integrity_rules}); model-based review, verification "
-                    "and threat modeling may have been manipulated (OWASP LLM01:2026), so review those locations manually"
-                ))
-            if not self.multi_reviewer.reviewer_agents:
-                inconclusive_reasons.append(bi("沒有設定任何 whitebox_reviewer_* 代理，因此沒有執行白箱模型審查",
-                                               "No whitebox_reviewer_* agents are configured, so no white-box model review ran"))
-            elif len(reviewer_models) < 2:
-                # 同一模型的副本意見一致只是一致性，而非交叉佐證（OWASP LLM07:2026）
-                # Copies of one model agreeing is consistency, not corroboration (OWASP LLM07:2026)
-                inconclusive_reasons.append(bi(
-                    f"只設定了一個不同的審查模型（{reviewer_models[0]}），因此跨模型驗證無法執行；這些發現是未經過濾的單一模型假設",
-                    f"Only one distinct reviewer model ({reviewer_models[0]}) is configured, so cross-model verification "
-                    "could not run; the findings are unfiltered single-model hypotheses"
-                ))
-            if not symbols:
-                inconclusive_reasons.append(bi("目標中找不到可分析的原始碼符號", "No analyzable source symbols were found in the target"))
-            if self.ast_extractor.parse_failures:
-                n_fail = len(self.ast_extractor.parse_failures)
-                inconclusive_reasons.append(bi(
-                    f"{n_fail} 個原始碼檔案無法解析，未納入分析",
-                    f"{n_fail} source file(s) could not be parsed and were not analyzed"
-                ))
-            if self.static_scanner.incomplete_files:
-                # 確定性規則在這些檔案上超時或出錯而提前停止：缺的命中不能當成「乾淨」
-                # The deterministic rules stopped early on these files (time cap or error): missing hits are not "clean"
-                n_inc = len(self.static_scanner.incomplete_files)
-                inconclusive_reasons.append(bi(
-                    f"{n_inc} 個原始碼檔案的確定性 AI 安全規則未能完整掃描（逾時或出錯）",
-                    f"The deterministic AI security rules could not fully scan {n_inc} source file(s) (time cap or error)"
-                ))
-            if self.ast_extractor.oversized_files:
-                n_big = len(self.ast_extractor.oversized_files)
-                inconclusive_reasons.append(bi(
-                    f"{n_big} 個原始碼檔案超過 max_file_bytes（{self.max_file_bytes}），未納入分析",
-                    f"{n_big} source file(s) exceed max_file_bytes ({self.max_file_bytes}) and were not analyzed"
-                ) + f": {', '.join(os.path.basename(p) for p in self.ast_extractor.oversized_files[:5])}")
-            if self.ast_extractor.skipped_files:
-                n_skip = len(self.ast_extractor.skipped_files)
-                inconclusive_reasons.append(bi(
-                    f"{n_skip} 個原始碼檔案因 max_files 上限（{self.max_files}）而被略過",
-                    f"{n_skip} source file(s) were skipped by the max_files limit ({self.max_files})"
-                ))
-            if wb_errored or bb_errored:
-                inconclusive_reasons.append(bi(
-                    f"{wb_errored + bb_errored} 個產生的測試發生錯誤、被略過或從未執行；它們涵蓋的邊界在這次執行中仍未驗證",
-                    f"{wb_errored + bb_errored} generated test(s) errored, were skipped, or never ran; "
-                    "the boundaries they cover remain unverified by this run"
-                ))
-            if mutation_report is not None:
-                min_score = self._mutation_cfg["min_score"]
-                if mutation_report.skipped_reason and mutation_report.score is None:
-                    inconclusive_reasons.append(bi(
-                        "已要求突變測試但沒有結論，通過的測試是否抓得到行為改變仍未驗證",
-                        "Mutation testing was requested but has no conclusion, so whether the passing tests catch behaviour changes is unverified"
-                    ) + f": {mutation_report.skipped_reason}")
-                elif mutation_report.score is not None and mutation_report.score < min_score:
-                    inconclusive_reasons.append(bi(
-                        f"突變測試分數 {mutation_report.score:.1f}% 低於門檻 {min_score:g}%：{mutation_report.survived} 個存活的變異體表示通過的測試可能抓不到行為改變",
-                        f"Mutation score {mutation_report.score:.1f}% is below the {min_score:g}% threshold: {mutation_report.survived} surviving mutant(s) "
-                        "mean the passing tests may not catch behaviour changes"
-                    ))
-                if mutation_report.truncated:
-                    inconclusive_reasons.append(bi(
-                        f"突變測試只涵蓋 {mutation_report.total} 個變異體（候選 {mutation_report.candidate_sites} 個，受 mutation_max_mutants 限制），分數只是樣本",
-                        f"Mutation testing covered {mutation_report.total} mutant(s) of {mutation_report.candidate_sites} candidates "
-                        "(limited by mutation_max_mutants), so the score is a sample"
-                    ))
-            js_tests = [t for t in wb_tests + bb_tests if t.language != "python"]
-            if "TypeScript/JavaScript" in detected_langs:
-                if not js_tests:
-                    inconclusive_reasons.append(bi(
-                        "TypeScript/JavaScript 程式碼只做了靜態審查：沒有為它產生任何 JS/TS 測試",
-                        "TypeScript/JavaScript code was reviewed statically only: no JS/TS test was generated for it"
-                    ))
-                elif self.executor.js_runner_unavailable_reason:
-                    js_problem = self.node_runtime_problem or self.executor.js_runner_unavailable_reason
-                    inconclusive_reasons.append(bi(
-                        f"已產生 {len(js_tests)} 個 JS/TS 測試但無法執行：{js_problem}；TypeScript/JavaScript 程式碼只做了靜態審查",
-                        f"{len(js_tests)} JS/TS test(s) were generated but could not run: {js_problem}; "
-                        "TypeScript/JavaScript code was reviewed statically only"
-                    ))
-                elif self.node_typescript_problem and any(t.language == "typescript" for t in js_tests):
-                    inconclusive_reasons.append(
-                        bi("已產生 TypeScript 測試但未執行", "TypeScript tests were generated but not run")
-                        + f": {self.node_typescript_problem}"
-                    )
-            if self.ast_extractor.unsupported_count:
-                # 擷取器只支援 Python 與 JS/TS：其他語言的原始碼完全沒有被審查或測試，不能當成「乾淨」
-                # The extractor only supports Python and JS/TS: source in other languages was neither reviewed nor
-                # tested, so it cannot count as "clean"
-                n_uns = self.ast_extractor.unsupported_count
-                langs = ", ".join(f"{lang}: {n}" for lang, n in sorted(self.ast_extractor.unsupported_languages.items()))
-                inconclusive_reasons.append(bi(
-                    f"{n_uns} 個不支援語言的原始碼檔案（{langs}）未納入分析",
-                    f"{n_uns} source file(s) in unsupported languages ({langs}) were not analyzed"
-                ) + f": {', '.join(os.path.basename(p) for p in self.ast_extractor.unsupported_files[:5])}")
-            n_cfg = (len(self.ast_extractor.skipped_config_files) + len(self.ast_extractor.oversized_config_files)
-                     + len(self.static_scanner.incomplete_config_files))
-            if n_cfg:
-                inconclusive_reasons.append(bi(
-                    f"{n_cfg} 個設定類檔案未完整做密鑰掃描（超過數量上限、max_file_bytes 或時間上限）",
-                    f"{n_cfg} configuration-like file(s) were not fully secret-scanned "
-                    "(file-count cap, max_file_bytes or time cap)"
-                ))
-            if bb_failed_unclassified:
-                inconclusive_reasons.append(bi(
-                    f"{len(bb_failed_unclassified)} 個黑箱攻擊測試失敗，但沒有確認的利用分類；證據不明確，需要人工調查",
-                    f"{len(bb_failed_unclassified)} black-box attack test(s) failed without a confirmed exploit "
-                    f"classification; the evidence is ambiguous and needs manual investigation"
-                ) + f": {', '.join(r.test_id for r in bb_failed_unclassified)}")
-            if not wb_results:
-                inconclusive_reasons.append(bi("沒有執行任何白箱測試", "No white-box tests were executed"))
-            if not threat_report.threats:
-                inconclusive_reasons.append(bi("威脅建模沒有產生任何威脅，因此黑箱涵蓋範圍未知",
-                                               "Threat modeling produced no threats, so black-box coverage is unknown"))
-            if untested_threats:
-                inconclusive_reasons.append(bi(
-                    f"{len(untested_threats)} 個已建模的威脅沒有可執行的測試",
-                    f"{len(untested_threats)} modeled threat(s) have no executable test"
-                ) + f": {', '.join(untested_threats)}")
-
-            # 只有已執行的證據或確定性規則命中才能阻擋或使閘門失敗；模型發現與
-            # 建模出的威脅在測試確認之前都只是假設
-            # Only executed evidence or deterministic rule hits can block or fail the gate; model findings and
-            # modeled threats are hypotheses until a test confirms them
-            static_blocking = [
-                f for f in static_findings if f.severity in (FindingSeverity.CRITICAL, FindingSeverity.HIGH)
-            ]
-            # --baseline：只有先前報告未包含的問題才決定判定結果；已知的
-            # 問題仍留在表格中，並列於「Known from baseline」之下
-            # --baseline: only problems the previous report did not contain decide the verdict; the known
-            # ones stay in the tables and are listed under "Known from baseline"
-            gate_wb_results, gate_bb_results = wb_results, bb_results
-            suppressed: List[Any] = []
-            if self.baseline is not None:
-                comparison = compare_with_baseline(
-                    self.baseline, target_dir, static_blocking, wb_results, debate_result.confirmed_findings,
-                    bb_results, threat_report.threats
-                )
-                suppressed = comparison.suppressed
-                static_blocking = comparison.new_static_blocking
-                known_ids = {s.id for s in suppressed if s.kind != "static"}
-                gate_wb_results = [r for r in wb_results if not (r.status == TestStatus.FAILED and r.test_id in known_ids)]
-                gate_bb_results = [r for r in bb_results if not (r.is_security_exploit_confirmed and r.test_id in known_ids)]
-                wb_failed = len(comparison.new_whitebox_failures)
-                bb_breaches = len(comparison.new_breaches)
-                if suppressed:
-                    self.console.print(
-                        f"[yellow][!] {bi('基準', 'Baseline')}: "
-                        + bi(f"來自 {escape(self.baseline.path)} 的 {len(suppressed)} 個已知問題已列出但不計入",
-                             f"{len(suppressed)} known problem(s) from {escape(self.baseline.path)} are reported but not counted")
-                        + f" ({escape(', '.join(s.id for s in suppressed))})[/yellow]"
-                    )
-            if bb_breaches > 0:
-                overall_status = "BLOCKED_CRITICAL_RISK"
-            elif wb_failed > 0 or static_blocking:
-                overall_status = "NEEDS_FIXES"
-            elif inconclusive_reasons:
-                overall_status = "INCONCLUSIVE"
-            else:
-                overall_status = "READY_TO_SHIP"
             for reason in inconclusive_reasons:
                 self.console.print(f"[yellow][!] {bi('證據缺口', 'Evidence gap')}: {reason}[/yellow]")
-
-            recommendations = self._build_recommendations(
-                gate_wb_results, gate_bb_results, threat_report, untested_threats, inconclusive_reasons, static_blocking
-            )
-            survivors = [m for m in (mutation_report.mutants if mutation_report else []) if m.status == "survived"]
-            if survivors:
-                where = ", ".join(f"{m.file}:{m.line}" for m in survivors[:3])
-                recommendations.append(bi(
-                    f"在 {where} 等位置補強斷言，讓測試抓得到這 {len(survivors)} 個存活的變異（把運算子或常數改掉測試仍通過）",
-                    f"Strengthen the assertions around {where} so the tests catch these {len(survivors)} surviving mutant(s) "
-                    "(the tests still pass when an operator or constant is changed)"
-                ))
-            if suppressed:
-                recommendations.append(
-                    bi(f"基準中已有的 {len(suppressed)} 個問題不計入；它們仍然存在",
-                       f"{len(suppressed)} problem(s) already in the baseline were not counted; they are still present")
-                    + ": " + ", ".join(f"`{s.id}`" for s in suppressed)
-                )
 
             commit, dirty = self._target_revision(target_dir)
             run_meta = RunMetadata(
@@ -1016,6 +839,7 @@ class VibeHarnessCommander:
                 static_findings=static_findings,
                 ai_components=ai_components,
                 reviewer_models=reviewer_models,
+                new_blocking_rule_hits=len(gate.blocking_rule_hits),
                 baseline_path=self.baseline.path if self.baseline else None,
                 baseline_suppressed=suppressed,
             )
@@ -1053,7 +877,7 @@ class VibeHarnessCommander:
                 with open(output_sarif_path, "w", encoding="utf-8") as f:
                     f.write(sarif_content)
                 self.console.print(f"[+] {bi('SARIF 報告已寫入', 'SARIF report written to')}: [bold green]{output_sarif_path}[/bold green] ({bi('供 GitHub Code Scanning 使用', 'for GitHub Code Scanning')})")
-            verdict_color = {"READY_TO_SHIP": "green", "INCONCLUSIVE": "yellow"}.get(overall_status, "red")
+            verdict_color = {Verdict.READY_TO_SHIP: "green", Verdict.INCONCLUSIVE: "yellow"}.get(overall_status, "red")
             self.console.print(Panel.fit(
                 f"[bold]{bi('品質閘門判定結果', 'Quality Gate Verdict')}:[/bold] [{verdict_color} bold]{overall_status}[/{verdict_color} bold]\n"
                 f"{bi('白箱通過', 'White-Box Passed')}: {wb_passed} | {bi('黑箱突破', 'Black-Box Breaches')}: {bb_breaches}\n"
@@ -1102,43 +926,3 @@ class VibeHarnessCommander:
                  f"Run stopped in phase {payload['phase_reached']} ({type(exc).__name__}); partial results written to {escape(path)}")
             + "[/yellow]"
         )
-
-    @staticmethod
-    def _build_recommendations(
-        wb_results: List[TestExecutionResult],
-        bb_results: List[TestExecutionResult],
-        threat_report: ThreatModelReport,
-        untested_threats: List[str],
-        inconclusive_reasons: List[str],
-        static_blocking: Optional[List[StaticFinding]] = None
-    ) -> List[str]:
-        """由本次執行的證據推導出的建議，最緊急者優先。
-        Recommendations derived from this run's evidence, most urgent first."""
-        recs: List[str] = []
-        threats_by_id = {t.threat_id: t for t in threat_report.threats}
-        for r in bb_results:
-            if r.is_security_exploit_confirmed:
-                threat = threats_by_id.get(r.source_ref or "")
-                label = f"{threat.threat_id} {threat.title}" if threat else r.test_id
-                recs.append(bi(f"修正已確認的資安突破 `{r.test_id}`（{label}）",
-                               f"Fix confirmed security breach `{r.test_id}` ({label})") + f": {r.failure_reason}")
-        for f in static_blocking or []:
-            location = f"`{os.path.basename(f.file_path)}:{f.line_number}`"
-            recs.append(bi(f"修正 `{f.rule_id}` {f.title}，位於 {location}（{f.owasp_mapping}）",
-                           f"Fix `{f.rule_id}` {f.title} at {location} ({f.owasp_mapping})") + f": {f.remediation}")
-        for r in wb_results:
-            if r.status == TestStatus.FAILED:
-                recs.append(bi(f"修正 `{r.test_id}` 暴露的缺陷（來自 `{r.source_ref or '-'}`）",
-                               f"Fix defect exposed by `{r.test_id}` (from `{r.source_ref or '-'}`)") + f": {r.failure_reason}")
-        for r in bb_results:
-            if r.status == TestStatus.FAILED and not r.is_security_exploit_confirmed:
-                recs.append(bi(f"調查 `{r.test_id}` 中的黑箱崩潰", f"Investigate black-box crash in `{r.test_id}`") + f": {r.failure_reason}")
-        if untested_threats:
-            recs.append(bi("為未測試的威脅撰寫或合成測試", "Write or synthesize tests for untested threats") + f": {', '.join(untested_threats)}")
-        if inconclusive_reasons:
-            recs.append(bi("在信任通過判定之前，先補上上方列出的證據缺口（例如以 `--mode live` 與有效的 API 金鑰執行）。",
-                           "Close the evidence gaps listed above (e.g. run with `--mode live` and valid API keys) before trusting a pass verdict."))
-        if not recs:
-            recs.append(bi("已執行的測試未暴露任何缺陷；請把這些測試留在 CI 中作為回歸防護。",
-                           "No defects were exposed by the executed tests; keep these tests in CI as regression guards."))
-        return recs

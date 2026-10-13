@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, List, NoReturn, Optional, Tuple
 
 from vibeharness import __version__
 from vibeharness.core.i18n import bi
+from vibeharness.core.verdict import Verdict
 
 if TYPE_CHECKING:
     # 型別檢查器看得到這些名稱；執行時由 _load_dependencies() 放進模組命名空間
@@ -116,9 +117,6 @@ def setup_logging(verbose: bool = False):
     )
 
 
-_VERDICT_STATUSES = ("BLOCKED_CRITICAL_RISK", "NEEDS_FIXES", "INCONCLUSIVE", "READY_TO_SHIP")
-
-
 def verdict_exit_code(overall_status: str) -> int:
     """把品質閘門的判定結果對應到其 CLI 結束碼。
 
@@ -129,15 +127,7 @@ def verdict_exit_code(overall_status: str) -> int:
     Unknown verdict strings fail closed with the INCONCLUSIVE code (3), never with
     READY_TO_SHIP (0) — an unrecognized verdict must not read as a clean bill of health.
     """
-    if overall_status == "BLOCKED_CRITICAL_RISK":
-        return 2
-    if overall_status == "NEEDS_FIXES":
-        return 1
-    if overall_status == "READY_TO_SHIP":
-        return 0
-    # INCONCLUSIVE 以及任何無法辨識的狀態
-    # INCONCLUSIVE and any unrecognized status
-    return 3
+    return (Verdict.parse(overall_status) or Verdict.INCONCLUSIVE).exit_code
 
 
 def _writable_location(path: str) -> bool:
@@ -703,7 +693,7 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                                                    f"cannot write --summary-json '{args.summary_json}'") + f": {e}", file=sys.stderr)
     # 依品質閘門回傳結束碼
     # Return exit code based on Quality Gate
-    if summary.overall_status not in _VERDICT_STATUSES:
+    if Verdict.parse(summary.overall_status) is None:
         print(f"{bi('錯誤', 'Error')}: "
               + bi(f"未知的整體狀態 '{summary.overall_status}'；以失敗收場（failing closed）。",
                    f"unknown overall status '{summary.overall_status}'; failing closed."), file=sys.stderr)

@@ -231,7 +231,16 @@ class ReportGenerator:
         md.append(f"| **{bi('黑箱測試失敗（未分類）', 'Black-Box Tests Failed (unclassified)')}** | `{summary.blackbox_tests_failed}` | "
                   f"{bi('0 — 失敗的攻擊腳本需人工審查', '0 — failing attack scripts need manual review')} |")
         blocking = sum(1 for f in summary.static_findings if f.severity in (FindingSeverity.CRITICAL, FindingSeverity.HIGH))
-        md.append(f"| **{bi('確定性 AI 資安規則命中', 'Deterministic AI-Security Rule Hits')}** | `{len(summary.static_findings)}` ({blocking} HIGH+) | 0 HIGH+ |")
+        new_blocking = summary.new_blocking_rule_hits
+        if summary.baseline_path and new_blocking is not None:
+            # --baseline：與判定結果一致，只有新的 HIGH 以上命中計入；已知的另外列出
+            # --baseline: as in the verdict, only new HIGH+ hits count; the known ones are shown separately
+            hits = bi(f"{new_blocking} 個新的 HIGH+，{blocking - new_blocking} 個基準中已知",
+                      f"{new_blocking} HIGH+ new, {blocking - new_blocking} known from baseline")
+            target = bi("0 個新的 HIGH+", "0 new HIGH+")
+        else:
+            hits, target = f"{blocking} HIGH+", "0 HIGH+"
+        md.append(f"| **{bi('確定性 AI 資安規則命中', 'Deterministic AI-Security Rule Hits')}** | `{len(summary.static_findings)}` ({hits}) | {target} |")
         md.append("\n")
         if summary.reviewer_models:
             n_models = len(summary.reviewer_models)
