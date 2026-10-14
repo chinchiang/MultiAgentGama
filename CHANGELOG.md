@@ -21,6 +21,7 @@
 - 發現、威脅與靜態命中的身分識別集中到新的 `vibeharness/core/identity.py`：模型文字的正規化（`normalize`、`key_text`）、位置規則、嚴重度順序（`severity_rank`，取代去重與威脅建模各自的一份），以及 `--baseline` 的鍵與 SARIF 的 partialFingerprints（`sarif_static_fingerprint`／`sarif_finding_fingerprint`／`sarif_breach_fingerprint`）並排定義；威脅合併改用同一個 `normalize`，不再有自己的副本。`vibeharness/core/baseline.py` 保留載入、比對與加註，並以舊名稱重新匯出這些函式。每個基準線 fingerprint 與 SARIF 指紋都逐位元組不變，既有的基準與 Code Scanning 警示照常相符；修正一節的兩個條目是隨後在這個模組上做的修正。
 - 模型回答的解析與形狀檢查移到新的 `vibeharness/core/model_output.py`（`parse_json_object`、`OutputSchema`、`check_output`，皆為純函式）：每個代理宣告它期望的回答形狀，`generate(..., schema=)` 取代 `required_keys`／`required_keys_any`；閘道保留重問、回應快取、呼叫紀錄與來源標記。修正一節中形狀錯誤與 `tests` 退回 `code` 兩個條目是隨後在這個模組上做的修正。
 - 執行器與沙盒改以回傳值交出結果：`execute_pytest_files` 回傳凍結的 `SandboxRun`（結束碼、stdout、stderr、執行時間、行涵蓋率與 JUnit 報告），取代六元組；執行器只依賴 `vibeharness/core/sandbox.py` 的 `Sandbox` Protocol，不再以 `getattr` 替沙盒補預設值（預設值改由 `LocalSubprocessSandbox` 提供）；`execute_test_suite` 回傳 `SuiteResult`（結果、Python 與 JS/TS 的行涵蓋率、JS/TS 涵蓋率算不出來的原因、JS 執行器的問題與 Node 執行環境），取代 `(結果, Python 涵蓋率)` 加上事後讀取的 `last_js_line_coverage_pct`、`js_coverage_unavailable_reason` 與 `js_runner_unavailable_reason`。Node 執行環境的選擇移到 `sandbox.py` 的 `build_node_sandbox`（回傳 `NodeRuntime`）；docker 映像檔內的 Node 版本由 `NodeDockerSandbox.probe_node_version` 偵測，TypeScript 旗標由沙盒自己設定（`with_probed_node`）。harness 不再呼叫沙盒的私有方法，刪除 `_build_node_sandbox`、`_docker_node_version` 與 `node_runtime`、`node_runtime_problem`、`node_typescript_problem` 屬性，改從 `SuiteResult.node_runtime` 讀取。另刪除沒有任何呼叫者的 `LocalSubprocessSandbox.execute_python_code`（改用 `execute_pytest_files({"test_exec.py": 程式碼})`）。直接呼叫這些方法的程式碼要改讀欄位；報告、`--summary-json`、判定與結束碼不變（修正一節中沒有 Node 時每個測試的原因除外）。
+- `--estimate` 改為加總各代理回報的呼叫計畫，不再抄一份代理的分批與分派規則：審查者、驗證者、測試生成器、威脅建模者與攻擊合成器各有 `plan(...)`，回傳一組 `PlannedCalls`（新定義在 `vibeharness/core/fanout.py`：呼叫數、是否為 JSON 呼叫、每次呼叫的程式碼 token、是否為執行前就已知的精確值、修復這類有條件的呼叫與每次最多幾次），審查者與威脅建模和自己的執行路徑共用同一個分批 helper，驗證者、測試生成器與攻擊合成器依同樣的派工規則計數；`tests/test_call_plans.py` 釘住每個計畫等於實際發出的呼叫。各代理公開 `AGENT_ID`，測試生成器公開 `HEAL_ATTEMPTS`（2）；`estimate.py` 刪除 `_PER_FINDING_CODE_TOKENS`、`_HEAL_ATTEMPTS_MAX` 與審查者、威脅建模批次排序的副本。僅為內部變更：`--estimate` 的文字與 JSON 輸出逐位元組不變。
 
 ### 修正
 
@@ -45,6 +46,7 @@
 - 新增 `tests/test_identity.py`，只透過 `core/identity.py` 測試身分識別：任何文字的正規化、改寫措辭與不同文字、模擬項目的英文半、各種鍵與其 SARIF 指紋的性質、嚴重度順序與未知位置，加上一張取自 master、釘住雜湊值的 golden 表，讓之後任何會讓既有基準或 Code Scanning 警示失配的改動都會讓測試失敗。散在其他檔案、直接測試鍵函式的 11 個測試搬進來；測試鍵的使用者（基準的載入與比對、SARIF 端對端、威脅合併、去重）留在原處。覆蓋率沒有任何一行下降。
 - 新增 `tests/test_model_output.py`，只透過 `core/model_output.py` 測試解析與形狀檢查：`parse_json_object` 的各種包裝與退回、`check_output` 對每種型別規格、清單規則與 `any_of` 的判斷與雙語原因、`mark_cached`，以及每個代理的模擬輸出都符合它自己的 schema（因此發現攻擊合成的模擬輸出 `{"tests": []}` 不符合它的 schema，已改為 `{"code": ""}`，行為不變）。原本直接呼叫閘道私有函式的解析與檢查測試搬進來，閘道的兩個包裝函式刪除；`core/model_output.py` 的覆蓋率 100%，沒有任何一行失去覆蓋。
 - 新增 `tests/test_node_runtime.py`，測試 Node 執行環境的選擇：`build_node_sandbox` 依 provider 與版本決定 TypeScript 支援、label 與問題，docker 內的 `probe_node_version`，harness 的工廠，以及 `SuiteResult.node_runtime` 只出現在含 JS/TS 測試的 suite、只有黑箱 suite 含 JS 時 harness 也拿得到它。其中四個測試從 `tests/test_js_execution.py` 與 `tests/test_js_coverage.py` 原樣搬來（三個改名，因為舊名稱指的是已刪除的方法）。測試裡的沙盒替身改回傳 `SandboxRun`，替換 `execute_test_suite` 的假函式改回傳 `SuiteResult`。
+- 新增 `tests/test_call_plans.py`：以 `scripted` fixture 實際執行每個代理，確認它的 `plan` 對同樣輸入算出的呼叫數等於實際發出的呼叫（修復以 `max_per_call` 為上限）。`tests/test_estimate.py` 不變。
 
 ### 文件
 
@@ -68,6 +70,8 @@
 - 設計文件說明 `Sandbox` 接縫、`SandboxRun`、`SuiteResult` 與 `NodeRuntime`（模組表、第 3 章 Phase 3、第 9.2 至 9.5 節、擴充點與測試章節），重要函式索引新增這些名稱並移除 harness 已刪除的兩個方法；同時修正 `test_executor.py` 後段（`_run_individually`、`_aggregate`、`_result` 等）、`transport.py` 與 `GateEvidence` 組成在先前就已偏移的行號。行號改以 commit `af9af80` 為準。
 - README 的專案結構列出 `tests/test_node_runtime.py`，並說明 `sandbox.py` 選擇 Node 執行環境、`test_executor.py` 回傳 `SuiteResult`。
 - `GLOSSARY.md` 新增 Node 執行環境。
+- 設計文件說明各代理的呼叫計畫（模組表的 `PlannedCalls` 與 `plan`、第 14.3 節 `--estimate` 改寫為加總計畫、第 6.6 節的 `HEAL_ATTEMPTS`、測試章節的 `test_call_plans.py`），重要函式索引新增 `PlannedCalls`、`_row` 與各代理的 `plan`，行號引用也更新為 commit `42fbd87`。
+- README 的專案結構列出 `tests/test_call_plans.py`，並說明 `estimate.py` 加總各代理的呼叫計畫。
 
 ## [0.12.0] - 2026-10-12
 

@@ -205,8 +205,8 @@ MultiAgentGama/
 │   │   ├── baseline.py              # --baseline：載入、比對與加註指紋，已知問題不計入（鍵在 identity.py）
 │   │   ├── codecheck.py             # 生成測試的靜態檢查（每個 test_ 函式／方法都要有斷言；拒絕安裝套件）
 │   │   ├── codecontext.py           # 提供給模型的原始碼與 import 指引（經不受信任程式碼通道）
-│   │   ├── estimate.py              # --estimate：不呼叫模型即估算呼叫數、token 與花費
-│   │   ├── fanout.py                # 扇出：並行執行代理的模型呼叫、依呼叫順序收集、當掉的呼叫記成證據缺口
+│   │   ├── estimate.py              # --estimate：加總各代理的呼叫計畫，不呼叫模型即估算呼叫數、token 與花費
+│   │   ├── fanout.py                # 扇出：並行執行代理的模型呼叫、依呼叫順序收集、當掉的呼叫記成證據缺口；PlannedCalls（代理的呼叫計畫）
 │   │   ├── gate.py                  # 品質閘門：證據缺口、--baseline 的新／已知拆分、判定與建議（純函式）
 │   │   ├── i18n.py                  # 「中文 ／ English」雙語輸出的工具（bi／en_only）
 │   │   ├── identity.py              # 身分識別：模型文字正規化、位置規則、嚴重度順序，--baseline 鍵與 SARIF 指紋並排（雜湊必須不變）
@@ -249,6 +249,7 @@ MultiAgentGama/
 │   ├── conftest.py              # 共用 fixture：以假 litellm 讓 live 路徑離線執行
 │   ├── test_ai_security.py      # OWASP LLM Top 10 2026／ATLAS 控制與確定性 AI 安全規則
 │   ├── test_baseline.py                # --baseline：載入與重算、已知問題不計入、action.yml 結構
+│   ├── test_call_plans.py              # 每個代理的呼叫計畫（plan）等於它實際發出的呼叫
 │   ├── test_cross_verification.py      # 交叉驗證：模型不評審自己的發現、依票數判定
 │   ├── test_dedup_and_budget.py        # 重複發現合併與 token 預算內的提示上下文
 │   ├── test_docker_sandbox.py          # Docker 沙盒：路徑映射、容器強化參數、實際執行（有 Docker 時）
