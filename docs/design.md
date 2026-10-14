@@ -786,7 +786,7 @@ console 輸出另外用 `rich.markup.escape`（`vibeharness/core/harness.py:9`�
 | `test_cross_verification.py` | debater：不評自家發現、多數決與平手、假的判決、N/A、報告呈現投票 |
 | `test_dedup_and_budget.py` | deduplicator、codecontext 的預算與分批、骨架、符號比對、finding id 唯一 |
 | `test_docker_sandbox.py` | 路徑改寫、隔離旗標、`custom_env` 過濾、nobody、逾時移除容器；真實容器測試以 `VIBEHARNESS_REQUIRE_DOCKER=1` 強制執行 |
-| `test_estimate.py` | 精確值等於真實執行的花費、情境值隨假設與重問倍數縮放、價格換算與驗證、尊重檔案篩選、CLI `--estimate` 不呼叫模型且 exit 0 |
+| `test_estimate.py` | 精確值等於真實執行的花費、情境值隨假設與重問倍數縮放、價格換算與驗證、驗證者的呼叫數沒有浮點誤差（`test_verifier_calls_have_no_float_error`）、尊重檔案篩選、CLI `--estimate` 不呼叫模型且 exit 0 |
 | `test_fanout.py` | 只透過 `fan_out` 測試扇出：呼叫順序、成功的 `None` 保留、崩潰換成 fallback 並以代理的 logger 與 `agent_id` 記錄、live 失敗與 Ctrl-C 時佇列中的呼叫不會開始、並行數上限、空清單不開執行緒池 |
 | `test_harness_components.py` | 各元件冒煙測試 |
 | `test_i18n.py` | `bi`／`en_only`／`has_cjk`、Markdown 標題與表頭常數為雙語、狀態標籤與判定徽章、SARIF 固定文字雙語但 id 不變、mock pipeline 的標題與 evidence gap、`--estimate` 的欄位與警告、CLI 錯誤訊息、`load_baseline` 的錯誤、每個 docstring 與註解都是雙語 |

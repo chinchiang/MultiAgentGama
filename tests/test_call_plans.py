@@ -34,12 +34,12 @@ def _symbols(tmp_path, count):
     return ASTExtractor().parse_file(str(path))
 
 
-def _finding(i, model="claude", corroborated_by=()):
+def _finding(i, model="claude", corroborating_models=()):
     return ReviewFinding(
         finding_id=f"F{i}", reviewer_name=model.title(), model_alias=model, file_path="unknown",
         severity=FindingSeverity.HIGH, title=f"title F{i}", description="", root_cause="",
         suspected_vibe_flaw="", suggested_test_scenario="",
-        corroborated_by=[m.title() for m in corroborated_by], corroborating_models=list(corroborated_by)
+        corroborated_by=[m.title() for m in corroborating_models], corroborating_models=list(corroborating_models)
     )
 
 
@@ -100,11 +100,14 @@ def test_reviewer_plan_is_one_call_per_reviewer_and_batch(scripted, tmp_path):
     assert ensemble.plan([], str(tmp_path)) == []
 
 
+def _unsure_verdicts(request):
+    """驗證者的回答：對請求裡的每一筆發現都裁決 unsure ／ A verifier's answer: unsure on every finding in the request."""
+    titles = re.findall(r"Title: title (\w+)", request.messages[1]["content"])
+    return {"verdicts": [{"index": i, "verdict": "unsure", "reason": "r"} for i in range(len(titles))]}
+
+
 def test_debater_plan_is_the_verifier_calls_for_the_reported_findings(scripted):
-    def rule(request):
-        ids = re.findall(r"Title: title (\w+)", request.messages[1]["content"])
-        return {"verdicts": [{"index": i, "verdict": "unsure", "reason": "r"} for i in range(len(ids))]}
-    transport = scripted({"whitebox_verifier_*": rule})
+    transport = scripted({"whitebox_verifier_*": _unsure_verdicts})
     debater = MultiModelDebater(LLMGateway(CONFIG, execution_mode="live", transport=transport))
     # 跨過每次呼叫的發現上限，讓驗證者各自需要不同的呼叫數；沒有佐證（計畫看不到哪些會被佐證）
     # Crosses the findings-per-call limit so the verifiers need different numbers of calls; nothing is corroborated
@@ -120,22 +123,19 @@ def test_debater_plan_is_the_verifier_calls_for_the_reported_findings(scripted):
 
 
 def test_debater_plan_is_an_upper_bound_when_findings_are_corroborated(scripted):
-    def rule(request):
-        ids = re.findall(r"Title: title (\w+)", request.messages[1]["content"])
-        return {"verdicts": [{"index": i, "verdict": "unsure", "reason": "r"} for i in range(len(ids))]}
-    transport = scripted({"whitebox_verifier_*": rule})
+    transport = scripted({"whitebox_verifier_*": _unsure_verdicts})
     debater = MultiModelDebater(LLMGateway(CONFIG, execution_mode="live", transport=transport))
-    # claude 回報比每次呼叫的上限多一筆，其中一筆 deepseek 也回報了：deepseek 不必再裁決它，剩 15 筆只要一次呼叫，
+    # claude 回報比每次呼叫的上限多一筆，其中一筆 deepseek 也回報了：deepseek 不必再裁決它，剩 FINDINGS_PER_CALL 筆只要一次呼叫，
     # 計畫看不到佐證，算成兩次；其他驗證者不受影響
     # claude reports one finding over the per-call limit, one of which deepseek reported too: deepseek need not rule
-    # on it, so its remaining 15 take one call, while the plan cannot see corroboration and counts two; the other
+    # on it, so its remaining FINDINGS_PER_CALL take one call, while the plan cannot see corroboration and counts two; the other
     # verifiers are unaffected
-    findings = [_finding(f"claude{i}", corroborated_by=["deepseek"] if i == 0 else [])
+    findings = [_finding(f"claude{i}", corroborating_models=["deepseek"] if i == 0 else [])
                 for i in range(debater.FINDINGS_PER_CALL + 1)]
     plans = debater.plan({"claude": len(findings)})
     debater.arbitrate(findings)
-    (deepseek,) = [p.agent_id for p in plans if p.model_alias == "deepseek"]
-    assert _planned(plans) - _actual(transport) == Counter({(deepseek, "deepseek"): 1})
+    (deepseek_id,) = [p.agent_id for p in plans if p.model_alias == "deepseek"]
+    assert _planned(plans) - _actual(transport) == Counter({(deepseek_id, "deepseek"): 1})
     assert not _actual(transport) - _planned(plans)
 
 
