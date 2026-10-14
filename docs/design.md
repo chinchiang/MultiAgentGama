@@ -2,7 +2,7 @@
 
 [English](design.en.md) ｜ 正體中文（臺灣）
 
-本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.12.0`（`CHANGELOG.md` 的 `[0.12.0]`，2026-10-12，第六輪審查：中文的威脅與發現不再被誤合併、`--changed-since` 收得到非 ASCII 檔名與 symlink 目標下的檔案、探針的基準線鍵含檔案、`--estimate` 計入未變異複本的那一批、保留名稱含 `key` 的 litellm 參數；`[0.11.0]`，2026-10-11，第五輪審查：Action 的判定只取自稽核摘要、`extra-args` 以 CLI 的解析器檢查、自動發現的設定檔只能調低花費、保留 litellm 的 callback 參數、揭露不支援語言的檔案與設定檔裡的密鑰、強化報告讀回與 Docker 輸出上限；`[0.10.1]`，2026-10-11，為修正版：Windows 的 JS/TS 涵蓋率也收得到 `node_modules` 底下的目標；`[0.10.0]` 為更嚴格的自動發現設定檔、Action 不再蓋掉設定檔的成本防護、null 保留預設值；`[0.9.0]` 為第三輪審查修正：自動發現設定檔的防護、Action 以 `exec` 執行稽核、SARIF 不收模擬項目、VH-AI-006 改寫、確定性規則的單檔時間上限、`--summary-json`；`[0.8.0]` 新增 JS/TS 行涵蓋率；`[0.7.1]` 為修正版：剩餘逾時預算不再多出一秒、`--init-config` 的提示；`[0.7.0]` 為第二輪審查修正、PyPI 打包、`--init-config` 與設定檔自動尋找；`[0.6.0]` 為依審查結果的強化並新增 `--cache-only`，`[0.5.1]` 為修正版，`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。文中的 `path:line` 引用以 commit `a9b2d8b` 的檔案為準（發布時改為 release tag）。
+本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.12.0`（`CHANGELOG.md` 的 `[0.12.0]`，2026-10-12，第六輪審查：中文的威脅與發現不再被誤合併、`--changed-since` 收得到非 ASCII 檔名與 symlink 目標下的檔案、探針的基準線鍵含檔案、`--estimate` 計入未變異複本的那一批、保留名稱含 `key` 的 litellm 參數；`[0.11.0]`，2026-10-11，第五輪審查：Action 的判定只取自稽核摘要、`extra-args` 以 CLI 的解析器檢查、自動發現的設定檔只能調低花費、保留 litellm 的 callback 參數、揭露不支援語言的檔案與設定檔裡的密鑰、強化報告讀回與 Docker 輸出上限；`[0.10.1]`，2026-10-11，為修正版：Windows 的 JS/TS 涵蓋率也收得到 `node_modules` 底下的目標；`[0.10.0]` 為更嚴格的自動發現設定檔、Action 不再蓋掉設定檔的成本防護、null 保留預設值；`[0.9.0]` 為第三輪審查修正：自動發現設定檔的防護、Action 以 `exec` 執行稽核、SARIF 不收模擬項目、VH-AI-006 改寫、確定性規則的單檔時間上限、`--summary-json`；`[0.8.0]` 新增 JS/TS 行涵蓋率；`[0.7.1]` 為修正版：剩餘逾時預算不再多出一秒、`--init-config` 的提示；`[0.7.0]` 為第二輪審查修正、PyPI 打包、`--init-config` 與設定檔自動尋找；`[0.6.0]` 為依審查結果的強化並新增 `--cache-only`，`[0.5.1]` 為修正版，`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。文中的 `path:line` 引用以 commit `c6a7adc` 的檔案為準（發布時改為 release tag）。
 
 與其他文件的分工：
 
@@ -958,7 +958,7 @@ DAST／fuzzing、以 hypothesis 為測試策略（Docker 沙盒映像已附 `hyp
 
 ## 18. 附錄
 
-行號對應 commit `a9b2d8b` 的程式碼（發布時改為 release tag）；核對方式為 `grep -n "def 名稱" 檔案`。
+行號對應 commit `c6a7adc` 的程式碼（發布時改為 release tag）；核對方式為 `grep -n "def 名稱" 檔案`。
 
 ### 18.1 關鍵常數
 
