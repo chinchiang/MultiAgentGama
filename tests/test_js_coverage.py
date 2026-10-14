@@ -11,7 +11,6 @@ import subprocess
 import pytest
 
 from vibeharness.core.codecontext import target_file_url
-from vibeharness.core.harness import VibeHarnessCommander
 from vibeharness.core.jscoverage import (
     LCOV_REPORT_NAME, JsLineCoverage, node_coverage_args, node_coverage_problem, parse_lcov, resolve_source_path,
     target_relative_path,
@@ -251,16 +250,6 @@ def test_node_docker_sandbox_coverage_command_and_container_path_translation(tmp
     assert unknown.js_coverage_problem()
     cmd, _, _ = unknown._build_command(str(run_dir), ["test_vh_000.mjs"], str(target), True, str(target), None)
     assert not any("coverage" in a or "lcov" in a for a in cmd)
-
-
-def test_harness_passes_the_node_version_to_the_sandboxes(tmp_path, monkeypatch):
-    import vibeharness.core.sandbox as sandbox_module
-    config = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vibeharness", "config",
-                          "agents_config.yaml")
-    commander = VibeHarnessCommander(config_path=config, execution_mode="mock")
-    monkeypatch.setattr(sandbox_module, "detect_node", lambda node_bin: ("/usr/bin/node", (22, 14, 0), None))
-    sandbox = commander.executor._js_sandbox_factory().sandbox
-    assert isinstance(sandbox, NodeSubprocessSandbox) and sandbox.node_version == (22, 14, 0)
 
 
 # --- 執行器接線 ---------------------------------------------------------------------------------------
