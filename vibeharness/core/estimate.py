@@ -17,17 +17,13 @@ which never re-asks); response-cache hits
 would make a re-run cheaper and are not predicted.
 """
 import math
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 from pydantic import BaseModel, Field
 
-from vibeharness.agents.blackbox.threat_modeler import BATCH_MAX_SYMBOLS as TM_BATCH_SYMBOLS
-from vibeharness.agents.blackbox.threat_modeler import BATCH_MAX_TOKENS as TM_BATCH_TOKENS
 from vibeharness.agents.whitebox.debater import MultiModelDebater
-from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
-from vibeharness.core.codecontext import batch_symbols, estimate_tokens, render_symbols
+from vibeharness.core.fanout import PlannedCalls
 from vibeharness.core.i18n import bi
-from vibeharness.core.models import CodeSymbol
 from vibeharness.core.settings import UNCONFIGURED_ALIAS
 
 # 程式碼清單以外的提示額外負擔（系統提示、結構描述、指引）與典型回答大小，
@@ -40,8 +36,9 @@ _OVERHEAD = {"reviewer": 450, "verifier": 350, "test_generator": 700, "heal": 30
 _TYPICAL_OUTPUT = {"reviewer": 1500, "verifier": 600, "test_generator": 1500, "heal": 1200, "threat_modeler": 2500, "synthesizer": 1500}
 _VERIFIER_LISTING_TOKENS = MultiModelDebater.LISTING_MAX_TOKENS
 _VERIFIER_CODE_TOKENS = MultiModelDebater.CODE_CONTEXT_TOKENS
-_PER_FINDING_CODE_TOKENS = 4000  # test_generator / scenario_builder 的 CODE_CONTEXT_TOKENS ／ test_generator / scenario_builder CODE_CONTEXT_TOKENS
-_HEAL_ATTEMPTS_MAX = 2
+# 修復提示詞帶著被修的測試程式碼；它的大小只能估計（大約是一個典型的測試）
+# A repair prompt carries the test code being repaired; its size can only be estimated (about one typical test)
+_HEALED_CODE_TOKENS = 1200
 
 
 class CallEstimate(BaseModel):
@@ -86,36 +83,52 @@ class RunEstimate(BaseModel):
     warnings: List[str] = Field(default_factory=list)
 
 
-def _alias(gateway, agent_id: str) -> str:
-    return gateway.settings.alias_for(agent_id)
+def _row(agent_id: str, model_alias: str, plans: Sequence[PlannedCalls], reask: int, heal_rate: float,
+         basis: str) -> CallEstimate:
+    """一個代理的計畫加總成一列：有條件的呼叫（修復）典型值乘上 heal_rate，JSON 呼叫的最大值乘上重新詢問次數，
+    每次呼叫的 token 是程式碼清單加上提示額外負擔，輸出是典型回答大小。
+    One agent's plans summed into one row: conditional calls (repairs) take heal_rate of their opportunities as the
+    typical figure, JSON calls are multiplied by the re-asks in the worst case, and each call's tokens are its code
+    listing plus the prompt overhead, with the typical answer size as output. No plans (e.g. no symbols) is a row of
+    zeros."""
+    typical = [math.ceil(p.calls * heal_rate) if p.conditional else p.calls for p in plans]
+    return CallEstimate(
+        agent=agent_id, model_alias=model_alias,
+        calls_exact=sum(p.calls for p in plans) if all(p.exact for p in plans) else None,
+        calls_typical=sum(typical),
+        calls_max=sum(p.calls * p.max_per_call * (reask if p.json_output else 1) for p in plans),
+        prompt_tokens_typical=sum(n * (p.code_tokens + _OVERHEAD[p.kind] + (_HEALED_CODE_TOKENS if p.kind == "heal" else 0))
+                                  for p, n in zip(plans, typical, strict=True)),
+        output_tokens_typical=sum(n * _TYPICAL_OUTPUT[p.kind] for p, n in zip(plans, typical, strict=True)),
+        basis=basis,
+    )
 
 
 def estimate_run(
     commander, target_dir: str, findings_per_batch: float = 3.0, threats_per_batch: float = 4.0
 ) -> RunEstimate:
-    """第 1 階段（符號擷取，不涉及模型）加上對代理設定的算術運算。
-    Phase 1 (symbol extraction, no model) plus arithmetic on the agent configuration."""
+    """第 1 階段（符號擷取，不涉及模型）加上各代理的呼叫計畫：精確的部分來自符號，其餘依所述假設推出。
+    Phase 1 (symbol extraction, no model) plus the agents' call plans: exact where the symbols decide, from the stated
+    assumptions elsewhere."""
     symbols, filters = commander.select_symbols(target_dir)
     gateway = commander.gateway
     work_dir = commander.work_dir_for(target_dir)
     reviewers = commander.multi_reviewer.reviewer_agents
-    verifiers = commander.debater.verifiers
     retry = int(gateway.retry_invalid_output)
     # --cache-only 絕不重新詢問（重新詢問是網路呼叫），所以最壞情況不乘上 retry_invalid_output
     # --cache-only never re-asks (a re-ask is a network call), so the worst case is not multiplied by retry_invalid_output
     reask = 1 if gateway.cache_only else 1 + retry
 
-    wb_batches = batch_symbols(
-        symbols, work_dir, HeterogeneousReviewerEnsemble.BATCH_MAX_TOKENS, HeterogeneousReviewerEnsemble.BATCH_MAX_SYMBOLS
-    ) if symbols and reviewers else []
-    ordered = sorted(symbols, key=lambda s: s.symbol_type != "route")
-    tm_batches: List[List[CodeSymbol]] = batch_symbols(ordered, work_dir, TM_BATCH_TOKENS, TM_BATCH_SYMBOLS) or [[]]
+    reviewer_plans = commander.multi_reviewer.plan(symbols, work_dir)
+    wb_batches = len(reviewer_plans) // len(reviewers) if reviewers else 0
+    tm_plans = commander.threat_modeler.plan(symbols, work_dir)
+    heal_rate = 0.3
 
     est = RunEstimate(
         target_path=target_dir, files_analyzed=len(commander.ast_extractor.analyzed_files), symbols=len(symbols),
-        whitebox_batches=len(wb_batches), threat_batches=len(tm_batches),
+        whitebox_batches=wb_batches, threat_batches=len(tm_plans),
         assumptions={"findings_per_reviewer_batch": findings_per_batch, "threats_per_batch": threats_per_batch,
-                     "confirmed_share": 0.7, "tests_per_finding": 1.0, "heal_rate": 0.3},
+                     "confirmed_share": 0.7, "tests_per_finding": 1.0, "heal_rate": heal_rate},
         retry_invalid_output=retry, max_model_calls=gateway.max_model_calls, cache_only=gateway.cache_only,
         # 變異體各一批，再加上先在未變異複本上確認測試通過的那一批
         # One batch per mutant, plus the batch that first confirms the tests pass on the unmutated copy
@@ -129,21 +142,16 @@ def estimate_run(
 
     # 1. 審查者：精確值
     # 1. Reviewers: exact
-    wb_listing_tokens = [estimate_tokens(render_symbols(b, work_dir, max_tokens=HeterogeneousReviewerEnsemble.BATCH_MAX_TOKENS)) for b in wb_batches]
     for reviewer in reviewers:
-        calls = len(wb_batches)
-        est.by_agent.append(CallEstimate(
-            agent=reviewer["agent_id"], model_alias=reviewer["model_alias"], calls_exact=calls, calls_typical=calls,
-            calls_max=calls * reask, prompt_tokens_typical=sum(wb_listing_tokens) + calls * _OVERHEAD["reviewer"],
-            output_tokens_typical=calls * _TYPICAL_OUTPUT["reviewer"],
-            basis=bi(f"{len(wb_batches)} 個白箱批次 × 1 次呼叫", f"{len(wb_batches)} white-box batch(es) × 1 call"),
-        ))
+        own = [p for p in reviewer_plans if p.agent_id == reviewer["agent_id"]]
+        est.by_agent.append(_row(reviewer["agent_id"], reviewer["model_alias"], own, reask, heal_rate, bi(
+            f"{wb_batches} 個白箱批次 × 1 次呼叫", f"{wb_batches} white-box batch(es) × 1 call")))
 
     # 2. 發現情境 -> 驗證者
     # 2. Findings scenario -> verifiers
-    raw_findings = findings_per_batch * len(wb_batches) * len(reviewers)
+    raw_findings = findings_per_batch * wb_batches * len(reviewers)
     distinct = raw_findings * 0.8  # 部分重複項會合併 ／ some duplicates merge
-    for agent_id, alias in verifiers.items():
+    for agent_id, alias in commander.debater.verifiers.items():
         # 驗證者絕不裁決自家模型的發現：它只看到其他模型回報的那一份
         # A verifier never rules on its own model's findings: it sees the share reported by other models
         own_share = sum(1 for r in reviewers if r["model_alias"] == alias) / max(len(reviewers), 1)
@@ -160,39 +168,24 @@ def estimate_run(
     # 3. 每筆已確認發現的測試產生（+ 修復）
     # 3. Test generation per confirmed finding (+ heals)
     confirmed = distinct * est.assumptions["confirmed_share"]
-    gen_calls = math.ceil(confirmed * est.assumptions["tests_per_finding"])
-    heal_typical = math.ceil(gen_calls * est.assumptions["heal_rate"])
-    tg_alias = _alias(gateway, "whitebox_test_generator")
-    est.by_agent.append(CallEstimate(
-        agent="whitebox_test_generator", model_alias=tg_alias, calls_typical=gen_calls + heal_typical,
-        calls_max=gen_calls * reask + gen_calls * _HEAL_ATTEMPTS_MAX,
-        prompt_tokens_typical=gen_calls * (_PER_FINDING_CODE_TOKENS + _OVERHEAD["test_generator"]) + heal_typical * (_OVERHEAD["heal"] + 1200),
-        output_tokens_typical=gen_calls * _TYPICAL_OUTPUT["test_generator"] + heal_typical * _TYPICAL_OUTPUT["heal"],
-        basis=bi(f"~{confirmed:.0f} 筆已確認的發現 × 1 次呼叫，+ 修復（典型 {heal_typical}，每個測試最多 {_HEAL_ATTEMPTS_MAX}）",
-                 f"~{confirmed:.0f} confirmed finding(s) × 1 call, + heals (typical {heal_typical}, max {_HEAL_ATTEMPTS_MAX} per test)"),
-    ))
+    tg_plans = commander.whitebox_test_gen.plan(confirmed, tests_per_finding=est.assumptions["tests_per_finding"])
+    heal = next(p for p in tg_plans if p.conditional)
+    heal_typical = math.ceil(heal.calls * heal_rate)
+    est.by_agent.append(_row(heal.agent_id, heal.model_alias, tg_plans, reask, heal_rate, bi(
+        f"~{confirmed:.0f} 筆已確認的發現 × 1 次呼叫，+ 修復（典型 {heal_typical}，每個測試最多 {heal.max_per_call}）",
+        f"~{confirmed:.0f} confirmed finding(s) × 1 call, + heals (typical {heal_typical}, max {heal.max_per_call} per test)")))
 
     # 4. 威脅建模：精確值
     # 4. Threat modeling: exact
-    tm_alias = _alias(gateway, "blackbox_threat_modeler")
-    tm_listing = [estimate_tokens(render_symbols(b, work_dir, max_tokens=TM_BATCH_TOKENS)) if b else 0 for b in tm_batches]
-    est.by_agent.append(CallEstimate(
-        agent="blackbox_threat_modeler", model_alias=tm_alias, calls_exact=len(tm_batches), calls_typical=len(tm_batches),
-        calls_max=len(tm_batches) * reask, prompt_tokens_typical=sum(tm_listing) + len(tm_batches) * _OVERHEAD["threat_modeler"],
-        output_tokens_typical=len(tm_batches) * _TYPICAL_OUTPUT["threat_modeler"],
-        basis=bi(f"{len(tm_batches)} 個威脅模型批次 × 1 次呼叫", f"{len(tm_batches)} threat-model batch(es) × 1 call"),
-    ))
+    est.by_agent.append(_row(tm_plans[0].agent_id, tm_plans[0].model_alias, tm_plans, reask, heal_rate, bi(
+        f"{len(tm_plans)} 個威脅模型批次 × 1 次呼叫", f"{len(tm_plans)} threat-model batch(es) × 1 call")))
 
     # 5. 每個威脅的攻擊合成
     # 5. Attack synthesis per threat
-    threats = math.ceil(threats_per_batch * len(tm_batches))
-    sy_alias = _alias(gateway, "blackbox_test_synthesizer")
-    est.by_agent.append(CallEstimate(
-        agent="blackbox_test_synthesizer", model_alias=sy_alias, calls_typical=threats, calls_max=threats * reask,
-        prompt_tokens_typical=threats * (_PER_FINDING_CODE_TOKENS + _OVERHEAD["synthesizer"]),
-        output_tokens_typical=threats * _TYPICAL_OUTPUT["synthesizer"],
-        basis=bi(f"~{threats} 個威脅 × 1 次呼叫", f"~{threats} threat(s) × 1 call"),
-    ))
+    threats = math.ceil(threats_per_batch * len(tm_plans))
+    (synthesis,) = commander.scenario_builder.plan(threats)
+    est.by_agent.append(_row(synthesis.agent_id, synthesis.model_alias, [synthesis], reask, heal_rate,
+                             bi(f"~{threats} 個威脅 × 1 次呼叫", f"~{threats} threat(s) × 1 call")))
 
     est.calls_exact = sum(c.calls_exact or 0 for c in est.by_agent)
     est.calls_typical = sum(c.calls_typical for c in est.by_agent)
