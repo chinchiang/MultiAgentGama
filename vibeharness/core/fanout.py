@@ -37,12 +37,14 @@ class Call(Generic[_T]):
 class PlannedCalls:
     """一個代理對給定輸入會發出的一組呼叫（`--estimate` 加總它們，不發出任何呼叫）。`calls` 是呼叫數；
     `conditional` 的呼叫只在回答需要時才發生（例如修復無效的測試），這時 `calls` 是機會數，每個機會最多
-    `max_per_call` 次。`json_output` 的呼叫在回答無法使用時會被重新詢問；`code_tokens` 是每次呼叫帶上的程式碼清單
-    token 數；`exact` 表示輸入在執行前就已知（符號），不是依假設推出的情境（發現、威脅）。
+    `max_per_call` 次。`json_output` 的呼叫在回答無法使用時會被重新詢問；`code_tokens` 是每次呼叫帶上的程式碼
+    token 數：`exact` 的計畫是實際的程式碼清單大小，其餘是估算假設的大小（預算上限或典型估計）；`exact` 表示輸入
+    在執行前就已知（符號），不是依假設推出的情境（發現、威脅）。
     A set of calls an agent would make for given inputs (`--estimate` adds them up and makes none). `calls` is the
     number of calls; `conditional` calls only happen when an answer needs them (e.g. healing an invalid test), and
     `calls` is then the number of opportunities, each with at most `max_per_call` calls. `json_output` calls are
-    re-asked when the answer is unusable; `code_tokens` is the code listing each call carries, in tokens; `exact`
+    re-asked when the answer is unusable; `code_tokens` is the code each call carries, in tokens: the actual code
+    listing for `exact` plans, otherwise the size the estimate assumes (a budget cap or a typical size); `exact`
     means the inputs are known before the run (symbols) rather than a scenario from assumptions (findings, threats)."""
     agent_id: str
     model_alias: str

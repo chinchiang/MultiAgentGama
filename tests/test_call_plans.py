@@ -153,6 +153,7 @@ def test_test_generator_plan_is_one_call_per_finding_and_bounds_the_heals(script
     assert _planned(plans, "test_generator") == generation
     (heal,) = [p for p in plans if p.kind == "heal"]
     assert heal.conditional and not heal.json_output and heal.max_per_call == test_generator.HEAL_ATTEMPTS
+    assert heal.code_tokens > 0  # 修復提示詞帶著被修的測試 ／ a repair prompt carries the test being repaired
     # 每次產生的回答有一個無效的測試：用了計畫上限的一半 ／ one invalid test per generated answer: half the plan's cap
     healed = sum(_actual(transport, "Fix Python Test Code").values())
     assert healed == len(findings) * test_generator.HEAL_ATTEMPTS == heal.calls * heal.max_per_call // 2
