@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from typing import Any, Callable, List, Tuple, Optional, Dict, Set
 from vibeharness.core.models import GeneratedTest, TestExecutionResult, TestStatus
 from vibeharness.core.sandbox import (
-    REASON_JS_COVERAGE_UNSUPPORTED as REASON_JS_COVERAGE_UNSUPPORTED, Sandbox, SandboxUnavailableError, TIMEOUT_EXIT_CODE,
+    REASON_JS_COVERAGE_UNSUPPORTED as REASON_JS_COVERAGE_UNSUPPORTED, NodeRuntime, Sandbox, SandboxUnavailableError,
+    TIMEOUT_EXIT_CODE,
 )
 from vibeharness.core.codecheck import check_test_code_for
 from vibeharness.core.jscoverage import JsLineCoverage
@@ -157,16 +158,19 @@ def _remaining_seconds(deadline: float, budget: float) -> int:
 class SuiteResult:
     """一次 execute_test_suite 的結果。`results` 依輸入順序；`python_coverage_pct` 與 `js_coverage_pct` 只有
     collect_coverage 時才有值（各自只代表自己的語言），`js_coverage_problem` 是收集了卻算不出 JS/TS 涵蓋率的原因；
-    `js_runner_problem` 只在這組測試含 JS/TS、卻沒有可用的 JS 執行器時才有值。
+    `js_runner_problem` 只在這組測試含 JS/TS、卻沒有可用的 JS 執行器時才有值；`node_runtime` 是這組測試含 JS/TS 時
+    解析出的 Node 執行環境（工廠拋出例外或沒有設定工廠時為 None）。
     The outcome of one execute_test_suite call. `results` is in input order; `python_coverage_pct` and
     `js_coverage_pct` are only set with collect_coverage (each covers its own language only), and
     `js_coverage_problem` says why JS/TS coverage was collected but could not be computed; `js_runner_problem` is only
-    set when the suite holds JS/TS tests and no JS runner is available."""
+    set when the suite holds JS/TS tests and no JS runner is available; `node_runtime` is the Node runtime resolved when
+    the suite holds JS/TS tests (None when the factory raised or none is configured)."""
     results: List[TestExecutionResult]
     python_coverage_pct: Optional[float] = None
     js_coverage_pct: Optional[float] = None
     js_coverage_problem: Optional[str] = None
     js_runner_problem: Optional[str] = None
+    node_runtime: Optional[NodeRuntime] = None
 
 
 class TestSuiteExecutor:
@@ -184,7 +188,7 @@ class TestSuiteExecutor:
         self,
         sandbox: Sandbox,
         per_test_timeout_seconds: int = 30,
-        js_sandbox_factory: Optional[Callable[[], Optional[Sandbox]]] = None,
+        js_sandbox_factory: Optional[Callable[[], NodeRuntime]] = None,
     ):
         self.sandbox = sandbox
         self.per_test_timeout_seconds = per_test_timeout_seconds
@@ -192,6 +196,7 @@ class TestSuiteExecutor:
         # Built on first use (Node is only needed when a JS/TS test exists); None means "cannot run JS"
         self._js_sandbox_factory = js_sandbox_factory
         self._js_sandbox: Optional[Sandbox] = None
+        self._node_runtime: Optional[NodeRuntime] = None
         self._js_sandbox_resolved = False
         # 沒有 JS 沙盒的原因，與沙盒一起只解析一次 ／ Why there is no JS sandbox, resolved once along with it
         self._js_runner_problem: Optional[str] = None
@@ -203,7 +208,8 @@ class TestSuiteExecutor:
                 self._js_runner_problem = REASON_JS_RUNNER_NOT_CONFIGURED
             else:
                 try:
-                    self._js_sandbox = self._js_sandbox_factory()
+                    self._node_runtime = self._js_sandbox_factory()
+                    self._js_sandbox = self._node_runtime.sandbox
                 except (SandboxUnavailableError, OSError) as e:
                     # 缺少 docker 映像檔、壞掉的 node 執行檔：會揭露，但不致命；設定錯誤已在啟動時驗證，其餘例外照常拋出
                     # a missing docker image, a broken node binary: disclosed, not fatal; configuration errors are
@@ -257,6 +263,7 @@ class TestSuiteExecutor:
             results=[results[i] for i in range(len(tests))], python_coverage_pct=coverage_pct,
             js_coverage_pct=js_coverage_pct, js_coverage_problem=js_coverage_problem,
             js_runner_problem=self._js_runner_problem if js_idx else None,
+            node_runtime=self._node_runtime if js_idx else None,
         )
 
     def run_mutant_batch(self, tests: List[GeneratedTest], working_dir: str, timeout_seconds: int) -> str:

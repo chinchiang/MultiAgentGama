@@ -17,7 +17,8 @@ import vibeharness.core.sandbox as sandbox_mod
 from vibeharness.core.codecheck import check_test_code
 from vibeharness.core.models import GeneratedTest, TestStatus
 from vibeharness.core.sandbox import (
-    EXECUTION_FAILURE_EXIT_CODE, TIMEOUT_EXIT_CODE, DockerSandbox, LocalSubprocessSandbox, SandboxRun, sandbox_home_env,
+    EXECUTION_FAILURE_EXIT_CODE, TIMEOUT_EXIT_CODE, DockerSandbox, LocalSubprocessSandbox, NodeRuntime, SandboxRun,
+    sandbox_home_env,
 )
 from vibeharness.runners.test_executor import (
     REASON_NOT_RUN_CORRECTLY, REASON_RERUN_BUDGET_EXHAUSTED, REASON_TARGET_BROKEN, TestSuiteExecutor,
@@ -260,7 +261,7 @@ def test_many_slow_but_passing_js_modules_all_run(tmp_path):
     # 20 modules of 0.3s each on a 2s batch budget: with groups of 10 the second pass keeps about 0.8s of slack
     # (enough for slow CI runners), while one shared budget left 8 of them not re-run
     js = _TimedJsSandbox(timeout_seconds=2, delay=0.3)
-    executor = TestSuiteExecutor(sandbox=LocalSubprocessSandbox(), js_sandbox_factory=lambda: js,
+    executor = TestSuiteExecutor(sandbox=LocalSubprocessSandbox(), js_sandbox_factory=lambda: NodeRuntime(js),
                                  per_test_timeout_seconds=2)
     tests = [_test(f"J{i}", _GOOD_JS, language="javascript") for i in range(20)]
     results = executor.execute_test_suite(tests, working_dir=str(tmp_path)).results
@@ -270,7 +271,7 @@ def test_many_slow_but_passing_js_modules_all_run(tmp_path):
 
 def test_js_rerun_timeouts_are_capped_by_the_remaining_budget(tmp_path):
     js = _TimedJsSandbox(timeout_seconds=3, hang={"test_vh_000", "test_vh_001", "test_vh_002"})
-    executor = TestSuiteExecutor(sandbox=LocalSubprocessSandbox(), js_sandbox_factory=lambda: js,
+    executor = TestSuiteExecutor(sandbox=LocalSubprocessSandbox(), js_sandbox_factory=lambda: NodeRuntime(js),
                                  per_test_timeout_seconds=2)
     tests = [_test(f"H{i}", _GOOD_JS, language="javascript") for i in range(3)]
     results = executor.execute_test_suite(tests, working_dir=str(tmp_path)).results

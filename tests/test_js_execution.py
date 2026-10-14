@@ -19,8 +19,9 @@ from vibeharness.core.codecontext import (
 from vibeharness.core.harness import VibeHarnessCommander
 from vibeharness.core.models import GeneratedTest, TestStatus
 from vibeharness.core.sandbox import (
-    DEFAULT_DOCKER_NODE_IMAGE, MIN_NODE_VERSION, TIMEOUT_EXIT_CODE, NodeDockerSandbox, NodeSubprocessSandbox,
-    SandboxRun, SandboxUnavailableError, detect_node, node_test_command, parse_node_version,
+    DEFAULT_DOCKER_NODE_IMAGE, MIN_NODE_VERSION, TIMEOUT_EXIT_CODE, NodeDockerSandbox, NodeRuntime,
+    NodeSubprocessSandbox, SandboxRun, SandboxUnavailableError, build_node_sandbox, detect_node, node_test_command,
+    parse_node_version,
 )
 from vibeharness.runners.test_executor import (
     TestSuiteExecutor, POC_HEADER_JS, REASON_NOT_RUN_CORRECTLY, REASON_TARGET_BROKEN,
@@ -380,7 +381,7 @@ class _PySandbox:
 
 def test_executor_keeps_order_across_languages_and_runs_js_modules_one_per_process(tmp_path):
     js = _RecordingSandbox({"test_vh_001": NODE_JUNIT.replace("test_vh_000", "test_vh_001")})
-    executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: js, per_test_timeout_seconds=7)
+    executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: NodeRuntime(js), per_test_timeout_seconds=7)
     tests = [
         _py_test("P1", "def test_a():\n    assert 1 == 1\n"),
         _js_test("J1", GOOD),
@@ -399,14 +400,14 @@ def test_executor_keeps_order_across_languages_and_runs_js_modules_one_per_proce
 
 def test_executor_js_timeout_and_unparseable_report(tmp_path):
     js = _RecordingSandbox(exit_code=TIMEOUT_EXIT_CODE)
-    executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: js, per_test_timeout_seconds=3)
+    executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: NodeRuntime(js), per_test_timeout_seconds=3)
     results = executor.execute_test_suite([_js_test("J", GOOD)], working_dir=str(tmp_path)).results
     # 唯一的模組已拿到整個批次預算（30 秒 >= 單測的 3 秒）：不重跑，回報實際用掉的預算
     # The only module already had the whole batch budget (30s >= the per-test 3s): no rerun, the budget it used is reported
     assert results[0].status == TestStatus.ERROR and "timed out after 30s" in results[0].failure_reason
     assert len(js.calls) == 1
     js = _RecordingSandbox({"test_vh_000": "<broken"})
-    executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: js)
+    executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: NodeRuntime(js))
     results = executor.execute_test_suite([_js_test("J", GOOD)], working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.ERROR and "could not be parsed" in results[0].failure_reason
 
@@ -435,7 +436,7 @@ def test_executor_without_js_runner_reports_every_js_test_as_not_run(tmp_path):
     with pytest.raises(RuntimeError, match="a bug in the factory"):
         executor.execute_test_suite([_js_test("J", GOOD)], working_dir=str(tmp_path))
 
-    executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: None)
+    executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: NodeRuntime(None))
     results = executor.execute_test_suite([_js_test("J", GOOD)], working_dir=str(tmp_path)).results
     assert "no usable Node runtime was found" in results[0].failure_reason
 
@@ -443,7 +444,7 @@ def test_executor_without_js_runner_reports_every_js_test_as_not_run(tmp_path):
 def test_executor_skips_typescript_when_the_runtime_cannot_strip_types(tmp_path):
     js = _RecordingSandbox()
     js.supports_typescript = False
-    executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: js)
+    executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: NodeRuntime(js))
     results = executor.execute_test_suite([_js_test("T", GOOD, language="typescript"), _js_test("J", GOOD)],
                                           working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.ERROR and "older than 22.6" in results[0].failure_reason
@@ -452,7 +453,7 @@ def test_executor_skips_typescript_when_the_runtime_cannot_strip_types(tmp_path)
 
 def test_executor_js_gate_failure_is_an_error_without_a_run(tmp_path):
     js = _RecordingSandbox()
-    executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: js)
+    executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: NodeRuntime(js))
     results = executor.execute_test_suite([_js_test("J", "test('x', () => {});")], working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.ERROR and "not executable" in results[0].failure_reason
     assert js.calls == []
@@ -591,7 +592,7 @@ def test_node_runs_esm_cjs_and_bare_specifier_modules(tmp_path):
     os.environ["NODE_OPTIONS"] = "--require /nonexistent/evil.js"
     try:
         sandbox = NodeSubprocessSandbox(timeout_seconds=60, memory_mb=512)
-        executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: sandbox, per_test_timeout_seconds=30)
+        executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: NodeRuntime(sandbox), per_test_timeout_seconds=30)
         results = executor.execute_test_suite(tests, working_dir=str(target)).results
     finally:
         del os.environ["OPENAI_API_KEY"], os.environ["NODE_OPTIONS"]
@@ -611,7 +612,7 @@ def test_node_runs_esm_cjs_and_bare_specifier_modules(tmp_path):
 @node_only
 def test_node_hang_is_killed_on_the_batch_budget(tmp_path):
     sandbox = NodeSubprocessSandbox(timeout_seconds=3)
-    executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: sandbox, per_test_timeout_seconds=2)
+    executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: NodeRuntime(sandbox), per_test_timeout_seconds=2)
     hang = _js_test("hang", _esm_test("", 'test("spin", () => { while (true) {} assert.ok(1); });'))
     results = executor.execute_test_suite([hang], working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.ERROR and "timed out after 3s" in results[0].failure_reason
@@ -620,7 +621,7 @@ def test_node_hang_is_killed_on_the_batch_budget(tmp_path):
 @node_only
 def test_node_file_without_tests_is_not_a_pass(tmp_path):
     sandbox = NodeSubprocessSandbox(timeout_seconds=30)
-    executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: sandbox)
+    executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: NodeRuntime(sandbox))
     # 關卡要求有 test() 呼叫；一個永遠不會註冊的 test()（在死分支內）會到達 Node
     # The gate requires a test() call; a test() that never registers (inside a dead branch) reaches Node
     code = _esm_test("", 'if (false) { test("ghost", () => { assert.ok(1); }); }')
@@ -637,7 +638,7 @@ def test_node_strips_types_for_typescript_targets(tmp_path):
     url = target_file_url(str(target / "svc.ts"))
     code = _esm_test(f'import {{ greet }} from "{url}";', 'test("greets", () => { assert.equal(greet("a"), "hi a"); });')
     sandbox = NodeSubprocessSandbox(timeout_seconds=30, strip_types=True)
-    executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: sandbox)
+    executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: NodeRuntime(sandbox))
     results = executor.execute_test_suite([_js_test("ts", code, language="typescript")], working_dir=str(target)).results
     assert results[0].status == TestStatus.PASSED and results[0].language == "typescript"
 
@@ -668,7 +669,7 @@ def test_node_container_runs_tests_against_the_mounted_target(tmp_path):
                                      's.on("error", () => { assert.ok(true); done(); }); s.on("connect", () => { assert.fail("net"); }); });')),
     ]
     sandbox = NodeDockerSandbox(timeout_seconds=60)
-    executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: sandbox, per_test_timeout_seconds=40)
+    executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: NodeRuntime(sandbox), per_test_timeout_seconds=40)
     results = executor.execute_test_suite(tests, working_dir=str(target)).results
     by_id = {r.test_id: r for r in results}
     assert by_id["ok"].status == TestStatus.PASSED
@@ -755,40 +756,41 @@ def test_js_target_without_a_node_runtime_is_an_evidence_gap(tmp_path, scripted)
     assert summary.run.node_runtime is None
 
 
-def test_harness_node_sandbox_provider_selection(tmp_path, monkeypatch):
-    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
+def test_node_sandbox_provider_selection(tmp_path, monkeypatch):
+    settings = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock").settings
+
+    def build(provider):
+        return build_node_sandbox(provider, settings.node.node_bin, settings.node.image, settings.sandbox, has_typescript=True)
     # docker provider：用映像檔自帶的 Node，主機沒有 node 也能建；TS 支援看映像檔的版本
     # docker provider: the image's own Node, built even without a host node; TS support follows the image's version
-    monkeypatch.setattr("vibeharness.core.harness.detect_node", lambda node_bin: (None, None, "no usable Node runtime found"))
-    monkeypatch.setattr(VibeHarnessCommander, "_docker_node_version", staticmethod(lambda sandbox: (22, 9, 0)))
-    commander.sandbox_node_provider = "docker"
-    commander.ast_extractor.analyzed_files = ["/app/x.ts"]
+    monkeypatch.setattr("vibeharness.core.sandbox.detect_node", lambda node_bin: (None, None, "no usable Node runtime found"))
+    monkeypatch.setattr(NodeDockerSandbox, "probe_node_version", lambda self: (22, 9, 0))
     monkeypatch.setattr(NodeDockerSandbox, "_verify_available", lambda self: None)
-    sandbox = commander._build_node_sandbox()
+    runtime = build("docker")
+    sandbox = runtime.sandbox
     assert isinstance(sandbox, NodeDockerSandbox) and sandbox.supports_typescript and sandbox.strip_types
-    assert commander.node_runtime == f"docker {DEFAULT_DOCKER_NODE_IMAGE} (node v22.9.0)"
-    assert commander.node_runtime_problem is None and commander.node_typescript_problem is None
+    assert runtime.label == f"docker {DEFAULT_DOCKER_NODE_IMAGE} (node v22.9.0)"
+    assert runtime.problem is None and runtime.ts_problem is None
     # 映像檔版本查不到：不假設，TS 列為未執行而 JS 照跑（不帶 strip 旗標）；映像檔太舊：TS 列為問題
     # unknown image version: no guessing, TS reported as not run while JS still runs (no strip flag); an old image: TS problem
-    monkeypatch.setattr(VibeHarnessCommander, "_docker_node_version", staticmethod(lambda sandbox: None))
-    sandbox = commander._build_node_sandbox()
-    assert not sandbox.supports_typescript and not sandbox.strip_types and commander.node_runtime == f"docker {DEFAULT_DOCKER_NODE_IMAGE}"
-    assert "could not be read" in commander.node_typescript_problem
-    monkeypatch.setattr(VibeHarnessCommander, "_docker_node_version", staticmethod(lambda sandbox: (20, 1, 0)))
-    assert not commander._build_node_sandbox().supports_typescript
-    assert "TypeScript tests need Node >= 22.6" in commander.node_typescript_problem
-    # 映像檔缺失：建構失敗，node_runtime 不得宣稱有執行環境 ／ missing image: construction fails, node_runtime must not claim one
-    commander.node_runtime = None
+    monkeypatch.setattr(NodeDockerSandbox, "probe_node_version", lambda self: None)
+    runtime = build("docker")
+    assert not runtime.sandbox.supports_typescript and not runtime.sandbox.strip_types
+    assert runtime.label == f"docker {DEFAULT_DOCKER_NODE_IMAGE}"
+    assert "could not be read" in runtime.ts_problem
+    monkeypatch.setattr(NodeDockerSandbox, "probe_node_version", lambda self: (20, 1, 0))
+    runtime = build("docker")
+    assert not runtime.sandbox.supports_typescript
+    assert "TypeScript tests need Node >= 22.6" in runtime.ts_problem
+    # 映像檔缺失：建構失敗，沒有任何 NodeRuntime 宣稱有執行環境 ／ missing image: construction fails, no NodeRuntime claims one
     monkeypatch.setattr(NodeDockerSandbox, "_verify_available", lambda self: (_ for _ in ()).throw(SandboxUnavailableError("no image")))
     with pytest.raises(SandboxUnavailableError):
-        commander._build_node_sandbox()
-    assert commander.node_runtime is None
-    monkeypatch.setattr("vibeharness.core.harness.detect_node", lambda node_bin: ("/usr/bin/node", (20, 5, 0), None))
-    commander.sandbox_node_provider = "local_subprocess"
-    commander.ast_extractor.analyzed_files = ["/app/x.ts"]
-    sandbox = commander._build_node_sandbox()
+        build("docker")
+    monkeypatch.setattr("vibeharness.core.sandbox.detect_node", lambda node_bin: ("/usr/bin/node", (20, 5, 0), None))
+    runtime = build("local_subprocess")
+    sandbox = runtime.sandbox
     assert isinstance(sandbox, NodeSubprocessSandbox) and not sandbox.supports_typescript and not sandbox.strip_types
-    assert "TypeScript tests need Node >= 22.6" in commander.node_typescript_problem
+    assert "TypeScript tests need Node >= 22.6" in runtime.ts_problem
 
 
 def test_bad_node_settings_fail_at_start_up(tmp_path):
@@ -880,26 +882,26 @@ def test_docker_node_version_is_recorded_for_js_only_targets_too(monkeypatch):
     commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
     commander.sandbox_node_provider = "docker"
     monkeypatch.setattr(NodeDockerSandbox, "_verify_available", lambda self: None)
-    monkeypatch.setattr(VibeHarnessCommander, "_docker_node_version", staticmethod(lambda sandbox: (22, 9, 0)))
+    monkeypatch.setattr(NodeDockerSandbox, "probe_node_version", lambda self: (22, 9, 0))
     commander.ast_extractor.analyzed_files = ["/app/x.mjs"]
-    sandbox = commander._build_node_sandbox()
-    assert not sandbox.strip_types and commander.node_runtime == f"docker {DEFAULT_DOCKER_NODE_IMAGE} (node v22.9.0)"
+    runtime = commander.executor._js_sandbox_factory()
+    assert not runtime.sandbox.strip_types and runtime.label == f"docker {DEFAULT_DOCKER_NODE_IMAGE} (node v22.9.0)"
     commander.ast_extractor.analyzed_files = ["/app/x.ts"]
-    assert commander._build_node_sandbox().strip_types
+    assert commander.executor._js_sandbox_factory().sandbox.strip_types
 
 
 def test_docker_node_version_probe_uses_the_sandbox_run_prefix(tmp_path, monkeypatch):
     """版本探測用與測試相同的 docker run 前綴（同使用者、掛載、限制），不是另一組手寫旗標。
     The version probe uses the same docker run prefix as the tests (same user, mounts, limits), not hand-rolled flags."""
-    import vibeharness.core.harness as harness_mod
+    import vibeharness.core.sandbox as sandbox_mod
     sandbox = NodeDockerSandbox(timeout_seconds=30, verify=False, memory="256m", pids_limit=64, network="none")
     seen = {}
 
     def fake_run(cmd, **kw):
         seen["cmd"] = cmd
         return subprocess.CompletedProcess(cmd, 0, stdout="v22.9.0\n", stderr="")
-    monkeypatch.setattr(harness_mod.subprocess, "run", fake_run)
-    assert VibeHarnessCommander._docker_node_version(sandbox) == (22, 9, 0)
+    monkeypatch.setattr(sandbox_mod.subprocess, "run", fake_run)
+    assert sandbox.probe_node_version() == (22, 9, 0)
     joined = " ".join(seen["cmd"])
     assert seen["cmd"][-6:] == [DEFAULT_DOCKER_NODE_IMAGE, "timeout", "--kill-after=5", "20", "node", "--version"]
     for flag in ("--rm", "--read-only", "--network none", "--cap-drop ALL", "--memory 256m", "--pids-limit 64", "--user", "--name"):
@@ -907,9 +909,9 @@ def test_docker_node_version_probe_uses_the_sandbox_run_prefix(tmp_path, monkeyp
     assert "--pull" not in joined
     # 主機端逾時：移除容器（與測試批次相同），回傳 None ／ host-side timeout: the container is removed (as for a batch), None
     removed = []
-    monkeypatch.setattr(harness_mod.subprocess, "run", lambda cmd, **kw: (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd, 30)))
+    monkeypatch.setattr(sandbox_mod.subprocess, "run", lambda cmd, **kw: (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd, 30)))
     monkeypatch.setattr(NodeDockerSandbox, "_after_timeout", lambda self, cmd: removed.append(cmd[cmd.index("--name") + 1]))
-    assert VibeHarnessCommander._docker_node_version(sandbox) is None and len(removed) == 1
+    assert sandbox.probe_node_version() is None and len(removed) == 1
 
 
 def test_file_level_case_match_is_exact():

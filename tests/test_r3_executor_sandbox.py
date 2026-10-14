@@ -22,7 +22,7 @@ from vibeharness.core.jscoverage import (
 )
 from vibeharness.core.models import GeneratedTest, TestStatus
 from vibeharness.core.sandbox import (
-    LocalSubprocessSandbox, NodeSubprocessSandbox, detect_node, sandbox_temp_env,
+    LocalSubprocessSandbox, NodeRuntime, NodeSubprocessSandbox, detect_node, sandbox_temp_env,
 )
 from vibeharness.runners.test_executor import REASON_NOT_RUN_CORRECTLY, REASON_TARGET_BROKEN, TestSuiteExecutor
 
@@ -51,7 +51,7 @@ class _PySandbox:
 
 
 def _js_executor(sandbox, **kwargs):
-    return TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: sandbox, **kwargs)
+    return TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: NodeRuntime(sandbox), **kwargs)
 
 
 # --- 1. 目標自己用 compile()／ast.parse() 解析檔案拋出的 SyntaxError 是缺陷，不是載入失敗 ----------------

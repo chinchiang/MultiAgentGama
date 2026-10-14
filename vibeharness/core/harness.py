@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import subprocess
-import tempfile
 import sys
 from typing import Any, Dict, Optional, List, Tuple
 from rich.console import Console
@@ -24,8 +23,7 @@ from vibeharness.core.models import (
 )
 from vibeharness.core.llm_gateway import LLMGateway, DEFAULT_CONFIG_PATH
 from vibeharness.core.sandbox import (
-    LocalSubprocessSandbox, DockerSandbox, DEFAULT_DOCKER_IMAGE as DEFAULT_DOCKER_IMAGE, MIN_NODE_VERSION_TS,
-    NodeDockerSandbox, NodeSubprocessSandbox, detect_node, parse_node_version,
+    LocalSubprocessSandbox, DockerSandbox, DEFAULT_DOCKER_IMAGE as DEFAULT_DOCKER_IMAGE, build_node_sandbox,
 )
 from vibeharness.core.baseline import Baseline, annotate_report_payload
 from vibeharness.core.gate import (
@@ -128,7 +126,11 @@ class VibeHarnessCommander:
         self.scenario_builder = ThreatScenarioBuilder(self.gateway)
         self.executor = TestSuiteExecutor(
             self.sandbox, per_test_timeout_seconds=settings.sandbox.per_test_timeout,
-            js_sandbox_factory=self._build_node_sandbox,
+            js_sandbox_factory=lambda: build_node_sandbox(
+                self.sandbox_node_provider, self.node_bin, self.settings.node.image, self.settings.sandbox,
+                has_typescript=any(f.lower().endswith((".ts", ".tsx", ".mts", ".cts"))
+                                   for f in self.ast_extractor.analyzed_files),
+            ),
         )
         # JS/TS 測試以 Node 內建的執行器執行；沙盒採延遲建立，在第一次需要時才建立（它的設定在載入時就驗證過）
         # JS/TS tests run with Node's built-in runner; the sandbox is built lazily, the first time one is needed
@@ -140,9 +142,6 @@ class VibeHarnessCommander:
         # and the source is recorded in RunMetadata
         self.mutation_testing: bool = settings.mutation.enabled
         self.mutation_source: str = settings.sources["mutation_testing"]
-        self.node_runtime: Optional[str] = None
-        self.node_runtime_problem: Optional[str] = None
-        self.node_typescript_problem: Optional[str] = None
         self.reporter = ReportGenerator()
         self.max_files = settings.scope.max_files
         self.max_file_bytes = settings.scope.max_file_bytes
@@ -242,83 +241,6 @@ class VibeHarnessCommander:
         Turns mutation testing on or off from a CLI flag (it wins over the config file)."""
         self.mutation_testing = enabled
         self.mutation_source = source
-
-    def _build_node_sandbox(self) -> Optional[LocalSubprocessSandbox]:
-        """供 `node:test` 模組使用的沙盒；沒有可用的 Node 執行環境時為 None（並設定 `node_runtime_problem`）：
-        缺少執行環境是 JS/TS 測試的證據缺口，絕不是啟動失敗。docker provider 用映像檔自帶的 Node，
-        不需要主機上的 node。
-        The sandbox for `node:test` modules, or None (with `node_runtime_problem` set) when no usable
-        Node runtime exists: a missing runtime is an evidence gap for the JS/TS tests, never a start-up failure.
-        The docker provider uses the image's own Node and needs no node binary on the host."""
-        sandbox_cfg, docker_cfg = self.settings.sandbox, self.settings.sandbox.docker
-        image = self.settings.node.image
-        has_ts = any(f.lower().endswith((".ts", ".tsx", ".mts", ".cts")) for f in self.ast_extractor.analyzed_files)
-        sandbox: LocalSubprocessSandbox
-        version: Optional[Tuple[int, int, int]]
-        if self.sandbox_node_provider == "docker":
-            # 先建沙盒（確認映像檔存在），再用與測試相同的 docker run 前綴在容器內讀 Node 版本：
-            # 它既是 RunMetadata 的執行環境來源，也決定 TypeScript 的型別剝除；讀不到就不猜
-            # Build the sandbox first (the image must exist), then read the Node version inside the container with the
-            # same docker run prefix as the tests: it is the runtime provenance in RunMetadata and decides TypeScript
-            # type stripping; no guessing when it cannot be read
-            docker_sandbox = NodeDockerSandbox(
-                timeout_seconds=sandbox_cfg.timeout, image=image, network=docker_cfg.network, memory=docker_cfg.memory,
-                cpus=docker_cfg.cpus, pids_limit=docker_cfg.pids_limit, docker_bin=docker_cfg.bin,
-            )
-            version = self._docker_node_version(docker_sandbox)
-            runtime = f"docker {image}" + (f" (node v{'.'.join(map(str, version))})" if version else "")
-            supports_ts = version is not None and version >= MIN_NODE_VERSION_TS
-            docker_sandbox.supports_typescript = supports_ts
-            docker_sandbox.node_version = version  # 決定 JS/TS 涵蓋率旗標；未知時不收集 ／ decides the JS/TS coverage flags; unknown means none
-            docker_sandbox.strip_types = has_ts and supports_ts
-            sandbox = docker_sandbox
-        else:
-            path, version, problem = detect_node(self.node_bin)
-            if path is None or version is None:
-                self.node_runtime_problem = problem
-                return None
-            runtime = f"node v{'.'.join(map(str, version))}"
-            supports_ts = version >= MIN_NODE_VERSION_TS
-            sandbox = NodeSubprocessSandbox(
-                timeout_seconds=sandbox_cfg.timeout, memory_mb=sandbox_cfg.memory_mb, node_bin=self.node_bin,
-                strip_types=has_ts and supports_ts, supports_typescript=supports_ts, node_version=version,
-            )
-        if has_ts and not supports_ts:
-            min_ts = '.'.join(map(str, MIN_NODE_VERSION_TS))
-            found = runtime if version is not None else bi(f"無法讀取 {runtime} 內的 Node 版本", f"the Node version inside {runtime} could not be read")
-            self.node_typescript_problem = bi(
-                f"TypeScript 測試需要 Node >= {min_ts}（型別剝除）；找到的是 {found}",
-                f"TypeScript tests need Node >= {min_ts} (type stripping); found {found}"
-            )
-        # 沙盒建立成功後才記錄執行環境：建構失敗（例如缺映像檔）時 RunMetadata 不能宣稱有 Node
-        # The runtime is recorded only once the sandbox exists: after a failed construction (e.g. a missing image)
-        # RunMetadata must not claim a Node runtime
-        self.node_runtime = runtime
-        return sandbox
-
-    @staticmethod
-    def _docker_node_version(sandbox: NodeDockerSandbox) -> Optional[Tuple[int, int, int]]:
-        """映像檔內的 Node 版本：用與測試相同的 `docker run` 前綴（同樣的使用者、掛載與限制）執行 `node --version`，
-        查不到時為 None。映像檔已由沙盒建構時的 `image inspect` 確認存在，不會觸發 pull；容器內有 `timeout` 兜底，
-        主機端逾時則移除容器（與測試批次相同）。
-        The Node version inside the image: `node --version` run with the same `docker run` prefix as the tests
-        (same user, mounts and limits), or None when it cannot be read. The image's presence was confirmed by the
-        sandbox's `image inspect`, so no pull is triggered; an in-container `timeout` backstops the command and a
-        host-side timeout removes the container (as a test batch does)."""
-        try:
-            with tempfile.TemporaryDirectory(prefix="vibe_node_probe_") as run_dir, \
-                    tempfile.TemporaryDirectory(prefix="vibe_node_target_") as base_dir:
-                cmd = sandbox._docker_run_prefix(run_dir, base_dir, {"HOME": "/tmp"}) + [
-                    sandbox.image, "timeout", "--kill-after=5", "20", "node", "--version"]
-                try:
-                    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
-                                            env=sandbox._cli_env())
-                except subprocess.TimeoutExpired:
-                    sandbox._after_timeout(cmd)
-                    return None
-        except OSError:
-            return None
-        return parse_node_version(result.stdout) if result.returncode == 0 else None
 
     @staticmethod
     def _build_sandbox(sandbox: SandboxSettings) -> LocalSubprocessSandbox:
@@ -601,6 +523,7 @@ class VibeHarnessCommander:
 
             ast = self.ast_extractor
             js_reason = wb_suite.js_runner_problem or bb_suite.js_runner_problem
+            node_runtime = wb_suite.node_runtime or bb_suite.node_runtime
             gate = evaluate(GateEvidence(
                 target_dir=target_dir,
                 threat_report=threat_report,
@@ -634,8 +557,8 @@ class VibeHarnessCommander:
                 static_findings=static_findings,
                 execution=ExecutionEvidence(
                     wb_tests=wb_tests, bb_tests=bb_tests, wb_results=wb_results, bb_results=bb_results,
-                    js_runner_problem=(self.node_runtime_problem or js_reason) if js_reason else None,
-                    ts_problem=self.node_typescript_problem,
+                    js_runner_problem=((node_runtime and node_runtime.problem) or js_reason) if js_reason else None,
+                    ts_problem=node_runtime.ts_problem if node_runtime else None,
                     mutation_report=mutation_report,
                 ),
                 untested_threats=untested_threats,
@@ -663,7 +586,7 @@ class VibeHarnessCommander:
                 target_git_commit=commit,
                 target_git_dirty=dirty,
                 file_filters=filters,
-                node_runtime=self.node_runtime,
+                node_runtime=node_runtime.label if node_runtime else None,
                 mutation_enabled=self.mutation_testing,
                 mutation_source=self.mutation_source,
             )

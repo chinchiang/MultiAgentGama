@@ -740,7 +740,7 @@ class LocalSubprocessSandbox:
 # --- Docker sandbox -----------------------------------------------------------------
 
 # 映像檔名稱的預設值定義在 core/settings.py ／ the image name defaults are defined in core/settings.py
-from vibeharness.core.settings import DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_NODE_IMAGE  # noqa: E402
+from vibeharness.core.settings import DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_NODE_IMAGE, SandboxSettings  # noqa: E402
 CONTAINER_WORK_ROOT = "/work"      # 目標掛載在 /work/<目標名稱> ／ the target is mounted at /work/<target name>
 CONTAINER_RUN_DIR = "/sandbox"     # 產生的測試模組、JUnit XML 與涵蓋率資料 ／ generated test modules, JUnit XML and coverage data
 # 轉送給 docker CLI 本身（絕不進入容器），讓遠端 daemon／context 能繼續運作
@@ -1284,9 +1284,9 @@ class NodeDockerSandbox(_NodeCoverageMixin, DockerSandbox):
     ):
         self.strip_types = strip_types
         self.supports_typescript = supports_typescript
-        # 映像檔內的 Node 版本（harness 以 _docker_node_version 探測後設定）；未知時不收集涵蓋率，也不另外探測
-        # The Node version inside the image (set by the harness after probing it with _docker_node_version); unknown
-        # means no coverage, and no extra probe
+        # 映像檔內的 Node 版本（with_probed_node 以 probe_node_version 探測後設定）；未知時不收集涵蓋率，也不另外探測
+        # The Node version inside the image (set by with_probed_node from probe_node_version); unknown means no
+        # coverage, and no extra probe
         self.node_version = node_version
         super().__init__(timeout_seconds, image, network, memory, cpus, pids_limit, docker_bin, verify)
 
@@ -1295,6 +1295,42 @@ class NodeDockerSandbox(_NodeCoverageMixin, DockerSandbox):
             super()._verify_available()
         except SandboxUnavailableError as e:
             raise SandboxUnavailableError(str(e).replace("docker/sandbox.Dockerfile", "docker/sandbox-node.Dockerfile")) from e
+
+    @classmethod
+    def with_probed_node(cls, has_typescript: bool, **kwargs: Any) -> "NodeDockerSandbox":
+        """建立沙盒（確認映像檔存在，否則拋出 SandboxUnavailableError），再用與測試相同的 docker run 前綴在容器內讀
+        Node 版本：它決定 JS/TS 涵蓋率旗標與 TypeScript 的型別剝除（只在目標有 TypeScript 時開）；讀不到就不猜。
+        Builds the sandbox (the image must exist, or SandboxUnavailableError is raised), then reads the Node version
+        inside the container with the same docker run prefix as the tests: it decides the JS/TS coverage flags and
+        TypeScript type stripping (on only when the target has TypeScript); no guessing when it cannot be read."""
+        sandbox = cls(**kwargs)
+        sandbox.node_version = sandbox.probe_node_version()
+        sandbox.supports_typescript = sandbox.node_version is not None and sandbox.node_version >= MIN_NODE_VERSION_TS
+        sandbox.strip_types = has_typescript and sandbox.supports_typescript
+        return sandbox
+
+    def probe_node_version(self) -> Optional[Tuple[int, int, int]]:
+        """映像檔內的 Node 版本：用與測試相同的 `docker run` 前綴（同樣的使用者、掛載與限制）執行 `node --version`，
+        查不到時為 None。映像檔已由建構時的 `image inspect` 確認存在，不會觸發 pull；容器內有 `timeout` 兜底，
+        主機端逾時則移除容器（與測試批次相同）。
+        The Node version inside the image: `node --version` run with the same `docker run` prefix as the tests
+        (same user, mounts and limits), or None when it cannot be read. The image's presence was confirmed by the
+        `image inspect` at construction, so no pull is triggered; an in-container `timeout` backstops the command and
+        a host-side timeout removes the container (as a test batch does)."""
+        try:
+            with tempfile.TemporaryDirectory(prefix="vibe_node_probe_") as run_dir, \
+                    tempfile.TemporaryDirectory(prefix="vibe_node_target_") as base_dir:
+                cmd = self._docker_run_prefix(run_dir, base_dir, {"HOME": "/tmp"}) + [
+                    self.image, "timeout", "--kill-after=5", "20", "node", "--version"]
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
+                                            env=self._cli_env())
+                except subprocess.TimeoutExpired:
+                    self._after_timeout(cmd)
+                    return None
+        except OSError:
+            return None
+        return parse_node_version(result.stdout) if result.returncode == 0 else None
 
     def _build_command(
         self,
@@ -1340,3 +1376,56 @@ class NodeDockerSandbox(_NodeCoverageMixin, DockerSandbox):
         # local results without being rewritten back to host paths; the test modules under /sandbox are outside the
         # root and drop out
         return [self._container_coverage_root(base_dir, coverage_target)], container_target_dir(base_dir), False
+
+
+@dataclass(frozen=True)
+class NodeRuntime:
+    """JS/TS 測試的 Node 執行環境。`sandbox` 為 None 時沒有可用的執行環境，原因在 `problem`；`label` 是
+    RunMetadata.node_runtime（例如 "node v22.9.0"），只有沙盒建立成功時才有值；`ts_problem` 是目標有 TypeScript、
+    執行環境卻無法剝除型別時的證據缺口。
+    The Node runtime for the JS/TS tests. With `sandbox` None there is no usable runtime and `problem` says why;
+    `label` is RunMetadata.node_runtime (e.g. "node v22.9.0") and is only set once the sandbox exists; `ts_problem` is
+    the evidence gap when the target has TypeScript but the runtime cannot strip types."""
+    sandbox: Optional[Sandbox]
+    label: Optional[str] = None
+    problem: Optional[str] = None
+    ts_problem: Optional[str] = None
+
+
+def build_node_sandbox(provider: str, node_bin: str, image: str, sandbox: SandboxSettings,
+                       has_typescript: bool) -> NodeRuntime:
+    """供 `node:test` 模組使用的沙盒：缺少執行環境是 JS/TS 測試的證據缺口，絕不是啟動失敗（docker 映像檔不存在時
+    拋出 SandboxUnavailableError，由執行器揭露）。docker provider 用映像檔自帶的 Node，不需要主機上的 node。
+    The sandbox for `node:test` modules: a missing runtime is an evidence gap for the JS/TS tests, never a start-up
+    failure (a missing docker image raises SandboxUnavailableError, which the executor discloses). The docker provider
+    uses the image's own Node and needs no node binary on the host."""
+    node_sandbox: Sandbox
+    version: Optional[Tuple[int, int, int]]
+    if provider == "docker":
+        docker = sandbox.docker
+        docker_sandbox = NodeDockerSandbox.with_probed_node(
+            has_typescript, timeout_seconds=sandbox.timeout, image=image, network=docker.network, memory=docker.memory,
+            cpus=docker.cpus, pids_limit=docker.pids_limit, docker_bin=docker.bin,
+        )
+        version, supports_ts = docker_sandbox.node_version, docker_sandbox.supports_typescript
+        label = f"docker {image}" + (f" (node v{'.'.join(map(str, version))})" if version else "")
+        node_sandbox = docker_sandbox
+    else:
+        path, version, problem = detect_node(node_bin)
+        if path is None or version is None:
+            return NodeRuntime(sandbox=None, problem=problem)
+        label = f"node v{'.'.join(map(str, version))}"
+        supports_ts = version >= MIN_NODE_VERSION_TS
+        node_sandbox = NodeSubprocessSandbox(
+            timeout_seconds=sandbox.timeout, memory_mb=sandbox.memory_mb, node_bin=node_bin,
+            strip_types=has_typescript and supports_ts, supports_typescript=supports_ts, node_version=version,
+        )
+    ts_problem: Optional[str] = None
+    if has_typescript and not supports_ts:
+        min_ts = '.'.join(map(str, MIN_NODE_VERSION_TS))
+        found = label if version is not None else bi(f"無法讀取 {label} 內的 Node 版本", f"the Node version inside {label} could not be read")
+        ts_problem = bi(
+            f"TypeScript 測試需要 Node >= {min_ts}（型別剝除）；找到的是 {found}",
+            f"TypeScript tests need Node >= {min_ts} (type stripping); found {found}"
+        )
+    return NodeRuntime(sandbox=node_sandbox, label=label, ts_problem=ts_problem)

@@ -10,7 +10,9 @@ import pytest
 
 from vibeharness.core.codecheck import check_test_code
 from vibeharness.core.models import GeneratedTest, TestStatus
-from vibeharness.core.sandbox import TIMEOUT_EXIT_CODE, LocalSubprocessSandbox, SandboxRun, harden_harness_process
+from vibeharness.core.sandbox import (
+    TIMEOUT_EXIT_CODE, LocalSubprocessSandbox, NodeRuntime, SandboxRun, harden_harness_process,
+)
 from vibeharness.runners.test_executor import REASON_RERUN_BUDGET_EXHAUSTED, TestSuiteExecutor
 
 linux_only = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux /proc and prctl semantics")
@@ -204,7 +206,7 @@ class _HangingJsSandbox:
 
 def test_js_hang_uses_the_batch_budget_and_the_rest_rerun_on_the_per_test_budget(tmp_path):
     js = _HangingJsSandbox(timeout_seconds=2, hang={"test_vh_000"})
-    executor = TestSuiteExecutor(sandbox=LocalSubprocessSandbox(), js_sandbox_factory=lambda: js,
+    executor = TestSuiteExecutor(sandbox=LocalSubprocessSandbox(), js_sandbox_factory=lambda: NodeRuntime(js),
                                  per_test_timeout_seconds=1)
     results = executor.execute_test_suite([_test("H", _GOOD_JS, language="javascript"),
                                           _test("OK", _GOOD_JS, language="javascript")], working_dir=str(tmp_path)).results
@@ -215,7 +217,7 @@ def test_js_hang_uses_the_batch_budget_and_the_rest_rerun_on_the_per_test_budget
 
 def test_js_rerun_pass_is_bounded_by_the_batch_budget(tmp_path):
     js = _HangingJsSandbox(timeout_seconds=1, hang={"test_vh_000", "test_vh_001", "test_vh_002"})
-    executor = TestSuiteExecutor(sandbox=LocalSubprocessSandbox(), js_sandbox_factory=lambda: js,
+    executor = TestSuiteExecutor(sandbox=LocalSubprocessSandbox(), js_sandbox_factory=lambda: NodeRuntime(js),
                                  per_test_timeout_seconds=1)
     tests = [_test(f"H{i}", _GOOD_JS, language="javascript") for i in range(3)]
     results = executor.execute_test_suite(tests, working_dir=str(tmp_path)).results

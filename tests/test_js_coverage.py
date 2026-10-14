@@ -20,8 +20,8 @@ from vibeharness.core.models import (
     GeneratedTest, MultiModelDebateResult, TestExecutionResult, TestStatus, ThreatModelReport, VibeHarnessSummary,
 )
 from vibeharness.core.sandbox import (
-    DEFAULT_DOCKER_NODE_IMAGE, TIMEOUT_EXIT_CODE, LocalSubprocessSandbox, NodeDockerSandbox, NodeSubprocessSandbox,
-    SandboxRun, detect_node, node_test_command,
+    DEFAULT_DOCKER_NODE_IMAGE, TIMEOUT_EXIT_CODE, LocalSubprocessSandbox, NodeDockerSandbox, NodeRuntime,
+    NodeSubprocessSandbox, SandboxRun, detect_node, node_test_command,
 )
 from vibeharness.reports.report_generator import ReportGenerator
 from vibeharness.runners.test_executor import (
@@ -254,12 +254,12 @@ def test_node_docker_sandbox_coverage_command_and_container_path_translation(tmp
 
 
 def test_harness_passes_the_node_version_to_the_sandboxes(tmp_path, monkeypatch):
-    import vibeharness.core.harness as harness_module
+    import vibeharness.core.sandbox as sandbox_module
     config = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vibeharness", "config",
                           "agents_config.yaml")
     commander = VibeHarnessCommander(config_path=config, execution_mode="mock")
-    monkeypatch.setattr(harness_module, "detect_node", lambda node_bin: ("/usr/bin/node", (22, 14, 0), None))
-    sandbox = commander._build_node_sandbox()
+    monkeypatch.setattr(sandbox_module, "detect_node", lambda node_bin: ("/usr/bin/node", (22, 14, 0), None))
+    sandbox = commander.executor._js_sandbox_factory().sandbox
     assert isinstance(sandbox, NodeSubprocessSandbox) and sandbox.node_version == (22, 14, 0)
 
 
@@ -303,7 +303,7 @@ _GOOD = _esm_test('import { add } from "file:///tmp/app/lib.mjs";', 'test("a", (
 
 def test_executor_unions_module_coverage_and_keeps_python_coverage_separate(tmp_path):
     js = _CoverageSandbox({"test_vh_000": _LCOV_A, "test_vh_001": _LCOV_B})
-    executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: js)
+    executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: NodeRuntime(js))
     suite = executor.execute_test_suite([_js_test("A", _GOOD), _js_test("B", _GOOD)],
                                         working_dir=str(tmp_path), collect_coverage=True)
     assert all(r.status == TestStatus.PASSED for r in suite.results)
@@ -318,13 +318,13 @@ def test_executor_unions_module_coverage_and_keeps_python_coverage_separate(tmp_
 
 def test_executor_timed_out_modules_do_not_contribute(tmp_path):
     js = _CoverageSandbox({"test_vh_000": _LCOV_A, "test_vh_001": _LCOV_B}, timeouts={"test_vh_001"})
-    executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: js, per_test_timeout_seconds=30)
+    executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: NodeRuntime(js), per_test_timeout_seconds=30)
     suite = executor.execute_test_suite([_js_test("A", _GOOD), _js_test("B", _GOOD)],
                                         working_dir=str(tmp_path), collect_coverage=True)
     assert suite.results[1].status == TestStatus.ERROR
     assert suite.js_coverage_pct == 50.0
     js = _CoverageSandbox({}, timeouts={"test_vh_000"})
-    executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: js, per_test_timeout_seconds=30)
+    executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: NodeRuntime(js), per_test_timeout_seconds=30)
     suite = executor.execute_test_suite([_js_test("A", _GOOD)], working_dir=str(tmp_path), collect_coverage=True)
     assert suite.js_coverage_pct is None
     assert suite.js_coverage_problem == REASON_JS_COVERAGE_NO_REPORT
@@ -332,12 +332,12 @@ def test_executor_timed_out_modules_do_not_contribute(tmp_path):
 
 def test_executor_reports_why_js_coverage_is_missing(tmp_path):
     js = _CoverageSandbox({"test_vh_000": "SF:../run/test_vh_000.mjs\nDA:1,1\nend_of_record\n"})
-    executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: js)
+    executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: NodeRuntime(js))
     suite = executor.execute_test_suite([_js_test("A", _GOOD)], working_dir=str(tmp_path), collect_coverage=True)
     assert suite.js_coverage_pct is None
     assert suite.js_coverage_problem == REASON_JS_COVERAGE_NO_TARGET_FILE
     old = _CoverageSandbox({"test_vh_000": _LCOV_A}, problem="Node v20.5.0 has no lcov test reporter")
-    executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: old)
+    executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: NodeRuntime(old))
     suite = executor.execute_test_suite([_js_test("A", _GOOD)], working_dir=str(tmp_path), collect_coverage=True)
     assert suite.results[0].status == TestStatus.PASSED and old.kwargs == [{}]  # 測試照常執行 ／ the tests still run
     assert suite.js_coverage_pct is None and "lcov" in suite.js_coverage_problem
@@ -347,7 +347,7 @@ def test_executor_reports_why_js_coverage_is_missing(tmp_path):
         # A sandbox that does not override the coverage interface keeps LocalSubprocessSandbox's default
         js_coverage_problem = LocalSubprocessSandbox.js_coverage_problem
 
-    executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: _Plain({}))
+    executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: NodeRuntime(_Plain({})))
     suite = executor.execute_test_suite([_js_test("A", _GOOD)], working_dir=str(tmp_path), collect_coverage=True)
     assert suite.js_coverage_problem == REASON_JS_COVERAGE_UNSUPPORTED
 
@@ -406,11 +406,11 @@ def _run_two_modules(target, imports, sandbox):
     b = _js_test("B", _esm_test(imports, 'test("big", () => { assert.equal(add(101, 2), -1); });'))
     singles = []
     for t in (a, b):
-        executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: sandbox, per_test_timeout_seconds=30)
+        executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: NodeRuntime(sandbox), per_test_timeout_seconds=30)
         single = executor.execute_test_suite([t], working_dir=str(target), collect_coverage=True)
         assert single.results[0].status == TestStatus.PASSED, single.results[0].failure_reason
         singles.append(single.js_coverage_pct)
-    executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: sandbox, per_test_timeout_seconds=30)
+    executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: NodeRuntime(sandbox), per_test_timeout_seconds=30)
     suite = executor.execute_test_suite([a, b], working_dir=str(target), collect_coverage=True)
     assert all(r.status == TestStatus.PASSED for r in suite.results) and suite.python_coverage_pct is None
     return singles, suite
@@ -497,8 +497,7 @@ def test_node_container_collects_js_coverage_from_the_mounted_target(tmp_path):
     target = tmp_path / "app"
     target.mkdir()
     (target / "lib.mjs").write_text(_ESM_LIB, encoding="utf-8")
-    sandbox = NodeDockerSandbox(timeout_seconds=60)
-    sandbox.node_version = VibeHarnessCommander._docker_node_version(sandbox)
+    sandbox = NodeDockerSandbox.with_probed_node(has_typescript=False, timeout_seconds=60)
     assert sandbox.node_version is not None and sandbox.js_coverage_problem() is None
     imports = f'import {{ add }} from "{target_file_url(str(target / "lib.mjs"))}";'
     singles, suite = _run_two_modules(target, imports, sandbox)
