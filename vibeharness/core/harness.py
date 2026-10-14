@@ -557,7 +557,7 @@ class VibeHarnessCommander:
                 static_findings=static_findings,
                 execution=ExecutionEvidence(
                     wb_tests=wb_tests, bb_tests=bb_tests, wb_results=wb_results, bb_results=bb_results,
-                    js_runner_problem=((node_runtime and node_runtime.problem) or js_reason) if js_reason else None,
+                    js_runner_problem=js_reason,
                     ts_problem=node_runtime.ts_problem if node_runtime else None,
                     mutation_report=mutation_report,
                 ),

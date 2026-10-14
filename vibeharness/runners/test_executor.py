@@ -216,7 +216,10 @@ class TestSuiteExecutor:
                     # validated at start-up, any other exception propagates
                     self._js_runner_problem = f"{type(e).__name__}: {e}"
                 if self._js_sandbox is None and not self._js_runner_problem:
-                    self._js_runner_problem = REASON_NO_NODE_RUNTIME
+                    # 執行環境說得出缺什麼時（哪個 node_bin、版本太舊）每個測試都用它，與閘門的證據缺口相同
+                    # When the runtime can say what is missing (which node_bin, a version too old) every test uses it,
+                    # the same as the gate's evidence gap
+                    self._js_runner_problem = (self._node_runtime and self._node_runtime.problem) or REASON_NO_NODE_RUNTIME
         return self._js_sandbox
 
     def execute_test_suite(

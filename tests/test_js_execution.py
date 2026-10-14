@@ -441,6 +441,21 @@ def test_executor_without_js_runner_reports_every_js_test_as_not_run(tmp_path):
     assert "no usable Node runtime was found" in results[0].failure_reason
 
 
+def test_executor_reports_why_there_is_no_node_runtime_on_every_js_test(tmp_path):
+    """沒有 Node 執行環境時，每個 JS/TS 測試的原因就是 NodeRuntime.problem（與閘門的證據缺口相同），
+    不是一句通用的「找不到」：使用者才看得出缺的是哪個 node_bin、版本太舊或 --version 失敗。
+    Without a Node runtime, every JS/TS test's reason is NodeRuntime.problem (the same as the gate's evidence gap),
+    not a generic "not found": the user can tell which node_bin is missing, the version is too old or --version failed."""
+    problem = "Node v18.0.0 is below the minimum 20.0.0"
+    executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: NodeRuntime(None, problem=problem))
+    suite = executor.execute_test_suite([_js_test("J", GOOD), _js_test("T", GOOD, language="typescript")],
+                                        working_dir=str(tmp_path))
+    for result in suite.results:
+        assert result.status == TestStatus.ERROR and result.failure_reason.endswith(f": {problem}")
+        assert "no usable Node runtime was found" not in result.failure_reason
+    assert suite.js_runner_problem == problem
+
+
 def test_executor_skips_typescript_when_the_runtime_cannot_strip_types(tmp_path):
     js = _RecordingSandbox()
     js.supports_typescript = False

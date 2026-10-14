@@ -30,6 +30,7 @@
 - 無法歸屬的發現位置改由單一判斷（core/identity.py 的 `is_unknown_location`）決定：None、空字串、只有空白與 `unknown` 佔位字（前後空白不計）都算未知。過去去重、測試生成、基準線鍵與 SARIF 各自判斷、條件略有不同：只有空白的路徑在基準線鍵中被當成檔名，去重會用符號而不是完全相同的標題判斷、測試生成會用空白當檔名；空字串或 ` unknown ` 在去重中也被當成已知的位置。實際上審查者只會寫出 `unknown`，所以一般執行的輸出不變。
 - 鍵在、形狀卻不對的模型回答不再被當成可用的回答：過去閘道只檢查必要的鍵是否存在，審查者回答 `{"findings": 5}` 或一份沒有任何可用項目的清單（每一項都不是物件，或都沒有 title 與 description）時，這次呼叫被登記為 live、讀成「零個發現」，可能讓判定變成 `READY_TO_SHIP`（fail open）。現在每個代理宣告它期望的回答形狀（core/model_output.py 的 `OutputSchema`：欄位型別，以及清單中「可用的項目」由代理自己的判斷決定），不合時以指名欄位的原因重新詢問一次（例如 `field 'findings' must be a list of objects (got int)`），仍不合就記為 `invalid`（證據缺口）。同樣適用於驗證者（沒有任何一項裁決的 index 在範圍內、verdict 為 confirm／reject／unsure：過去只是「未經驗證」、不算證據缺口）、威脅建模（`threats` 不是物件清單）、測試生成（`tests` 沒有任何一項有 code，且沒有可用的 `code` 字串）與攻擊合成（`code` 不是字串）。空清單與只有部分項目不能用的清單照舊接受、不重問。**已知影響**：在升級前存下的回應快取若含有這類回答，`--cache-only` 重跑時那次呼叫會變成 `invalid`，原本的 `READY_TO_SHIP` 可能變成 `INCONCLUSIVE`（exit 3）；原本的判定正是建立在無法使用的輸出上。原因會標明「回應快取中的回答已不符合預期的形狀」；不帶 `--cache-only` 跑一次就會重新詢問並覆寫那些快取。`live-smoke.yml` 在同一次 workflow 中填快取再重跑，不受影響。
 - 測試生成的回答同時有 `tests` 清單與單一的 `code`，但 `tests` 的每一項都沒有 code（例如 `{"tests": ["bad"], "code": "…"}`）時，現在改用那個 `code`；過去只要 `tests` 不是空清單就忽略 `code`，那個發現因此沒有模型測試、改用探針。`tests` 有任何一項可用時仍只用 `tests`。
+- 沒有可用的 Node 執行環境時，每個 JS/TS 測試的原因現在寫出缺了什麼，與閘門的證據缺口相同（例如「找不到 node_bin '/usr/local/bin/node' 可用的 Node 執行環境（需要 Node >= 20.0.0）」或「Node v18.0.0 低於最低需求 20.0.0」）；過去報告與 JSON 裡每個測試只寫「找不到可用的 Node 執行環境」，詳細原因只出現在證據缺口。判定結果、證據缺口與結束碼不變；docker 映像檔不存在時的原因原本就是詳細的，也不變。
 
 ### 測試
 
