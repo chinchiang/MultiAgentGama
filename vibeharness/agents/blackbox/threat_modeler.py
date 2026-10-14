@@ -33,6 +33,8 @@ THREATS_SCHEMA = OutputSchema(required={"threats": LIST_OF_OBJECTS(
 # instead of rendering everything into one prompt and silently dropping the overflow.
 BATCH_MAX_TOKENS = 8000
 BATCH_MAX_SYMBOLS = 15
+# 這個代理在 agents_config.yaml 裡的 id：模型別名、呼叫計畫與呼叫紀錄都以它為鍵
+# This agent's id in agents_config.yaml: its model alias, call plans and call records are keyed by it
 AGENT_ID = "blackbox_threat_modeler"
 
 

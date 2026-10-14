@@ -40,6 +40,8 @@ TESTS_SCHEMA = OutputSchema(any_of={
 # 每個發現所顯示目標原始碼的估計 token 預算
 # Estimated-token budget for the target source shown per finding
 CODE_CONTEXT_TOKENS = 4000
+# 這個代理在 agents_config.yaml 裡的 id：模型別名、呼叫計畫與呼叫紀錄都以它為鍵
+# This agent's id in agents_config.yaml: its model alias, call plans and call records are keyed by it
 AGENT_ID = "whitebox_test_generator"
 # 無效的測試最多請模型修復幾次（之後原樣保留，由執行器回報為 ERROR）
 # How many times an invalid test is sent back to the model for repair (after that it is kept as is and the executor

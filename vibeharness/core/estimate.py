@@ -84,7 +84,7 @@ class RunEstimate(BaseModel):
 def _row(agent_id: str, model_alias: str, plans: Sequence[PlannedCalls], reask: int, heal_rate: float,
          basis: str) -> CallEstimate:
     """一個代理的計畫加總成一列：有條件的呼叫（修復）典型值乘上 heal_rate，JSON 呼叫的最大值乘上重新詢問次數，
-    每次呼叫的 token 是程式碼清單加上提示額外負擔，輸出是典型回答大小。
+    每次呼叫的 token 是程式碼清單加上提示額外負擔，輸出是典型回答大小。沒有計畫（例如沒有符號）就是一列零。
     One agent's plans summed into one row: conditional calls (repairs) take heal_rate of their opportunities as the
     typical figure, JSON calls are multiplied by the re-asks in the worst case, and each call's tokens are its code
     listing plus the prompt overhead, with the typical answer size as output. No plans (e.g. no symbols) is a row of
