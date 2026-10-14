@@ -222,15 +222,15 @@ def test_container_runs_tests_against_the_mounted_target(tmp_path, monkeypatch):
                            f"        open({str(target / 'x.txt')!r}, 'w')\n"),
         _test("no_secret", "import os\n\ndef test_env():\n    assert 'OPENAI_API_KEY' not in os.environ\n"),
     ]
-    results, coverage = TestSuiteExecutor(DockerSandbox(timeout_seconds=120)).execute_test_suite(
+    suite = TestSuiteExecutor(DockerSandbox(timeout_seconds=120)).execute_test_suite(
         tests, working_dir=str(target), collect_coverage=True
     )
-    status = {r.test_id: r.status for r in results}
+    status = {r.test_id: r.status for r in suite.results}
     assert status == {
         "imports": TestStatus.PASSED, "by_path": TestStatus.PASSED, "fails": TestStatus.FAILED,
         "no_net": TestStatus.PASSED, "ro_target": TestStatus.PASSED, "no_secret": TestStatus.PASSED,
-    }, [(r.test_id, r.failure_reason) for r in results]
-    assert coverage == 100.0
+    }, [(r.test_id, r.failure_reason) for r in suite.results]
+    assert suite.python_coverage_pct == 100.0
     assert not (target / "x.txt").exists() and not (target / "__pycache__").exists()
 
 

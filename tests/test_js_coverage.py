@@ -304,43 +304,43 @@ _GOOD = _esm_test('import { add } from "file:///tmp/app/lib.mjs";', 'test("a", (
 def test_executor_unions_module_coverage_and_keeps_python_coverage_separate(tmp_path):
     js = _CoverageSandbox({"test_vh_000": _LCOV_A, "test_vh_001": _LCOV_B})
     executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: js)
-    results, py_cov = executor.execute_test_suite([_js_test("A", _GOOD), _js_test("B", _GOOD)],
-                                                  working_dir=str(tmp_path), collect_coverage=True)
-    assert all(r.status == TestStatus.PASSED for r in results)
-    assert py_cov is None  # 回傳值的第二項只代表 Python ／ the second item only means Python
-    assert executor.last_js_line_coverage_pct == 75.0 and executor.js_coverage_unavailable_reason is None
-    # 黑箱（collect_coverage=False）不傳涵蓋率參數，並重設上一次的值
-    # Black-box (collect_coverage=False) passes no coverage arguments and resets the previous value
+    suite = executor.execute_test_suite([_js_test("A", _GOOD), _js_test("B", _GOOD)],
+                                        working_dir=str(tmp_path), collect_coverage=True)
+    assert all(r.status == TestStatus.PASSED for r in suite.results)
+    assert suite.python_coverage_pct is None  # python_coverage_pct 只代表 Python ／ python_coverage_pct only means Python
+    assert suite.js_coverage_pct == 75.0 and suite.js_coverage_problem is None
+    # 黑箱（collect_coverage=False）不傳涵蓋率參數，也沒有 JS/TS 涵蓋率
+    # Black-box (collect_coverage=False) passes no coverage arguments and has no JS/TS coverage
     js.kwargs.clear()
-    executor.execute_test_suite([_js_test("A", _GOOD)], working_dir=str(tmp_path))
-    assert js.kwargs == [{}] and executor.last_js_line_coverage_pct is None
+    blackbox = executor.execute_test_suite([_js_test("A", _GOOD)], working_dir=str(tmp_path))
+    assert js.kwargs == [{}] and blackbox.js_coverage_pct is None
 
 
 def test_executor_timed_out_modules_do_not_contribute(tmp_path):
     js = _CoverageSandbox({"test_vh_000": _LCOV_A, "test_vh_001": _LCOV_B}, timeouts={"test_vh_001"})
     executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: js, per_test_timeout_seconds=30)
-    results, _ = executor.execute_test_suite([_js_test("A", _GOOD), _js_test("B", _GOOD)],
-                                             working_dir=str(tmp_path), collect_coverage=True)
-    assert results[1].status == TestStatus.ERROR
-    assert executor.last_js_line_coverage_pct == 50.0
+    suite = executor.execute_test_suite([_js_test("A", _GOOD), _js_test("B", _GOOD)],
+                                        working_dir=str(tmp_path), collect_coverage=True)
+    assert suite.results[1].status == TestStatus.ERROR
+    assert suite.js_coverage_pct == 50.0
     js = _CoverageSandbox({}, timeouts={"test_vh_000"})
     executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: js, per_test_timeout_seconds=30)
-    executor.execute_test_suite([_js_test("A", _GOOD)], working_dir=str(tmp_path), collect_coverage=True)
-    assert executor.last_js_line_coverage_pct is None
-    assert executor.js_coverage_unavailable_reason == REASON_JS_COVERAGE_NO_REPORT
+    suite = executor.execute_test_suite([_js_test("A", _GOOD)], working_dir=str(tmp_path), collect_coverage=True)
+    assert suite.js_coverage_pct is None
+    assert suite.js_coverage_problem == REASON_JS_COVERAGE_NO_REPORT
 
 
 def test_executor_reports_why_js_coverage_is_missing(tmp_path):
     js = _CoverageSandbox({"test_vh_000": "SF:../run/test_vh_000.mjs\nDA:1,1\nend_of_record\n"})
     executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: js)
-    executor.execute_test_suite([_js_test("A", _GOOD)], working_dir=str(tmp_path), collect_coverage=True)
-    assert executor.last_js_line_coverage_pct is None
-    assert executor.js_coverage_unavailable_reason == REASON_JS_COVERAGE_NO_TARGET_FILE
+    suite = executor.execute_test_suite([_js_test("A", _GOOD)], working_dir=str(tmp_path), collect_coverage=True)
+    assert suite.js_coverage_pct is None
+    assert suite.js_coverage_problem == REASON_JS_COVERAGE_NO_TARGET_FILE
     old = _CoverageSandbox({"test_vh_000": _LCOV_A}, problem="Node v20.5.0 has no lcov test reporter")
     executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: old)
-    results, _ = executor.execute_test_suite([_js_test("A", _GOOD)], working_dir=str(tmp_path), collect_coverage=True)
-    assert results[0].status == TestStatus.PASSED and old.kwargs == [{}]  # 測試照常執行 ／ the tests still run
-    assert executor.last_js_line_coverage_pct is None and "lcov" in executor.js_coverage_unavailable_reason
+    suite = executor.execute_test_suite([_js_test("A", _GOOD)], working_dir=str(tmp_path), collect_coverage=True)
+    assert suite.results[0].status == TestStatus.PASSED and old.kwargs == [{}]  # 測試照常執行 ／ the tests still run
+    assert suite.js_coverage_pct is None and "lcov" in suite.js_coverage_problem
 
     class _Plain(_CoverageSandbox):
         # 沒有覆寫涵蓋率介面的沙盒沿用 LocalSubprocessSandbox 的預設值
@@ -348,8 +348,8 @@ def test_executor_reports_why_js_coverage_is_missing(tmp_path):
         js_coverage_problem = LocalSubprocessSandbox.js_coverage_problem
 
     executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: _Plain({}))
-    executor.execute_test_suite([_js_test("A", _GOOD)], working_dir=str(tmp_path), collect_coverage=True)
-    assert executor.js_coverage_unavailable_reason == REASON_JS_COVERAGE_UNSUPPORTED
+    suite = executor.execute_test_suite([_js_test("A", _GOOD)], working_dir=str(tmp_path), collect_coverage=True)
+    assert suite.js_coverage_problem == REASON_JS_COVERAGE_UNSUPPORTED
 
 
 # --- 報告 ---------------------------------------------------------------------------------------------
@@ -399,26 +399,27 @@ _CJS_LIB = ("function add(a, b) {\n  if (a > 100) {\n    return -1;\n  }\n  retu
 
 
 def _run_two_modules(target, imports, sandbox):
-    """兩個模組各自走 add 的一條分支；回傳 (只跑 A, 只跑 B, 兩個一起) 的涵蓋率累加器與執行器。
-    Two modules, each taking one branch of add; returns the coverage of (A alone, B alone, both) and the executor."""
+    """兩個模組各自走 add 的一條分支；回傳 (只跑 A, 只跑 B) 的 JS/TS 涵蓋率，以及兩個一起跑的 SuiteResult。
+    Two modules, each taking one branch of add; returns the JS/TS coverage of (A alone, B alone) and the SuiteResult
+    of both together."""
     a = _js_test("A", _esm_test(imports, 'test("small", () => { assert.equal(add(1, 2), 3); });'))
     b = _js_test("B", _esm_test(imports, 'test("big", () => { assert.equal(add(101, 2), -1); });'))
     singles = []
     for t in (a, b):
         executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: sandbox, per_test_timeout_seconds=30)
-        results, _ = executor.execute_test_suite([t], working_dir=str(target), collect_coverage=True)
-        assert results[0].status == TestStatus.PASSED, results[0].failure_reason
-        singles.append(executor.last_js_line_coverage_pct)
+        single = executor.execute_test_suite([t], working_dir=str(target), collect_coverage=True)
+        assert single.results[0].status == TestStatus.PASSED, single.results[0].failure_reason
+        singles.append(single.js_coverage_pct)
     executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: sandbox, per_test_timeout_seconds=30)
-    results, py_cov = executor.execute_test_suite([a, b], working_dir=str(target), collect_coverage=True)
-    assert all(r.status == TestStatus.PASSED for r in results) and py_cov is None
-    return singles, executor
+    suite = executor.execute_test_suite([a, b], working_dir=str(target), collect_coverage=True)
+    assert all(r.status == TestStatus.PASSED for r in suite.results) and suite.python_coverage_pct is None
+    return singles, suite
 
 
-def _assert_union(singles, executor):
+def _assert_union(singles, suite):
     pct_a, pct_b = singles
-    union = executor.last_js_line_coverage_pct
-    assert pct_a is not None and pct_b is not None and union is not None, executor.js_coverage_unavailable_reason
+    union = suite.js_coverage_pct
+    assert pct_a is not None and pct_b is not None and union is not None, suite.js_coverage_problem
     # 各自走一條分支：聯集比任何一個單獨的模組都高，但 neg() 從未被呼叫，所以不到 100%
     # Each takes one branch: the union beats either module alone, but neg() was never called, so it is below 100%
     assert max(pct_a, pct_b) < union < 100.0
@@ -443,8 +444,8 @@ def test_real_node_esm_target_union_across_two_modules(tmp_path):
     (target / "unused.mjs").write_text("export const z = 1;\n", encoding="utf-8")
     sandbox = NodeSubprocessSandbox(timeout_seconds=60, node_version=_NODE_VERSION)
     imports = f'import {{ add }} from "{target_file_url(str(target / "lib.mjs"))}";\nimport {{ one }} from "dep";'
-    singles, executor = _run_two_modules(target, imports, sandbox)
-    _assert_union(singles, executor)
+    singles, suite = _run_two_modules(target, imports, sandbox)
+    _assert_union(singles, suite)
     sink = _lines_of(sandbox, target, _js_test("A", _esm_test(imports, 'test("s", () => { assert.equal(add(one, 2), 3); });')))
     # 只有目標自己載入過的檔案：沒有 node_modules、沒有產生的測試模組、沒有從未載入的 unused.mjs
     # Only the target's own loaded files: no node_modules, no generated test module, no never-loaded unused.mjs
@@ -460,8 +461,8 @@ def test_real_node_cjs_target_union_across_two_modules(tmp_path):
     url = target_file_url(str(target / "lib.cjs"))
     imports = f'import lib from "{url}";\nconst {{ add }} = lib;'
     sandbox = NodeSubprocessSandbox(timeout_seconds=60, node_version=_NODE_VERSION)
-    singles, executor = _run_two_modules(target, imports, sandbox)
-    _assert_union(singles, executor)
+    singles, suite = _run_two_modules(target, imports, sandbox)
+    _assert_union(singles, suite)
 
 
 @pytest.mark.skipif(not _TS_OK, reason=f"Node >= 22.6 (type stripping) with the lcov reporter unavailable (found {_FOUND})")
@@ -473,8 +474,8 @@ def test_real_node_typescript_target_coverage(tmp_path):
         "  return a + b;\n}\nexport function neg(x: number): number {\n  return -x;\n}\n", encoding="utf-8")
     imports = f'import {{ add }} from "{target_file_url(str(target / "lib.ts"))}";'
     sandbox = NodeSubprocessSandbox(timeout_seconds=60, strip_types=True, node_version=_NODE_VERSION)
-    singles, executor = _run_two_modules(target, imports, sandbox)
-    _assert_union(singles, executor)
+    singles, suite = _run_two_modules(target, imports, sandbox)
+    _assert_union(singles, suite)
 
 
 # --- Docker 容器 -------------------------------------------------------------------------------------
@@ -500,7 +501,7 @@ def test_node_container_collects_js_coverage_from_the_mounted_target(tmp_path):
     sandbox.node_version = VibeHarnessCommander._docker_node_version(sandbox)
     assert sandbox.node_version is not None and sandbox.js_coverage_problem() is None
     imports = f'import {{ add }} from "{target_file_url(str(target / "lib.mjs"))}";'
-    singles, executor = _run_two_modules(target, imports, sandbox)
-    _assert_union(singles, executor)
+    singles, suite = _run_two_modules(target, imports, sandbox)
+    _assert_union(singles, suite)
     sink = _lines_of(sandbox, target, _js_test("A", _esm_test(imports, 'test("s", () => { assert.equal(add(1, 2), 3); });')))
     assert list(sink.files) == ["lib.mjs"]  # 容器路徑已對應回目標相對路徑 ／ container paths mapped back to target-relative paths

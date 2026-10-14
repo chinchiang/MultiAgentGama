@@ -392,7 +392,7 @@ def test_real_docker_cli_output_beyond_the_cap_is_an_error_not_a_crash(tmp_path,
                         lambda cmd: (names.append(cmd[cmd.index("--name") + 1]), original(cmd))[1])
     code = "def test_flood():\n    assert False, 'z' * (8 * 1024 * 1024)\n"
     run = sandbox.execute_pytest_files({"test_vh_000.py": code},
-                                                                         working_dir=str(target))
+                                       working_dir=str(target))
     assert run.exit_code == EXECUTION_FAILURE_EXIT_CODE and run.junit_xml is None and run.stderr.endswith(OUTPUT_CAP_NOTE), run.stderr[-500:]
     assert len(names) == 1 and run.duration < 60
     left = subprocess.run(["docker", "ps", "-aq", "--filter", f"name=^{names[0]}$"], capture_output=True, text=True)

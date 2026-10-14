@@ -13,7 +13,7 @@ from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
 from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
 from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
 from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
-from vibeharness.runners.test_executor import TestSuiteExecutor
+from vibeharness.runners.test_executor import SuiteResult, TestSuiteExecutor
 from vibeharness.core.harness import VibeHarnessCommander
 from vibeharness.reports.report_generator import METRIC_TABLE_HEADER
 from vibeharness.core.model_output import ANY, OutputSchema
@@ -39,10 +39,10 @@ def executor():
 # --- Executor ---------------------------------------------------------------
 
 def test_syntax_error_does_not_poison_other_tests(executor, tmp_path):
-    results, _ = executor.execute_test_suite([
+    results = executor.execute_test_suite([
         _test("OK", "def test_ok():\n    assert True"),
         _test("BROKEN", "def test_b(:\n    pass"),
-    ], working_dir=str(tmp_path))
+    ], working_dir=str(tmp_path)).results
     ok, broken = results
     assert ok.status == TestStatus.PASSED
     assert broken.status == TestStatus.ERROR
@@ -51,10 +51,10 @@ def test_syntax_error_does_not_poison_other_tests(executor, tmp_path):
 
 
 def test_module_level_import_error_is_isolated(executor, tmp_path):
-    results, _ = executor.execute_test_suite([
+    results = executor.execute_test_suite([
         _test("A", "import definitely_missing_mod\ndef test_a():\n    pass"),
         _test("B", "def test_b():\n    assert 1 == 2"),
-    ], working_dir=str(tmp_path))
+    ], working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.ERROR
     assert not results[0].is_security_exploit_confirmed
     assert results[1].status == TestStatus.FAILED
@@ -72,10 +72,10 @@ def test_parent_dir_module_does_not_shadow_the_target(executor, tmp_path):
     app = tmp_path / "app"
     app.mkdir()
     (app / "m.py").write_text("WHO = 'target'\ndef f(x):\n    return WHO\n", encoding="utf-8")
-    results, _ = executor.execute_test_suite(
+    results = executor.execute_test_suite(
         [_test("A", "from m import f\n\ndef test_which():\n    assert f(1) == 'target'")],
         working_dir=str(app),
-    )
+    ).results
     assert results[0].status == TestStatus.PASSED, results[0].failure_reason
 
 
@@ -91,10 +91,10 @@ def test_unparseable_junit_report_is_not_reported_as_no_tests_collected(executor
         return SandboxRun(0, "", "", 0.1, None, "<testsuites><truncated")
 
     monkeypatch.setattr(executor.sandbox, "execute_pytest_files", broken_report)
-    results, _ = executor.execute_test_suite([
+    results = executor.execute_test_suite([
         _test("A", "def test_a():\n    assert True"),
         _test("B", "def test_b():\n    assert True"),
-    ], working_dir=str(tmp_path))
+    ], working_dir=str(tmp_path)).results
     assert [r.status for r in results] == [TestStatus.ERROR, TestStatus.ERROR]
     for r in results:
         assert "could not be parsed" in r.failure_reason
@@ -108,10 +108,10 @@ def test_rerun_report_parse_failure_is_reported_honestly(executor, tmp_path, mon
         return SandboxRun(0, "", "", 0.1, None, "<junk")
 
     monkeypatch.setattr(executor.sandbox, "execute_pytest_files", batch_times_out_then_bad_report)
-    results, _ = executor.execute_test_suite([
+    results = executor.execute_test_suite([
         _test("A", "def test_a():\n    assert True"),
         _test("B", "def test_b():\n    assert True"),
-    ], working_dir=str(tmp_path))
+    ], working_dir=str(tmp_path)).results
     assert [r.status for r in results] == [TestStatus.ERROR, TestStatus.ERROR]
     for r in results:
         assert "could not be parsed" in r.failure_reason
@@ -124,10 +124,10 @@ def test_broken_target_import_is_attributed_to_the_target(executor, tmp_path):
     broken: the report must attribute the error to the target instead of the generated
     test, and must not claim the boundary was exercised."""
     (tmp_path / "m.py").write_text("import nonexistent_pkg_xyz\n\ndef f(x):\n    return x\n", encoding="utf-8")
-    results, _ = executor.execute_test_suite(
+    results = executor.execute_test_suite(
         [_test("A", "from m import f\n\ndef test_a():\n    assert f(1) == 1")],
         working_dir=str(tmp_path),
-    )
+    ).results
     r = results[0]
     assert r.status == TestStatus.ERROR
     assert "Target code is broken" in r.failure_reason, r.failure_reason
@@ -136,10 +136,10 @@ def test_broken_target_import_is_attributed_to_the_target(executor, tmp_path):
 
 
 def test_test_side_import_error_still_blames_the_test(executor, tmp_path):
-    results, _ = executor.execute_test_suite(
+    results = executor.execute_test_suite(
         [_test("A", "import definitely_missing_mod\n\ndef test_a():\n    assert True")],
         working_dir=str(tmp_path),
-    )
+    ).results
     r = results[0]
     assert r.status == TestStatus.ERROR
     assert "Target code is broken" not in r.failure_reason
@@ -147,9 +147,9 @@ def test_test_side_import_error_still_blames_the_test(executor, tmp_path):
 
 
 def test_pytest_fail_is_recognized_as_confirmed_exploit(executor, tmp_path):
-    results, _ = executor.execute_test_suite([
+    results = executor.execute_test_suite([
         _test("FAIL_CALL", "import pytest\ndef test_exploit():\n    pytest.fail('BOLA breach succeeded')"),
-    ], working_dir=str(tmp_path))
+    ], working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.FAILED
     assert results[0].is_security_exploit_confirmed is True
     assert "BOLA breach succeeded" in (results[0].failure_reason or "")
@@ -161,10 +161,10 @@ def test_did_not_raise_is_recognized_as_confirmed_exploit(executor, tmp_path):
     A missing defense (`pytest.raises` not satisfied) must count as a confirmed exploit
     like any other assertion failure, not as a non-security test error."""
     (tmp_path / "m.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
-    results, _ = executor.execute_test_suite([
+    results = executor.execute_test_suite([
         _test("NO_RAISE", "import pytest\nfrom m import f\n\ndef test_exploit():\n"
                           "    with pytest.raises(ValueError):\n        f(None)"),
-    ], working_dir=str(tmp_path))
+    ], working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.FAILED
     assert results[0].is_security_exploit_confirmed is True
     assert "DID NOT RAISE" in (results[0].failure_reason or "")
@@ -181,24 +181,24 @@ def test_is_assertion_recognizes_assertion_and_pytest_fail():
 
 
 def test_import_error_inside_test_is_error_not_exploit(executor, tmp_path):
-    results, _ = executor.execute_test_suite([
+    results = executor.execute_test_suite([
         _test("A", "def test_a():\n    import definitely_missing_mod\n    assert definitely_missing_mod"),
-    ], working_dir=str(tmp_path))
+    ], working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.ERROR
     assert not results[0].is_security_exploit_confirmed
 
 
 def test_duplicate_ids_and_function_names_run_independently(executor, tmp_path):
-    results, _ = executor.execute_test_suite([
+    results = executor.execute_test_suite([
         _test("WB-TEST-01", "def test_x():\n    assert False", "whitebox_unit"),
         _test("WB-TEST-01", "def test_x():\n    assert True", "whitebox_unit"),
-    ], working_dir=str(tmp_path))
+    ], working_dir=str(tmp_path)).results
     assert [r.status for r in results] == [TestStatus.FAILED, TestStatus.PASSED]
     assert [r.test_id for r in results] == ["WB-TEST-01", "WB-TEST-01-2"]
 
 
 def test_code_without_test_function_is_error(executor, tmp_path):
-    results, _ = executor.execute_test_suite([_test("A", "x = 1")], working_dir=str(tmp_path))
+    results = executor.execute_test_suite([_test("A", "x = 1")], working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.ERROR
 
 
@@ -215,7 +215,7 @@ def test_metadata_newlines_cannot_inject_code(executor, tmp_path):
         "title": "nice\ndef test_evicted():\n    assert False",
         "target_component": "x\nimport os\nassert os is None or True",
     })
-    results, _ = executor.execute_test_suite([injected], working_dir=str(tmp_path))
+    results = executor.execute_test_suite([injected], working_dir=str(tmp_path)).results
     # 只有通過驗證的測試函式會執行；注入的行只是無作用的註解文字
     # Only the validated test function runs; the injected lines are inert comment text
     assert results[0].status == TestStatus.PASSED
@@ -268,14 +268,14 @@ def test_partially_skipped_module_is_flagged(tmp_path):
         "</testsuite>"
     )
     executor = TestSuiteExecutor(_FakeSandbox(batch_exit=0, individual_junit=junit))
-    results, _ = executor.execute_test_suite([_test("A", "def test_a():\n    assert True")], working_dir=str(tmp_path))
+    results = executor.execute_test_suite([_test("A", "def test_a():\n    assert True")], working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.PASSED
     assert "skipped" in results[0].failure_reason
 
 
 def test_single_module_timeout_says_so_instead_of_no_report(tmp_path):
     executor = TestSuiteExecutor(_FakeSandbox(timeout_seconds=60))
-    results, _ = executor.execute_test_suite([_test("A", "def test_a():\n    assert True")], working_dir=str(tmp_path))
+    results = executor.execute_test_suite([_test("A", "def test_a():\n    assert True")], working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.ERROR
     assert "timed out" in results[0].failure_reason and "no per-test report" in results[0].failure_reason
 
@@ -283,10 +283,10 @@ def test_single_module_timeout_says_so_instead_of_no_report(tmp_path):
 def test_rerun_budget_is_capped_by_the_batch_budget(tmp_path):
     sandbox = _FakeSandbox(timeout_seconds=0)
     executor = TestSuiteExecutor(sandbox, per_test_timeout_seconds=30)
-    results, _ = executor.execute_test_suite([
+    results = executor.execute_test_suite([
         _test("A", "def test_a():\n    assert True"),
         _test("B", "def test_b():\n    assert True"),
-    ], working_dir=str(tmp_path))
+    ], working_dir=str(tmp_path)).results
     # 批次逾時且（為零的）重跑預算立刻耗盡：沒有任何模組被重跑
     # The batch timed out and the (zero) rerun budget is exhausted immediately: no module is re-run
     assert sandbox.individual_calls == 0
@@ -294,9 +294,9 @@ def test_rerun_budget_is_capped_by_the_batch_budget(tmp_path):
 
 
 def test_non_assertion_crash_in_blackbox_is_failure_but_not_exploit(executor, tmp_path):
-    results, _ = executor.execute_test_suite([
+    results = executor.execute_test_suite([
         _test("A", "def test_a():\n    assert {}['missing']"),
-    ], working_dir=str(tmp_path))
+    ], working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.FAILED
     assert not results[0].is_security_exploit_confirmed
 
@@ -435,7 +435,7 @@ def test_offline_probes_derive_from_target_not_sample_app(executor, tmp_path):
     assert [p.target_component for p in probes] == ["safe", "crashy"]
     assert all("vibe_sample_app" not in p.code for p in probes)
 
-    results, _ = executor.execute_test_suite(probes, working_dir=str(tmp_path))
+    results = executor.execute_test_suite(probes, working_dir=str(tmp_path)).results
     assert [r.status for r in results] == [TestStatus.PASSED, TestStatus.FAILED]
 
 
@@ -480,7 +480,7 @@ def test_mock_pipeline_is_never_ready_to_ship_and_report_discloses_simulation(tm
 # --- Gate honesty: vacuous tests, unusable model output, arbitration ---------
 
 def test_vacuous_test_is_error_not_defended(executor, tmp_path):
-    results, _ = executor.execute_test_suite([_test("A", "def test_a():\n    pass")], working_dir=str(tmp_path))
+    results = executor.execute_test_suite([_test("A", "def test_a():\n    pass")], working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.ERROR
     assert "without any assertion" in results[0].failure_reason
 
@@ -591,12 +591,12 @@ def test_failed_unclassified_blackbox_test_is_an_evidence_gap(tmp_path, monkeypa
             wb = [TestExecutionResult(
                 test_id="WB-T", test_type="whitebox_unit", status=TestStatus.PASSED, source_ref="WB-CLA-01"
             )]
-            return wb, 42.0
+            return SuiteResult(wb, python_coverage_pct=42.0)
         bb = [TestExecutionResult(
             test_id="BB-T", test_type="blackbox_security", status=TestStatus.FAILED,
             failure_reason="TypeError: 'NoneType' object is not subscriptable", source_ref="THREAT-01"
         )]
-        return bb, None
+        return SuiteResult(bb)
 
     monkeypatch.setattr(commander.executor, "execute_test_suite", fake_execute)
     summary = commander.run_full_pipeline(
@@ -837,7 +837,7 @@ def test_probe_handles_keyword_only_and_skips_decorated_async(executor, tmp_path
     symbols = ASTExtractor().parse_file(str(target))
     probes = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="mock")).build_offline_probes(symbols)
     assert [p.target_component for p in probes] == ["guarded"]
-    results, _ = executor.execute_test_suite(probes, working_dir=str(tmp_path))
+    results = executor.execute_test_suite(probes, working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.PASSED
 
 
@@ -847,12 +847,12 @@ def test_probe_handles_keyword_only_and_skips_decorated_async(executor, tmp_path
 def test_sandbox_withholds_secrets_from_generated_code(executor, tmp_path, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-not-leak")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "should-not-leak")
-    results, _ = executor.execute_test_suite([_test("A", (
+    results = executor.execute_test_suite([_test("A", (
         "import os\n"
         "def test_env():\n"
         "    leaked = [k for k in os.environ if 'KEY' in k or 'SECRET' in k]\n"
         "    assert not leaked, leaked\n"
-    ))], working_dir=str(tmp_path))
+    ))], working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.PASSED, results[0].failure_reason
 
 
@@ -879,11 +879,11 @@ def test_hanging_test_does_not_void_the_batch(tmp_path, monkeypatch):
         return real_execute(files, working_dir=working_dir, timeout_seconds=timeout_seconds)
 
     monkeypatch.setattr(executor.sandbox, "execute_pytest_files", batch_times_out)
-    results, _ = executor.execute_test_suite([
+    results = executor.execute_test_suite([
         _test("OK", "def test_ok():\n    assert True"),
         _test("HANG", "import time\ndef test_hang():\n    time.sleep(60)\n    assert True"),
         _test("BAD", "def test_bad():\n    assert 1 == 2"),
-    ], working_dir=str(tmp_path))
+    ], working_dir=str(tmp_path)).results
     assert calls["batch_timeouts"] == 1  # 批次逾時並觸發了個別重跑 ／ the batch timed out and triggered the individual reruns
     assert [r.status for r in results] == [TestStatus.PASSED, TestStatus.ERROR, TestStatus.FAILED]
     assert "timed out" in results[1].failure_reason
@@ -925,10 +925,10 @@ def test_daemonized_grandchild_cannot_hang_the_sandbox(tmp_path):
 
 
 def test_results_carry_their_own_output(executor, tmp_path):
-    results, _ = executor.execute_test_suite([
+    results = executor.execute_test_suite([
         _test("A", "def test_a():\n    print('from-a')\n    assert True"),
         _test("B", "def test_b():\n    print('from-b')\n    assert True"),
-    ], working_dir=str(tmp_path))
+    ], working_dir=str(tmp_path)).results
     assert "from-a" in results[0].stdout and "from-b" not in results[0].stdout
     assert "from-b" in results[1].stdout
 

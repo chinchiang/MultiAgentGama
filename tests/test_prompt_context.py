@@ -74,9 +74,9 @@ def test_offline_probe_imports_a_package_module_by_name(tmp_path):
     gen = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="mock"))
     probes = gen.build_offline_probes(symbols, root_dir=str(pkg))
     assert "importlib.import_module('shop.app')" in probes[0].code
-    results, _ = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60)).execute_test_suite(
+    results = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60)).execute_test_suite(
         probes, working_dir=str(pkg)
-    )
+    ).results
     # 探針到達了 checkout()（None 的購物車 -> TypeError）：對目標的 FAILED 判定結果，
     # 而不是歸咎於目標相對匯入的 ERROR
     # The probe reached checkout() (None cart -> TypeError): a FAILED verdict about the target,
@@ -188,9 +188,9 @@ def test_generated_test_imports_target_as_instructed_and_runs(fake_live, tmp_pat
     assert "return sum(i['price'] for i in items)" in prompts[0]
     assert [t.test_type for t in tests] == ["whitebox_unit"]  # 不需要退回探針 ／ no fallback probes needed
 
-    results, _ = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60)).execute_test_suite(
+    results = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60)).execute_test_suite(
         tests, working_dir=str(target)
-    )
+    ).results
     assert results[0].status == TestStatus.PASSED, results[0].failure_reason
 
 

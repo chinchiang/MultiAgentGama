@@ -5,6 +5,7 @@ import os
 import time
 import logging
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from typing import Any, Callable, List, Tuple, Optional, Dict, Set
 from vibeharness.core.models import GeneratedTest, TestExecutionResult, TestStatus
 from vibeharness.core.sandbox import (
@@ -152,6 +153,22 @@ def _remaining_seconds(deadline: float, budget: float) -> int:
 
 
 
+@dataclass(frozen=True)
+class SuiteResult:
+    """一次 execute_test_suite 的結果。`results` 依輸入順序；`python_coverage_pct` 與 `js_coverage_pct` 只有
+    collect_coverage 時才有值（各自只代表自己的語言），`js_coverage_problem` 是收集了卻算不出 JS/TS 涵蓋率的原因；
+    `js_runner_problem` 只在這組測試含 JS/TS、卻沒有可用的 JS 執行器時才有值。
+    The outcome of one execute_test_suite call. `results` is in input order; `python_coverage_pct` and
+    `js_coverage_pct` are only set with collect_coverage (each covers its own language only), and
+    `js_coverage_problem` says why JS/TS coverage was collected but could not be computed; `js_runner_problem` is only
+    set when the suite holds JS/TS tests and no JS runner is available."""
+    results: List[TestExecutionResult]
+    python_coverage_pct: Optional[float] = None
+    js_coverage_pct: Optional[float] = None
+    js_coverage_problem: Optional[str] = None
+    js_runner_problem: Optional[str] = None
+
+
 class TestSuiteExecutor:
     __test__ = False
     """
@@ -176,19 +193,14 @@ class TestSuiteExecutor:
         self._js_sandbox_factory = js_sandbox_factory
         self._js_sandbox: Optional[Sandbox] = None
         self._js_sandbox_resolved = False
-        self.js_runner_unavailable_reason: Optional[str] = None
-        # 最近一次 execute_test_suite 的 JS/TS 行涵蓋率（只有 collect_coverage 時；回傳值的第二項維持只代表 Python），
-        # 以及收集不到時的原因。每次呼叫開頭都會重設
-        # The JS/TS line coverage of the latest execute_test_suite call (with collect_coverage only; the second item of
-        # its return value keeps meaning Python), and why it could not be collected. Reset at the start of every call
-        self.last_js_line_coverage_pct: Optional[float] = None
-        self.js_coverage_unavailable_reason: Optional[str] = None
+        # 沒有 JS 沙盒的原因，與沙盒一起只解析一次 ／ Why there is no JS sandbox, resolved once along with it
+        self._js_runner_problem: Optional[str] = None
 
     def _js_sandbox_or_none(self) -> Optional[Sandbox]:
         if not self._js_sandbox_resolved:
             self._js_sandbox_resolved = True
             if self._js_sandbox_factory is None:
-                self.js_runner_unavailable_reason = REASON_JS_RUNNER_NOT_CONFIGURED
+                self._js_runner_problem = REASON_JS_RUNNER_NOT_CONFIGURED
             else:
                 try:
                     self._js_sandbox = self._js_sandbox_factory()
@@ -196,9 +208,9 @@ class TestSuiteExecutor:
                     # 缺少 docker 映像檔、壞掉的 node 執行檔：會揭露，但不致命；設定錯誤已在啟動時驗證，其餘例外照常拋出
                     # a missing docker image, a broken node binary: disclosed, not fatal; configuration errors are
                     # validated at start-up, any other exception propagates
-                    self.js_runner_unavailable_reason = f"{type(e).__name__}: {e}"
-                if self._js_sandbox is None and not self.js_runner_unavailable_reason:
-                    self.js_runner_unavailable_reason = REASON_NO_NODE_RUNTIME
+                    self._js_runner_problem = f"{type(e).__name__}: {e}"
+                if self._js_sandbox is None and not self._js_runner_problem:
+                    self._js_runner_problem = REASON_NO_NODE_RUNTIME
         return self._js_sandbox
 
     def execute_test_suite(
@@ -206,24 +218,20 @@ class TestSuiteExecutor:
         tests: List[GeneratedTest],
         working_dir: str = ".",
         collect_coverage: bool = False
-    ) -> Tuple[List[TestExecutionResult], Optional[float]]:
-        """執行一組測試；回傳 (依輸入順序的結果, Python 行涵蓋率)。collect_coverage 時 JS/TS 的行涵蓋率另外放在
-        `last_js_line_coverage_pct`（收集不到時為 None，原因在 `js_coverage_unavailable_reason`），讓回傳的形狀與
-        Python 的意義維持不變。
-        Runs a set of tests; returns (results in input order, Python line coverage). With collect_coverage the JS/TS
-        line coverage goes to `last_js_line_coverage_pct` instead (None when it could not be collected, the reason in
-        `js_coverage_unavailable_reason`), so the return shape and its Python meaning stay unchanged."""
-        self.last_js_line_coverage_pct = None
-        self.js_coverage_unavailable_reason = None
+    ) -> SuiteResult:
+        """執行一組測試；Python 與 JS/TS 的行涵蓋率分開回報（見 SuiteResult）。
+        Runs a set of tests; Python and JS/TS line coverage are reported separately (see SuiteResult)."""
         if not tests:
-            return [], None
+            return SuiteResult(results=[])
         unique_ids = self._unique_test_ids(tests)
         results: Dict[int, TestExecutionResult] = {}
         py_idx = [i for i, t in enumerate(tests) if t.language == "python"]
         js_idx = [i for i, t in enumerate(tests) if t.language != "python"]
 
-        coverage_pct = self._run_group(tests, py_idx, unique_ids, results, working_dir, collect_coverage,
-                                       "python", self.sandbox) if py_idx else None
+        coverage_pct, _ = self._run_group(tests, py_idx, unique_ids, results, working_dir, collect_coverage,
+                                          "python", self.sandbox) if py_idx else (None, None)
+        js_coverage_pct: Optional[float] = None
+        js_coverage_problem: Optional[str] = None
         if js_idx:
             sandbox = self._js_sandbox_or_none()
             runnable = []
@@ -232,7 +240,7 @@ class TestSuiteExecutor:
                 if sandbox is None:
                     results[i] = self._result(
                         t, unique_ids[i], TestStatus.ERROR,
-                        failure_reason=f"{REASON_JS_NOT_RUN}: {self.js_runner_unavailable_reason}"
+                        failure_reason=f"{REASON_JS_NOT_RUN}: {self._js_runner_problem}"
                     )
                 elif t.language == "typescript" and not sandbox.supports_typescript:
                     results[i] = self._result(
@@ -242,10 +250,14 @@ class TestSuiteExecutor:
                 else:
                     runnable.append(i)
             if runnable and sandbox is not None:
-                js_coverage = self._run_group(tests, runnable, unique_ids, results, working_dir, collect_coverage,
-                                              "javascript", sandbox)
-                self.last_js_line_coverage_pct = js_coverage if collect_coverage else None
-        return [results[i] for i in range(len(tests))], coverage_pct
+                js_coverage, js_coverage_problem = self._run_group(
+                    tests, runnable, unique_ids, results, working_dir, collect_coverage, "javascript", sandbox)
+                js_coverage_pct = js_coverage if collect_coverage else None
+        return SuiteResult(
+            results=[results[i] for i in range(len(tests))], python_coverage_pct=coverage_pct,
+            js_coverage_pct=js_coverage_pct, js_coverage_problem=js_coverage_problem,
+            js_runner_problem=self._js_runner_problem if js_idx else None,
+        )
 
     def run_mutant_batch(self, tests: List[GeneratedTest], working_dir: str, timeout_seconds: int) -> str:
         """突變測試用：把已通過的 Python 測試當作**一個**沙盒批次對 working_dir 執行，不走逾時後逐測重跑的路徑
@@ -322,11 +334,12 @@ class TestSuiteExecutor:
         collect_coverage: bool,
         language: str,
         sandbox: Sandbox,
-    ) -> Optional[float]:
+    ) -> Tuple[Optional[float], Optional[str]]:
         """把某一語言的測試當作一個沙盒批次執行（模組名稱使用全域索引，所以 id
-        在各群組間保持唯一），並為這些索引填入 `results`。
+        在各群組間保持唯一），並為這些索引填入 `results`。回傳 (行涵蓋率, 收集了卻算不出 JS/TS 涵蓋率的原因)。
         Runs one language's tests as one sandbox batch (module names use the global index, so ids
-        stay unique across groups) and fills `results` for those indices."""
+        stay unique across groups) and fills `results` for those indices. Returns (line coverage, why JS/TS coverage
+        was collected but could not be computed)."""
         is_js = language != "python"
         header = self._js_header(working_dir) if is_js else self._python_header(working_dir)
         ext = ".mjs" if is_js else ".py"
@@ -352,8 +365,9 @@ class TestSuiteExecutor:
             )
 
         coverage_pct: Optional[float] = None
+        coverage_problem: Optional[str] = None
         if not files:
-            return None
+            return None, None
         logger.info(bi(f"在沙盒中執行 {len(files)} 個 {language} 測試模組（coverage={collect_coverage}）...",
                        f"Executing {len(files)} {language} test module(s) in sandbox (coverage={collect_coverage})..."))
         # 每個模組：(結束碼, stdout, stderr, junit xml)；Python 批次共用一次執行，JS 模組
@@ -370,17 +384,17 @@ class TestSuiteExecutor:
         # The timeout actually used (seconds), for the timeout reason: never report a budget that did not apply
         timeout_used: Dict[str, int] = {}
         if is_js:
-            js_coverage = self._js_coverage_or_none(sandbox) if collect_coverage else None
+            js_coverage, coverage_problem = self._js_coverage_or_none(sandbox) if collect_coverage else (None, None)
             cases, timed_out, not_rerun, parse_failed = self._run_js_modules(
                 files, working_dir, sandbox, language, runs, timeout_used, coverage=js_coverage
             )
             if js_coverage is not None:
                 coverage_pct = js_coverage.percent()
                 if coverage_pct is None:
-                    self.js_coverage_unavailable_reason = (REASON_JS_COVERAGE_NO_TARGET_FILE if js_coverage.reports
-                                                           else REASON_JS_COVERAGE_NO_REPORT)
-                    logger.warning(bi(f"JS/TS 行涵蓋率無法計算：{self.js_coverage_unavailable_reason}",
-                                      f"JS/TS line coverage could not be computed: {self.js_coverage_unavailable_reason}"))
+                    coverage_problem = (REASON_JS_COVERAGE_NO_TARGET_FILE if js_coverage.reports
+                                        else REASON_JS_COVERAGE_NO_REPORT)
+                    logger.warning(bi(f"JS/TS 行涵蓋率無法計算：{coverage_problem}",
+                                      f"JS/TS line coverage could not be computed: {coverage_problem}"))
                 else:
                     logger.info(bi(f"JS/TS 行涵蓋率 {coverage_pct:.1f}%（{len(js_coverage.files)} 個載入過的目標檔案，"
                                    f"{js_coverage.covered_lines}／{js_coverage.instrumented_lines} 行）",
@@ -464,7 +478,7 @@ class TestSuiteExecutor:
                 )
             else:
                 results[idx] = self._aggregate(t, unique_ids[idx], module_cases)
-        return coverage_pct
+        return coverage_pct, coverage_problem
 
     def _run_individually(
         self, files: Dict[str, str], working_dir: str, sandbox: Optional[Sandbox] = None,
@@ -519,16 +533,15 @@ class TestSuiteExecutor:
             cases.update(module_cases)
         return cases, timed_out, not_rerun, parse_failed
 
-    def _js_coverage_or_none(self, sandbox: Sandbox) -> Optional[JsLineCoverage]:
-        """這次 JS/TS 執行要用的涵蓋率累加器；沙盒不支援（不收集涵蓋率的沙盒、舊版 Node）時為 None，並記下原因。
-        The coverage accumulator for this JS/TS run; None (with the reason recorded) when the sandbox cannot collect
-        it (a sandbox that collects none, an old Node)."""
+    def _js_coverage_or_none(self, sandbox: Sandbox) -> Tuple[Optional[JsLineCoverage], Optional[str]]:
+        """(這次 JS/TS 執行要用的涵蓋率累加器, None)；沙盒不支援（不收集涵蓋率的沙盒、舊版 Node）時為 (None, 原因)。
+        (The coverage accumulator for this JS/TS run, None); (None, the reason) when the sandbox cannot collect it
+        (a sandbox that collects none, an old Node)."""
         problem = sandbox.js_coverage_problem()
         if problem:
-            self.js_coverage_unavailable_reason = problem
             logger.warning(bi(f"不收集 JS/TS 行涵蓋率：{problem}", f"JS/TS line coverage is not collected: {problem}"))
-            return None
-        return JsLineCoverage()
+            return None, problem
+        return JsLineCoverage(), None
 
     def _per_test_budget(self, sandbox: Sandbox) -> int:
         """逐測重跑實際使用的逾時（秒）。非正數的 per_test_timeout_seconds（設定驗證交給 harness）會讓沙盒

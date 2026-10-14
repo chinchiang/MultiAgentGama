@@ -63,14 +63,14 @@ def target(tmp_path):
 
 def test_target_load_failures_during_a_test_are_target_broken_not_defects(target):
     executor = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60))
-    results, _ = executor.execute_test_suite([
+    results = executor.execute_test_suite([
         _test("LAZY", "import r2_app\n\ndef test_a():\n    assert r2_app.lazy() == 1\n"),
         _test("SUB_IN_TARGET", "import r2_app\n\ndef test_a():\n    assert r2_app.sub() == 1\n"),
         _test("SUB_IN_TEST", "def test_a():\n    import r2_badsub\n    assert r2_badsub.x\n"),
         _test("PARSE", "import r2_app\n\ndef test_a():\n    assert r2_app.parse('x = (')\n"),
         _test("NAME", "import r2_app\n\ndef test_a():\n    assert r2_app.ne()\n"),
         _test("TEST_IMPORT", "def test_a():\n    import missingpkg_vh_abc\n    assert 1\n"),
-    ], working_dir=str(target))
+    ], working_dir=str(target)).results
     by_id = {r.test_id: r for r in results}
     for test_id in ("LAZY", "SUB_IN_TARGET", "SUB_IN_TEST"):
         result = by_id[test_id]
@@ -91,11 +91,11 @@ def test_target_load_failures_during_a_test_are_target_broken_not_defects(target
 
 def test_missing_target_attribute_called_from_the_test_is_a_harness_error(target):
     executor = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60))
-    results, _ = executor.execute_test_suite([
+    results = executor.execute_test_suite([
         _test("FN", "import r2_app\n\ndef test_a():\n    assert r2_app.nonexist() == 1\n"),
         _test("CLS", "from r2_app import C\n\ndef test_a():\n    assert C.nope\n"),
         _test("IN_TARGET", "import r2_app\n\ndef test_a():\n    assert r2_app.attr()\n"),
-    ], working_dir=str(target))
+    ], working_dir=str(target)).results
     by_id = {r.test_id: r for r in results}
     for test_id in ("FN", "CLS"):
         assert by_id[test_id].status == TestStatus.ERROR, by_id[test_id].failure_reason
@@ -158,13 +158,13 @@ def test_noisy_test_hits_the_cap_while_junit_and_coverage_still_work(tmp_path, m
         "        f.write(b'x' * (4 * 1024 * 1024))\n"
         "    assert True\n"
     )
-    results, coverage = executor.execute_test_suite([
+    suite = executor.execute_test_suite([
         _test("OK", "from r2_cov import add\n\ndef test_a():\n    assert add(1, 2) == 3\n"),
         _test("NOISY", noisy),
     ], working_dir=str(tmp_path), collect_coverage=True)
-    ok, big = results
+    ok, big = suite.results
     assert ok.status == TestStatus.PASSED
-    assert coverage is not None and coverage > 0
+    assert suite.python_coverage_pct is not None and suite.python_coverage_pct > 0
     # 寫入超過上限是沙盒的限制，不是目標的缺陷 ／ hitting the cap is a sandbox limit, not a defect in the target
     assert big.status == TestStatus.ERROR and "Errno 27" in big.failure_reason
 
@@ -263,7 +263,7 @@ def test_many_slow_but_passing_js_modules_all_run(tmp_path):
     executor = TestSuiteExecutor(sandbox=LocalSubprocessSandbox(), js_sandbox_factory=lambda: js,
                                  per_test_timeout_seconds=2)
     tests = [_test(f"J{i}", _GOOD_JS, language="javascript") for i in range(20)]
-    results, _ = executor.execute_test_suite(tests, working_dir=str(tmp_path))
+    results = executor.execute_test_suite(tests, working_dir=str(tmp_path)).results
     assert all(r.status == TestStatus.PASSED for r in results), [r.failure_reason for r in results]
     assert all(budget <= 2 for _, budget in js.calls)  # 每個模組仍不超過一份批次預算 ／ never more than one batch budget
 
@@ -273,7 +273,7 @@ def test_js_rerun_timeouts_are_capped_by_the_remaining_budget(tmp_path):
     executor = TestSuiteExecutor(sandbox=LocalSubprocessSandbox(), js_sandbox_factory=lambda: js,
                                  per_test_timeout_seconds=2)
     tests = [_test(f"H{i}", _GOOD_JS, language="javascript") for i in range(3)]
-    results, _ = executor.execute_test_suite(tests, working_dir=str(tmp_path))
+    results = executor.execute_test_suite(tests, working_dir=str(tmp_path)).results
     # 第一輪：000 拿到整份 3 秒；重跑：001 拿 2 秒，002 只剩 1 秒（不是另一份 2 秒）
     # First pass: 000 gets the whole 3s; reruns: 001 gets 2s, 002 only the 1s left (not another 2s)
     assert js.calls == [("test_vh_000", 3), ("test_vh_001", 2), ("test_vh_002", 1)]
@@ -306,7 +306,7 @@ def test_python_rerun_timeouts_are_capped_by_the_remaining_budget(tmp_path):
     executor = TestSuiteExecutor(sandbox=sandbox, per_test_timeout_seconds=2)
     tests = [_test(f"P{i}", f"def test_{i}():\n    assert 1\n") for i in range(3)]
     start = time.monotonic()
-    results, _ = executor.execute_test_suite(tests, working_dir=str(tmp_path))
+    results = executor.execute_test_suite(tests, working_dir=str(tmp_path)).results
     assert sandbox.budgets == [None, 2, 1]
     assert time.monotonic() - start < _RERUN_BOUND  # 重跑總時間不超出 3 秒的批次預算 ／ the reruns stay within the 3s batch budget
     assert "after 2s" in results[0].failure_reason and "after 1s" in results[1].failure_reason

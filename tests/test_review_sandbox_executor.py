@@ -129,10 +129,10 @@ def test_run_returns_output_and_exit_code_without_pipes(tmp_path):
 def test_name_error_in_target_is_a_defect_but_in_the_test_is_a_harness_error(tmp_path):
     (tmp_path / "app_ne.py").write_text("def f():\n    return undefined_name\n", encoding="utf-8")
     executor = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60))
-    results, _ = executor.execute_test_suite([
+    results = executor.execute_test_suite([
         _test("TARGET", "from app_ne import f\n\ndef test_f():\n    assert f() == 1\n"),
         _test("TEST", "def test_g():\n    assert nope == 1\n"),
-    ], working_dir=str(tmp_path))
+    ], working_dir=str(tmp_path)).results
     target, test = results
     assert target.status == TestStatus.FAILED and "NameError" in target.failure_reason
     assert not target.is_security_exploit_confirmed  # 崩潰不是斷言失敗 ／ a crash is not an assertion failure
@@ -206,8 +206,8 @@ def test_js_hang_uses_the_batch_budget_and_the_rest_rerun_on_the_per_test_budget
     js = _HangingJsSandbox(timeout_seconds=2, hang={"test_vh_000"})
     executor = TestSuiteExecutor(sandbox=LocalSubprocessSandbox(), js_sandbox_factory=lambda: js,
                                  per_test_timeout_seconds=1)
-    results, _ = executor.execute_test_suite([_test("H", _GOOD_JS, language="javascript"),
-                                              _test("OK", _GOOD_JS, language="javascript")], working_dir=str(tmp_path))
+    results = executor.execute_test_suite([_test("H", _GOOD_JS, language="javascript"),
+                                          _test("OK", _GOOD_JS, language="javascript")], working_dir=str(tmp_path)).results
     assert js.calls == [("test_vh_000", 2), ("test_vh_001", 1)]
     assert results[0].status == TestStatus.ERROR and "timed out after 2s" in results[0].failure_reason
     assert results[1].status == TestStatus.PASSED
@@ -218,7 +218,7 @@ def test_js_rerun_pass_is_bounded_by_the_batch_budget(tmp_path):
     executor = TestSuiteExecutor(sandbox=LocalSubprocessSandbox(), js_sandbox_factory=lambda: js,
                                  per_test_timeout_seconds=1)
     tests = [_test(f"H{i}", _GOOD_JS, language="javascript") for i in range(3)]
-    results, _ = executor.execute_test_suite(tests, working_dir=str(tmp_path))
+    results = executor.execute_test_suite(tests, working_dir=str(tmp_path)).results
     assert [m for m, _ in js.calls] == ["test_vh_000", "test_vh_001"]
     assert "timed out after 1s" in results[0].failure_reason and "timed out after 1s" in results[1].failure_reason
     assert results[2].status == TestStatus.ERROR and results[2].failure_reason == REASON_RERUN_BUDGET_EXHAUSTED
@@ -254,8 +254,8 @@ class _AlwaysTimesOut:
 def test_zero_per_test_budget_reports_the_budget_actually_used(tmp_path):
     sandbox = _AlwaysTimesOut()
     executor = TestSuiteExecutor(sandbox=sandbox, per_test_timeout_seconds=0)
-    results, _ = executor.execute_test_suite([_test("A", "def test_a():\n    assert 1\n"),
-                                              _test("B", "def test_b():\n    assert 1\n")], working_dir=str(tmp_path))
+    results = executor.execute_test_suite([_test("A", "def test_a():\n    assert 1\n"),
+                                          _test("B", "def test_b():\n    assert 1\n")], working_dir=str(tmp_path)).results
     assert sandbox.budgets[1:] == [30, 30]  # 逐測重跑退回沙盒的批次預算 ／ the reruns fall back to the sandbox's batch budget
     for result in results:
         assert "after 30s" in result.failure_reason and "after 0s" not in result.failure_reason

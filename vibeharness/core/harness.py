@@ -481,15 +481,16 @@ class VibeHarnessCommander:
             )
             self.console.print(f"[+] {bi(f'已產生 [bold]{len(wb_tests)}[/bold] 個針對性的 Pytest 單元／邊界測試（含自我修復驗證）。', f'Generated [bold]{len(wb_tests)}[/bold] targeted Pytest unit/boundary tests (with self-healing validation).')}")
 
-            wb_results, cov_pct = self.executor.execute_test_suite(
+            wb_suite = self.executor.execute_test_suite(
                 wb_tests,
                 working_dir=work_dir,
                 collect_coverage=True
             )
+            wb_results, cov_pct = wb_suite.results, wb_suite.python_coverage_pct
             # JS/TS 的行涵蓋率另外存放（cov_pct 維持只代表 Python）；收集不到時執行器已記錄原因，不算證據缺口（與 Python 一致）
             # JS/TS line coverage is kept separately (cov_pct keeps meaning Python); when it could not be collected the
             # executor has logged why, and it is not an evidence gap (same as Python)
-            js_cov_pct = getattr(self.executor, "last_js_line_coverage_pct", None)
+            js_cov_pct = wb_suite.js_coverage_pct
             wb_passed = sum(1 for r in wb_results if r.status == TestStatus.PASSED)
             progress.update(phase=3, whitebox_tests=wb_tests, whitebox_results=wb_results)
             wb_failed = sum(1 for r in wb_results if r.status == TestStatus.FAILED)
@@ -563,11 +564,12 @@ class VibeHarnessCommander:
             )
             self.console.print(f"[+] {bi(f'已合成 [bold]{len(bb_tests)}[/bold] 個針對已識別威脅的黑箱攻擊腳本。', f'Synthesized [bold]{len(bb_tests)}[/bold] black-box attack scripts targeting identified threats.')}")
 
-            bb_results, _ = self.executor.execute_test_suite(
+            bb_suite = self.executor.execute_test_suite(
                 bb_tests,
                 working_dir=work_dir,
                 collect_coverage=False
             )
+            bb_results = bb_suite.results
             bb_passed = sum(1 for r in bb_results if r.status == TestStatus.PASSED)
             progress.update(phase=5, blackbox_tests=bb_tests, blackbox_results=bb_results)
             bb_breaches = sum(1 for r in bb_results if r.is_security_exploit_confirmed)
@@ -598,7 +600,7 @@ class VibeHarnessCommander:
             critical_threats = sum(1 for t in threat_report.threats if t.severity == FindingSeverity.CRITICAL)
 
             ast = self.ast_extractor
-            js_reason = self.executor.js_runner_unavailable_reason
+            js_reason = wb_suite.js_runner_problem or bb_suite.js_runner_problem
             gate = evaluate(GateEvidence(
                 target_dir=target_dir,
                 threat_report=threat_report,

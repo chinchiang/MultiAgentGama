@@ -222,7 +222,7 @@ class _CrashOnRerun:
 def test_rerun_without_a_report_is_reported_as_a_sandbox_problem(tmp_path):
     tests = [GeneratedTest(test_id=i, test_type="whitebox_unit", target_component="x", title=i, code=f"def test_{i.lower()}():\n    assert 1\n",
                            rationale="", expected_outcome="") for i in ("A", "B")]
-    results, _ = TestSuiteExecutor(sandbox=_CrashOnRerun(), per_test_timeout_seconds=5).execute_test_suite(tests, working_dir=str(tmp_path))
+    results = TestSuiteExecutor(sandbox=_CrashOnRerun(), per_test_timeout_seconds=5).execute_test_suite(tests, working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.ERROR and results[0].failure_reason != REASON_NO_TEST_COLLECTED
     assert "Sandbox run produced no report" in results[0].failure_reason and "Fatal Python error" in results[0].failure_reason
     assert results[1].status == TestStatus.PASSED

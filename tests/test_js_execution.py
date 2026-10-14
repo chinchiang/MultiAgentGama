@@ -386,12 +386,12 @@ def test_executor_keeps_order_across_languages_and_runs_js_modules_one_per_proce
         _js_test("J1", GOOD),
         _js_test("J2", GOOD),
     ]
-    results, coverage = executor.execute_test_suite(tests, working_dir=str(tmp_path))
-    assert [r.test_id for r in results] == ["P1", "J1", "J2"]
-    assert [r.language for r in results] == ["python", "javascript", "javascript"]
-    assert results[0].status == TestStatus.PASSED and coverage == 88.0
-    assert results[1].status == TestStatus.FAILED  # NODE_JUNIT 中的斷言失敗 ／ the assertion failure in NODE_JUNIT
-    assert results[2].status == TestStatus.ERROR and "No test was collected" in results[2].failure_reason
+    suite = executor.execute_test_suite(tests, working_dir=str(tmp_path))
+    assert [r.test_id for r in suite.results] == ["P1", "J1", "J2"]
+    assert [r.language for r in suite.results] == ["python", "javascript", "javascript"]
+    assert suite.results[0].status == TestStatus.PASSED and suite.python_coverage_pct == 88.0
+    assert suite.results[1].status == TestStatus.FAILED  # NODE_JUNIT 中的斷言失敗 ／ the assertion failure in NODE_JUNIT
+    assert suite.results[2].status == TestStatus.ERROR and "No test was collected" in suite.results[2].failure_reason
     assert [files for files, _ in js.calls] == [["test_vh_001.mjs"], ["test_vh_002.mjs"]]  # 全域索引，每個模組一個行程 ／ global index, one process each
     # 第一輪用的是剩下的批次預算（沙盒的 30 秒），不是單測預算 ／ the first pass uses what is left of the batch budget (the sandbox's 30s), not the per-test one
     assert all(7 < budget <= 30 for _, budget in js.calls)
@@ -400,21 +400,21 @@ def test_executor_keeps_order_across_languages_and_runs_js_modules_one_per_proce
 def test_executor_js_timeout_and_unparseable_report(tmp_path):
     js = _RecordingSandbox(exit_code=TIMEOUT_EXIT_CODE)
     executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: js, per_test_timeout_seconds=3)
-    results, _ = executor.execute_test_suite([_js_test("J", GOOD)], working_dir=str(tmp_path))
+    results = executor.execute_test_suite([_js_test("J", GOOD)], working_dir=str(tmp_path)).results
     # 唯一的模組已拿到整個批次預算（30 秒 >= 單測的 3 秒）：不重跑，回報實際用掉的預算
     # The only module already had the whole batch budget (30s >= the per-test 3s): no rerun, the budget it used is reported
     assert results[0].status == TestStatus.ERROR and "timed out after 30s" in results[0].failure_reason
     assert len(js.calls) == 1
     js = _RecordingSandbox({"test_vh_000": "<broken"})
     executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: js)
-    results, _ = executor.execute_test_suite([_js_test("J", GOOD)], working_dir=str(tmp_path))
+    results = executor.execute_test_suite([_js_test("J", GOOD)], working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.ERROR and "could not be parsed" in results[0].failure_reason
 
 
 def test_executor_without_js_runner_reports_every_js_test_as_not_run(tmp_path):
     executor = TestSuiteExecutor(sandbox=_PySandbox())
-    results, _ = executor.execute_test_suite([_js_test("J", GOOD), _py_test("P", "def test_a():\n    assert 1\n")],
-                                             working_dir=str(tmp_path))
+    results = executor.execute_test_suite([_js_test("J", GOOD), _py_test("P", "def test_a():\n    assert 1\n")],
+                                          working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.ERROR
     assert "test was not run: " in results[0].failure_reason
     assert "no JavaScript/TypeScript runner is configured" in results[0].failure_reason
@@ -423,9 +423,9 @@ def test_executor_without_js_runner_reports_every_js_test_as_not_run(tmp_path):
     def boom():
         raise SandboxUnavailableError("docker image missing")
     executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=boom)
-    results, _ = executor.execute_test_suite([_js_test("J", GOOD)], working_dir=str(tmp_path))
-    assert "SandboxUnavailableError: docker image missing" in results[0].failure_reason
-    assert executor.js_runner_unavailable_reason == "SandboxUnavailableError: docker image missing"
+    suite = executor.execute_test_suite([_js_test("J", GOOD)], working_dir=str(tmp_path))
+    assert "SandboxUnavailableError: docker image missing" in suite.results[0].failure_reason
+    assert suite.js_runner_problem == "SandboxUnavailableError: docker image missing"
 
     # 沙盒可用性以外的例外（程式缺陷、設定錯誤）照常拋出，不會被當成證據缺口吞掉
     # Exceptions other than sandbox availability (bugs, configuration errors) propagate instead of becoming a gap
@@ -436,7 +436,7 @@ def test_executor_without_js_runner_reports_every_js_test_as_not_run(tmp_path):
         executor.execute_test_suite([_js_test("J", GOOD)], working_dir=str(tmp_path))
 
     executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: None)
-    results, _ = executor.execute_test_suite([_js_test("J", GOOD)], working_dir=str(tmp_path))
+    results = executor.execute_test_suite([_js_test("J", GOOD)], working_dir=str(tmp_path)).results
     assert "no usable Node runtime was found" in results[0].failure_reason
 
 
@@ -444,8 +444,8 @@ def test_executor_skips_typescript_when_the_runtime_cannot_strip_types(tmp_path)
     js = _RecordingSandbox()
     js.supports_typescript = False
     executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: js)
-    results, _ = executor.execute_test_suite([_js_test("T", GOOD, language="typescript"), _js_test("J", GOOD)],
-                                             working_dir=str(tmp_path))
+    results = executor.execute_test_suite([_js_test("T", GOOD, language="typescript"), _js_test("J", GOOD)],
+                                          working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.ERROR and "older than 22.6" in results[0].failure_reason
     assert js.calls == [(["test_vh_001.mjs"], 30)]
 
@@ -453,7 +453,7 @@ def test_executor_skips_typescript_when_the_runtime_cannot_strip_types(tmp_path)
 def test_executor_js_gate_failure_is_an_error_without_a_run(tmp_path):
     js = _RecordingSandbox()
     executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: js)
-    results, _ = executor.execute_test_suite([_js_test("J", "test('x', () => {});")], working_dir=str(tmp_path))
+    results = executor.execute_test_suite([_js_test("J", "test('x', () => {});")], working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.ERROR and "not executable" in results[0].failure_reason
     assert js.calls == []
 
@@ -592,7 +592,7 @@ def test_node_runs_esm_cjs_and_bare_specifier_modules(tmp_path):
     try:
         sandbox = NodeSubprocessSandbox(timeout_seconds=60, memory_mb=512)
         executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: sandbox, per_test_timeout_seconds=30)
-        results, _ = executor.execute_test_suite(tests, working_dir=str(target))
+        results = executor.execute_test_suite(tests, working_dir=str(target)).results
     finally:
         del os.environ["OPENAI_API_KEY"], os.environ["NODE_OPTIONS"]
     by_id = {r.test_id: r for r in results}
@@ -613,7 +613,7 @@ def test_node_hang_is_killed_on_the_batch_budget(tmp_path):
     sandbox = NodeSubprocessSandbox(timeout_seconds=3)
     executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: sandbox, per_test_timeout_seconds=2)
     hang = _js_test("hang", _esm_test("", 'test("spin", () => { while (true) {} assert.ok(1); });'))
-    results, _ = executor.execute_test_suite([hang], working_dir=str(tmp_path))
+    results = executor.execute_test_suite([hang], working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.ERROR and "timed out after 3s" in results[0].failure_reason
 
 
@@ -624,7 +624,7 @@ def test_node_file_without_tests_is_not_a_pass(tmp_path):
     # 關卡要求有 test() 呼叫；一個永遠不會註冊的 test()（在死分支內）會到達 Node
     # The gate requires a test() call; a test() that never registers (inside a dead branch) reaches Node
     code = _esm_test("", 'if (false) { test("ghost", () => { assert.ok(1); }); }')
-    results, _ = executor.execute_test_suite([_js_test("ghost", code)], working_dir=str(tmp_path))
+    results = executor.execute_test_suite([_js_test("ghost", code)], working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.ERROR and "No test was collected" in results[0].failure_reason
 
 
@@ -638,7 +638,7 @@ def test_node_strips_types_for_typescript_targets(tmp_path):
     code = _esm_test(f'import {{ greet }} from "{url}";', 'test("greets", () => { assert.equal(greet("a"), "hi a"); });')
     sandbox = NodeSubprocessSandbox(timeout_seconds=30, strip_types=True)
     executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: sandbox)
-    results, _ = executor.execute_test_suite([_js_test("ts", code, language="typescript")], working_dir=str(target))
+    results = executor.execute_test_suite([_js_test("ts", code, language="typescript")], working_dir=str(target)).results
     assert results[0].status == TestStatus.PASSED and results[0].language == "typescript"
 
 
@@ -669,7 +669,7 @@ def test_node_container_runs_tests_against_the_mounted_target(tmp_path):
     ]
     sandbox = NodeDockerSandbox(timeout_seconds=60)
     executor = TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: sandbox, per_test_timeout_seconds=40)
-    results, _ = executor.execute_test_suite(tests, working_dir=str(target))
+    results = executor.execute_test_suite(tests, working_dir=str(target)).results
     by_id = {r.test_id: r for r in results}
     assert by_id["ok"].status == TestStatus.PASSED
     assert by_id["bug"].status == TestStatus.FAILED
