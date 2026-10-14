@@ -20,7 +20,7 @@ from vibeharness.core.harness import VibeHarnessCommander
 from vibeharness.core.models import GeneratedTest, TestStatus
 from vibeharness.core.sandbox import (
     DEFAULT_DOCKER_NODE_IMAGE, MIN_NODE_VERSION, TIMEOUT_EXIT_CODE, NodeDockerSandbox, NodeSubprocessSandbox,
-    SandboxUnavailableError, detect_node, node_test_command, parse_node_version,
+    SandboxRun, SandboxUnavailableError, detect_node, node_test_command, parse_node_version,
 )
 from vibeharness.runners.test_executor import (
     TestSuiteExecutor, POC_HEADER_JS, REASON_NOT_RUN_CORRECTLY, REASON_TARGET_BROKEN,
@@ -367,7 +367,7 @@ class _RecordingSandbox:
         self.calls.append((list(files), timeout_seconds))
         module = os.path.splitext(next(iter(files)))[0]
         junit = self.junit_by_module.get(module, EMPTY_FILE_JUNIT.replace("test_vh_002", module))
-        return self.exit_code, "", "", 0.1, None, junit
+        return SandboxRun(self.exit_code, "", "", 0.1, None, junit)
 
 
 class _PySandbox:
@@ -375,7 +375,7 @@ class _PySandbox:
 
     def execute_pytest_files(self, files, **kw):
         cases = "".join(f'<testcase classname="{os.path.splitext(f)[0]}" name="test_a" time="0.1"/>' for f in files)
-        return 0, "", "", 0.1, 88.0, f"<testsuites><testsuite>{cases}</testsuite></testsuites>"
+        return SandboxRun(0, "", "", 0.1, 88.0, f"<testsuites><testsuite>{cases}</testsuite></testsuites>")
 
 
 def test_executor_keeps_order_across_languages_and_runs_js_modules_one_per_process(tmp_path):

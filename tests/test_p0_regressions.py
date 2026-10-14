@@ -6,7 +6,7 @@ import sys
 import pytest
 from vibeharness.core.models import GeneratedTest, TestStatus, AgentCallRecord
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
-from vibeharness.core.sandbox import LocalSubprocessSandbox, TIMEOUT_EXIT_CODE
+from vibeharness.core.sandbox import LocalSubprocessSandbox, SandboxRun, TIMEOUT_EXIT_CODE
 from vibeharness.core.codecheck import check_test_code, strip_code_fences
 from vibeharness.core.codecontext import import_instructions
 from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
@@ -88,7 +88,7 @@ def test_unparseable_junit_report_is_not_reported_as_no_tests_collected(executor
     A truncated/corrupt JUnit report is a sandbox problem, not 'no test was collected
     from the generated code', which would wrongly blame the generated tests."""
     def broken_report(files, working_dir=None, **kwargs):
-        return 0, "", "", 0.1, None, "<testsuites><truncated"
+        return SandboxRun(0, "", "", 0.1, None, "<testsuites><truncated")
 
     monkeypatch.setattr(executor.sandbox, "execute_pytest_files", broken_report)
     results, _ = executor.execute_test_suite([
@@ -104,8 +104,8 @@ def test_unparseable_junit_report_is_not_reported_as_no_tests_collected(executor
 def test_rerun_report_parse_failure_is_reported_honestly(executor, tmp_path, monkeypatch):
     def batch_times_out_then_bad_report(files, working_dir=None, **kwargs):
         if len(files) > 1:
-            return TIMEOUT_EXIT_CODE, "", "", 0.0, None, None
-        return 0, "", "", 0.1, None, "<junk"
+            return SandboxRun(TIMEOUT_EXIT_CODE, "", "", 0.0, None, None)
+        return SandboxRun(0, "", "", 0.1, None, "<junk")
 
     monkeypatch.setattr(executor.sandbox, "execute_pytest_files", batch_times_out_then_bad_report)
     results, _ = executor.execute_test_suite([
@@ -256,8 +256,8 @@ class _FakeSandbox:
     def execute_pytest_files(self, files, **kwargs):
         if len(files) == 1 and self.individual_junit is not None:
             self.individual_calls += 1
-            return (0, "", "", 0.1, None, self.individual_junit)
-        return (self.batch_exit, "", "Execution timed out after 60 seconds.", 60.0, None, None)
+            return SandboxRun(0, "", "", 0.1, None, self.individual_junit)
+        return SandboxRun(self.batch_exit, "", "Execution timed out after 60 seconds.", 60.0, None, None)
 
 
 def test_partially_skipped_module_is_flagged(tmp_path):
@@ -875,7 +875,7 @@ def test_hanging_test_does_not_void_the_batch(tmp_path, monkeypatch):
     def batch_times_out(files, working_dir=None, timeout_seconds=None, **kwargs):
         if len(files) > 1:
             calls["batch_timeouts"] += 1
-            return TIMEOUT_EXIT_CODE, "", "sandbox: batch timed out", 0.0, None, None
+            return SandboxRun(TIMEOUT_EXIT_CODE, "", "sandbox: batch timed out", 0.0, None, None)
         return real_execute(files, working_dir=working_dir, timeout_seconds=timeout_seconds)
 
     monkeypatch.setattr(executor.sandbox, "execute_pytest_files", batch_times_out)
@@ -911,15 +911,15 @@ def test_daemonized_grandchild_cannot_hang_the_sandbox(tmp_path):
     sandbox = LocalSubprocessSandbox(timeout_seconds=60)
     start = time.monotonic()
     try:
-        exit_code, _, stderr, *_ = sandbox.execute_pytest_files(
+        run = sandbox.execute_pytest_files(
             {"test_daemon_test.py": code}, working_dir=str(tmp_path), timeout_seconds=2
         )
         elapsed = time.monotonic() - start
-        assert exit_code == TIMEOUT_EXIT_CODE
+        assert run.exit_code == TIMEOUT_EXIT_CODE
         # 終止 + 約 5 秒管線排空；若卡住則會跑到 120 秒的孫行程結束
         # kill + ~5s pipe drain; a hang would run until the 120s grandchild exits
         assert elapsed < 20, f"sandbox blocked for {elapsed:.1f}s on a daemonized grandchild"
-        assert "timed out" in stderr.lower()
+        assert "timed out" in run.stderr.lower()
     finally:
         subprocess.run(["pkill", "-f", "time.sleep(120)"], capture_output=True)
 
@@ -1031,8 +1031,8 @@ def test_local_sandbox_memory_cap_stops_a_runaway_allocation(tmp_path):
     )
     capped = LocalSubprocessSandbox(timeout_seconds=60, memory_mb=512)
     assert capped._limits(60) == {"cpu_seconds": 70, "memory_bytes": 512 * 1024 * 1024}
-    rc, out, err, _, _, junit = capped.execute_pytest_files({"test_mem.py": code}, working_dir=str(tmp_path))
-    assert rc != 0 and "MemoryError" in (out + err + (junit or ""))
+    run = capped.execute_pytest_files({"test_mem.py": code}, working_dir=str(tmp_path))
+    assert run.exit_code != 0 and "MemoryError" in (run.stdout + run.stderr + (run.junit_xml or ""))
     uncapped = LocalSubprocessSandbox(timeout_seconds=60, memory_mb=0)
     assert "memory_bytes" not in uncapped._limits(60)
 

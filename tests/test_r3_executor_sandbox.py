@@ -257,10 +257,10 @@ def test_real_node_coverage_run_has_no_glob_warning_on_stderr(tmp_path):
     code = _esm_test(f'import {{ add }} from "{target_file_url(str(tmp_path / "lib.mjs"))}";',
                      'test("a", () => { assert.equal(add(1, 2), 3); });')
     sandbox = NodeSubprocessSandbox(timeout_seconds=60, node_version=_NODE_VERSION)
-    _, _, stderr, _, pct, _ = sandbox.execute_pytest_files({"test_vh_000.mjs": code}, working_dir=str(tmp_path),
+    run = sandbox.execute_pytest_files({"test_vh_000.mjs": code}, working_dir=str(tmp_path),
                                                            collect_coverage=True, coverage_sink=JsLineCoverage())
-    assert pct == 100.0
-    assert "ExperimentalWarning" not in stderr, stderr
+    assert run.coverage_pct == 100.0
+    assert "ExperimentalWarning" not in run.stderr, run.stderr
 
 
 # --- 6. 位於 node_modules 底下的目標仍收得到涵蓋率 ---------------------------------------------------------

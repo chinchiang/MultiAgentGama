@@ -15,6 +15,7 @@ from vibeharness.core.llm_gateway import LLMGateway, REASON_NOT_VALID_JSON, _RET
 from vibeharness.core.models import (
     CodeSymbol, FindingSeverity, GeneratedTest, ReviewFinding, STRIDECategory, TestStatus, ThreatItem,
 )
+from vibeharness.core.sandbox import SandboxRun
 from vibeharness.runners.test_executor import (
     POC_HEADER_JS, POC_HEADER_PY, REASON_NOT_RUN_CORRECTLY, REASON_TARGET_BROKEN, TestSuiteExecutor,
 )
@@ -161,7 +162,7 @@ class _FailingSandbox:
             "</testcase>"
             "</testsuite></testsuites>"
         )
-        return 0, "", "", 0.2, None, junit
+        return SandboxRun(0, "", "", 0.2, None, junit)
 
 
 def test_failed_executor_result_reason_and_poc_are_bilingual(tmp_path):

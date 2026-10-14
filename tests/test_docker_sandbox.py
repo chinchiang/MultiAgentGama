@@ -166,8 +166,8 @@ def test_timeout_removes_the_container(tmp_path, monkeypatch):
     monkeypatch.setattr(sandbox, "_run", lambda *a, **k: (None, "", ""))
     calls = []
     monkeypatch.setattr(sandbox_mod.subprocess, "run", lambda cmd, **k: calls.append(cmd))
-    exit_code, _, stderr, *_ = sandbox.execute_pytest_files({"test_x.py": "def test_x(): pass"}, working_dir=str(tmp_path))
-    assert exit_code == TIMEOUT_EXIT_CODE and "timed out" in stderr
+    run = sandbox.execute_pytest_files({"test_x.py": "def test_x(): pass"}, working_dir=str(tmp_path))
+    assert run.exit_code == TIMEOUT_EXIT_CODE and "timed out" in run.stderr
     assert len(calls) == 1 and calls[0][1:3] == ["rm", "-f"] and calls[0][3].startswith("vibeharness-")
 
 
@@ -237,9 +237,9 @@ def test_container_runs_tests_against_the_mounted_target(tmp_path, monkeypatch):
 @docker_only
 def test_container_is_killed_on_timeout(tmp_path):
     sandbox = DockerSandbox(timeout_seconds=5)
-    exit_code, *_ = sandbox.execute_pytest_files(
+    run = sandbox.execute_pytest_files(
         {"test_hang.py": "import time\n\ndef test_hang():\n    time.sleep(120)\n"}, working_dir=str(tmp_path)
     )
-    assert exit_code == TIMEOUT_EXIT_CODE
+    assert run.exit_code == TIMEOUT_EXIT_CODE
     running = subprocess.run(["docker", "ps", "-q", "--filter", "name=vibeharness-"], capture_output=True, text=True)
     assert running.stdout.strip() == ""

@@ -7,7 +7,9 @@ import logging
 import xml.etree.ElementTree as ET
 from typing import Any, Callable, List, Tuple, Optional, Dict, Set
 from vibeharness.core.models import GeneratedTest, TestExecutionResult, TestStatus
-from vibeharness.core.sandbox import LocalSubprocessSandbox, SandboxUnavailableError, TIMEOUT_EXIT_CODE
+from vibeharness.core.sandbox import (
+    REASON_JS_COVERAGE_UNSUPPORTED as REASON_JS_COVERAGE_UNSUPPORTED, Sandbox, SandboxUnavailableError, TIMEOUT_EXIT_CODE,
+)
 from vibeharness.core.codecheck import check_test_code_for
 from vibeharness.core.jscoverage import JsLineCoverage
 from vibeharness.core.i18n import bi
@@ -30,7 +32,6 @@ REASON_NO_NODE_RUNTIME = bi("找不到可用的 Node 執行環境", "no usable N
 REASON_JS_NOT_RUN = bi("JavaScript/TypeScript 測試未執行", "JavaScript/TypeScript test was not run")
 REASON_TS_NOT_RUN = bi("TypeScript 測試未執行：Node 執行環境低於 22.6（不支援型別剝除）",
                        "TypeScript test was not run: the Node runtime is older than 22.6 (no type stripping)")
-REASON_JS_COVERAGE_UNSUPPORTED = bi("這個 JS/TS 沙盒不收集行涵蓋率", "this JS/TS sandbox does not collect line coverage")
 REASON_JS_COVERAGE_NO_REPORT = bi("沒有任何模組產生 lcov 涵蓋率報告（全部逾時，或 Node 沒有寫出報告）",
                                   "no module produced an lcov coverage report (all timed out, or Node wrote none)")
 REASON_JS_COVERAGE_NO_TARGET_FILE = bi("lcov 報告中沒有任何載入過的目標原始檔（測試可能沒有匯入目標）",
@@ -164,16 +165,16 @@ class TestSuiteExecutor:
 
     def __init__(
         self,
-        sandbox: LocalSubprocessSandbox,
+        sandbox: Sandbox,
         per_test_timeout_seconds: int = 30,
-        js_sandbox_factory: Optional[Callable[[], Optional[LocalSubprocessSandbox]]] = None,
+        js_sandbox_factory: Optional[Callable[[], Optional[Sandbox]]] = None,
     ):
         self.sandbox = sandbox
         self.per_test_timeout_seconds = per_test_timeout_seconds
         # 第一次使用時才建立（只有存在 JS/TS 測試時才需要 Node）；None 代表「無法執行 JS」
         # Built on first use (Node is only needed when a JS/TS test exists); None means "cannot run JS"
         self._js_sandbox_factory = js_sandbox_factory
-        self._js_sandbox: Optional[LocalSubprocessSandbox] = None
+        self._js_sandbox: Optional[Sandbox] = None
         self._js_sandbox_resolved = False
         self.js_runner_unavailable_reason: Optional[str] = None
         # 最近一次 execute_test_suite 的 JS/TS 行涵蓋率（只有 collect_coverage 時；回傳值的第二項維持只代表 Python），
@@ -183,7 +184,7 @@ class TestSuiteExecutor:
         self.last_js_line_coverage_pct: Optional[float] = None
         self.js_coverage_unavailable_reason: Optional[str] = None
 
-    def _js_sandbox_or_none(self) -> Optional[LocalSubprocessSandbox]:
+    def _js_sandbox_or_none(self) -> Optional[Sandbox]:
         if not self._js_sandbox_resolved:
             self._js_sandbox_resolved = True
             if self._js_sandbox_factory is None:
@@ -233,7 +234,7 @@ class TestSuiteExecutor:
                         t, unique_ids[i], TestStatus.ERROR,
                         failure_reason=f"{REASON_JS_NOT_RUN}: {self.js_runner_unavailable_reason}"
                     )
-                elif t.language == "typescript" and not getattr(sandbox, "supports_typescript", True):
+                elif t.language == "typescript" and not sandbox.supports_typescript:
                     results[i] = self._result(
                         t, unique_ids[i], TestStatus.ERROR,
                         failure_reason=REASON_TS_NOT_RUN
@@ -262,12 +263,12 @@ class TestSuiteExecutor:
                 f"{preamble}{header}\n# Target: {self._header_field(t.target_component)} | "
                 f"Test: {self._header_field(t.title)}\n{body}\n"
             )
-        exit_code, _stdout, _stderr, _duration, _coverage, junit_xml = self.sandbox.execute_pytest_files(
+        run = self.sandbox.execute_pytest_files(
             files, working_dir=working_dir, collect_coverage=False, timeout_seconds=timeout_seconds
         )
-        if exit_code == TIMEOUT_EXIT_CODE:
+        if run.exit_code == TIMEOUT_EXIT_CODE:
             return "killed"
-        cases = self._parse_junit(junit_xml, "python")
+        cases = self._parse_junit(run.junit_xml, "python")
         if not cases:
             return "invalid"
         flat = [case for module_cases in cases.values() for case in module_cases]
@@ -320,7 +321,7 @@ class TestSuiteExecutor:
         working_dir: str,
         collect_coverage: bool,
         language: str,
-        sandbox: LocalSubprocessSandbox,
+        sandbox: Sandbox,
     ) -> Optional[float]:
         """把某一語言的測試當作一個沙盒批次執行（模組名稱使用全域索引，所以 id
         在各群組間保持唯一），並為這些索引填入 `results`。
@@ -386,12 +387,14 @@ class TestSuiteExecutor:
                                    f"JS/TS line coverage {coverage_pct:.1f}% ({len(js_coverage.files)} loaded target "
                                    f"file(s), {js_coverage.covered_lines}/{js_coverage.instrumented_lines} lines)"))
         else:
-            exit_code, stdout, stderr, duration, coverage_pct, junit_xml = sandbox.execute_pytest_files(
+            run = sandbox.execute_pytest_files(
                 files,
                 working_dir=working_dir,
                 collect_coverage=collect_coverage,
                 coverage_target=working_dir
             )
+            exit_code, stdout, stderr, coverage_pct, junit_xml = (
+                run.exit_code, run.stdout, run.stderr, run.coverage_pct, run.junit_xml)
             cases = self._parse_junit(junit_xml, language)
             if exit_code == TIMEOUT_EXIT_CODE and len(files) > 1:
                 # 一個卡住的測試不能讓整個批次作廢：用各自的預算重跑每個模組
@@ -404,7 +407,7 @@ class TestSuiteExecutor:
                 )
                 junit_xml = ""  # 逐模組的結果現在在 `cases`／`timed_out` 裡 ／ per-module outcomes are now in `cases` / `timed_out`
             elif exit_code == TIMEOUT_EXIT_CODE:
-                batch_timeout = getattr(sandbox, "timeout_seconds", None)
+                batch_timeout = sandbox.timeout_seconds
             # 重跑過的模組保留自己那次的結果（含沒有報告的情況）；其餘沿用批次的結果
             # A rerun module keeps its own outcome (including no report); the others take the batch's
             for module in module_to_idx:
@@ -464,7 +467,7 @@ class TestSuiteExecutor:
         return coverage_pct
 
     def _run_individually(
-        self, files: Dict[str, str], working_dir: str, sandbox: Optional[LocalSubprocessSandbox] = None,
+        self, files: Dict[str, str], working_dir: str, sandbox: Optional[Sandbox] = None,
         language: str = "python", timeout_used: Optional[Dict[str, int]] = None,
         runs: Optional[Dict[str, Tuple[int, str, str, Optional[str]]]] = None
     ) -> Tuple[Dict[str, List[dict]], Set[str], Set[str], Set[str]]:
@@ -490,7 +493,7 @@ class TestSuiteExecutor:
         parse_failed: Set[str] = set()
         sandbox = sandbox or self.sandbox
         per_test = self._per_test_budget(sandbox)
-        budget = float(getattr(sandbox, "timeout_seconds", 0) or 0)
+        budget = float(sandbox.timeout_seconds or 0)
         deadline = time.monotonic() + budget
         for filename, code in files.items():
             module = os.path.splitext(filename)[0]
@@ -501,34 +504,33 @@ class TestSuiteExecutor:
             timeout = min(per_test, remaining)
             if timeout_used is not None:
                 timeout_used[module] = timeout
-            exit_code, stdout, stderr, _, _, junit_xml = sandbox.execute_pytest_files(
+            run = sandbox.execute_pytest_files(
                 {filename: code}, working_dir=working_dir, timeout_seconds=timeout
             )
             if runs is not None:
-                runs[module] = (exit_code, stdout, stderr, junit_xml)
-            if exit_code == TIMEOUT_EXIT_CODE:
+                runs[module] = (run.exit_code, run.stdout, run.stderr, run.junit_xml)
+            if run.exit_code == TIMEOUT_EXIT_CODE:
                 timed_out.add(module)
                 continue
-            module_cases = self._parse_junit(junit_xml, language)
+            module_cases = self._parse_junit(run.junit_xml, language)
             if module_cases is None:
                 parse_failed.add(module)
                 continue
             cases.update(module_cases)
         return cases, timed_out, not_rerun, parse_failed
 
-    def _js_coverage_or_none(self, sandbox: LocalSubprocessSandbox) -> Optional[JsLineCoverage]:
-        """這次 JS/TS 執行要用的涵蓋率累加器；沙盒不支援（替身、舊版 Node）時為 None，並記下原因。
+    def _js_coverage_or_none(self, sandbox: Sandbox) -> Optional[JsLineCoverage]:
+        """這次 JS/TS 執行要用的涵蓋率累加器；沙盒不支援（不收集涵蓋率的沙盒、舊版 Node）時為 None，並記下原因。
         The coverage accumulator for this JS/TS run; None (with the reason recorded) when the sandbox cannot collect
-        it (a stand-in, an old Node)."""
-        problem_of = getattr(sandbox, "js_coverage_problem", None)
-        problem = problem_of() if callable(problem_of) else REASON_JS_COVERAGE_UNSUPPORTED
+        it (a sandbox that collects none, an old Node)."""
+        problem = sandbox.js_coverage_problem()
         if problem:
             self.js_coverage_unavailable_reason = problem
             logger.warning(bi(f"不收集 JS/TS 行涵蓋率：{problem}", f"JS/TS line coverage is not collected: {problem}"))
             return None
         return JsLineCoverage()
 
-    def _per_test_budget(self, sandbox: LocalSubprocessSandbox) -> int:
+    def _per_test_budget(self, sandbox: Sandbox) -> int:
         """逐測重跑實際使用的逾時（秒）。非正數的 per_test_timeout_seconds（設定驗證交給 harness）會讓沙盒
         退回自己的批次預算，所以這裡也回報那個值，而不是「0 秒後逾時」。
         The timeout (seconds) a per-test rerun actually gets. A non-positive per_test_timeout_seconds (config
@@ -537,10 +539,10 @@ class TestSuiteExecutor:
         per_test = self.per_test_timeout_seconds
         if isinstance(per_test, int) and per_test > 0:
             return per_test
-        return int(getattr(sandbox, "timeout_seconds", 0) or 0) or 30
+        return int(sandbox.timeout_seconds or 0) or 30
 
     def _run_js_modules(
-        self, files: Dict[str, str], working_dir: str, sandbox: LocalSubprocessSandbox, language: str,
+        self, files: Dict[str, str], working_dir: str, sandbox: Sandbox, language: str,
         runs: Dict[str, Tuple[int, str, str, Optional[str]]], timeout_used: Dict[str, int],
         coverage: Optional[JsLineCoverage] = None
     ) -> Tuple[Dict[str, List[dict]], Set[str], Set[str], Set[str]]:
@@ -583,7 +585,7 @@ class TestSuiteExecutor:
         not_rerun: Set[str] = set()
         parse_failed: Set[str] = set()
         per_test = self._per_test_budget(sandbox)
-        batch_budget = float(getattr(sandbox, "timeout_seconds", 0) or 0) or float(per_test)
+        batch_budget = float(sandbox.timeout_seconds or 0) or float(per_test)
 
         def run_one(filename: str, code: str, timeout: int) -> bool:
             # 執行一個模組並記錄結果；逾時時回傳 False ／ Runs one module and records it; False on a timeout
@@ -592,15 +594,16 @@ class TestSuiteExecutor:
             # The coverage arguments are only passed when coverage is collected: sandbox stand-ins need not know them
             coverage_kwargs: Dict[str, Any] = {} if coverage is None else {
                 "collect_coverage": True, "coverage_target": working_dir, "coverage_sink": coverage}
-            exit_code, stdout, stderr, _, _, junit_xml = sandbox.execute_pytest_files(
+            run = sandbox.execute_pytest_files(
                 {filename: code}, working_dir=working_dir, timeout_seconds=timeout, **coverage_kwargs
             )
-            runs[module] = (exit_code, stdout, stderr, junit_xml)
+            stdout = run.stdout
+            runs[module] = (run.exit_code, stdout, run.stderr, run.junit_xml)
             timeout_used[module] = timeout
-            if exit_code == TIMEOUT_EXIT_CODE:
+            if run.exit_code == TIMEOUT_EXIT_CODE:
                 return False
             timed_out.discard(module)
-            parsed = self._parse_junit(junit_xml, language, module=module)
+            parsed = self._parse_junit(run.junit_xml, language, module=module)
             if parsed is None:
                 parse_failed.add(module)
                 return True

@@ -17,7 +17,7 @@ from vibeharness.core.models import (
     MultiModelDebateResult, ThreatModelReport,
     FindingSeverity, GeneratedTest, MutantResult, MutationReport, ReviewFinding, TestExecutionResult, TestStatus,
 )
-from vibeharness.core.sandbox import LocalSubprocessSandbox
+from vibeharness.core.sandbox import LocalSubprocessSandbox, SandboxRun
 from vibeharness.runners.test_executor import TestSuiteExecutor
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -362,7 +362,7 @@ class _JunitSandbox:
 
     def execute_pytest_files(self, files, **kwargs):
         self.calls.append(kwargs)
-        return self.exit_code, "", "", 0.1, None, self.junit
+        return SandboxRun(self.exit_code, "", "", 0.1, None, self.junit)
 
 
 def _junit(*cases):

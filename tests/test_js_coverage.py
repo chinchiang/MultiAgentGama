@@ -20,8 +20,8 @@ from vibeharness.core.models import (
     GeneratedTest, MultiModelDebateResult, TestExecutionResult, TestStatus, ThreatModelReport, VibeHarnessSummary,
 )
 from vibeharness.core.sandbox import (
-    DEFAULT_DOCKER_NODE_IMAGE, TIMEOUT_EXIT_CODE, NodeDockerSandbox, NodeSubprocessSandbox, detect_node,
-    node_test_command,
+    DEFAULT_DOCKER_NODE_IMAGE, TIMEOUT_EXIT_CODE, LocalSubprocessSandbox, NodeDockerSandbox, NodeSubprocessSandbox,
+    SandboxRun, detect_node, node_test_command,
 )
 from vibeharness.reports.report_generator import ReportGenerator
 from vibeharness.runners.test_executor import (
@@ -289,11 +289,11 @@ class _CoverageSandbox:
         self.kwargs.append(kw)
         module = os.path.splitext(next(iter(files)))[0]
         if module in self.timeouts:
-            return TIMEOUT_EXIT_CODE, "", "timed out", 1.0, None, None
+            return SandboxRun(TIMEOUT_EXIT_CODE, "", "timed out", 1.0, None, None)
         sink = kw.get("coverage_sink")
         if kw.get("collect_coverage") and sink is not None and module in self.lcov_by_module:
             sink.add_lcov(self.lcov_by_module[module], [working_dir], working_dir, windows=False)
-        return 0, "", "", 0.1, None, PASS_JUNIT
+        return SandboxRun(0, "", "", 0.1, None, PASS_JUNIT)
 
 
 _LCOV_A = "SF:lib.mjs\nDA:1,1\nDA:2,1\nDA:3,0\nDA:4,0\nend_of_record\n"
@@ -343,7 +343,9 @@ def test_executor_reports_why_js_coverage_is_missing(tmp_path):
     assert executor.last_js_line_coverage_pct is None and "lcov" in executor.js_coverage_unavailable_reason
 
     class _Plain(_CoverageSandbox):
-        js_coverage_problem = None  # 沒有涵蓋率介面的沙盒替身 ／ a stand-in without the coverage interface
+        # 沒有覆寫涵蓋率介面的沙盒沿用 LocalSubprocessSandbox 的預設值
+        # A sandbox that does not override the coverage interface keeps LocalSubprocessSandbox's default
+        js_coverage_problem = LocalSubprocessSandbox.js_coverage_problem
 
     executor = TestSuiteExecutor(sandbox=None, js_sandbox_factory=lambda: _Plain({}))
     executor.execute_test_suite([_js_test("A", _GOOD)], working_dir=str(tmp_path), collect_coverage=True)

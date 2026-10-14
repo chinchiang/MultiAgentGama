@@ -17,7 +17,7 @@ import vibeharness.core.sandbox as sandbox_mod
 from vibeharness.core.codecheck import check_test_code
 from vibeharness.core.models import GeneratedTest, TestStatus
 from vibeharness.core.sandbox import (
-    EXECUTION_FAILURE_EXIT_CODE, TIMEOUT_EXIT_CODE, DockerSandbox, LocalSubprocessSandbox, sandbox_home_env,
+    EXECUTION_FAILURE_EXIT_CODE, TIMEOUT_EXIT_CODE, DockerSandbox, LocalSubprocessSandbox, SandboxRun, sandbox_home_env,
 )
 from vibeharness.runners.test_executor import (
     REASON_NOT_RUN_CORRECTLY, REASON_RERUN_BUDGET_EXHAUSTED, REASON_TARGET_BROKEN, TestSuiteExecutor,
@@ -249,9 +249,9 @@ class _TimedJsSandbox:
         self.calls.append((module, timeout_seconds))
         if module in self.hang or self.delay > timeout_seconds:
             time.sleep(timeout_seconds)
-            return TIMEOUT_EXIT_CODE, "", "timed out", float(timeout_seconds), None, None
+            return SandboxRun(TIMEOUT_EXIT_CODE, "", "timed out", float(timeout_seconds), None, None)
         time.sleep(self.delay)
-        return 0, "", "", self.delay, None, _PASS_JUNIT
+        return SandboxRun(0, "", "", self.delay, None, _PASS_JUNIT)
 
 
 def test_many_slow_but_passing_js_modules_all_run(tmp_path):
@@ -292,7 +292,7 @@ class _BatchHangsPySandbox:
         self.budgets.append(timeout_seconds)
         if timeout_seconds:
             time.sleep(timeout_seconds)
-        return TIMEOUT_EXIT_CODE, "", "timed out", 0.0, None, None
+        return SandboxRun(TIMEOUT_EXIT_CODE, "", "timed out", 0.0, None, None)
 
 
 # 重跑共睡 3 秒（2 + 1）；上限多留 4 秒給較慢的 runner，涵蓋率啟用時再放寬 2 倍——超出預算的重跑仍會被抓到

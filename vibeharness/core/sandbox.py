@@ -8,7 +8,8 @@ import shutil
 import signal
 import uuid
 import logging
-from typing import Dict, Optional, Sequence, Tuple, List, Any, Union
+from dataclasses import dataclass
+from typing import Dict, Optional, Protocol, Sequence, Tuple, List, Any, Union
 
 from vibeharness.core.i18n import bi
 from vibeharness.core.jscoverage import (
@@ -54,6 +55,48 @@ _SAFE_ENV_VARS = {
 class SandboxUnavailableError(RuntimeError):
     """設定的沙盒無法在這台機器上執行（例如缺少 Docker 或其映像檔）。
     The configured sandbox cannot run on this machine (e.g. Docker or its image is missing)."""
+
+
+REASON_JS_COVERAGE_UNSUPPORTED = bi("這個 JS/TS 沙盒不收集行涵蓋率", "this JS/TS sandbox does not collect line coverage")
+
+
+@dataclass(frozen=True)
+class SandboxRun:
+    """一次沙盒執行的結果。`exit_code` 可能是 TIMEOUT_EXIT_CODE 或 EXECUTION_FAILURE_EXIT_CODE；`coverage_pct` 只有
+    collect_coverage 時才有值；`junit_xml` 是讀回的 JUnit 報告文字，沒有報告（逾時、執行失敗、讀回被拒）時為 None。
+    The outcome of one sandbox run. `exit_code` may be TIMEOUT_EXIT_CODE or EXECUTION_FAILURE_EXIT_CODE; `coverage_pct`
+    is only set with collect_coverage; `junit_xml` is the JUnit report text read back, None when there is no report
+    (a timeout, an execution failure, a refused read-back)."""
+    exit_code: int
+    stdout: str
+    stderr: str
+    duration: float
+    coverage_pct: Optional[float] = None
+    junit_xml: Optional[str] = None
+
+
+class Sandbox(Protocol):
+    """執行器與沙盒之間的接縫。`timeout_seconds` 是一個批次的預算；`supports_typescript` 與 `js_coverage_problem`
+    只對執行 JS/TS 的沙盒有意義（LocalSubprocessSandbox 提供預設值：可以執行、不收集涵蓋率）。
+    The seam between the executor and the sandboxes. `timeout_seconds` is one batch's budget; `supports_typescript` and
+    `js_coverage_problem` only matter for a sandbox that runs JS/TS (LocalSubprocessSandbox provides the defaults: it
+    can run them, and collects no coverage)."""
+
+    timeout_seconds: int
+    supports_typescript: bool
+
+    def js_coverage_problem(self) -> Optional[str]: ...
+
+    def execute_pytest_files(
+        self,
+        files: Dict[str, str],
+        custom_env: Optional[Dict[str, str]] = None,
+        working_dir: Optional[str] = None,
+        collect_coverage: bool = False,
+        coverage_target: Optional[str] = None,
+        timeout_seconds: Optional[int] = None,
+        coverage_sink: Optional[JsLineCoverage] = None
+    ) -> SandboxRun: ...
 
 
 # custom_env 中無論大小寫怎麼拼都絕不轉送的鍵：
@@ -295,6 +338,11 @@ class LocalSubprocessSandbox:
     # Local children share the harness's uid and could read /proc/<harness>/environ: make the harness non-dumpable
     # before running (see harden_harness_process). Container sandboxes override this with False
     _hardens_harness = True
+    # 能否執行 TypeScript 測試；Node 沙盒依 Node 版本設定。Python 沙盒不會收到 JS/TS 測試，這個預設值只讓
+    # 當作 JS 沙盒的替身能執行它們
+    # Whether TypeScript tests can run; the Node sandboxes set it from the Node version. A Python sandbox never gets
+    # a JS/TS test, so this default only lets a stand-in used as the JS sandbox run them
+    supports_typescript = True
 
     def __init__(self, timeout_seconds: int = 30, memory_mb: int = 0):
         self.timeout_seconds = timeout_seconds
@@ -303,6 +351,11 @@ class LocalSubprocessSandbox:
         # Address-space cap (RLIMIT_AS, POSIX only) for the pytest process tree; 0 disables. Not a security
         # boundary, but it stops a generated test from eating the host's memory or CPU time.
         self.memory_mb = int(memory_mb or 0)
+
+    def js_coverage_problem(self) -> Optional[str]:
+        """收集不到 JS/TS 行涵蓋率的原因；Node 沙盒依版本覆寫。
+        Why JS/TS line coverage cannot be collected; the Node sandboxes override it by version."""
+        return REASON_JS_COVERAGE_UNSUPPORTED
 
     def execute_python_code(
         self,
@@ -318,14 +371,14 @@ class LocalSubprocessSandbox:
         Executes a single Python test module in an isolated subprocess.
         Returns: (exit_code, stdout, stderr, execution_duration_seconds, line_coverage_percent)
         """
-        exit_code, stdout, stderr, duration, coverage, _ = self.execute_pytest_files(
+        run = self.execute_pytest_files(
             {"test_exec.py": code_content},
             custom_env=custom_env,
             working_dir=working_dir,
             collect_coverage=collect_coverage,
             coverage_target=coverage_target
         )
-        return exit_code, stdout, stderr, duration, coverage
+        return run.exit_code, run.stdout, run.stderr, run.duration, run.coverage_pct
 
     def execute_pytest_files(
         self,
@@ -336,16 +389,14 @@ class LocalSubprocessSandbox:
         coverage_target: Optional[str] = None,
         timeout_seconds: Optional[int] = None,
         coverage_sink: Optional[JsLineCoverage] = None
-    ) -> Tuple[int, str, str, float, Optional[float], Optional[str]]:
+    ) -> SandboxRun:
         """
         把每個 {filename: code} 項目寫成獨立的測試模組，並在同一個 pytest 行程中執行。
         某一模組的收集錯誤不會中止其他模組。
-        回傳：(exit_code, stdout, stderr, duration_seconds, line_coverage_percent, junit_xml_text)
         `coverage_sink`（只有 Node 沙盒使用）：collect_coverage 時，這次執行的逐行 JS/TS 涵蓋率以聯集併入其中，
         讓呼叫端能跨模組合併；逾時的執行不會併入任何東西。
         Writes each {filename: code} entry as a separate test module and runs them in one pytest process.
         A collection error in one module does not abort the others.
-        Returns: (exit_code, stdout, stderr, duration_seconds, line_coverage_percent, junit_xml_text)
         `coverage_sink` (Node sandboxes only): with collect_coverage, this run's per-line JS/TS coverage is merged into
         it as a union so the caller can combine modules; a timed-out run merges nothing.
         """
@@ -371,14 +422,14 @@ class LocalSubprocessSandbox:
                 stderr = self._clean_coverage_stderr(stderr)
             if returncode is None:
                 self._after_timeout(cmd)
-                return TIMEOUT_EXIT_CODE, stdout, (
+                return SandboxRun(TIMEOUT_EXIT_CODE, stdout, (
                     f"Execution timed out after {timeout} seconds; module(s) attempted: {', '.join(sorted(files))}."
-                ), duration, None, None
+                ), duration)
             if stderr.endswith(OUTPUT_CAP_NOTE) and self._after_output_cap(cmd):
                 # 輸出超過上限、結果不可信（例如 docker CLI 寫不下輸出就先結束了，容器可能還在寫報告）：不讀報告
                 # The output exceeded the cap and the outcome cannot be trusted (e.g. the docker CLI quit when it could
                 # not write the output, while the container may still be writing the reports): no report is read
-                return EXECUTION_FAILURE_EXIT_CODE, stdout, stderr, duration, None, None
+                return SandboxRun(EXECUTION_FAILURE_EXIT_CODE, stdout, stderr, duration)
 
             coverage_percent = self._collect_coverage(
                 run_dir, stdout, base_dir, coverage_target, coverage_sink
@@ -391,10 +442,10 @@ class LocalSubprocessSandbox:
             junit_xml, refusal = read_untrusted_file(junit_path, MAX_REPORT_BYTES)
             if refusal:
                 stderr = f"{refusal}\n{stderr}" if stderr else refusal
-            return returncode, stdout, stderr, duration, coverage_percent, junit_xml
+            return SandboxRun(returncode, stdout, stderr, duration, coverage_percent, junit_xml)
         except Exception as e:
             duration = time.time() - start_time
-            return EXECUTION_FAILURE_EXIT_CODE, "", f"Execution failed: {str(e)}", duration, None, None
+            return SandboxRun(EXECUTION_FAILURE_EXIT_CODE, "", f"Execution failed: {str(e)}", duration)
         finally:
             shutil.rmtree(run_dir, ignore_errors=True)
 
