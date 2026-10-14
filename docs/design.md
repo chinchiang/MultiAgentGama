@@ -782,7 +782,7 @@ console 輸出另外用 `rich.markup.escape`（`vibeharness/core/harness.py:9`�
 | :--- | :--- |
 | `test_ai_security.py` | sanitize、設定檔驅動的 reviewer、https 限制、`prompt_sha256`、`unconfigured`、禁止安裝套件、VH-AI 規則、只對 AI 目標加 LLM 清單、per-model token 與截斷、Bedrock、生成測試附錄 |
 | `test_baseline.py` | 拒絕 partial 與他工具的 JSON；舊報告重算 fingerprint；已知問題列出但不計入判定；CLI `--baseline` 先驗證；`action.yml` 結構 |
-| `test_call_plans.py` | 每個代理的 `plan` 等於它對同樣輸入實際發出的呼叫：審查者與威脅建模的分批（含沒有符號時的一批）、驗證者跨過每次呼叫的發現上限、測試生成的修復以 `max_per_call` 為上限、攻擊合成每個威脅一次 |
+| `test_call_plans.py` | 每個代理的 `plan` 等於它對同樣輸入實際發出的呼叫：審查者與威脅建模的分批（含沒有符號時的一批）與每批實際帶上的程式碼 token、驗證者跨過每次呼叫的發現上限、已佐證的發現讓驗證者少一次呼叫（計畫是上限）、測試生成的修復以 `max_per_call` 為上限、攻擊合成每個威脅一次 |
 | `test_cross_verification.py` | debater：不評自家發現、多數決與平手、假的判決、N/A、報告呈現投票 |
 | `test_dedup_and_budget.py` | deduplicator、codecontext 的預算與分批、骨架、符號比對、finding id 唯一 |
 | `test_docker_sandbox.py` | 路徑改寫、隔離旗標、`custom_env` 過濾、nobody、逾時移除容器；真實容器測試以 `VIBEHARNESS_REQUIRE_DOCKER=1` 強制執行 |

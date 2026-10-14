@@ -13,13 +13,16 @@ from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
 from vibeharness.agents.whitebox.debater import MultiModelDebater
 from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
 from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
+from vibeharness.core.codecontext import estimate_tokens
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.models import FindingSeverity, ReviewFinding, STRIDECategory, ThreatItem
+from vibeharness.core.sanitize import UNTRUSTED_CODE_CLOSE, UNTRUSTED_CODE_OPEN
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
 _VALID_TEST = "def test_ok():\n    assert 1 == 1\n"
 _INVALID_TEST = "def test_broken(:\n"
+_LISTING_RE = re.compile(re.escape(UNTRUSTED_CODE_OPEN) + "\n(.*?)\n" + re.escape(UNTRUSTED_CODE_CLOSE), re.S)
 
 
 def _symbols(tmp_path, count):
@@ -31,11 +34,12 @@ def _symbols(tmp_path, count):
     return ASTExtractor().parse_file(str(path))
 
 
-def _finding(i, model="claude"):
+def _finding(i, model="claude", corroborated_by=()):
     return ReviewFinding(
         finding_id=f"F{i}", reviewer_name=model.title(), model_alias=model, file_path="unknown",
         severity=FindingSeverity.HIGH, title=f"title F{i}", description="", root_cause="",
-        suspected_vibe_flaw="", suggested_test_scenario=""
+        suspected_vibe_flaw="", suggested_test_scenario="",
+        corroborated_by=[m.title() for m in corroborated_by], corroborating_models=list(corroborated_by)
     )
 
 
@@ -63,6 +67,26 @@ def _actual(transport, system=None):
                    if system is None or r.messages[0]["content"] == system)
 
 
+def _planned_code_tokens(plans):
+    """{(代理 id, 模型別名): 每次呼叫計畫帶上的程式碼 token，排序後} ／ {(agent id, model alias): each call's planned code tokens, sorted}."""
+    planned = {}
+    for p in plans:
+        planned.setdefault((p.agent_id, p.model_alias), []).extend([p.code_tokens] * p.calls)
+    return {key: sorted(tokens) for key, tokens in planned.items()}
+
+
+def _actual_code_tokens(transport):
+    """{(代理 id, 模型別名): 每次呼叫實際帶上的程式碼清單的 token，排序後}；沒有程式碼區塊的呼叫算 0。
+    {(agent id, model alias): the tokens of the code listing each call actually carried, sorted}; a call without a code
+    block counts as 0."""
+    actual = {}
+    for r in transport.requests:
+        listings = _LISTING_RE.findall(r.messages[1]["content"])
+        assert len(listings) <= 1
+        actual.setdefault((r.agent_id, r.model_alias), []).append(estimate_tokens(listings[0]) if listings else 0)
+    return {key: sorted(tokens) for key, tokens in actual.items()}
+
+
 def test_reviewer_plan_is_one_call_per_reviewer_and_batch(scripted, tmp_path):
     symbols = _symbols(tmp_path, 20)
     transport = scripted({"whitebox_reviewer_*": {"findings": []}})
@@ -72,6 +96,7 @@ def test_reviewer_plan_is_one_call_per_reviewer_and_batch(scripted, tmp_path):
     assert all(p.exact and p.kind == "reviewer" for p in plans)
     assert set(_planned(plans).values()) == {2}  # 每個審查者兩批 ／ two batches per reviewer
     assert _planned(plans) == _actual(transport)
+    assert _planned_code_tokens(plans) == _actual_code_tokens(transport)
     assert ensemble.plan([], str(tmp_path)) == []
 
 
@@ -92,6 +117,26 @@ def test_debater_plan_is_the_verifier_calls_for_the_reported_findings(scripted):
     assert len(set(_planned(plans).values())) > 1
     assert _planned(plans) == _actual(transport)
     assert set(_planned(debater.plan({})).values()) == {0}
+
+
+def test_debater_plan_is_an_upper_bound_when_findings_are_corroborated(scripted):
+    def rule(request):
+        ids = re.findall(r"Title: title (\w+)", request.messages[1]["content"])
+        return {"verdicts": [{"index": i, "verdict": "unsure", "reason": "r"} for i in range(len(ids))]}
+    transport = scripted({"whitebox_verifier_*": rule})
+    debater = MultiModelDebater(LLMGateway(CONFIG, execution_mode="live", transport=transport))
+    # claude 回報比每次呼叫的上限多一筆，其中一筆 deepseek 也回報了：deepseek 不必再裁決它，剩 15 筆只要一次呼叫，
+    # 計畫看不到佐證，算成兩次；其他驗證者不受影響
+    # claude reports one finding over the per-call limit, one of which deepseek reported too: deepseek need not rule
+    # on it, so its remaining 15 take one call, while the plan cannot see corroboration and counts two; the other
+    # verifiers are unaffected
+    findings = [_finding(f"claude{i}", corroborated_by=["deepseek"] if i == 0 else [])
+                for i in range(debater.FINDINGS_PER_CALL + 1)]
+    plans = debater.plan({"claude": len(findings)})
+    debater.arbitrate(findings)
+    (deepseek,) = [p.agent_id for p in plans if p.model_alias == "deepseek"]
+    assert _planned(plans) - _actual(transport) == Counter({(deepseek, "deepseek"): 1})
+    assert not _actual(transport) - _planned(plans)
 
 
 def test_test_generator_plan_is_one_call_per_finding_and_bounds_the_heals(scripted, tmp_path):
@@ -123,6 +168,7 @@ def test_threat_modeler_plan_is_one_call_per_batch(scripted, tmp_path):
     tm.model_system("desc", ["/api"], root_dir=str(tmp_path))  # 沒有符號仍有一批 ／ one batch even without symbols
     assert all(p.exact for p in plans) and [p.code_tokens > 0 for p in plans] == [True, True, False]
     assert _planned(plans) == _actual(transport) == Counter({(threat_modeler.AGENT_ID, plans[0].model_alias): 3})
+    assert _planned_code_tokens(plans) == _actual_code_tokens(transport)
 
 
 def test_scenario_builder_plan_is_one_call_per_threat(scripted):

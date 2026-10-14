@@ -46,7 +46,7 @@
 - 新增 `tests/test_identity.py`，只透過 `core/identity.py` 測試身分識別：任何文字的正規化、改寫措辭與不同文字、模擬項目的英文半、各種鍵與其 SARIF 指紋的性質、嚴重度順序與未知位置，加上一張取自 master、釘住雜湊值的 golden 表，讓之後任何會讓既有基準或 Code Scanning 警示失配的改動都會讓測試失敗。散在其他檔案、直接測試鍵函式的 11 個測試搬進來；測試鍵的使用者（基準的載入與比對、SARIF 端對端、威脅合併、去重）留在原處。覆蓋率沒有任何一行下降。
 - 新增 `tests/test_model_output.py`，只透過 `core/model_output.py` 測試解析與形狀檢查：`parse_json_object` 的各種包裝與退回、`check_output` 對每種型別規格、清單規則與 `any_of` 的判斷與雙語原因、`mark_cached`，以及每個代理的模擬輸出都符合它自己的 schema（因此發現攻擊合成的模擬輸出 `{"tests": []}` 不符合它的 schema，已改為 `{"code": ""}`，行為不變）。原本直接呼叫閘道私有函式的解析與檢查測試搬進來，閘道的兩個包裝函式刪除；`core/model_output.py` 的覆蓋率 100%，沒有任何一行失去覆蓋。
 - 新增 `tests/test_node_runtime.py`，測試 Node 執行環境的選擇：`build_node_sandbox` 依 provider 與版本決定 TypeScript 支援、label 與問題，docker 內的 `probe_node_version`，harness 的工廠，以及 `SuiteResult.node_runtime` 只出現在含 JS/TS 測試的 suite、只有黑箱 suite 含 JS 時 harness 也拿得到它。其中四個測試從 `tests/test_js_execution.py` 與 `tests/test_js_coverage.py` 原樣搬來（三個改名，因為舊名稱指的是已刪除的方法）。測試裡的沙盒替身改回傳 `SandboxRun`，替換 `execute_test_suite` 的假函式改回傳 `SuiteResult`。
-- 新增 `tests/test_call_plans.py`：以 `scripted` fixture 實際執行每個代理，確認它的 `plan` 對同樣輸入算出的呼叫數等於實際發出的呼叫（修復以 `max_per_call` 為上限）。`tests/test_estimate.py` 原有的測試不變，另新增 `test_verifier_calls_have_no_float_error`，釘住「修正」中驗證者呼叫數的那一項。
+- 新增 `tests/test_call_plans.py`：以 `scripted` fixture 實際執行每個代理，確認它的 `plan` 對同樣輸入算出的呼叫數等於實際發出的呼叫（修復以 `max_per_call` 為上限）；審查者與威脅建模的計畫每次呼叫的程式碼 token 等於實際送出的程式碼清單；驗證者的計畫在有已佐證的發現時是上限（佐證只會讓呼叫變少）。`tests/test_estimate.py` 原有的測試不變，另新增 `test_verifier_calls_have_no_float_error`，釘住「修正」中驗證者呼叫數的那一項。
 
 ### 文件
 

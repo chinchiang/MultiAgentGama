@@ -782,7 +782,7 @@ The suite is hermetic: mock mode plus two fixtures in `conftest.py` exercise the
 | :--- | :--- |
 | `test_ai_security.py` | sanitize, config-driven reviewers, the https rule, `prompt_sha256`, `unconfigured`, no package installs, VH-AI rules, the LLM checklist only for AI targets, per-model tokens and truncation, Bedrock, the generated-test appendix |
 | `test_baseline.py` | partial and foreign JSON refused; fingerprints recomputed for old reports; known problems listed but not counted; CLI `--baseline` validated up front; `action.yml` structure |
-| `test_call_plans.py` | each agent's `plan` equals the calls it actually makes for the same inputs: the reviewer and threat-model batches (including the one batch without symbols), verifiers crossing the findings-per-call limit, test-generation repairs capped by `max_per_call`, one attack synthesis per threat |
+| `test_call_plans.py` | each agent's `plan` equals the calls it actually makes for the same inputs: the reviewer and threat-model batches (including the one batch without symbols) and the code tokens each batch actually carries, verifiers crossing the findings-per-call limit, a corroborated finding saving a verifier one call (the plan is an upper bound), test-generation repairs capped by `max_per_call`, one attack synthesis per threat |
 | `test_cross_verification.py` | the debater: no self-review, majority and ties, bogus verdicts, N/A, votes in the report |
 | `test_dedup_and_budget.py` | the deduplicator, codecontext budgets and batching, skeletons, symbol matching, unique finding ids |
 | `test_docker_sandbox.py` | path rewriting, isolation flags, `custom_env` filtering, nobody, container removal on timeout; real-container tests are forced with `VIBEHARNESS_REQUIRE_DOCKER=1` |
