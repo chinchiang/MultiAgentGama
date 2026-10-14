@@ -12,6 +12,7 @@ from vibeharness.core.harness import VibeHarnessCommander
 from vibeharness.core.models import (
     FindingSeverity, ReviewFinding, STRIDECategory, StaticFinding, TestExecutionResult, TestStatus, ThreatItem,
 )
+from vibeharness.runners.test_executor import SuiteResult
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
@@ -96,11 +97,13 @@ def _forced_outcomes(breach_ids, wb_fail=True):
     def fake_execute(tests, working_dir=".", collect_coverage=False):
         if collect_coverage:
             status = TestStatus.FAILED if wb_fail else TestStatus.PASSED
-            return [TestExecutionResult(test_id="WB-PROBE-01", test_type="whitebox_probe", status=status,
-                                        failure_reason="AssertionError: crashed", source_ref="get_user_profile")], 50.0
-        return [TestExecutionResult(test_id=f"BB-TEST-{tid}", test_type="blackbox_security", status=TestStatus.FAILED,
-                                    failure_reason="AssertionError: breached", is_security_exploit_confirmed=True,
-                                    source_ref=tid) for tid in breach_ids], None
+            return SuiteResult([TestExecutionResult(test_id="WB-PROBE-01", test_type="whitebox_probe", status=status,
+                                                    failure_reason="AssertionError: crashed",
+                                                    source_ref="get_user_profile")], python_coverage_pct=50.0)
+        return SuiteResult([TestExecutionResult(test_id=f"BB-TEST-{tid}", test_type="blackbox_security",
+                                                status=TestStatus.FAILED, failure_reason="AssertionError: breached",
+                                                is_security_exploit_confirmed=True, source_ref=tid)
+                            for tid in breach_ids])
     return fake_execute
 
 

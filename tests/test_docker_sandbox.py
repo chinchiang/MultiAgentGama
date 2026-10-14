@@ -166,8 +166,8 @@ def test_timeout_removes_the_container(tmp_path, monkeypatch):
     monkeypatch.setattr(sandbox, "_run", lambda *a, **k: (None, "", ""))
     calls = []
     monkeypatch.setattr(sandbox_mod.subprocess, "run", lambda cmd, **k: calls.append(cmd))
-    exit_code, _, stderr, *_ = sandbox.execute_pytest_files({"test_x.py": "def test_x(): pass"}, working_dir=str(tmp_path))
-    assert exit_code == TIMEOUT_EXIT_CODE and "timed out" in stderr
+    run = sandbox.execute_pytest_files({"test_x.py": "def test_x(): pass"}, working_dir=str(tmp_path))
+    assert run.exit_code == TIMEOUT_EXIT_CODE and "timed out" in run.stderr
     assert len(calls) == 1 and calls[0][1:3] == ["rm", "-f"] and calls[0][3].startswith("vibeharness-")
 
 
@@ -222,24 +222,24 @@ def test_container_runs_tests_against_the_mounted_target(tmp_path, monkeypatch):
                            f"        open({str(target / 'x.txt')!r}, 'w')\n"),
         _test("no_secret", "import os\n\ndef test_env():\n    assert 'OPENAI_API_KEY' not in os.environ\n"),
     ]
-    results, coverage = TestSuiteExecutor(DockerSandbox(timeout_seconds=120)).execute_test_suite(
+    suite = TestSuiteExecutor(DockerSandbox(timeout_seconds=120)).execute_test_suite(
         tests, working_dir=str(target), collect_coverage=True
     )
-    status = {r.test_id: r.status for r in results}
+    status = {r.test_id: r.status for r in suite.results}
     assert status == {
         "imports": TestStatus.PASSED, "by_path": TestStatus.PASSED, "fails": TestStatus.FAILED,
         "no_net": TestStatus.PASSED, "ro_target": TestStatus.PASSED, "no_secret": TestStatus.PASSED,
-    }, [(r.test_id, r.failure_reason) for r in results]
-    assert coverage == 100.0
+    }, [(r.test_id, r.failure_reason) for r in suite.results]
+    assert suite.python_coverage_pct == 100.0
     assert not (target / "x.txt").exists() and not (target / "__pycache__").exists()
 
 
 @docker_only
 def test_container_is_killed_on_timeout(tmp_path):
     sandbox = DockerSandbox(timeout_seconds=5)
-    exit_code, *_ = sandbox.execute_pytest_files(
+    run = sandbox.execute_pytest_files(
         {"test_hang.py": "import time\n\ndef test_hang():\n    time.sleep(120)\n"}, working_dir=str(tmp_path)
     )
-    assert exit_code == TIMEOUT_EXIT_CODE
+    assert run.exit_code == TIMEOUT_EXIT_CODE
     running = subprocess.run(["docker", "ps", "-q", "--filter", "name=vibeharness-"], capture_output=True, text=True)
     assert running.stdout.strip() == ""

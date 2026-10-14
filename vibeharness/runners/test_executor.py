@@ -5,9 +5,13 @@ import os
 import time
 import logging
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from typing import Any, Callable, List, Tuple, Optional, Dict, Set
 from vibeharness.core.models import GeneratedTest, TestExecutionResult, TestStatus
-from vibeharness.core.sandbox import LocalSubprocessSandbox, SandboxUnavailableError, TIMEOUT_EXIT_CODE
+from vibeharness.core.sandbox import (
+    REASON_JS_COVERAGE_UNSUPPORTED as REASON_JS_COVERAGE_UNSUPPORTED, NodeRuntime, Sandbox, SandboxUnavailableError,
+    TIMEOUT_EXIT_CODE,
+)
 from vibeharness.core.codecheck import check_test_code_for
 from vibeharness.core.jscoverage import JsLineCoverage
 from vibeharness.core.i18n import bi
@@ -30,7 +34,6 @@ REASON_NO_NODE_RUNTIME = bi("找不到可用的 Node 執行環境", "no usable N
 REASON_JS_NOT_RUN = bi("JavaScript/TypeScript 測試未執行", "JavaScript/TypeScript test was not run")
 REASON_TS_NOT_RUN = bi("TypeScript 測試未執行：Node 執行環境低於 22.6（不支援型別剝除）",
                        "TypeScript test was not run: the Node runtime is older than 22.6 (no type stripping)")
-REASON_JS_COVERAGE_UNSUPPORTED = bi("這個 JS/TS 沙盒不收集行涵蓋率", "this JS/TS sandbox does not collect line coverage")
 REASON_JS_COVERAGE_NO_REPORT = bi("沒有任何模組產生 lcov 涵蓋率報告（全部逾時，或 Node 沒有寫出報告）",
                                   "no module produced an lcov coverage report (all timed out, or Node wrote none)")
 REASON_JS_COVERAGE_NO_TARGET_FILE = bi("lcov 報告中沒有任何載入過的目標原始檔（測試可能沒有匯入目標）",
@@ -151,6 +154,25 @@ def _remaining_seconds(deadline: float, budget: float) -> int:
 
 
 
+@dataclass(frozen=True)
+class SuiteResult:
+    """一次 execute_test_suite 的結果。`results` 依輸入順序；`python_coverage_pct` 與 `js_coverage_pct` 只有
+    collect_coverage 時才有值（各自只代表自己的語言），`js_coverage_problem` 是收集了卻算不出 JS/TS 涵蓋率的原因；
+    `js_runner_problem` 只在這組測試含 JS/TS、卻沒有可用的 JS 執行器時才有值；`node_runtime` 是這組測試含 JS/TS 時
+    解析出的 Node 執行環境（工廠拋出例外或沒有設定工廠時為 None）。
+    The outcome of one execute_test_suite call. `results` is in input order; `python_coverage_pct` and
+    `js_coverage_pct` are only set with collect_coverage (each covers its own language only), and
+    `js_coverage_problem` says why JS/TS coverage was collected but could not be computed; `js_runner_problem` is only
+    set when the suite holds JS/TS tests and no JS runner is available; `node_runtime` is the Node runtime resolved when
+    the suite holds JS/TS tests (None when the factory raised or none is configured)."""
+    results: List[TestExecutionResult]
+    python_coverage_pct: Optional[float] = None
+    js_coverage_pct: Optional[float] = None
+    js_coverage_problem: Optional[str] = None
+    js_runner_problem: Optional[str] = None
+    node_runtime: Optional[NodeRuntime] = None
+
+
 class TestSuiteExecutor:
     __test__ = False
     """
@@ -164,40 +186,40 @@ class TestSuiteExecutor:
 
     def __init__(
         self,
-        sandbox: LocalSubprocessSandbox,
+        sandbox: Sandbox,
         per_test_timeout_seconds: int = 30,
-        js_sandbox_factory: Optional[Callable[[], Optional[LocalSubprocessSandbox]]] = None,
+        js_sandbox_factory: Optional[Callable[[], NodeRuntime]] = None,
     ):
         self.sandbox = sandbox
         self.per_test_timeout_seconds = per_test_timeout_seconds
         # 第一次使用時才建立（只有存在 JS/TS 測試時才需要 Node）；None 代表「無法執行 JS」
         # Built on first use (Node is only needed when a JS/TS test exists); None means "cannot run JS"
         self._js_sandbox_factory = js_sandbox_factory
-        self._js_sandbox: Optional[LocalSubprocessSandbox] = None
+        self._js_sandbox: Optional[Sandbox] = None
+        self._node_runtime: Optional[NodeRuntime] = None
         self._js_sandbox_resolved = False
-        self.js_runner_unavailable_reason: Optional[str] = None
-        # 最近一次 execute_test_suite 的 JS/TS 行涵蓋率（只有 collect_coverage 時；回傳值的第二項維持只代表 Python），
-        # 以及收集不到時的原因。每次呼叫開頭都會重設
-        # The JS/TS line coverage of the latest execute_test_suite call (with collect_coverage only; the second item of
-        # its return value keeps meaning Python), and why it could not be collected. Reset at the start of every call
-        self.last_js_line_coverage_pct: Optional[float] = None
-        self.js_coverage_unavailable_reason: Optional[str] = None
+        # 沒有 JS 沙盒的原因，與沙盒一起只解析一次 ／ Why there is no JS sandbox, resolved once along with it
+        self._js_runner_problem: Optional[str] = None
 
-    def _js_sandbox_or_none(self) -> Optional[LocalSubprocessSandbox]:
+    def _js_sandbox_or_none(self) -> Optional[Sandbox]:
         if not self._js_sandbox_resolved:
             self._js_sandbox_resolved = True
             if self._js_sandbox_factory is None:
-                self.js_runner_unavailable_reason = REASON_JS_RUNNER_NOT_CONFIGURED
+                self._js_runner_problem = REASON_JS_RUNNER_NOT_CONFIGURED
             else:
                 try:
-                    self._js_sandbox = self._js_sandbox_factory()
+                    self._node_runtime = self._js_sandbox_factory()
+                    self._js_sandbox = self._node_runtime.sandbox
                 except (SandboxUnavailableError, OSError) as e:
                     # 缺少 docker 映像檔、壞掉的 node 執行檔：會揭露，但不致命；設定錯誤已在啟動時驗證，其餘例外照常拋出
                     # a missing docker image, a broken node binary: disclosed, not fatal; configuration errors are
                     # validated at start-up, any other exception propagates
-                    self.js_runner_unavailable_reason = f"{type(e).__name__}: {e}"
-                if self._js_sandbox is None and not self.js_runner_unavailable_reason:
-                    self.js_runner_unavailable_reason = REASON_NO_NODE_RUNTIME
+                    self._js_runner_problem = f"{type(e).__name__}: {e}"
+                if self._js_sandbox is None and not self._js_runner_problem:
+                    # 執行環境說得出缺什麼時（哪個 node_bin、版本太舊）每個測試都用它，與閘門的證據缺口相同
+                    # When the runtime can say what is missing (which node_bin, a version too old) every test uses it,
+                    # the same as the gate's evidence gap
+                    self._js_runner_problem = (self._node_runtime and self._node_runtime.problem) or REASON_NO_NODE_RUNTIME
         return self._js_sandbox
 
     def execute_test_suite(
@@ -205,24 +227,20 @@ class TestSuiteExecutor:
         tests: List[GeneratedTest],
         working_dir: str = ".",
         collect_coverage: bool = False
-    ) -> Tuple[List[TestExecutionResult], Optional[float]]:
-        """執行一組測試；回傳 (依輸入順序的結果, Python 行涵蓋率)。collect_coverage 時 JS/TS 的行涵蓋率另外放在
-        `last_js_line_coverage_pct`（收集不到時為 None，原因在 `js_coverage_unavailable_reason`），讓回傳的形狀與
-        Python 的意義維持不變。
-        Runs a set of tests; returns (results in input order, Python line coverage). With collect_coverage the JS/TS
-        line coverage goes to `last_js_line_coverage_pct` instead (None when it could not be collected, the reason in
-        `js_coverage_unavailable_reason`), so the return shape and its Python meaning stay unchanged."""
-        self.last_js_line_coverage_pct = None
-        self.js_coverage_unavailable_reason = None
+    ) -> SuiteResult:
+        """執行一組測試；Python 與 JS/TS 的行涵蓋率分開回報（見 SuiteResult）。
+        Runs a set of tests; Python and JS/TS line coverage are reported separately (see SuiteResult)."""
         if not tests:
-            return [], None
+            return SuiteResult(results=[])
         unique_ids = self._unique_test_ids(tests)
         results: Dict[int, TestExecutionResult] = {}
         py_idx = [i for i, t in enumerate(tests) if t.language == "python"]
         js_idx = [i for i, t in enumerate(tests) if t.language != "python"]
 
-        coverage_pct = self._run_group(tests, py_idx, unique_ids, results, working_dir, collect_coverage,
-                                       "python", self.sandbox) if py_idx else None
+        coverage_pct, _ = self._run_group(tests, py_idx, unique_ids, results, working_dir, collect_coverage,
+                                          "python", self.sandbox) if py_idx else (None, None)
+        js_coverage_pct: Optional[float] = None
+        js_coverage_problem: Optional[str] = None
         if js_idx:
             sandbox = self._js_sandbox_or_none()
             runnable = []
@@ -231,9 +249,9 @@ class TestSuiteExecutor:
                 if sandbox is None:
                     results[i] = self._result(
                         t, unique_ids[i], TestStatus.ERROR,
-                        failure_reason=f"{REASON_JS_NOT_RUN}: {self.js_runner_unavailable_reason}"
+                        failure_reason=f"{REASON_JS_NOT_RUN}: {self._js_runner_problem}"
                     )
-                elif t.language == "typescript" and not getattr(sandbox, "supports_typescript", True):
+                elif t.language == "typescript" and not sandbox.supports_typescript:
                     results[i] = self._result(
                         t, unique_ids[i], TestStatus.ERROR,
                         failure_reason=REASON_TS_NOT_RUN
@@ -241,10 +259,15 @@ class TestSuiteExecutor:
                 else:
                     runnable.append(i)
             if runnable and sandbox is not None:
-                js_coverage = self._run_group(tests, runnable, unique_ids, results, working_dir, collect_coverage,
-                                              "javascript", sandbox)
-                self.last_js_line_coverage_pct = js_coverage if collect_coverage else None
-        return [results[i] for i in range(len(tests))], coverage_pct
+                js_coverage, js_coverage_problem = self._run_group(
+                    tests, runnable, unique_ids, results, working_dir, collect_coverage, "javascript", sandbox)
+                js_coverage_pct = js_coverage if collect_coverage else None
+        return SuiteResult(
+            results=[results[i] for i in range(len(tests))], python_coverage_pct=coverage_pct,
+            js_coverage_pct=js_coverage_pct, js_coverage_problem=js_coverage_problem,
+            js_runner_problem=self._js_runner_problem if js_idx else None,
+            node_runtime=self._node_runtime if js_idx else None,
+        )
 
     def run_mutant_batch(self, tests: List[GeneratedTest], working_dir: str, timeout_seconds: int) -> str:
         """突變測試用：把已通過的 Python 測試當作**一個**沙盒批次對 working_dir 執行，不走逾時後逐測重跑的路徑
@@ -262,12 +285,12 @@ class TestSuiteExecutor:
                 f"{preamble}{header}\n# Target: {self._header_field(t.target_component)} | "
                 f"Test: {self._header_field(t.title)}\n{body}\n"
             )
-        exit_code, _stdout, _stderr, _duration, _coverage, junit_xml = self.sandbox.execute_pytest_files(
+        run = self.sandbox.execute_pytest_files(
             files, working_dir=working_dir, collect_coverage=False, timeout_seconds=timeout_seconds
         )
-        if exit_code == TIMEOUT_EXIT_CODE:
+        if run.exit_code == TIMEOUT_EXIT_CODE:
             return "killed"
-        cases = self._parse_junit(junit_xml, "python")
+        cases = self._parse_junit(run.junit_xml, "python")
         if not cases:
             return "invalid"
         flat = [case for module_cases in cases.values() for case in module_cases]
@@ -320,12 +343,13 @@ class TestSuiteExecutor:
         working_dir: str,
         collect_coverage: bool,
         language: str,
-        sandbox: LocalSubprocessSandbox,
-    ) -> Optional[float]:
+        sandbox: Sandbox,
+    ) -> Tuple[Optional[float], Optional[str]]:
         """把某一語言的測試當作一個沙盒批次執行（模組名稱使用全域索引，所以 id
-        在各群組間保持唯一），並為這些索引填入 `results`。
+        在各群組間保持唯一），並為這些索引填入 `results`。回傳 (行涵蓋率, 收集了卻算不出 JS/TS 涵蓋率的原因)。
         Runs one language's tests as one sandbox batch (module names use the global index, so ids
-        stay unique across groups) and fills `results` for those indices."""
+        stay unique across groups) and fills `results` for those indices. Returns (line coverage, why JS/TS coverage
+        was collected but could not be computed)."""
         is_js = language != "python"
         header = self._js_header(working_dir) if is_js else self._python_header(working_dir)
         ext = ".mjs" if is_js else ".py"
@@ -351,8 +375,9 @@ class TestSuiteExecutor:
             )
 
         coverage_pct: Optional[float] = None
+        coverage_problem: Optional[str] = None
         if not files:
-            return None
+            return None, None
         logger.info(bi(f"在沙盒中執行 {len(files)} 個 {language} 測試模組（coverage={collect_coverage}）...",
                        f"Executing {len(files)} {language} test module(s) in sandbox (coverage={collect_coverage})..."))
         # 每個模組：(結束碼, stdout, stderr, junit xml)；Python 批次共用一次執行，JS 模組
@@ -369,29 +394,31 @@ class TestSuiteExecutor:
         # The timeout actually used (seconds), for the timeout reason: never report a budget that did not apply
         timeout_used: Dict[str, int] = {}
         if is_js:
-            js_coverage = self._js_coverage_or_none(sandbox) if collect_coverage else None
+            js_coverage, coverage_problem = self._js_coverage_or_none(sandbox) if collect_coverage else (None, None)
             cases, timed_out, not_rerun, parse_failed = self._run_js_modules(
                 files, working_dir, sandbox, language, runs, timeout_used, coverage=js_coverage
             )
             if js_coverage is not None:
                 coverage_pct = js_coverage.percent()
                 if coverage_pct is None:
-                    self.js_coverage_unavailable_reason = (REASON_JS_COVERAGE_NO_TARGET_FILE if js_coverage.reports
-                                                           else REASON_JS_COVERAGE_NO_REPORT)
-                    logger.warning(bi(f"JS/TS 行涵蓋率無法計算：{self.js_coverage_unavailable_reason}",
-                                      f"JS/TS line coverage could not be computed: {self.js_coverage_unavailable_reason}"))
+                    coverage_problem = (REASON_JS_COVERAGE_NO_TARGET_FILE if js_coverage.reports
+                                        else REASON_JS_COVERAGE_NO_REPORT)
+                    logger.warning(bi(f"JS/TS 行涵蓋率無法計算：{coverage_problem}",
+                                      f"JS/TS line coverage could not be computed: {coverage_problem}"))
                 else:
                     logger.info(bi(f"JS/TS 行涵蓋率 {coverage_pct:.1f}%（{len(js_coverage.files)} 個載入過的目標檔案，"
                                    f"{js_coverage.covered_lines}／{js_coverage.instrumented_lines} 行）",
                                    f"JS/TS line coverage {coverage_pct:.1f}% ({len(js_coverage.files)} loaded target "
                                    f"file(s), {js_coverage.covered_lines}/{js_coverage.instrumented_lines} lines)"))
         else:
-            exit_code, stdout, stderr, duration, coverage_pct, junit_xml = sandbox.execute_pytest_files(
+            run = sandbox.execute_pytest_files(
                 files,
                 working_dir=working_dir,
                 collect_coverage=collect_coverage,
                 coverage_target=working_dir
             )
+            exit_code, stdout, stderr, coverage_pct, junit_xml = (
+                run.exit_code, run.stdout, run.stderr, run.coverage_pct, run.junit_xml)
             cases = self._parse_junit(junit_xml, language)
             if exit_code == TIMEOUT_EXIT_CODE and len(files) > 1:
                 # 一個卡住的測試不能讓整個批次作廢：用各自的預算重跑每個模組
@@ -404,7 +431,7 @@ class TestSuiteExecutor:
                 )
                 junit_xml = ""  # 逐模組的結果現在在 `cases`／`timed_out` 裡 ／ per-module outcomes are now in `cases` / `timed_out`
             elif exit_code == TIMEOUT_EXIT_CODE:
-                batch_timeout = getattr(sandbox, "timeout_seconds", None)
+                batch_timeout = sandbox.timeout_seconds
             # 重跑過的模組保留自己那次的結果（含沒有報告的情況）；其餘沿用批次的結果
             # A rerun module keeps its own outcome (including no report); the others take the batch's
             for module in module_to_idx:
@@ -461,10 +488,10 @@ class TestSuiteExecutor:
                 )
             else:
                 results[idx] = self._aggregate(t, unique_ids[idx], module_cases)
-        return coverage_pct
+        return coverage_pct, coverage_problem
 
     def _run_individually(
-        self, files: Dict[str, str], working_dir: str, sandbox: Optional[LocalSubprocessSandbox] = None,
+        self, files: Dict[str, str], working_dir: str, sandbox: Optional[Sandbox] = None,
         language: str = "python", timeout_used: Optional[Dict[str, int]] = None,
         runs: Optional[Dict[str, Tuple[int, str, str, Optional[str]]]] = None
     ) -> Tuple[Dict[str, List[dict]], Set[str], Set[str], Set[str]]:
@@ -490,7 +517,7 @@ class TestSuiteExecutor:
         parse_failed: Set[str] = set()
         sandbox = sandbox or self.sandbox
         per_test = self._per_test_budget(sandbox)
-        budget = float(getattr(sandbox, "timeout_seconds", 0) or 0)
+        budget = float(sandbox.timeout_seconds or 0)
         deadline = time.monotonic() + budget
         for filename, code in files.items():
             module = os.path.splitext(filename)[0]
@@ -501,34 +528,32 @@ class TestSuiteExecutor:
             timeout = min(per_test, remaining)
             if timeout_used is not None:
                 timeout_used[module] = timeout
-            exit_code, stdout, stderr, _, _, junit_xml = sandbox.execute_pytest_files(
+            run = sandbox.execute_pytest_files(
                 {filename: code}, working_dir=working_dir, timeout_seconds=timeout
             )
             if runs is not None:
-                runs[module] = (exit_code, stdout, stderr, junit_xml)
-            if exit_code == TIMEOUT_EXIT_CODE:
+                runs[module] = (run.exit_code, run.stdout, run.stderr, run.junit_xml)
+            if run.exit_code == TIMEOUT_EXIT_CODE:
                 timed_out.add(module)
                 continue
-            module_cases = self._parse_junit(junit_xml, language)
+            module_cases = self._parse_junit(run.junit_xml, language)
             if module_cases is None:
                 parse_failed.add(module)
                 continue
             cases.update(module_cases)
         return cases, timed_out, not_rerun, parse_failed
 
-    def _js_coverage_or_none(self, sandbox: LocalSubprocessSandbox) -> Optional[JsLineCoverage]:
-        """這次 JS/TS 執行要用的涵蓋率累加器；沙盒不支援（替身、舊版 Node）時為 None，並記下原因。
-        The coverage accumulator for this JS/TS run; None (with the reason recorded) when the sandbox cannot collect
-        it (a stand-in, an old Node)."""
-        problem_of = getattr(sandbox, "js_coverage_problem", None)
-        problem = problem_of() if callable(problem_of) else REASON_JS_COVERAGE_UNSUPPORTED
+    def _js_coverage_or_none(self, sandbox: Sandbox) -> Tuple[Optional[JsLineCoverage], Optional[str]]:
+        """(這次 JS/TS 執行要用的涵蓋率累加器, None)；沙盒不支援（不收集涵蓋率的沙盒、舊版 Node）時為 (None, 原因)。
+        (The coverage accumulator for this JS/TS run, None); (None, the reason) when the sandbox cannot collect it
+        (a sandbox that collects none, an old Node)."""
+        problem = sandbox.js_coverage_problem()
         if problem:
-            self.js_coverage_unavailable_reason = problem
             logger.warning(bi(f"不收集 JS/TS 行涵蓋率：{problem}", f"JS/TS line coverage is not collected: {problem}"))
-            return None
-        return JsLineCoverage()
+            return None, problem
+        return JsLineCoverage(), None
 
-    def _per_test_budget(self, sandbox: LocalSubprocessSandbox) -> int:
+    def _per_test_budget(self, sandbox: Sandbox) -> int:
         """逐測重跑實際使用的逾時（秒）。非正數的 per_test_timeout_seconds（設定驗證交給 harness）會讓沙盒
         退回自己的批次預算，所以這裡也回報那個值，而不是「0 秒後逾時」。
         The timeout (seconds) a per-test rerun actually gets. A non-positive per_test_timeout_seconds (config
@@ -537,10 +562,10 @@ class TestSuiteExecutor:
         per_test = self.per_test_timeout_seconds
         if isinstance(per_test, int) and per_test > 0:
             return per_test
-        return int(getattr(sandbox, "timeout_seconds", 0) or 0) or 30
+        return int(sandbox.timeout_seconds or 0) or 30
 
     def _run_js_modules(
-        self, files: Dict[str, str], working_dir: str, sandbox: LocalSubprocessSandbox, language: str,
+        self, files: Dict[str, str], working_dir: str, sandbox: Sandbox, language: str,
         runs: Dict[str, Tuple[int, str, str, Optional[str]]], timeout_used: Dict[str, int],
         coverage: Optional[JsLineCoverage] = None
     ) -> Tuple[Dict[str, List[dict]], Set[str], Set[str], Set[str]]:
@@ -583,7 +608,7 @@ class TestSuiteExecutor:
         not_rerun: Set[str] = set()
         parse_failed: Set[str] = set()
         per_test = self._per_test_budget(sandbox)
-        batch_budget = float(getattr(sandbox, "timeout_seconds", 0) or 0) or float(per_test)
+        batch_budget = float(sandbox.timeout_seconds or 0) or float(per_test)
 
         def run_one(filename: str, code: str, timeout: int) -> bool:
             # 執行一個模組並記錄結果；逾時時回傳 False ／ Runs one module and records it; False on a timeout
@@ -592,15 +617,16 @@ class TestSuiteExecutor:
             # The coverage arguments are only passed when coverage is collected: sandbox stand-ins need not know them
             coverage_kwargs: Dict[str, Any] = {} if coverage is None else {
                 "collect_coverage": True, "coverage_target": working_dir, "coverage_sink": coverage}
-            exit_code, stdout, stderr, _, _, junit_xml = sandbox.execute_pytest_files(
+            run = sandbox.execute_pytest_files(
                 {filename: code}, working_dir=working_dir, timeout_seconds=timeout, **coverage_kwargs
             )
-            runs[module] = (exit_code, stdout, stderr, junit_xml)
+            stdout = run.stdout
+            runs[module] = (run.exit_code, stdout, run.stderr, run.junit_xml)
             timeout_used[module] = timeout
-            if exit_code == TIMEOUT_EXIT_CODE:
+            if run.exit_code == TIMEOUT_EXIT_CODE:
                 return False
             timed_out.discard(module)
-            parsed = self._parse_junit(junit_xml, language, module=module)
+            parsed = self._parse_junit(run.junit_xml, language, module=module)
             if parsed is None:
                 parse_failed.add(module)
                 return True

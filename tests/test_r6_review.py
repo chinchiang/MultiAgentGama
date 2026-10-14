@@ -19,7 +19,7 @@ from vibeharness.core.models import (
     FindingSeverity, GeneratedTest, ReviewFinding, STRIDECategory, TestExecutionResult, TestStatus,
     ThreatItem,
 )
-from vibeharness.core.sandbox import TIMEOUT_EXIT_CODE
+from vibeharness.core.sandbox import TIMEOUT_EXIT_CODE, SandboxRun
 from vibeharness.runners.test_executor import REASON_NO_TEST_COLLECTED, TestSuiteExecutor
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -211,18 +211,18 @@ class _CrashOnRerun:
 
     def execute_pytest_files(self, files, timeout_seconds=None, **kw):
         if len(files) > 1:
-            return TIMEOUT_EXIT_CODE, "", "timed out", 30.0, None, None
+            return SandboxRun(TIMEOUT_EXIT_CODE, "", "timed out", 30.0, None, None)
         module = os.path.splitext(next(iter(files)))[0]
         if module == "test_vh_000":
-            return -9, "", "Fatal Python error: killed", 0.1, None, None
+            return SandboxRun(-9, "", "Fatal Python error: killed", 0.1, None, None)
         junit = f'<testsuites><testsuite name="pytest"><testcase classname="{module}" name="test_b" time="0.1"/></testsuite></testsuites>'
-        return 0, "", "", 0.1, None, junit
+        return SandboxRun(0, "", "", 0.1, None, junit)
 
 
 def test_rerun_without_a_report_is_reported_as_a_sandbox_problem(tmp_path):
     tests = [GeneratedTest(test_id=i, test_type="whitebox_unit", target_component="x", title=i, code=f"def test_{i.lower()}():\n    assert 1\n",
                            rationale="", expected_outcome="") for i in ("A", "B")]
-    results, _ = TestSuiteExecutor(sandbox=_CrashOnRerun(), per_test_timeout_seconds=5).execute_test_suite(tests, working_dir=str(tmp_path))
+    results = TestSuiteExecutor(sandbox=_CrashOnRerun(), per_test_timeout_seconds=5).execute_test_suite(tests, working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.ERROR and results[0].failure_reason != REASON_NO_TEST_COLLECTED
     assert "Sandbox run produced no report" in results[0].failure_reason and "Fatal Python error" in results[0].failure_reason
     assert results[1].status == TestStatus.PASSED

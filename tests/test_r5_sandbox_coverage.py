@@ -124,11 +124,11 @@ def test_local_sandbox_does_not_follow_a_planted_junit(tmp_path, monkeypatch, ki
             os.mkfifo(junit)
 
     monkeypatch.setattr(sandbox, "_run", _planting_run(plant))
-    rc, _, stderr, _, _, junit_xml = _no_hang(
+    run = _no_hang(
         lambda: sandbox.execute_pytest_files({"test_x.py": "def test_x(): pass\n"}, working_dir=str(tmp_path)))
-    assert rc == 0 and junit_xml is None
-    assert stderr.startswith("拒絕讀回沙盒產生的 junit.xml") and "Refused to read back the sandbox's junit.xml" in stderr
-    assert SECRET not in stderr
+    assert run.exit_code == 0 and run.junit_xml is None
+    assert run.stderr.startswith("拒絕讀回沙盒產生的 junit.xml") and "Refused to read back the sandbox's junit.xml" in run.stderr
+    assert SECRET not in run.stderr
 
 
 @posix_only
@@ -232,9 +232,9 @@ def test_real_container_cannot_make_the_host_follow_a_junit_symlink(tmp_path):
             f"    os.symlink({str(host_file)!r}, '/sandbox/junit.xml')\n\n"
             "atexit.register(_swap)\n\n"
             "def test_x():\n    assert True\n")
-    rc, _, stderr, _, _, junit_xml = DockerSandbox(timeout_seconds=120).execute_pytest_files(
+    run = DockerSandbox(timeout_seconds=120).execute_pytest_files(
         {"test_vh_000.py": code}, working_dir=str(target))
-    assert junit_xml is None and "symbolic link" in stderr and SECRET not in stderr, (rc, stderr)
+    assert run.junit_xml is None and "symbolic link" in run.stderr and SECRET not in run.stderr, (run.exit_code, run.stderr)
 
 
 # --- 3. POSIX 上的反斜線、各種根目錄 ------------------------------------------------------------------------
@@ -354,10 +354,10 @@ def test_docker_output_cap_removes_the_container_and_reads_no_report(tmp_path, m
     monkeypatch.setattr(sandbox, "_run", lambda *a, **k: (1, "x", f"write /dev/stdout: file too large\n{OUTPUT_CAP_NOTE}"))
     removed = []
     monkeypatch.setattr(sandbox_mod.subprocess, "run", lambda cmd, **k: removed.append(cmd))
-    rc, _, stderr, _, coverage, junit_xml = sandbox.execute_pytest_files(
+    run = sandbox.execute_pytest_files(
         {"test_x.py": "def test_x(): pass\n"}, working_dir=str(tmp_path), collect_coverage=True)
-    assert rc == EXECUTION_FAILURE_EXIT_CODE and junit_xml is None and coverage is None
-    assert stderr.endswith(OUTPUT_CAP_NOTE) and "per-file size cap" in stderr and "單檔大小上限" in stderr
+    assert run.exit_code == EXECUTION_FAILURE_EXIT_CODE and run.junit_xml is None and run.coverage_pct is None
+    assert run.stderr.endswith(OUTPUT_CAP_NOTE) and "per-file size cap" in run.stderr and "單檔大小上限" in run.stderr
     assert len(removed) == 1 and removed[0][1:3] == ["rm", "-f"]
 
 
@@ -391,10 +391,10 @@ def test_real_docker_cli_output_beyond_the_cap_is_an_error_not_a_crash(tmp_path,
     monkeypatch.setattr(sandbox, "_after_timeout",
                         lambda cmd: (names.append(cmd[cmd.index("--name") + 1]), original(cmd))[1])
     code = "def test_flood():\n    assert False, 'z' * (8 * 1024 * 1024)\n"
-    rc, _, stderr, duration, _, junit_xml = sandbox.execute_pytest_files({"test_vh_000.py": code},
-                                                                         working_dir=str(target))
-    assert rc == EXECUTION_FAILURE_EXIT_CODE and junit_xml is None and stderr.endswith(OUTPUT_CAP_NOTE), stderr[-500:]
-    assert len(names) == 1 and duration < 60
+    run = sandbox.execute_pytest_files({"test_vh_000.py": code},
+                                       working_dir=str(target))
+    assert run.exit_code == EXECUTION_FAILURE_EXIT_CODE and run.junit_xml is None and run.stderr.endswith(OUTPUT_CAP_NOTE), run.stderr[-500:]
+    assert len(names) == 1 and run.duration < 60
     left = subprocess.run(["docker", "ps", "-aq", "--filter", f"name=^{names[0]}$"], capture_output=True, text=True)
     assert left.stdout.strip() == ""
 
@@ -403,6 +403,6 @@ def test_real_docker_cli_output_beyond_the_cap_is_an_error_not_a_crash(tmp_path,
 def test_real_docker_cli_keeps_working_under_the_cap(tmp_path):
     target = tmp_path / "app"
     target.mkdir()
-    rc, stdout, stderr, _, _, junit_xml = DockerSandbox(timeout_seconds=120).execute_pytest_files(
+    run = DockerSandbox(timeout_seconds=120).execute_pytest_files(
         {"test_vh_000.py": "def test_ok():\n    print('hello')\n    assert True\n"}, working_dir=str(target))
-    assert rc == 0 and junit_xml and "test_ok" in junit_xml and OUTPUT_CAP_NOTE not in stderr, stdout + stderr
+    assert run.exit_code == 0 and run.junit_xml and "test_ok" in run.junit_xml and OUTPUT_CAP_NOTE not in run.stderr, run.stdout + run.stderr

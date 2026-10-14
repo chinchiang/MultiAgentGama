@@ -10,7 +10,9 @@ import pytest
 
 from vibeharness.core.codecheck import check_test_code
 from vibeharness.core.models import GeneratedTest, TestStatus
-from vibeharness.core.sandbox import TIMEOUT_EXIT_CODE, LocalSubprocessSandbox, harden_harness_process
+from vibeharness.core.sandbox import (
+    TIMEOUT_EXIT_CODE, LocalSubprocessSandbox, NodeRuntime, SandboxRun, harden_harness_process,
+)
 from vibeharness.runners.test_executor import REASON_RERUN_BUDGET_EXHAUSTED, TestSuiteExecutor
 
 linux_only = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux /proc and prctl semantics")
@@ -40,10 +42,10 @@ def test_generated_test_cannot_read_the_harness_environ_or_real_home(tmp_path):
         f"    assert os.environ['HOME'] != {real_home!r}\n"
         f"    assert os.path.expanduser('~') != {real_home!r}\n"
     )
-    exit_code, stdout, stderr, *_ = LocalSubprocessSandbox(timeout_seconds=60).execute_pytest_files(
+    run = LocalSubprocessSandbox(timeout_seconds=60).execute_pytest_files(
         {"test_leak.py": code}, working_dir=str(tmp_path)
     )
-    assert exit_code == 0, stdout[-2000:] + stderr[-2000:]
+    assert run.exit_code == 0, run.stdout[-2000:] + run.stderr[-2000:]
 
 
 @linux_only
@@ -64,11 +66,11 @@ def test_sandbox_home_is_the_per_run_directory_and_pytest_still_runs(tmp_path):
         "    assert 'vibe_sandbox_' in os.environ['HOME']\n"
         "    assert 'HOMEDRIVE' not in os.environ and 'HOMEPATH' not in os.environ\n"
     )
-    exit_code, stdout, stderr, _, coverage, junit = LocalSubprocessSandbox(timeout_seconds=60).execute_pytest_files(
+    run = LocalSubprocessSandbox(timeout_seconds=60).execute_pytest_files(
         {"test_home.py": code}, working_dir=str(tmp_path), collect_coverage=True, coverage_target=str(tmp_path)
     )
-    assert exit_code == 0, stdout[-2000:] + stderr[-2000:]
-    assert junit and "test_home" in junit
+    assert run.exit_code == 0, run.stdout[-2000:] + run.stderr[-2000:]
+    assert run.junit_xml and "test_home" in run.junit_xml
 
 
 # --- 2. 留下的子行程不能讓一次已結束的執行被當成逾時 ----------------------------------------------
@@ -85,13 +87,13 @@ def test_child_holding_stdout_does_not_turn_a_pass_into_a_timeout_and_is_killed(
         "    assert True\n"
     )
     start = time.monotonic()
-    exit_code, stdout, stderr, *_ = LocalSubprocessSandbox(timeout_seconds=30).execute_pytest_files(
+    run = LocalSubprocessSandbox(timeout_seconds=30).execute_pytest_files(
         {"test_server.py": code}, working_dir=str(tmp_path)
     )
     elapsed = time.monotonic() - start
-    assert exit_code == 0, stdout[-2000:] + stderr[-2000:]
+    assert run.exit_code == 0, run.stdout[-2000:] + run.stderr[-2000:]
     assert elapsed < 20, f"the sandbox waited {elapsed:.1f}s on pipes held by a stray child"
-    assert "1 passed" in stdout
+    assert "1 passed" in run.stdout
     child = int(pid_file.read_text())
     # 殘留的子行程隨行程群組一起被砍掉（給 init 一點時間回收）
     # The stray child was killed with the process group (give init a moment to reap it)
@@ -129,10 +131,10 @@ def test_run_returns_output_and_exit_code_without_pipes(tmp_path):
 def test_name_error_in_target_is_a_defect_but_in_the_test_is_a_harness_error(tmp_path):
     (tmp_path / "app_ne.py").write_text("def f():\n    return undefined_name\n", encoding="utf-8")
     executor = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60))
-    results, _ = executor.execute_test_suite([
+    results = executor.execute_test_suite([
         _test("TARGET", "from app_ne import f\n\ndef test_f():\n    assert f() == 1\n"),
         _test("TEST", "def test_g():\n    assert nope == 1\n"),
-    ], working_dir=str(tmp_path))
+    ], working_dir=str(tmp_path)).results
     target, test = results
     assert target.status == TestStatus.FAILED and "NameError" in target.failure_reason
     assert not target.is_security_exploit_confirmed  # 崩潰不是斷言失敗 ／ a crash is not an assertion failure
@@ -198,16 +200,16 @@ class _HangingJsSandbox:
         self.calls.append((module, timeout_seconds))
         if module in self.hang:
             time.sleep(timeout_seconds)
-            return TIMEOUT_EXIT_CODE, "", "timed out", float(timeout_seconds), None, None
-        return 0, "", "", 0.1, None, _PASS_JUNIT
+            return SandboxRun(TIMEOUT_EXIT_CODE, "", "timed out", float(timeout_seconds), None, None)
+        return SandboxRun(0, "", "", 0.1, None, _PASS_JUNIT)
 
 
 def test_js_hang_uses_the_batch_budget_and_the_rest_rerun_on_the_per_test_budget(tmp_path):
     js = _HangingJsSandbox(timeout_seconds=2, hang={"test_vh_000"})
-    executor = TestSuiteExecutor(sandbox=LocalSubprocessSandbox(), js_sandbox_factory=lambda: js,
+    executor = TestSuiteExecutor(sandbox=LocalSubprocessSandbox(), js_sandbox_factory=lambda: NodeRuntime(js),
                                  per_test_timeout_seconds=1)
-    results, _ = executor.execute_test_suite([_test("H", _GOOD_JS, language="javascript"),
-                                              _test("OK", _GOOD_JS, language="javascript")], working_dir=str(tmp_path))
+    results = executor.execute_test_suite([_test("H", _GOOD_JS, language="javascript"),
+                                          _test("OK", _GOOD_JS, language="javascript")], working_dir=str(tmp_path)).results
     assert js.calls == [("test_vh_000", 2), ("test_vh_001", 1)]
     assert results[0].status == TestStatus.ERROR and "timed out after 2s" in results[0].failure_reason
     assert results[1].status == TestStatus.PASSED
@@ -215,10 +217,10 @@ def test_js_hang_uses_the_batch_budget_and_the_rest_rerun_on_the_per_test_budget
 
 def test_js_rerun_pass_is_bounded_by_the_batch_budget(tmp_path):
     js = _HangingJsSandbox(timeout_seconds=1, hang={"test_vh_000", "test_vh_001", "test_vh_002"})
-    executor = TestSuiteExecutor(sandbox=LocalSubprocessSandbox(), js_sandbox_factory=lambda: js,
+    executor = TestSuiteExecutor(sandbox=LocalSubprocessSandbox(), js_sandbox_factory=lambda: NodeRuntime(js),
                                  per_test_timeout_seconds=1)
     tests = [_test(f"H{i}", _GOOD_JS, language="javascript") for i in range(3)]
-    results, _ = executor.execute_test_suite(tests, working_dir=str(tmp_path))
+    results = executor.execute_test_suite(tests, working_dir=str(tmp_path)).results
     assert [m for m, _ in js.calls] == ["test_vh_000", "test_vh_001"]
     assert "timed out after 1s" in results[0].failure_reason and "timed out after 1s" in results[1].failure_reason
     assert results[2].status == TestStatus.ERROR and results[2].failure_reason == REASON_RERUN_BUDGET_EXHAUSTED
@@ -248,14 +250,14 @@ class _AlwaysTimesOut:
 
     def execute_pytest_files(self, files, timeout_seconds=None, **kw):
         self.budgets.append(timeout_seconds)
-        return TIMEOUT_EXIT_CODE, "", "timed out", 0.0, None, None
+        return SandboxRun(TIMEOUT_EXIT_CODE, "", "timed out", 0.0, None, None)
 
 
 def test_zero_per_test_budget_reports_the_budget_actually_used(tmp_path):
     sandbox = _AlwaysTimesOut()
     executor = TestSuiteExecutor(sandbox=sandbox, per_test_timeout_seconds=0)
-    results, _ = executor.execute_test_suite([_test("A", "def test_a():\n    assert 1\n"),
-                                              _test("B", "def test_b():\n    assert 1\n")], working_dir=str(tmp_path))
+    results = executor.execute_test_suite([_test("A", "def test_a():\n    assert 1\n"),
+                                          _test("B", "def test_b():\n    assert 1\n")], working_dir=str(tmp_path)).results
     assert sandbox.budgets[1:] == [30, 30]  # 逐測重跑退回沙盒的批次預算 ／ the reruns fall back to the sandbox's batch budget
     for result in results:
         assert "after 30s" in result.failure_reason and "after 0s" not in result.failure_reason
@@ -264,8 +266,8 @@ def test_zero_per_test_budget_reports_the_budget_actually_used(tmp_path):
 def test_sandbox_never_times_out_after_zero_seconds(tmp_path):
     sandbox = LocalSubprocessSandbox(timeout_seconds=1)
     assert sandbox._effective_timeout(0) == 1 and sandbox._effective_timeout(-5) == 1 and sandbox._effective_timeout(7) == 7
-    exit_code, _, stderr, *_ = sandbox.execute_pytest_files(
+    run = sandbox.execute_pytest_files(
         {"test_hang.py": "import time\ndef test_h():\n    time.sleep(30)\n    assert 1\n"},
         working_dir=str(tmp_path), timeout_seconds=0
     )
-    assert exit_code == TIMEOUT_EXIT_CODE and "after 1 seconds" in stderr
+    assert run.exit_code == TIMEOUT_EXIT_CODE and "after 1 seconds" in run.stderr

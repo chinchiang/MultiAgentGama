@@ -519,8 +519,9 @@ def test_probe():
     # too, so only a number is reported)
     assert False, f"LEAKS={len(leaked)}"
 '''
-code, out, err, _, _ = LocalSubprocessSandbox(60).execute_python_code(test)
-print("CLEAN" if "LEAKS=0" in out else ("LEAKED" if "LEAKS=" in out.replace("LEAKS={", "") else "BROKEN " + out + err))
+run = LocalSubprocessSandbox(60).execute_pytest_files({"test_exec.py": test})
+out = run.stdout
+print("CLEAN" if "LEAKS=0" in out else ("LEAKED" if "LEAKS=" in out.replace("LEAKS={", "") else "BROKEN " + out + run.stderr))
 """
 
 

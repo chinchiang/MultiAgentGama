@@ -22,7 +22,7 @@ from vibeharness.core.jscoverage import (
 )
 from vibeharness.core.models import GeneratedTest, TestStatus
 from vibeharness.core.sandbox import (
-    LocalSubprocessSandbox, NodeSubprocessSandbox, detect_node, sandbox_temp_env,
+    LocalSubprocessSandbox, NodeRuntime, NodeSubprocessSandbox, detect_node, sandbox_temp_env,
 )
 from vibeharness.runners.test_executor import REASON_NOT_RUN_CORRECTLY, REASON_TARGET_BROKEN, TestSuiteExecutor
 
@@ -51,7 +51,7 @@ class _PySandbox:
 
 
 def _js_executor(sandbox, **kwargs):
-    return TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: sandbox, **kwargs)
+    return TestSuiteExecutor(sandbox=_PySandbox(), js_sandbox_factory=lambda: NodeRuntime(sandbox), **kwargs)
 
 
 # --- 1. 目標自己用 compile()／ast.parse() 解析檔案拋出的 SyntaxError 是缺陷，不是載入失敗 ----------------
@@ -85,13 +85,13 @@ def target(tmp_path):
 def test_target_parsing_a_real_file_is_a_defect_but_importing_a_broken_module_is_target_broken(target):
     user_file = str(target / "user_input.py")
     executor = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60))
-    results, _ = executor.execute_test_suite([
+    results = executor.execute_test_suite([
         _test("COMPILE", f"import r3_app\n\ndef test_a():\n    assert r3_app.comp({user_file!r})\n"),
         _test("AST", f"import r3_app\n\ndef test_a():\n    assert r3_app.parse({user_file!r})\n"),
         _test("SUB", "import r3_app\n\ndef test_a():\n    assert r3_app.sub() == 1\n"),
         _test("DYN", "import r3_app\n\ndef test_a():\n    assert r3_app.dyn() == 1\n"),
         _test("IN_TEST", "def test_a():\n    import r3_badsub\n    assert r3_badsub.x\n"),
-    ], working_dir=str(target))
+    ], working_dir=str(target)).results
     by_id = {r.test_id: r for r in results}
     # 目標沒有包住自己解析時的錯誤：缺陷（FAILED），即使檔名是真實的 .py 路徑
     # The target does not wrap its own parsing error: a defect (FAILED), even under a real .py file name
@@ -166,10 +166,10 @@ def test_real_node_write_beyond_the_cap_is_an_error_not_a_defect(tmp_path, monke
         encoding="utf-8")
     imports = f'import {{ big, own }} from "{target_file_url(str(tmp_path / "app.mjs"))}";\nimport os from "node:os";'
     executor = _js_executor(NodeSubprocessSandbox(timeout_seconds=60))
-    results, _ = executor.execute_test_suite([
+    results = executor.execute_test_suite([
         _test("BIG", _esm_test(imports, 'test("b", () => { assert.equal(big(os.tmpdir()), 1); });'), "javascript"),
         _test("OWN", _esm_test(imports, 'test("o", () => { assert.equal(own(), 1); });'), "javascript"),
-    ], working_dir=str(tmp_path))
+    ], working_dir=str(tmp_path)).results
     big, own = results
     assert big.status == TestStatus.ERROR and big.failure_reason.startswith(REASON_NOT_RUN_CORRECTLY)
     assert "EFBIG" in big.failure_reason
@@ -207,8 +207,8 @@ def test_python_sandbox_child_temp_dir_is_inside_the_run_dir(tmp_path):
             "def test_a():\n"
             "    here = os.path.dirname(os.path.abspath(__file__))\n"
             "    assert os.path.realpath(tempfile.gettempdir()) == os.path.realpath(os.path.join(here, 'tmp'))\n")
-    results, _ = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60)).execute_test_suite(
-        [_test("TMP", code)], working_dir=str(tmp_path))
+    results = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60)).execute_test_suite(
+        [_test("TMP", code)], working_dir=str(tmp_path)).results
     assert results[0].status == TestStatus.PASSED, results[0].failure_reason
 
 
@@ -232,7 +232,7 @@ def test_timed_out_js_module_with_coverage_leaves_nothing_in_the_host_temp_dir(t
     sandbox = NodeSubprocessSandbox(timeout_seconds=3, node_version=_NODE_VERSION)
     executor = _js_executor(sandbox, per_test_timeout_seconds=2)
     hang = _test("HANG", _esm_test("", 'test("spin", () => { while (true) {} assert.ok(1); });'), "javascript")
-    results, _ = executor.execute_test_suite([hang], working_dir=str(tmp_path), collect_coverage=True)
+    results = executor.execute_test_suite([hang], working_dir=str(tmp_path), collect_coverage=True).results
     assert results[0].status == TestStatus.ERROR and "timed out" in results[0].failure_reason
     assert os.listdir(host_tmp) == []  # 沒有 node-coverage-XXXX，執行目錄也已刪除 ／ no node-coverage-XXXX, the run dir is gone too
     assert not glob.glob(str(host_tmp / "node-coverage-*"))
@@ -257,10 +257,10 @@ def test_real_node_coverage_run_has_no_glob_warning_on_stderr(tmp_path):
     code = _esm_test(f'import {{ add }} from "{target_file_url(str(tmp_path / "lib.mjs"))}";',
                      'test("a", () => { assert.equal(add(1, 2), 3); });')
     sandbox = NodeSubprocessSandbox(timeout_seconds=60, node_version=_NODE_VERSION)
-    _, _, stderr, _, pct, _ = sandbox.execute_pytest_files({"test_vh_000.mjs": code}, working_dir=str(tmp_path),
-                                                           collect_coverage=True, coverage_sink=JsLineCoverage())
-    assert pct == 100.0
-    assert "ExperimentalWarning" not in stderr, stderr
+    run = sandbox.execute_pytest_files({"test_vh_000.mjs": code}, working_dir=str(tmp_path),
+                                       collect_coverage=True, coverage_sink=JsLineCoverage())
+    assert run.coverage_pct == 100.0
+    assert "ExperimentalWarning" not in run.stderr, run.stderr
 
 
 # --- 6. 位於 node_modules 底下的目標仍收得到涵蓋率 ---------------------------------------------------------

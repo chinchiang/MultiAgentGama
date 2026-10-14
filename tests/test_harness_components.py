@@ -121,17 +121,17 @@ def test_scenario_builder_server_health_check():
 def test_sandbox_process_isolation_and_timeout():
     sandbox = LocalSubprocessSandbox(timeout_seconds=15)
     code_pass = "def test_ok(): assert 1 + 1 == 2"
-    exit_code, stdout, stderr, dur, cov = sandbox.execute_python_code(code_pass)
-    assert exit_code == 0
-    assert "passed" in stdout.lower()
+    run = sandbox.execute_pytest_files({"test_exec.py": code_pass})
+    assert run.exit_code == 0
+    assert "passed" in run.stdout.lower()
 
     # 驗證逾時處理
     # Verify timeout handling
     quick_sandbox = LocalSubprocessSandbox(timeout_seconds=1)
     code_hang = "import time\ndef test_slow(): time.sleep(3)"
-    exit_code_timeout, _, err, _, _ = quick_sandbox.execute_python_code(code_hang)
-    assert exit_code_timeout == TIMEOUT_EXIT_CODE
-    assert "timed out" in err.lower()
+    run = quick_sandbox.execute_pytest_files({"test_exec.py": code_hang})
+    assert run.exit_code == TIMEOUT_EXIT_CODE
+    assert "timed out" in run.stderr.lower()
     # 訊息必須指出所嘗試的模組名稱
     # The message must name the module that was attempted
-    assert "test_exec.py" in err
+    assert "test_exec.py" in run.stderr

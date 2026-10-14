@@ -105,3 +105,10 @@ _Avoid_: fingerprint (for the concept; a fingerprint is its hash), finding id
 無法歸屬到任何檔案的發現位置（審查者寫下的 `unknown` 佔位字，或空白）。這類發現只在標題完全相同時才算同一個，其身分不含路徑。
 The location of a finding that cannot be tied to any file (the reviewer's `unknown` placeholder, or a blank). Such findings are only the same when their titles are identical, and their Identity has no path.
 _Avoid_: missing file, unknown file
+
+### 測試執行 ／ Test execution
+
+**Node 執行環境 ／ Node runtime**:
+執行 JS/TS 測試用的 Node：本機的 `node_bin`，或 docker 映像檔內的 Node，連同它的版本；版本決定能不能執行 TypeScript、能不能收集 JS/TS 行涵蓋率。沒有可用的 Node 執行環境是證據缺口，不是啟動失敗，每個 JS/TS 測試的原因都說明缺了什麼；報告的 `node_runtime` 只在它真的可用時才寫。
+The Node that runs the JS/TS tests: the local `node_bin`, or the Node inside the docker image, together with its version; the version decides whether TypeScript can run and whether JS/TS line coverage can be collected. No usable Node runtime is an Evidence gap, never a start-up failure, and every JS/TS test's reason says what is missing; the report's `node_runtime` is only written when one is actually usable.
+_Avoid_: Node sandbox (the sandbox is where a test runs; the runtime is which Node, and which version), node version

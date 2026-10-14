@@ -213,7 +213,7 @@ MultiAgentGama/
 │   │   ├── jscoverage.py            # JS/TS 行涵蓋率：Node 涵蓋率旗標、lcov 解析、跨模組聯集
 │   │   ├── mutation.py              # 選用的突變測試（Python）
 │   │   ├── sanitize.py              # 信任邊界：去隱形字元、遮蔽密鑰、不受信任程式碼／模型輸出通道、報告消毒
-│   │   ├── sandbox.py               # 沙盒：本機子程序（非安全邊界）與 Docker 容器；Node 版本各一（node --test）
+│   │   ├── sandbox.py               # 沙盒：本機子程序（非安全邊界）與 Docker 容器；Node 版本各一（node --test）；Node 執行環境的選擇與版本偵測
 │   │   ├── settings.py              # 設定：設定檔只載入、套用預設值並驗證一次（探索到的設定檔政策、CLI 覆寫值）
 │   │   ├── transport.py             # 模型呼叫接縫 ModelTransport；預設的 LiteLLMTransport 是唯一 import litellm 的地方
 │   │   └── verdict.py               # 四種判定結果與其結束碼（不匯入第三方套件）
@@ -233,7 +233,7 @@ MultiAgentGama/
 │   │       └── scenario_builder.py  # 威脅轉化可執行攻擊腳本
 │   ├── runners/
 │   │   ├── __init__.py
-│   │   └── test_executor.py         # 沙盒測試執行器（pytest；JS/TS 走 node:test）與 PoC 抓取（白箱與黑箱共用）
+│   │   └── test_executor.py         # 沙盒測試執行器（pytest；JS/TS 走 node:test）與 PoC 抓取（白箱與黑箱共用）；每組測試回傳一個 SuiteResult
 │   ├── reports/
 │   │   ├── __init__.py
 │   │   └── report_generator.py      # Markdown／JSON／SARIF 審計報告生成器
@@ -264,6 +264,7 @@ MultiAgentGama/
 │   ├── test_mutation.py                # 突變測試：變異點與切換、決定性與上限、隔離與路徑改寫、強弱測試端對端、閘門語意、開關優先順序、CLI／Action
 │   ├── test_model_output.py            # 透過 model_output 測試解析與形狀檢查：各種包裝、型別規格、清單規則、any_of、模擬輸出符合 schema
 │   ├── test_model_output_robustness.py # 模型輸出異常時優雅降級、形狀錯誤重問後記 invalid、探針回退的揭露
+│   ├── test_node_runtime.py            # Node 執行環境的選擇：build_node_sandbox、docker 內的版本偵測、harness 的工廠、SuiteResult.node_runtime
 │   ├── test_p0_regressions.py          # 執行器正確性、自我修復與結果來源誠實性的回歸測試
 │   ├── test_parallel_and_budgets.py    # 測試生成並行、模型呼叫預算、檔案／worker 上限
 │   ├── test_prompt_context.py          # live 模式：提示帶入真實程式碼與 import 路徑、閘道呼叫健壯性

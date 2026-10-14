@@ -219,9 +219,9 @@ def test_future_imports_survive_the_harness_header(tmp_path, code):
     from vibeharness.core.sandbox import LocalSubprocessSandbox
     from vibeharness.runners.test_executor import TestSuiteExecutor
     (tmp_path / "m.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
-    results, _ = TestSuiteExecutor(LocalSubprocessSandbox(60)).execute_test_suite(
+    results = TestSuiteExecutor(LocalSubprocessSandbox(60)).execute_test_suite(
         [_gen_test(code)], working_dir=str(tmp_path)
-    )
+    ).results
     assert results[0].status == TestStatus.PASSED, results[0].failure_reason
 
 
@@ -414,7 +414,7 @@ def test_wrong_signature_call_in_the_test_is_an_error_not_a_defect(tmp_path):
     from vibeharness.core.sandbox import LocalSubprocessSandbox
     from vibeharness.runners.test_executor import TestSuiteExecutor
     (tmp_path / "m.py").write_text("def f(x):\n    return g(x, 1)\n\ndef g(a):\n    return a\n", encoding="utf-8")
-    results, _ = TestSuiteExecutor(LocalSubprocessSandbox(60)).execute_test_suite([
+    results = TestSuiteExecutor(LocalSubprocessSandbox(60)).execute_test_suite([
         _gen_test("from m import g\n\ndef test_a():\n    assert g(1, 2) == 1\n", "TEST-SIG"),
         _gen_test("from m import g\n\ndef test_a():\n    assert g(a=1, b=2) == 1\n", "TEST-KW"),
         # 同樣的 TypeError 若在目標內部拋出，就是真正的缺陷
@@ -423,7 +423,7 @@ def test_wrong_signature_call_in_the_test_is_an_error_not_a_defect(tmp_path):
         # 測試那一行拋出的其他 TypeError 仍算缺陷（例如 None 的處理）
         # other TypeErrors raised by the test line stay defects (e.g. None handling)
         _gen_test("def test_a():\n    assert len(None) == 0\n", "OTHER"),
-    ], working_dir=str(tmp_path))
+    ], working_dir=str(tmp_path)).results
     status = {r.test_id: r.status for r in results}
     assert status == {
         "TEST-SIG": TestStatus.ERROR, "TEST-KW": TestStatus.ERROR,

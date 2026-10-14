@@ -15,6 +15,7 @@ from vibeharness.core.llm_gateway import LLMGateway, REASON_NOT_VALID_JSON, _RET
 from vibeharness.core.models import (
     CodeSymbol, FindingSeverity, GeneratedTest, ReviewFinding, STRIDECategory, TestStatus, ThreatItem,
 )
+from vibeharness.core.sandbox import SandboxRun
 from vibeharness.runners.test_executor import (
     POC_HEADER_JS, POC_HEADER_PY, REASON_NOT_RUN_CORRECTLY, REASON_TARGET_BROKEN, TestSuiteExecutor,
 )
@@ -161,7 +162,7 @@ class _FailingSandbox:
             "</testcase>"
             "</testsuite></testsuites>"
         )
-        return 0, "", "", 0.2, None, junit
+        return SandboxRun(0, "", "", 0.2, None, junit)
 
 
 def test_failed_executor_result_reason_and_poc_are_bilingual(tmp_path):
@@ -174,7 +175,7 @@ def test_failed_executor_result_reason_and_poc_are_bilingual(tmp_path):
                       title="import probe", code="import svc\n\ndef test_b():\n    assert svc\n", rationale="r",
                       expected_outcome="e", source_ref="WB-CLA-01"),
     ]
-    results, _ = executor.execute_test_suite(tests, working_dir=str(tmp_path))
+    results = executor.execute_test_suite(tests, working_dir=str(tmp_path)).results
     exploit, broken = results
 
     assert exploit.status == TestStatus.FAILED and exploit.is_security_exploit_confirmed
@@ -202,7 +203,7 @@ def test_assertion_fallback_and_js_runner_reasons_are_bilingual(tmp_path):
     js = GeneratedTest(test_id="J", test_type="whitebox_unit", target_component="m", title="js",
                        code="import { test } from 'node:test';\ntest('x', () => {});\n", rationale="r",
                        expected_outcome="e", source_ref="x", language="javascript")
-    results, _ = executor.execute_test_suite([js], working_dir=str(tmp_path))
+    results = executor.execute_test_suite([js], working_dir=str(tmp_path)).results
     reason = results[0].failure_reason
     assert results[0].status == TestStatus.ERROR
     assert has_cjk(reason) and "JavaScript/TypeScript test was not run" in reason
