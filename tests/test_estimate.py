@@ -63,6 +63,25 @@ def test_scenario_figures_scale_with_assumptions_and_retries(tmp_path):
     assert est.calls_typical >= est.calls_exact and est.calls_max >= est.calls_typical
 
 
+def test_verifier_calls_have_no_float_error(tmp_path):
+    """3 個審查者 × 25 批 × 3 個發現 × 0.8 = 180 筆發現；驗證者只裁決其他兩個模型的 120 筆，每次 15 筆 = 8 次呼叫。
+    以 distinct × (1 - 自家份額) 計算時浮點誤差得到 120.00000000000001，多算成 9 次。
+    3 reviewers × 25 batches × 3 findings × 0.8 = 180 findings; a verifier rules on the other two models' 120 only,
+    15 per call = 8 calls. Computed as distinct × (1 - own share), float error gave 120.00000000000001 and so 9."""
+    with open(CONFIG, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    del cfg["agents"]["whitebox_reviewer_gemini"]
+    config = tmp_path / "cfg.yaml"
+    config.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "w.py").write_text("".join(f"def w_{i}(x):\n    return x + {i}\n\n" for i in range(15 * 25)), encoding="utf-8")
+    est = estimate_run(VibeHarnessCommander(config_path=str(config), execution_mode="mock"), str(target))
+    assert est.whitebox_batches == 25
+    verifiers = {c.model_alias: c.calls_typical for c in est.by_agent if c.agent.startswith("whitebox_verifier_")}
+    assert verifiers == {"claude": 8, "deepseek": 8, "glm": 8, "gemini": 12}
+
+
 def test_prices_turn_tokens_into_cost_and_are_validated(tmp_path):
     cfg = _config(tmp_path, model_overrides={
         "claude": {"price_per_million_input": 3.0, "price_per_million_output": 15.0},

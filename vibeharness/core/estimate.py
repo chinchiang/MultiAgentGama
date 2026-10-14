@@ -34,8 +34,6 @@ from vibeharness.core.settings import UNCONFIGURED_ALIAS
 # max_output_tokens, which is a ceiling, not a spend.
 _OVERHEAD = {"reviewer": 450, "verifier": 350, "test_generator": 700, "heal": 300, "threat_modeler": 2200, "synthesizer": 900}
 _TYPICAL_OUTPUT = {"reviewer": 1500, "verifier": 600, "test_generator": 1500, "heal": 1200, "threat_modeler": 2500, "synthesizer": 1500}
-_VERIFIER_LISTING_TOKENS = MultiModelDebater.LISTING_MAX_TOKENS
-_VERIFIER_CODE_TOKENS = MultiModelDebater.CODE_CONTEXT_TOKENS
 # 修復提示詞帶著被修的測試程式碼；它的大小只能估計（大約是一個典型的測試）
 # A repair prompt carries the test code being repaired; its size can only be estimated (about one typical test)
 _HEALED_CODE_TOKENS = 1200
@@ -151,19 +149,19 @@ def estimate_run(
     # 2. Findings scenario -> verifiers
     raw_findings = findings_per_batch * wb_batches * len(reviewers)
     distinct = raw_findings * 0.8  # 部分重複項會合併 ／ some duplicates merge
-    for agent_id, alias in commander.debater.verifiers.items():
-        # 驗證者絕不裁決自家模型的發現：它只看到其他模型回報的那一份
-        # A verifier never rules on its own model's findings: it sees the share reported by other models
-        own_share = sum(1 for r in reviewers if r["model_alias"] == alias) / max(len(reviewers), 1)
-        assigned = distinct * (1 - own_share)
-        calls = math.ceil(assigned / MultiModelDebater.FINDINGS_PER_CALL) if assigned > 0 else 0
-        est.by_agent.append(CallEstimate(
-            agent=agent_id, model_alias=alias, calls_typical=calls, calls_max=calls * reask,
-            prompt_tokens_typical=calls * (_VERIFIER_LISTING_TOKENS + _VERIFIER_CODE_TOKENS + _OVERHEAD["verifier"]),
-            output_tokens_typical=calls * _TYPICAL_OUTPUT["verifier"],
-            basis=bi(f"來自其他模型的 ~{assigned:.0f} 筆發現 / 每次呼叫 {MultiModelDebater.FINDINGS_PER_CALL} 筆",
-                     f"~{assigned:.0f} finding(s) from other models / {MultiModelDebater.FINDINGS_PER_CALL} per call"),
-        ))
+    # 各模型回報的發現數，依審查者的模型別名平均分配
+    # Findings per reporting model, split evenly over the reviewers' model aliases
+    by_alias: Dict[str, float] = {}
+    for reviewer in reviewers:
+        by_alias[reviewer["model_alias"]] = by_alias.get(reviewer["model_alias"], 0) + distinct / len(reviewers)
+    per_call = MultiModelDebater.FINDINGS_PER_CALL
+    for plan in commander.debater.plan(by_alias):
+        # 說明裡的發現數：其他模型回報的（驗證者絕不裁決自家模型的發現）
+        # The finding count in the basis: those other models reported (a verifier never rules on its own model's)
+        assigned = sum(n for alias, n in by_alias.items() if alias != plan.model_alias)
+        est.by_agent.append(_row(plan.agent_id, plan.model_alias, [plan], reask, heal_rate, bi(
+            f"來自其他模型的 ~{assigned:.0f} 筆發現 / 每次呼叫 {per_call} 筆",
+            f"~{assigned:.0f} finding(s) from other models / {per_call} per call")))
 
     # 3. 每筆已確認發現的測試產生（+ 修復）
     # 3. Test generation per confirmed finding (+ heals)
