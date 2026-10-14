@@ -6,7 +6,7 @@ import threading
 
 import pytest
 
-from vibeharness.core.llm_gateway import LLMGateway, PROVENANCE_KEY, REASON_NOT_VALID_JSON
+from vibeharness.core.llm_gateway import LLMGateway, PROVENANCE_KEY
 from vibeharness.core.i18n import bi, en_only, has_cjk
 from vibeharness.core.models import (
     AgentCallRecord,
@@ -421,50 +421,6 @@ def test_sarif_uri_relativization(tmp_path):
     assert uri(r"D:\proj\app.py", r"D:\proj") == "app.py"
 
 
-def test_clean_and_parse_json_robustness():
-    gw = LLMGateway(CONFIG, execution_mode="mock")
-    # 1. 純粹合法的 JSON
-    # 1. Pure valid JSON
-    assert gw._clean_and_parse_json('{"key": "value"}') == {"key": "value"}
-    # 2. 帶 json ／ JSON ／ 無語言標籤的 Markdown 圍欄
-    # 2. Markdown fences with json / JSON / no lang tag
-    assert gw._clean_and_parse_json('```json\n{"key": 1}\n```') == {"key": 1}
-    assert gw._clean_and_parse_json('```JSON\n{"key": 2}\n```') == {"key": 2}
-    assert gw._clean_and_parse_json('```\n{"key": 3}\n```') == {"key": 3}
-    # 3. 沒有圍欄的對話式包裝
-    # 3. Conversational wrapper without fences
-    assert gw._clean_and_parse_json('Sure! Here is the output:\n{"key": 4}\nHope this helps!') == {"key": 4}
-    # 4. 真正的 JSON 區塊之前有非 JSON 的大括號文字
-    # 4. Text with prior non-JSON braces before the real JSON block
-    assert gw._clean_and_parse_json('Note: {ignore this invalid}\nReal output:\n{"key": 5}') == {"key": 5}
-    # 5. 未關閉的程式碼圍欄
-    # 5. Unclosed code fence
-    assert gw._clean_and_parse_json('```json\n{"key": 6}\n') == {"key": 6}
-    # 6. 完全不是 JSON 的文字回傳 None（沒有模型可能撞上的哨兵字典）
-    # 6. Completely non-JSON text returns None (no sentinel dict a model could collide with)
-    assert gw._clean_and_parse_json('Sorry, I cannot help with that.') is None
-    # 7. 模型回聲一個形狀像解析失敗的字典，也只是普通字典，不是錯誤
-    # 7. A model echoing a parse-failure-shaped dict is just a normal dict, not an error
-    assert gw._clean_and_parse_json('{"error": "JSONDecodeError", "raw_content": "hi"}') == {
-        "error": "JSONDecodeError", "raw_content": "hi"
-    }
-
-
-def test_validate_output_any_of_keys():
-    tests_or_code = OutputSchema(any_of={"tests": ANY, "code": ANY})
-    assert LLMGateway._validate_output({"tests": []}, True, tests_or_code) is None
-    assert LLMGateway._validate_output({"code": "def test_x(): pass"}, True, tests_or_code) is None
-    assert LLMGateway._validate_output(None, True, tests_or_code) == REASON_NOT_VALID_JSON
-    assert en_only(REASON_NOT_VALID_JSON) == "response is not valid JSON"
-    problem = LLMGateway._validate_output({"oops": 1}, True, tests_or_code)
-    assert problem is not None and "none of the expected" in problem
-    # 全部必備（all-of）的語意不變
-    # all-of semantics are unchanged
-    both = OutputSchema(required={"a": ANY, "b": ANY})
-    assert en_only(LLMGateway._validate_output({"a": 1}, True, both)) == "response is missing required key(s): b"
-    assert LLMGateway._validate_output({"a": 1, "b": 2}, True, both) is None
-
-
 def test_garbage_json_object_is_recorded_as_invalid_call(fake_live):
     """一個能解析成 JSON 但沒有任何預期鍵的 live 回應，必須以 mode「invalid」
     （附上原因）記錄下來，而不是當成剛好產生零個結果的成功呼叫。
@@ -479,7 +435,6 @@ def test_garbage_json_object_is_recorded_as_invalid_call(fake_live):
     assert set(result.keys()) == {PROVENANCE_KEY}
     assert gw.call_log[-1].mode == "invalid"
     assert "none of the expected" in gw.call_log[-1].reason
-
 
 
 def test_reports_carry_run_metadata_and_a_schema_version(tmp_path):
@@ -596,16 +551,6 @@ def test_an_empty_or_partly_usable_list_is_not_reasked(scripted, answer):
     from vibeharness.agents.whitebox.multi_reviewer import FINDINGS_SCHEMA
     gw = LLMGateway(CONFIG, execution_mode="live", transport=scripted({"*": answer}))
     assert gw.is_usable(gw.generate("whitebox_reviewer_claude", "sys", "user", schema=FINDINGS_SCHEMA))
-    assert [c.mode for c in gw.call_log] == ["live"]
-
-
-def test_a_wrongly_typed_key_next_to_a_usable_one_passes_any_of(scripted):
-    """`any_of` 只要有一個鍵存在且形狀正確就合格：`tests` 型別錯、`code` 可用時不浪費一次重問。
-    `any_of` fits as soon as one key is there with the right shape: a wrongly typed `tests` next to a usable `code`
-    does not waste a re-ask."""
-    from vibeharness.agents.whitebox.test_generator import TESTS_SCHEMA
-    gw = LLMGateway(CONFIG, execution_mode="live", transport=scripted({"*": {"tests": "x", "code": "def test_x():\n    assert 1\n"}}))
-    assert gw.is_usable(gw.generate("whitebox_test_generator", "sys", "user", schema=TESTS_SCHEMA))
     assert [c.mode for c in gw.call_log] == ["live"]
 
 

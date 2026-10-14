@@ -397,8 +397,12 @@ class LLMGateway:
                 # 必須明確失敗，而不是被掩蓋成退回模擬。
                 # Only the network call is guarded above: a bug in parsing/validation/booking
                 # must fail loudly instead of being masked as a fallback to simulation.
-                result = self._clean_and_parse_json(raw_text) if json_output else {"raw": raw_text}
-                problem = self._validate_output(result, json_output, schema)
+                result = parse_json_object(raw_text) if json_output else {"raw": raw_text}
+                if json_output and result is None:
+                    shown = raw_text.strip()[:200]
+                    logger.error(bi(f"JSON 解析錯誤：無法擷取有效的 JSON。原始內容：{shown}",
+                                    f"JSON parsing error: could not extract valid JSON. Raw content: {shown}"))
+                problem = check_output(result, schema) if json_output else None
                 if problem is None and result is not None:
                     from_cache = cached is not None and attempt == 0
                     if not from_cache:
@@ -555,10 +559,6 @@ class LLMGateway:
             value = self.settings.max_output_tokens
         return int(value)
 
-    @staticmethod
-    def _validate_output(result: Any, json_output: bool, schema: Optional[OutputSchema]) -> Optional[str]:
-        return check_output(result, schema) if json_output else None
-
     def record_failure(self, agent_id: str, reason: str) -> None:
         """登記一次在閘道能回答之前就當掉的代理呼叫（例如呼叫端執行緒池批次中的
         例外）。記錄為 `invalid` 呼叫，讓品質閘門把缺少的結果視為證據缺口，
@@ -584,13 +584,3 @@ class LLMGateway:
     @property
     def cached_calls(self) -> List[AgentCallRecord]:
         return [rec for rec in self.call_log if rec.cached]
-
-    def _clean_and_parse_json(self, text: str) -> Optional[Dict[str, Any]]:
-        """`parse_json_object`（core/model_output.py），解析失敗時以閘道的 logger 記錄。
-        `parse_json_object` (core/model_output.py), logged with the gateway's logger when parsing fails."""
-        parsed = parse_json_object(text)
-        if parsed is None:
-            text = text.strip()
-            logger.error(bi(f"JSON 解析錯誤：無法擷取有效的 JSON。原始內容：{text[:200]}",
-                            f"JSON parsing error: could not extract valid JSON. Raw content: {text[:200]}"))
-        return parsed
