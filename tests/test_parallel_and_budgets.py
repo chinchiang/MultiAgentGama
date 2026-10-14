@@ -17,6 +17,7 @@ from vibeharness.core.i18n import has_cjk
 from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
 from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
 from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
+from vibeharness.core.model_output import ANY, OutputSchema
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
@@ -187,7 +188,7 @@ def test_budget_falls_back_to_simulation_in_hybrid_mode(fake_live, tmp_path):
     fake = fake_live(lambda s, u: json.dumps({"findings": []}))
     gw = LLMGateway(_config(tmp_path, max_model_calls=2), execution_mode="hybrid")
     for _ in range(4):
-        gw.generate("whitebox_reviewer_claude", "s", "u", required_keys=["findings"])
+        gw.generate("whitebox_reviewer_claude", "s", "u", schema=OutputSchema(required={"findings": ANY}))
     assert len(fake.calls) == 2
     assert [r.mode for r in gw.call_log] == ["live", "live", "simulated", "simulated"]
     assert len(gw.budget_exhausted_calls) == 2 and gw.call_log[-1].reason == BUDGET_EXHAUSTED_REASON
@@ -345,7 +346,7 @@ def test_unusable_answer_is_re_asked_once_and_the_retry_can_succeed(fake_live):
 
     fake = fake_live(responder)
     gw = LLMGateway(CONFIG, execution_mode="live")
-    resp = gw.generate("whitebox_reviewer_claude", "sys", "audit this", required_keys=["findings"])
+    resp = gw.generate("whitebox_reviewer_claude", "sys", "audit this", schema=OutputSchema(required={"findings": ANY}))
     assert gw.is_usable(resp) and resp["findings"] == []
     assert [c.mode for c in gw.call_log] == ["retried", "live"]
     assert "could not be used (response is not valid JSON)" in prompts[1] and prompts[1].startswith("audit this")
@@ -358,15 +359,15 @@ def test_re_ask_respects_the_call_budget_and_is_configurable(fake_live, tmp_path
     fake = fake_live(lambda s, u: "not json")
     gw = LLMGateway(CONFIG, execution_mode="hybrid")
     gw.max_model_calls = 1
-    gw.generate("whitebox_reviewer_claude", "sys", "u", required_keys=["findings"])
+    gw.generate("whitebox_reviewer_claude", "sys", "u", schema=OutputSchema(required={"findings": ANY}))
     # 沒有預算可以再問：單次嘗試後登記為 invalid
     # No budget left for a re-ask: booked invalid after the single attempt
     assert [c.mode for c in gw.call_log] == ["invalid"] and len(fake.calls) == 1
     gw = LLMGateway(_config(tmp_path, retry_invalid_output=0), execution_mode="hybrid")
-    gw.generate("whitebox_reviewer_claude", "sys", "u", required_keys=["findings"])
+    gw.generate("whitebox_reviewer_claude", "sys", "u", schema=OutputSchema(required={"findings": ANY}))
     assert [c.mode for c in gw.call_log] == ["invalid"]
     gw = LLMGateway(_config(tmp_path, retry_invalid_output=2), execution_mode="hybrid")
-    gw.generate("whitebox_reviewer_claude", "sys", "u", required_keys=["findings"])
+    gw.generate("whitebox_reviewer_claude", "sys", "u", schema=OutputSchema(required={"findings": ANY}))
     assert [c.mode for c in gw.call_log] == ["retried", "retried", "invalid"]
     # 非 JSON 的呼叫（測試產生器的修復提示詞）永遠不會再問
     # Non-JSON calls (the test-generator heal prompt) are never re-asked
@@ -385,7 +386,7 @@ def test_extra_params_are_passed_to_litellm_and_validated(fake_live, tmp_path):
     path = tmp_path / "good.yaml"
     path.write_text(yaml.safe_dump(good), encoding="utf-8")
     fake = fake_live(lambda s, u: '{"findings": []}')
-    LLMGateway(str(path), execution_mode="live").generate("whitebox_reviewer_claude", "s", "u", required_keys=["findings"])
+    LLMGateway(str(path), execution_mode="live").generate("whitebox_reviewer_claude", "s", "u", schema=OutputSchema(required={"findings": ANY}))
     assert fake.calls[0]["thinking"] == {"type": "disabled"} and fake.calls[0]["reasoning_effort"] == "low"
     bad = dict(cfg, models=dict(cfg["models"], claude=dict(cfg["models"]["claude"], extra_params=["thinking"])))
     path.write_text(yaml.safe_dump(bad), encoding="utf-8")
@@ -553,12 +554,12 @@ def test_response_cache_serves_repeat_prompts_without_a_provider_call(fake_live,
     cache = tmp_path / "cache"
     gw = LLMGateway(_config(tmp_path, cache_dir=str(cache)), execution_mode="live")
     gw.max_model_calls = 1
-    first = gw.generate("whitebox_reviewer_claude", "sys", "audit", required_keys=["findings"])
+    first = gw.generate("whitebox_reviewer_claude", "sys", "audit", schema=OutputSchema(required={"findings": ANY}))
     assert first["findings"] and first[PROVENANCE_KEY]["cached"] is False
     assert len(list(cache.glob("*.json"))) == 1 and len(fake.calls) == 1
     # 第二次相同的提示詞：沒有供應商呼叫、不消耗預算，在呼叫紀錄中標示為已快取
     # Second identical prompt: no provider call, no budget consumed, flagged as cached in the call log
-    second = gw.generate("whitebox_reviewer_claude", "sys", "audit", required_keys=["findings"])
+    second = gw.generate("whitebox_reviewer_claude", "sys", "audit", schema=OutputSchema(required={"findings": ANY}))
     assert second["findings"] == first["findings"] and second[PROVENANCE_KEY]["cached"] is True
     assert len(fake.calls) == 1 and gw.live_calls_attempted == 1
     assert [c.cached for c in gw.call_log] == [False, True] and gw.call_log[-1].mode == "live"
@@ -566,12 +567,12 @@ def test_response_cache_serves_repeat_prompts_without_a_provider_call(fake_live,
     # 不同的提示詞、模型設定或代理溫度就是不同的鍵
     # A different prompt, model setting or agent temperature is a different key
     gw.max_model_calls = None
-    gw.generate("whitebox_reviewer_claude", "sys", "audit something else", required_keys=["findings"])
+    gw.generate("whitebox_reviewer_claude", "sys", "audit something else", schema=OutputSchema(required={"findings": ANY}))
     assert len(fake.calls) == 2
     # 新的閘道（新行程）會重用這些檔案
     # A fresh gateway (new process) reuses the files
     gw2 = LLMGateway(_config(tmp_path, cache_dir=str(cache)), execution_mode="live")
-    gw2.generate("whitebox_reviewer_claude", "sys", "audit", required_keys=["findings"])
+    gw2.generate("whitebox_reviewer_claude", "sys", "audit", schema=OutputSchema(required={"findings": ANY}))
     assert len(fake.calls) == 2 and gw2.call_log[-1].cached
 
 
@@ -579,13 +580,13 @@ def test_unusable_answers_are_never_cached_and_bad_entries_are_ignored(fake_live
     fake = fake_live(lambda s, u: "not json")
     cache = tmp_path / "cache"
     gw = LLMGateway(_config(tmp_path, cache_dir=str(cache), retry_invalid_output=0), execution_mode="hybrid")
-    gw.generate("whitebox_reviewer_claude", "sys", "u", required_keys=["findings"])
+    gw.generate("whitebox_reviewer_claude", "sys", "u", schema=OutputSchema(required={"findings": ANY}))
     assert gw.invalid_calls and not list(cache.glob("*.json"))
     # 該鍵對應的檔案毀損時視為未命中
     # A corrupt file for the key is treated as a miss
     key = gw._cache_key("claude", gw.models_config["claude"], 0.2, "sys", "u")
     (cache / f"{key}.json").write_text("{corrupt", encoding="utf-8")
-    gw.generate("whitebox_reviewer_claude", "sys", "u", required_keys=["findings"])
+    gw.generate("whitebox_reviewer_claude", "sys", "u", schema=OutputSchema(required={"findings": ANY}))
     assert len(fake.calls) == 2
     with pytest.raises(ConfigError, match="cache_dir"):
         bad = tmp_path / "file.txt"

@@ -200,6 +200,7 @@ MultiAgentGama/
 │   │   ├── __init__.py
 │   │   ├── harness.py               # 指揮官：六個階段加上選用的階段 3.5；把本次執行的證據交給品質閘門
 │   │   ├── llm_gateway.py           # 統一模型閘道：路由、fallback、模擬回退、呼叫預算與 call_log（模型呼叫經 transport.py）
+│   │   ├── model_output.py          # 模型回答的解析與形狀檢查：擷取 JSON 物件、對照代理宣告的 OutputSchema（純函式）
 │   │   ├── models.py                # Pydantic 數據模型
 │   │   ├── baseline.py              # --baseline：載入、比對與加註指紋，已知問題不計入（鍵在 identity.py）
 │   │   ├── codecheck.py             # 生成測試的靜態檢查（每個 test_ 函式／方法都要有斷言；拒絕安裝套件）
@@ -261,7 +262,8 @@ MultiAgentGama/
 │   ├── test_js_coverage.py             # JS/TS 行涵蓋率：lcov 解析、路徑篩選、模組聯集、版本門檻、執行器串接、報告欄位、實際 Node 與 Docker 執行
 │   ├── test_js_ts_extractor.py         # JS/TS 擷取器：括號配對、字面值／註解遮蔽、箭頭函式、路由
 │   ├── test_mutation.py                # 突變測試：變異點與切換、決定性與上限、隔離與路徑改寫、強弱測試端對端、閘門語意、開關優先順序、CLI／Action
-│   ├── test_model_output_robustness.py # 模型輸出異常時優雅降級、探針回退的揭露
+│   ├── test_model_output.py            # 透過 model_output 測試解析與形狀檢查：各種包裝、型別規格、清單規則、any_of、模擬輸出符合 schema
+│   ├── test_model_output_robustness.py # 模型輸出異常時優雅降級、形狀錯誤重問後記 invalid、探針回退的揭露
 │   ├── test_p0_regressions.py          # 執行器正確性、自我修復與結果來源誠實性的回歸測試
 │   ├── test_parallel_and_budgets.py    # 測試生成並行、模型呼叫預算、檔案／worker 上限
 │   ├── test_prompt_context.py          # live 模式：提示帶入真實程式碼與 import 路徑、閘道呼叫健壯性

@@ -5,10 +5,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import os
 from vibeharness.core.models import ThreatItem, GeneratedTest, CodeSymbol, text_or
 from vibeharness.core.fanout import Call, fan_out
+from vibeharness.core.model_output import STRING, OutputSchema
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.codecheck import check_test_code_for, strip_code_fences
 from vibeharness.core.i18n import bi, en_only
@@ -18,6 +19,11 @@ from vibeharness.core.sanitize import (
 )
 
 logger = logging.getLogger("VibeHarness.ScenarioBuilder")
+
+# 攻擊合成回答的形狀（core/model_output.py）：`code` 是字串；空字串合格（提示詞允許「無法表達攻擊時回傳空字串」）
+# The shape of an attack-synthesis answer (core/model_output.py): `code` is a string; an empty one fits (the prompt
+# allows "return an empty code string" when the attack cannot be expressed)
+CODE_SCHEMA = OutputSchema(required={"code": STRING})
 
 # 每個威脅所顯示目標程式碼的估計 token 預算
 # Estimated-token budget for the target code shown per threat
@@ -360,11 +366,9 @@ class ThreatScenarioBuilder:
             f"{closing}"
         )
 
-        # 模擬輸出沒有測試：模擬引擎無法撰寫針對目標的測試，這個威脅記為未測試
-        # The Simulated output holds no tests: the simulation engine cannot write target-specific tests, so the threat is marked untested
         resp = self.gateway.generate(
-            "blackbox_test_synthesizer", system_prompt, user_prompt, json_output=True, required_keys=["code"],
-            simulated=lambda alias: {"tests": []},
+            "blackbox_test_synthesizer", system_prompt, user_prompt, json_output=True, schema=CODE_SCHEMA,
+            simulated=_simulated_attack_test,
         )
 
         raw_code = resp.get("code")
@@ -402,3 +406,10 @@ class ThreatScenarioBuilder:
             source_ref=threat.threat_id,
             language=language,
         )
+
+
+def _simulated_attack_test(model_alias: str) -> Dict[str, Any]:
+    """攻擊合成的模擬輸出：空的 `code`（符合 CODE_SCHEMA）。模擬引擎無法撰寫針對目標的攻擊測試，所以這個威脅記為未測試。
+    The attack synthesizer's Simulated output: an empty `code` (it fits CODE_SCHEMA). The simulation engine cannot
+    write a target-specific attack test, so the threat is recorded as untested."""
+    return {"code": ""}

@@ -4,8 +4,10 @@ import json
 import os
 import threading
 
-from vibeharness.core.llm_gateway import LLMGateway, PROVENANCE_KEY, REASON_NOT_VALID_JSON
-from vibeharness.core.i18n import bi, en_only
+import pytest
+
+from vibeharness.core.llm_gateway import LLMGateway, PROVENANCE_KEY
+from vibeharness.core.i18n import bi, en_only, has_cjk
 from vibeharness.core.models import (
     AgentCallRecord,
     CodeSymbol,
@@ -27,6 +29,7 @@ from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler, D
 from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
 from vibeharness.reports.report_generator import ReportGenerator
 from vibeharness.core.harness import VibeHarnessCommander
+from vibeharness.core.model_output import ANY, OutputSchema
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
@@ -418,48 +421,6 @@ def test_sarif_uri_relativization(tmp_path):
     assert uri(r"D:\proj\app.py", r"D:\proj") == "app.py"
 
 
-def test_clean_and_parse_json_robustness():
-    gw = LLMGateway(CONFIG, execution_mode="mock")
-    # 1. 純粹合法的 JSON
-    # 1. Pure valid JSON
-    assert gw._clean_and_parse_json('{"key": "value"}') == {"key": "value"}
-    # 2. 帶 json ／ JSON ／ 無語言標籤的 Markdown 圍欄
-    # 2. Markdown fences with json / JSON / no lang tag
-    assert gw._clean_and_parse_json('```json\n{"key": 1}\n```') == {"key": 1}
-    assert gw._clean_and_parse_json('```JSON\n{"key": 2}\n```') == {"key": 2}
-    assert gw._clean_and_parse_json('```\n{"key": 3}\n```') == {"key": 3}
-    # 3. 沒有圍欄的對話式包裝
-    # 3. Conversational wrapper without fences
-    assert gw._clean_and_parse_json('Sure! Here is the output:\n{"key": 4}\nHope this helps!') == {"key": 4}
-    # 4. 真正的 JSON 區塊之前有非 JSON 的大括號文字
-    # 4. Text with prior non-JSON braces before the real JSON block
-    assert gw._clean_and_parse_json('Note: {ignore this invalid}\nReal output:\n{"key": 5}') == {"key": 5}
-    # 5. 未關閉的程式碼圍欄
-    # 5. Unclosed code fence
-    assert gw._clean_and_parse_json('```json\n{"key": 6}\n') == {"key": 6}
-    # 6. 完全不是 JSON 的文字回傳 None（沒有模型可能撞上的哨兵字典）
-    # 6. Completely non-JSON text returns None (no sentinel dict a model could collide with)
-    assert gw._clean_and_parse_json('Sorry, I cannot help with that.') is None
-    # 7. 模型回聲一個形狀像解析失敗的字典，也只是普通字典，不是錯誤
-    # 7. A model echoing a parse-failure-shaped dict is just a normal dict, not an error
-    assert gw._clean_and_parse_json('{"error": "JSONDecodeError", "raw_content": "hi"}') == {
-        "error": "JSONDecodeError", "raw_content": "hi"
-    }
-
-
-def test_validate_output_any_of_keys():
-    assert LLMGateway._validate_output({"tests": []}, True, None, ["tests", "code"]) is None
-    assert LLMGateway._validate_output({"code": "def test_x(): pass"}, True, None, ["tests", "code"]) is None
-    assert LLMGateway._validate_output(None, True, None, ["tests", "code"]) == REASON_NOT_VALID_JSON
-    assert en_only(REASON_NOT_VALID_JSON) == "response is not valid JSON"
-    problem = LLMGateway._validate_output({"oops": 1}, True, None, ["tests", "code"])
-    assert problem is not None and "none of the expected" in problem
-    # 全部必備（all-of）的語意不變
-    # all-of semantics are unchanged
-    assert en_only(LLMGateway._validate_output({"a": 1}, True, ["a", "b"], None)) == "response is missing required key(s): b"
-    assert LLMGateway._validate_output({"a": 1, "b": 2}, True, ["a", "b"], None) is None
-
-
 def test_garbage_json_object_is_recorded_as_invalid_call(fake_live):
     """一個能解析成 JSON 但沒有任何預期鍵的 live 回應，必須以 mode「invalid」
     （附上原因）記錄下來，而不是當成剛好產生零個結果的成功呼叫。
@@ -470,11 +431,10 @@ def test_garbage_json_object_is_recorded_as_invalid_call(fake_live):
     gw = LLMGateway(CONFIG, execution_mode="live")
     fake_live(lambda s, u: json.dumps({"sorry": "no tests in here"}))
     result = gw.generate("whitebox_test_generator", "sys", "user", json_output=True,
-                         required_keys_any=["tests", "code"])
+                         schema=OutputSchema(any_of={"tests": ANY, "code": ANY}))
     assert set(result.keys()) == {PROVENANCE_KEY}
     assert gw.call_log[-1].mode == "invalid"
     assert "none of the expected" in gw.call_log[-1].reason
-
 
 
 def test_reports_carry_run_metadata_and_a_schema_version(tmp_path):
@@ -539,3 +499,127 @@ def test_agreement_display_covers_every_state():
     assert "verification not applied" in agreement_display(MultiModelDebateResult(consensus_summary="c"))
     assert agreement_display(MultiModelDebateResult(consensus_summary="c", arbitration_applied=True, model_agreement_ratio=0.75)) == "75.0%"
     assert "no decisive votes" in agreement_display(MultiModelDebateResult(consensus_summary="c", arbitration_applied=True))
+
+
+# --- 形狀錯誤：重新詢問一次，仍不合就記為 invalid（不再當成「什麼都沒找到」）----------------------------------
+# --- Shape errors: re-asked once, booked as invalid if still wrong (no longer read as "nothing found") ---------
+
+def _shape_cases():
+    from vibeharness.agents.blackbox.scenario_builder import CODE_SCHEMA
+    from vibeharness.agents.blackbox.threat_modeler import THREATS_SCHEMA
+    from vibeharness.agents.whitebox.debater import verdicts_schema
+    from vibeharness.agents.whitebox.multi_reviewer import FINDINGS_SCHEMA
+    from vibeharness.agents.whitebox.test_generator import TESTS_SCHEMA
+    return [
+        ("whitebox_reviewer_claude", FINDINGS_SCHEMA, {"findings": 5}, "field 'findings' must be a list of objects (got int)"),
+        ("whitebox_reviewer_claude", FINDINGS_SCHEMA, {"findings": ["x", 1]}, "field 'findings' has no usable item (2 item(s))"),
+        ("whitebox_reviewer_claude", FINDINGS_SCHEMA, {"findings": [{"symbol_name": "f"}]},
+         "each item needs a non-empty title or description"),
+        ("whitebox_verifier_glm", verdicts_schema(1), {"verdicts": [{"index": 9, "verdict": "confirm"}]},
+         "each item needs an index from 0 to 0 and a verdict of confirm, reject or unsure"),
+        ("whitebox_verifier_glm", verdicts_schema(1), {"verdicts": [{"index": 0, "verdict": "maybe"}]}, "has no usable item"),
+        ("blackbox_threat_modeler", THREATS_SCHEMA, {"threats": "x"}, "field 'threats' must be a list of objects (got str)"),
+        ("blackbox_threat_modeler", THREATS_SCHEMA, {"threats": [1, 2]}, "each item must be an object"),
+        ("whitebox_test_generator", TESTS_SCHEMA, {"tests": [{"title": "t"}]}, "each item needs non-empty code"),
+        ("whitebox_test_generator", TESTS_SCHEMA, {"code": 42}, "field 'code' must be a string (got int)"),
+        ("blackbox_test_synthesizer", CODE_SCHEMA, {"code": None}, "field 'code' must be a string (got null)"),
+    ]
+
+
+@pytest.mark.parametrize("case", range(10))
+def test_a_shape_error_is_reasked_with_the_reason_then_booked_invalid(scripted, case):
+    """鍵在、形狀不對的回答（`findings: 5`、沒有任何可用項目的清單、`code: 42`）過去被當成可用的回答，代理再把它讀成
+    「什麼都沒找到」；現在與缺鍵一樣：以指名欄位的原因重新詢問一次，仍不合就記為 invalid（證據缺口）。
+    An answer with the keys but the wrong shape (`findings: 5`, a list with no usable item, `code: 42`) used to be
+    a usable answer the agent then read as "nothing found"; now it is treated like a missing key: re-asked once with
+    a reason naming the field, and booked as invalid (an evidence gap) if it still does not fit."""
+    agent_id, schema, answer, reason = _shape_cases()[case]
+    transport = scripted({"*": answer})
+    gw = LLMGateway(CONFIG, execution_mode="live", transport=transport)
+    resp = gw.generate(agent_id, "sys", "user", schema=schema)
+    assert not gw.is_usable(resp)
+    assert [c.mode for c in gw.call_log] == ["retried", "invalid"]
+    assert reason in gw.call_log[-1].reason and reason in transport.prompts()[1][1]
+    assert not has_cjk(transport.prompts()[1][1])  # 模型只看到英文半 ／ the model sees the English half only
+
+
+@pytest.mark.parametrize("answer", [
+    {"findings": []},                                    # 什麼都沒找到是合法的回答 ／ "nothing found" is a legitimate answer
+    {"findings": [{"title": "ok"}, "x", {"symbol_name": "f"}]},  # 部分項目不能用：略過，不重問 ／ some unusable: skipped, no re-ask
+])
+def test_an_empty_or_partly_usable_list_is_not_reasked(scripted, answer):
+    from vibeharness.agents.whitebox.multi_reviewer import FINDINGS_SCHEMA
+    gw = LLMGateway(CONFIG, execution_mode="live", transport=scripted({"*": answer}))
+    assert gw.is_usable(gw.generate("whitebox_reviewer_claude", "sys", "user", schema=FINDINGS_SCHEMA))
+    assert [c.mode for c in gw.call_log] == ["live"]
+
+
+def test_a_reviewer_answering_a_non_list_is_an_evidence_gap_not_zero_findings(scripted, tmp_path):
+    """端對端：審查者回答 `{"findings": 5}` 過去被登記為 live、讀成零個發現（fail open）；現在是一筆 invalid 呼叫，
+    品質閘門會把它列為證據缺口。
+    End to end: a reviewer answering `{"findings": 5}` used to be booked live and read as zero findings (fail open);
+    now it is an invalid call, which the quality gate lists as an evidence gap."""
+    (tmp_path / "svc.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
+    symbols = ASTExtractor().parse_file(str(tmp_path / "svc.py"))
+    gw = LLMGateway(CONFIG, execution_mode="live",
+                    transport=scripted({"whitebox_reviewer_claude": {"findings": 5}, "*": {"findings": []}}))
+    assert HeterogeneousReviewerEnsemble(gw).review_symbols(symbols, root_dir=str(tmp_path)) == []
+    assert [c.agent_id for c in gw.invalid_calls] == ["whitebox_reviewer_claude"]
+
+
+def test_a_cached_answer_that_no_longer_fits_is_invalid_under_cache_only_and_reasked_otherwise(scripted, tmp_path):
+    """舊版本存進回應快取、現在形狀已不合的回答：--cache-only 下記為 invalid，原因標明來自快取（重新詢問的提示不帶這個
+    標記）；不帶 --cache-only 時重新詢問，可用的回答覆寫那筆快取。
+    An answer an older version stored in the response cache that no longer fits: under --cache-only it is booked
+    invalid with a reason naming the cache (a re-ask prompt never carries that mark); without --cache-only it is
+    re-asked and the usable answer overwrites the cache entry."""
+    from vibeharness.agents.whitebox.multi_reviewer import FINDINGS_SCHEMA
+    from vibeharness.core.model_output import ANY, CACHED_ANSWER_PREFIX, OutputSchema
+
+    def gateway(answer, cache_only=False):
+        transport = scripted({"*": answer})
+        gw = LLMGateway(CONFIG, execution_mode="live", transport=transport)
+        gw.set_cache_dir(str(tmp_path / "cache"))
+        gw.cache_only = cache_only
+        return gw, transport
+    old, _ = gateway({"findings": 5})  # 舊版本只檢查鍵是否存在 ／ the older version only checked that the key is there
+    assert old.is_usable(old.generate("whitebox_reviewer_claude", "sys", "user", schema=OutputSchema(required={"findings": ANY})))
+    replay, transport = gateway(pytest.fail, cache_only=True)
+    assert not replay.is_usable(replay.generate("whitebox_reviewer_claude", "sys", "user", schema=FINDINGS_SCHEMA))
+    assert [c.mode for c in replay.call_log] == ["invalid"] and not transport.requests
+    assert replay.call_log[0].reason.startswith(CACHED_ANSWER_PREFIX.split(" ／ ")[0]) and en_only(CACHED_ANSWER_PREFIX) in replay.call_log[0].reason
+    fresh, transport = gateway({"findings": [{"title": "ok"}]})
+    assert fresh.is_usable(fresh.generate("whitebox_reviewer_claude", "sys", "user", schema=FINDINGS_SCHEMA))
+    assert [c.mode for c in fresh.call_log] == ["retried", "live"]
+    assert en_only(CACHED_ANSWER_PREFIX) in fresh.call_log[0].reason
+    assert en_only(CACHED_ANSWER_PREFIX) not in transport.prompts()[0][1]
+    again, _ = gateway(pytest.fail, cache_only=True)
+    assert again.generate("whitebox_reviewer_claude", "sys", "user", schema=FINDINGS_SCHEMA)["findings"] == [{"title": "ok"}]
+
+
+def test_test_generation_falls_back_to_code_when_tests_has_no_usable_item(tmp_path):
+    """`tests` 是清單、卻沒有任何一項有 code 時，改用回答裡非空的 `code`：形狀檢查已經因為 `code` 可用而接受這個回答，
+    代理過去卻因為 `tests` 不是空清單就忽略 `code`，那個發現因此沒有模型測試。`tests` 有可用的項目時仍忽略 `code`。
+    When `tests` is a list but no item has code, the answer's non-empty `code` is used: the shape check already
+    accepts the answer because `code` is usable, yet the agent used to ignore `code` as soon as `tests` was a
+    non-empty list, leaving the finding without a model test. When `tests` has a usable item, `code` is still
+    ignored."""
+    (tmp_path / "svc.py").write_text("def f(x):\n    return x['id']\n", encoding="utf-8")
+    symbols = ASTExtractor().parse_file(str(tmp_path / "svc.py"))
+    code = "import svc\n\ndef test_f():\n    assert svc.f({'id': 1}) == 1\n"
+    finding = ReviewFinding(finding_id="WB-CLA-01", reviewer_name="Claude", model_alias="claude",
+                            file_path=str(tmp_path / "svc.py"), symbol_name="f", severity=FindingSeverity.HIGH,
+                            title="KeyError", description="d", root_cause="r", suspected_vibe_flaw="v",
+                            suggested_test_scenario="s")
+
+    def generator(answer):
+        gw = LLMGateway(CONFIG, execution_mode="mock")
+        gw.generate = lambda *a, **k: answer
+        return WhiteboxTestGenerator(gw)
+    fallback = generator({"tests": ["not an object", {"title": "no code"}], "code": code})
+    tests = fallback.generate_tests_for_findings([finding], symbols, root_dir=str(tmp_path))
+    assert [t.code.strip() for t in tests if t.test_type == "whitebox_unit"] == [code.strip()]
+    assert fallback.findings_without_model_tests == []
+    preferred = generator({"tests": [{"title": "from tests", "code": code}], "code": "def test_other():\n    assert 2\n"})
+    tests = preferred.generate_tests_for_findings([finding], symbols, root_dir=str(tmp_path))
+    assert [t.title for t in tests if t.test_type == "whitebox_unit"] == ["from tests"]

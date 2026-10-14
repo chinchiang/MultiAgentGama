@@ -18,6 +18,7 @@ from vibeharness.core.harness import VibeHarnessCommander, sorted_call_log
 from vibeharness.core.llm_gateway import DEFAULT_CONFIG_PATH, RESERVED_EXTRA_PARAMS, ConfigError, LLMGateway
 from vibeharness.core.models import AgentCallRecord, MultiModelDebateResult, ThreatModelReport, VibeHarnessSummary
 from vibeharness.reports.report_generator import JSON_SCHEMA_VERSION, ReportGenerator
+from vibeharness.core.model_output import ANY, OutputSchema
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXAMPLES = os.path.join(REPO_ROOT, "examples")
@@ -190,7 +191,7 @@ def test_gateway_books_the_attempt_number(tmp_path, fake_live):
                     "models:\n  a: {model: m-a, api_key_env: ANTHROPIC_API_KEY}\nagents:\n  x: {model_alias: a}\n",
                     encoding="utf-8")
     gw = LLMGateway(str(path))
-    assert gw.generate("x", "s", "u", required_keys=["ok"])["ok"] == 1
+    assert gw.generate("x", "s", "u", schema=OutputSchema(required={"ok": ANY}))["ok"] == 1
     assert [(r.mode, r.attempt) for r in sorted_call_log(list(reversed(gw.call_log)))] == [("retried", 0), ("live", 1)]
     assert gw.call_log[0].prompt_sha256 == gw.call_log[1].prompt_sha256
 

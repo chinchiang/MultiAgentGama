@@ -23,6 +23,7 @@ from vibeharness.core.sanitize import (
     UNTRUSTED_CODE_CLOSE, UNTRUSTED_CODE_OPEN, clean_model_text, find_injection_markers, find_invisible,
     find_secrets, markdown_safe, prepare_untrusted_code, redact_secrets, strip_invisible, untrusted_block,
 )
+from vibeharness.core.model_output import ANY, OutputSchema
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
@@ -530,8 +531,8 @@ def test_per_model_output_limit_overrides_the_global_one(fake_live, monkeypatch,
         encoding="utf-8",
     )
     gw = LLMGateway(str(cfg), execution_mode="live")
-    gw.generate("whitebox_reviewer_a", "s", "u", required_keys=["findings"])
-    gw.generate("whitebox_reviewer_b", "s", "u", required_keys=["findings"])
+    gw.generate("whitebox_reviewer_a", "s", "u", schema=OutputSchema(required={"findings": ANY}))
+    gw.generate("whitebox_reviewer_b", "s", "u", schema=OutputSchema(required={"findings": ANY}))
     assert [c["max_tokens"] for c in calls] == [32000, 2048]
     assert all(c["drop_params"] is True for c in calls)
 
@@ -540,7 +541,7 @@ def test_truncated_answer_is_reported_as_truncation(fake_live, monkeypatch):
     calls = []
     _fake_completion(monkeypatch, calls, '{"findings": [{"title": "cut', "length")
     gw = LLMGateway(CONFIG, execution_mode="live")
-    resp = gw.generate("whitebox_reviewer_gemini", "s", "u", required_keys=["findings"])
+    resp = gw.generate("whitebox_reviewer_gemini", "s", "u", schema=OutputSchema(required={"findings": ANY}))
     assert not gw.is_usable(resp)
     assert "output truncated at the max_output_tokens limit (16384)" in gw.call_log[-1].reason
 
@@ -549,7 +550,7 @@ def test_empty_answer_reports_the_finish_reason(fake_live, monkeypatch):
     calls = []
     _fake_completion(monkeypatch, calls, None, "content_filter")
     gw = LLMGateway(CONFIG, execution_mode="live")
-    resp = gw.generate("blackbox_test_synthesizer", "s", "u", required_keys=["code"])
+    resp = gw.generate("blackbox_test_synthesizer", "s", "u", schema=OutputSchema(required={"code": ANY}))
     assert not gw.is_usable(resp)
     reason = gw.call_log[-1].reason
     assert has_cjk(reason) and en_only(reason) == "model returned an empty response (finish_reason: content_filter)"
@@ -567,7 +568,7 @@ def test_bedrock_model_authenticates_with_an_aws_profile(tmp_path, monkeypatch):
     )
     gw = LLMGateway(str(cfg), execution_mode="live")
     assert gw.is_live_configured("claude")
-    gw.generate("whitebox_reviewer_claude", "s", "u", required_keys=["findings"])
+    gw.generate("whitebox_reviewer_claude", "s", "u", schema=OutputSchema(required={"findings": ANY}))
     assert calls[0]["aws_profile_name"] == "my-sso" and calls[0]["aws_region_name"] == "ap-southeast-1"
     assert "api_key" not in calls[0]
 

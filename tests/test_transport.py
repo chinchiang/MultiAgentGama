@@ -8,6 +8,7 @@ import pytest
 
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
 from vibeharness.core.transport import LiteLLMTransport, ModelReply, ModelRequest
+from vibeharness.core.model_output import ANY, OutputSchema
 
 CONFIG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vibeharness", "config", "agents_config.yaml")
 
@@ -38,7 +39,7 @@ def keys(monkeypatch):
 def test_each_attempt_is_one_request_carrying_the_agent(keys):
     transport = _Recording()
     gw = LLMGateway(CONFIG, execution_mode="live", transport=transport)
-    resp = gw.generate("whitebox_reviewer_claude", "system", "user", required_keys=["ok"])
+    resp = gw.generate("whitebox_reviewer_claude", "system", "user", schema=OutputSchema(required={"ok": ANY}))
     assert resp["ok"] == 1 and not gw.is_simulated(resp)
     (request,) = transport.requests
     model = gw.models_config["claude"]
@@ -51,7 +52,7 @@ def test_a_failed_primary_is_retried_on_the_fallback_model(keys):
     gw = LLMGateway(CONFIG, execution_mode="live")
     primary, fallback = gw.models_config["claude"]["model"], gw.models_config["claude"]["fallback_model"]
     gw.transport = transport = _Recording(fail={primary})
-    gw.generate("whitebox_reviewer_claude", "system", "user", required_keys=["ok"])
+    gw.generate("whitebox_reviewer_claude", "system", "user", schema=OutputSchema(required={"ok": ANY}))
     assert [r.model for r in transport.requests] == [primary, fallback]
     assert gw.call_log[-1].model_name == fallback and gw.call_log[-1].mode == "live"
 
@@ -106,8 +107,8 @@ def test_scripted_answers_by_agent_and_raises_like_a_provider(scripted):
     attempts = iter([RuntimeError("primary is down"), {"ok": 2}])
     transport = scripted({"whitebox_reviewer_*": {"ok": 1}, "whitebox_reviewer_glm": lambda request: next(attempts)})
     gw = LLMGateway(CONFIG, execution_mode="live", transport=transport)
-    assert gw.generate("whitebox_reviewer_claude", "s", "u", required_keys=["ok"])["ok"] == 1
-    assert gw.generate("whitebox_reviewer_glm", "s", "u", required_keys=["ok"])["ok"] == 2
+    assert gw.generate("whitebox_reviewer_claude", "s", "u", schema=OutputSchema(required={"ok": ANY}))["ok"] == 1
+    assert gw.generate("whitebox_reviewer_glm", "s", "u", schema=OutputSchema(required={"ok": ANY}))["ok"] == 2
     glm = gw.models_config["glm"]
     assert [r.model for r in transport.requests[1:]] == [glm["model"], glm["fallback_model"]]
     assert transport.prompts("whitebox_reviewer_glm") == [(transport.requests[1].messages[0]["content"], "u")] * 2

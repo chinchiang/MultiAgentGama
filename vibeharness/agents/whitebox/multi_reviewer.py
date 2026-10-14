@@ -11,8 +11,27 @@ from vibeharness.core.codecontext import render_symbols, batch_symbols
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
 from vibeharness.core.fanout import Call, fan_out
 from vibeharness.core.identity import UNKNOWN_FILE
+from vibeharness.core.model_output import LIST_OF_OBJECTS, OutputSchema
 
 logger = logging.getLogger("VibeHarness.MultiReviewer")
+
+
+def is_usable_finding(item: Dict[str, Any]) -> bool:
+    """模型回報的一項發現可以使用：有非空的 title 或 description（驗證者與測試生成器才有內容可據以行動）。
+    審查者略過其他項目；閘道的形狀檢查也用同一個判斷，所以兩者不會不一致。
+    A reported finding item is usable: it has a non-empty title or description (something the verifiers and the
+    test generator can act on). The reviewer skips the others, and the gateway's shape check uses the same rule, so
+    the two cannot disagree."""
+    return bool(text_or(item.get("title"), "") or text_or(item.get("description"), ""))
+
+
+# 審查者回答的形狀（core/model_output.py）：`findings` 是物件清單，不為空時至少要有一項可用的發現
+# The shape of a reviewer's answer (core/model_output.py): `findings` is a list of objects, with at least one usable
+# finding when it is not empty
+FINDINGS_SCHEMA = OutputSchema(required={"findings": LIST_OF_OBJECTS(
+    usable=is_usable_finding,
+    requirement=bi("每一項都要有非空的 title 或 description", "each item needs a non-empty title or description"),
+)})
 
 # 模型輸出的嚴重度字串若與列舉不符（大小寫怪異、拼錯）就落到這裡
 # Model-emitted severity strings that do not match the enum (odd casing, typos) land here
@@ -116,7 +135,7 @@ class HeterogeneousReviewerEnsemble:
             for item in raw_findings:
                 if not isinstance(item, dict):
                     continue
-                if not text_or(item.get("title"), "") and not text_or(item.get("description"), ""):
+                if not is_usable_finding(item):
                     # 沒有驗證者或測試產生器可據以行動的內容
                     # Nothing a verifier or test generator could act on
                     logger.warning(bi(f"略過 {reviewer['name']} 沒有可用標題或描述的發現",
@@ -209,7 +228,7 @@ class HeterogeneousReviewerEnsemble:
                        f"Running white-box audit with reviewer: {name} ({len(batch)} symbols)"))
         agent_id = reviewer["agent_id"]
         resp = self.gateway.generate(
-            agent_id, system_prompt, user_prompt, json_output=True, required_keys=["findings"],
+            agent_id, system_prompt, user_prompt, json_output=True, schema=FINDINGS_SCHEMA,
             simulated=lambda alias: _simulated_review(agent_id, alias),
         )
         return resp, self.gateway.is_simulated(resp)

@@ -11,6 +11,7 @@ from vibeharness import cli
 from vibeharness.core.estimate import estimate_lines, estimate_run
 from vibeharness.core.harness import VibeHarnessCommander
 from vibeharness.core.llm_gateway import CACHE_MISS_REASON, LLMGateway, LLMGatewayError
+from vibeharness.core.model_output import ANY, OutputSchema
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
@@ -50,11 +51,11 @@ def test_cache_hit_is_served_without_calling_litellm(tmp_path, fake_live):
     """第一次執行填好快取後，--cache-only 從快取取用同一個回答，假 litellm 一次也沒被呼叫。
     Once a first run filled the cache, --cache-only serves the same answer and the fake litellm is never called."""
     fake_live(lambda system, user: '{"ok": 1}')
-    assert _gateway(tmp_path).generate("x", "s", "u", required_keys=["ok"])["ok"] == 1
+    assert _gateway(tmp_path).generate("x", "s", "u", schema=OutputSchema(required={"ok": ANY}))["ok"] == 1
 
     replay = _gateway(tmp_path, cache_only=True)
     fake = fake_live(lambda system, user: pytest.fail("cache-only must not call litellm"))
-    result = replay.generate("x", "s", "u", required_keys=["ok"])
+    result = replay.generate("x", "s", "u", schema=OutputSchema(required={"ok": ANY}))
     assert result["ok"] == 1 and result["_provenance"]["cached"] is True
     assert fake.calls == [] and replay.live_calls_attempted == 0
     assert [rec.mode for rec in replay.call_log] == ["live"] and replay.call_log[0].cached
@@ -97,7 +98,7 @@ def test_unusable_cached_answer_is_never_re_asked(tmp_path, fake_live):
     _gateway(tmp_path).generate("x", "s", "u")
     fake = fake_live(lambda system, user: pytest.fail("cache-only must not call litellm"))
     gw = _gateway(tmp_path, cache_only=True)
-    assert gw.generate("x", "s", "u", required_keys=["ok"])["_provenance"]["mode"] == "invalid"
+    assert gw.generate("x", "s", "u", schema=OutputSchema(required={"ok": ANY}))["_provenance"]["mode"] == "invalid"
     assert fake.calls == [] and [rec.mode for rec in gw.call_log] == ["invalid"]
 
 
@@ -107,9 +108,9 @@ def test_a_re_asked_answer_is_cached_under_the_original_prompt(tmp_path, fake_li
     not miss the first attempt."""
     answers = iter(["not json", '{"ok": 2}'])
     fake_live(lambda system, user: next(answers))
-    assert _gateway(tmp_path).generate("x", "s", "u", required_keys=["ok"])["ok"] == 2
+    assert _gateway(tmp_path).generate("x", "s", "u", schema=OutputSchema(required={"ok": ANY}))["ok"] == 2
     fake = fake_live(lambda system, user: pytest.fail("cache-only must not call litellm"))
-    assert _gateway(tmp_path, cache_only=True).generate("x", "s", "u", required_keys=["ok"])["ok"] == 2
+    assert _gateway(tmp_path, cache_only=True).generate("x", "s", "u", schema=OutputSchema(required={"ok": ANY}))["ok"] == 2
     assert fake.calls == []
 
 

@@ -200,6 +200,7 @@ MultiAgentGama/
 │   │   ├── __init__.py
 │   │   ├── harness.py               # Commander: six phases plus optional Phase 3.5; hands the run's evidence to the quality gate
 │   │   ├── llm_gateway.py           # Unified model gateway: routing, fallback, simulation fallback, call budget and call_log (model calls go through transport.py)
+│   │   ├── model_output.py          # Parsing and shape checking of model answers: JSON extraction, the agent's OutputSchema (pure)
 │   │   ├── models.py                # Pydantic data models
 │   │   ├── baseline.py              # --baseline: loading, comparison and fingerprint annotation, known problems not counted (keys in identity.py)
 │   │   ├── codecheck.py             # Static checks on generated tests (every test_ function / method asserts; refuses package installs)
@@ -261,7 +262,8 @@ MultiAgentGama/
 │   ├── test_js_coverage.py             # JS/TS line coverage: lcov parsing, path filtering, union across modules, version gate, executor wiring, report fields, real Node and Docker runs
 │   ├── test_js_ts_extractor.py         # JS/TS extractor: brace matching, literal/comment masking, arrow functions, routes
 │   ├── test_mutation.py                # Mutation testing: sites and splicing, determinism and cap, isolation and path rewriting, strong vs weak tests end to end, gate semantics, switch precedence, CLI / Action
-│   ├── test_model_output_robustness.py # Graceful degradation on malformed model output, probe-fallback disclosure
+│   ├── test_model_output.py            # Parsing and shape checking through model_output: wrappings, type specs, the list rule, any_of, Simulated output fits
+│   ├── test_model_output_robustness.py # Graceful degradation on malformed model output, shape errors re-asked then invalid, probe-fallback disclosure
 │   ├── test_p0_regressions.py          # Executor correctness, self-repair and result-provenance honesty regressions
 │   ├── test_parallel_and_budgets.py    # Parallel test generation, model-call budget, file / worker caps
 │   ├── test_prompt_context.py          # Live mode: prompts carry real code and import paths, gateway call robustness
