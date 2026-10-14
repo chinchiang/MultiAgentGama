@@ -357,29 +357,6 @@ class LocalSubprocessSandbox:
         Why JS/TS line coverage cannot be collected; the Node sandboxes override it by version."""
         return REASON_JS_COVERAGE_UNSUPPORTED
 
-    def execute_python_code(
-        self,
-        code_content: str,
-        custom_env: Optional[Dict[str, str]] = None,
-        working_dir: Optional[str] = None,
-        collect_coverage: bool = False,
-        coverage_target: Optional[str] = None
-    ) -> Tuple[int, str, str, float, Optional[float]]:
-        """
-        在隔離的子行程中執行單一個 Python 測試模組。
-        回傳：(exit_code, stdout, stderr, execution_duration_seconds, line_coverage_percent)
-        Executes a single Python test module in an isolated subprocess.
-        Returns: (exit_code, stdout, stderr, execution_duration_seconds, line_coverage_percent)
-        """
-        run = self.execute_pytest_files(
-            {"test_exec.py": code_content},
-            custom_env=custom_env,
-            working_dir=working_dir,
-            collect_coverage=collect_coverage,
-            coverage_target=coverage_target
-        )
-        return run.exit_code, run.stdout, run.stderr, run.duration, run.coverage_pct
-
     def execute_pytest_files(
         self,
         files: Dict[str, str],
