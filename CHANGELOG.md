@@ -21,6 +21,7 @@
 - 發現、威脅與靜態命中的身分識別集中到新的 `vibeharness/core/identity.py`：模型文字的正規化（`normalize`、`key_text`）、位置規則、嚴重度順序（`severity_rank`，取代去重與威脅建模各自的一份），以及 `--baseline` 的鍵與 SARIF 的 partialFingerprints（`sarif_static_fingerprint`／`sarif_finding_fingerprint`／`sarif_breach_fingerprint`）並排定義；威脅合併改用同一個 `normalize`，不再有自己的副本。`vibeharness/core/baseline.py` 保留載入、比對與加註，並以舊名稱重新匯出這些函式。每個基準線 fingerprint 與 SARIF 指紋都逐位元組不變，既有的基準與 Code Scanning 警示照常相符；修正一節的兩個條目是隨後在這個模組上做的修正。
 - 模型回答的解析與形狀檢查移到新的 `vibeharness/core/model_output.py`（`parse_json_object`、`OutputSchema`、`check_output`，皆為純函式）：每個代理宣告它期望的回答形狀，`generate(..., schema=)` 取代 `required_keys`／`required_keys_any`；閘道保留重問、回應快取、呼叫紀錄與來源標記。修正一節中形狀錯誤與 `tests` 退回 `code` 兩個條目是隨後在這個模組上做的修正。
 - 執行器與沙盒改以回傳值交出結果：`execute_pytest_files` 回傳凍結的 `SandboxRun`（結束碼、stdout、stderr、執行時間、行涵蓋率與 JUnit 報告），取代六元組；執行器只依賴 `vibeharness/core/sandbox.py` 的 `Sandbox` Protocol，不再以 `getattr` 替沙盒補預設值（預設值改由 `LocalSubprocessSandbox` 提供）；`execute_test_suite` 回傳 `SuiteResult`（結果、Python 與 JS/TS 的行涵蓋率、JS/TS 涵蓋率算不出來的原因、JS 執行器的問題與 Node 執行環境），取代 `(結果, Python 涵蓋率)` 加上事後讀取的 `last_js_line_coverage_pct`、`js_coverage_unavailable_reason` 與 `js_runner_unavailable_reason`。Node 執行環境的選擇移到 `sandbox.py` 的 `build_node_sandbox`（回傳 `NodeRuntime`）；docker 映像檔內的 Node 版本由 `NodeDockerSandbox.probe_node_version` 偵測，TypeScript 旗標由沙盒自己設定（`with_probed_node`）。harness 不再呼叫沙盒的私有方法，刪除 `_build_node_sandbox`、`_docker_node_version` 與 `node_runtime`、`node_runtime_problem`、`node_typescript_problem` 屬性，改從 `SuiteResult.node_runtime` 讀取。另刪除沒有任何呼叫者的 `LocalSubprocessSandbox.execute_python_code`（改用 `execute_pytest_files({"test_exec.py": 程式碼})`）。直接呼叫這些方法的程式碼要改讀欄位；報告、`--summary-json`、判定與結束碼不變（修正一節中沒有 Node 時每個測試的原因除外）。
+- `--estimate` 改為加總各代理回報的呼叫計畫，不再抄一份代理的分批與分派規則：審查者、驗證者、測試生成器、威脅建模者與攻擊合成器各有 `plan(...)`，回傳一組 `PlannedCalls`（新定義在 `vibeharness/core/fanout.py`：呼叫數、是否為 JSON 呼叫、每次呼叫的程式碼 token、是否為執行前就已知的精確值、修復這類有條件的呼叫與每次最多幾次），審查者與威脅建模和自己的執行路徑共用同一個分批 helper，驗證者、測試生成器與攻擊合成器依同樣的派工規則計數；`tests/test_call_plans.py` 釘住每個計畫等於實際發出的呼叫。測試生成器、威脅建模者與攻擊合成器公開 `AGENT_ID`（審查者與驗證者的 id 來自設定檔），測試生成器另公開 `HEAL_ATTEMPTS`（2）；`estimate.py` 刪除 `_PER_FINDING_CODE_TOKENS`、`_HEAL_ATTEMPTS_MAX` 與審查者、威脅建模批次排序的副本。這一步本身不改變行為：`--estimate` 的文字與 JSON 輸出逐位元組不變；「修正」中驗證者呼叫數的那一項是之後在驗證者計畫上做的修正。
 
 ### 修正
 
@@ -32,6 +33,7 @@
 - 鍵在、形狀卻不對的模型回答不再被當成可用的回答：過去閘道只檢查必要的鍵是否存在，審查者回答 `{"findings": 5}` 或一份沒有任何可用項目的清單（每一項都不是物件，或都沒有 title 與 description）時，這次呼叫被登記為 live、讀成「零個發現」，可能讓判定變成 `READY_TO_SHIP`（fail open）。現在每個代理宣告它期望的回答形狀（core/model_output.py 的 `OutputSchema`：欄位型別，以及清單中「可用的項目」由代理自己的判斷決定），不合時以指名欄位的原因重新詢問一次（例如 `field 'findings' must be a list of objects (got int)`），仍不合就記為 `invalid`（證據缺口）。同樣適用於驗證者（沒有任何一項裁決的 index 在範圍內、verdict 為 confirm／reject／unsure：過去只是「未經驗證」、不算證據缺口）、威脅建模（`threats` 不是物件清單）、測試生成（`tests` 沒有任何一項有 code，且沒有可用的 `code` 字串）與攻擊合成（`code` 不是字串）。空清單與只有部分項目不能用的清單照舊接受、不重問。**已知影響**：在升級前存下的回應快取若含有這類回答，`--cache-only` 重跑時那次呼叫會變成 `invalid`，原本的 `READY_TO_SHIP` 可能變成 `INCONCLUSIVE`（exit 3）；原本的判定正是建立在無法使用的輸出上。原因會標明「回應快取中的回答已不符合預期的形狀」；不帶 `--cache-only` 跑一次就會重新詢問並覆寫那些快取。`live-smoke.yml` 在同一次 workflow 中填快取再重跑，不受影響。
 - 測試生成的回答同時有 `tests` 清單與單一的 `code`，但 `tests` 的每一項都沒有 code（例如 `{"tests": ["bad"], "code": "…"}`）時，現在改用那個 `code`；過去只要 `tests` 不是空清單就忽略 `code`，那個發現因此沒有模型測試、改用探針。`tests` 有任何一項可用時仍只用 `tests`。
 - 沒有可用的 Node 執行環境時，每個 JS/TS 測試的原因現在寫出缺了什麼，與閘門的證據缺口相同（例如「找不到 node_bin '/usr/local/bin/node' 可用的 Node 執行環境（需要 Node >= 20.0.0）」或「Node v18.0.0 低於最低需求 20.0.0」）；過去報告與 JSON 裡每個測試只寫「找不到可用的 Node 執行環境」，詳細原因只出現在證據缺口。判定結果、證據缺口與結束碼不變；docker 映像檔不存在時的原因原本就是詳細的，也不變。
+- `--estimate` 的驗證者呼叫數在某些審查者數與批次數下多算一次：發現數以「去重後的發現數 ×（1 − 自家份額）」計算，浮點誤差讓整數變成略大一點的值，無條件進位後多出一次呼叫。例如 3 個別名不同的審查者、25 個白箱批次與預設的每批 3 個發現：每位驗證者分到 120 筆發現，應為 8 次呼叫，卻估成 9 次（120.00000000000001 筆）。現在發現數改由驗證者自己的呼叫計畫依每個模型回報的數量加總，估出 8 次。只影響這類組合的驗證者呼叫數與其 token、花費與總計；預設的 4 個審查者不受影響。
 
 ### 測試
 
@@ -44,6 +46,7 @@
 - 新增 `tests/test_identity.py`，只透過 `core/identity.py` 測試身分識別：任何文字的正規化、改寫措辭與不同文字、模擬項目的英文半、各種鍵與其 SARIF 指紋的性質、嚴重度順序與未知位置，加上一張取自 master、釘住雜湊值的 golden 表，讓之後任何會讓既有基準或 Code Scanning 警示失配的改動都會讓測試失敗。散在其他檔案、直接測試鍵函式的 11 個測試搬進來；測試鍵的使用者（基準的載入與比對、SARIF 端對端、威脅合併、去重）留在原處。覆蓋率沒有任何一行下降。
 - 新增 `tests/test_model_output.py`，只透過 `core/model_output.py` 測試解析與形狀檢查：`parse_json_object` 的各種包裝與退回、`check_output` 對每種型別規格、清單規則與 `any_of` 的判斷與雙語原因、`mark_cached`，以及每個代理的模擬輸出都符合它自己的 schema（因此發現攻擊合成的模擬輸出 `{"tests": []}` 不符合它的 schema，已改為 `{"code": ""}`，行為不變）。原本直接呼叫閘道私有函式的解析與檢查測試搬進來，閘道的兩個包裝函式刪除；`core/model_output.py` 的覆蓋率 100%，沒有任何一行失去覆蓋。
 - 新增 `tests/test_node_runtime.py`，測試 Node 執行環境的選擇：`build_node_sandbox` 依 provider 與版本決定 TypeScript 支援、label 與問題，docker 內的 `probe_node_version`，harness 的工廠，以及 `SuiteResult.node_runtime` 只出現在含 JS/TS 測試的 suite、只有黑箱 suite 含 JS 時 harness 也拿得到它。其中四個測試從 `tests/test_js_execution.py` 與 `tests/test_js_coverage.py` 原樣搬來（三個改名，因為舊名稱指的是已刪除的方法）。測試裡的沙盒替身改回傳 `SandboxRun`，替換 `execute_test_suite` 的假函式改回傳 `SuiteResult`。
+- 新增 `tests/test_call_plans.py`：以 `scripted` fixture 實際執行每個代理，確認它的 `plan` 對同樣輸入算出的呼叫數等於實際發出的呼叫（修復以 `max_per_call` 為上限）；審查者與威脅建模的計畫每次呼叫的程式碼 token 等於實際送出的程式碼清單；驗證者的計畫在有已佐證的發現時是上限（佐證只會讓呼叫變少）。`tests/test_estimate.py` 原有的測試不變，另新增 `test_verifier_calls_have_no_float_error`，釘住「修正」中驗證者呼叫數的那一項。
 
 ### 文件
 
@@ -67,6 +70,8 @@
 - 設計文件說明 `Sandbox` 接縫、`SandboxRun`、`SuiteResult` 與 `NodeRuntime`（模組表、第 3 章 Phase 3、第 9.2 至 9.5 節、擴充點與測試章節），重要函式索引新增這些名稱並移除 harness 已刪除的兩個方法；同時修正 `test_executor.py` 後段（`_run_individually`、`_aggregate`、`_result` 等）、`transport.py` 與 `GateEvidence` 組成在先前就已偏移的行號。行號改以 commit `af9af80` 為準。
 - README 的專案結構列出 `tests/test_node_runtime.py`，並說明 `sandbox.py` 選擇 Node 執行環境、`test_executor.py` 回傳 `SuiteResult`。
 - `GLOSSARY.md` 新增 Node 執行環境。
+- 設計文件說明各代理的呼叫計畫（模組表的 `PlannedCalls` 與 `plan`、第 14.3 節 `--estimate` 改寫為加總計畫、第 6.6 節的 `HEAL_ATTEMPTS`、測試章節的 `test_call_plans.py`），重要函式索引新增 `PlannedCalls`、`_row` 與各代理的 `plan`，行號引用也更新為 commit `5ea93a9`。
+- README 的專案結構列出 `tests/test_call_plans.py`，並說明 `estimate.py` 加總各代理的呼叫計畫。
 
 ## [0.12.0] - 2026-10-12
 

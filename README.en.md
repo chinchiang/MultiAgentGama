@@ -205,8 +205,8 @@ MultiAgentGama/
 │   │   ├── baseline.py              # --baseline: loading, comparison and fingerprint annotation, known problems not counted (keys in identity.py)
 │   │   ├── codecheck.py             # Static checks on generated tests (every test_ function / method asserts; refuses package installs)
 │   │   ├── codecontext.py           # Source code and import guidance handed to the models (through the untrusted-code channel)
-│   │   ├── estimate.py              # --estimate: calls, tokens and cost without calling a model
-│   │   ├── fanout.py                # Fan-out: runs an agent's model calls in parallel, in call order, booking crashed calls as evidence gaps
+│   │   ├── estimate.py              # --estimate: adds up the agents' call plans into calls, tokens and cost without calling a model
+│   │   ├── fanout.py                # Fan-out: runs an agent's model calls in parallel, in call order, booking crashed calls as evidence gaps; PlannedCalls (an agent's call plan)
 │   │   ├── gate.py                  # Quality gate: evidence gaps, --baseline new/known split, verdict and recommendations (pure)
 │   │   ├── i18n.py                  # bilingual "中文 ／ English" output helpers (bi / en_only)
 │   │   ├── identity.py              # Identity: text normalization, the location rule, severity order, --baseline keys next to SARIF fingerprints (hashes must not change)
@@ -249,6 +249,7 @@ MultiAgentGama/
 │   ├── conftest.py              # Shared fixtures: a fake litellm so the live paths run offline
 │   ├── test_ai_security.py      # OWASP LLM Top 10 2026 / ATLAS controls and the deterministic AI-security rules
 │   ├── test_baseline.py                # --baseline: loading and recomputing, known problems not counted, action.yml structure
+│   ├── test_call_plans.py              # Each agent's call plan (plan) equals the calls it actually makes
 │   ├── test_cross_verification.py      # Cross-verification: models never judge their own findings, vote tallies
 │   ├── test_dedup_and_budget.py        # Duplicate-finding merge and prompt context within the token budget
 │   ├── test_docker_sandbox.py          # Docker sandbox: path mapping, hardening flags, real execution (when Docker is present)
