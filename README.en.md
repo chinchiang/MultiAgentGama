@@ -213,7 +213,7 @@ MultiAgentGama/
 │   │   ├── jscoverage.py            # JS/TS line coverage: Node coverage flags, lcov parsing, union across modules
 │   │   ├── mutation.py              # Optional mutation testing (Python)
 │   │   ├── sanitize.py              # Trust-boundary hygiene: invisible chars, secret redaction, untrusted-code / model-output channels, output sanitizing
-│   │   ├── sandbox.py               # Sandboxes: local subprocess (not a security boundary) and Docker containers; a Node flavour of each (node --test)
+│   │   ├── sandbox.py               # Sandboxes: local subprocess (not a security boundary) and Docker containers; a Node flavour of each (node --test); choosing and probing the Node runtime
 │   │   ├── settings.py              # Settings: the config file loaded, defaulted and validated once (Discovered config policy, CLI overrides)
 │   │   ├── transport.py             # The ModelTransport model-call seam; the default LiteLLMTransport is the only place that imports litellm
 │   │   └── verdict.py               # The four verdicts and their exit codes (no third-party imports)
@@ -233,7 +233,7 @@ MultiAgentGama/
 │   │       └── scenario_builder.py  # Turns threats into executable attack scripts
 │   ├── runners/
 │   │   ├── __init__.py
-│   │   └── test_executor.py         # Sandboxed test executor (pytest; JS/TS via node:test) with PoC capture (shared by white-box and black-box)
+│   │   └── test_executor.py         # Sandboxed test executor (pytest; JS/TS via node:test) with PoC capture (shared by white-box and black-box); one SuiteResult per suite
 │   ├── reports/
 │   │   ├── __init__.py
 │   │   └── report_generator.py      # Markdown / JSON / SARIF audit report generator
@@ -264,6 +264,7 @@ MultiAgentGama/
 │   ├── test_mutation.py                # Mutation testing: sites and splicing, determinism and cap, isolation and path rewriting, strong vs weak tests end to end, gate semantics, switch precedence, CLI / Action
 │   ├── test_model_output.py            # Parsing and shape checking through model_output: wrappings, type specs, the list rule, any_of, Simulated output fits
 │   ├── test_model_output_robustness.py # Graceful degradation on malformed model output, shape errors re-asked then invalid, probe-fallback disclosure
+│   ├── test_node_runtime.py            # Choosing the Node runtime: build_node_sandbox, probing the version inside docker, the harness's factory, SuiteResult.node_runtime
 │   ├── test_p0_regressions.py          # Executor correctness, self-repair and result-provenance honesty regressions
 │   ├── test_parallel_and_budgets.py    # Parallel test generation, model-call budget, file / worker caps
 │   ├── test_prompt_context.py          # Live mode: prompts carry real code and import paths, gateway call robustness
