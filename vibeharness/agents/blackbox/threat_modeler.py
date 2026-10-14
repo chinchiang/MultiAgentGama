@@ -6,12 +6,12 @@ import yaml
 from pydantic import ValidationError
 from typing import Any, Dict, List, Optional
 from vibeharness.core.models import ThreatItem, ThreatModelReport, STRIDECategory, FindingSeverity, CodeSymbol
-from vibeharness.core.fanout import Call, fan_out
+from vibeharness.core.fanout import Call, PlannedCalls, fan_out
 from vibeharness.core.identity import severity_rank, threat_identity
 from vibeharness.core.model_output import LIST_OF_OBJECTS, OutputSchema
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.i18n import bi
-from vibeharness.core.codecontext import render_symbols, batch_symbols
+from vibeharness.core.codecontext import estimate_tokens, render_symbols, batch_symbols
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
 
 DEFAULT_RULES_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config", "threat_rules.yaml")
@@ -33,6 +33,19 @@ THREATS_SCHEMA = OutputSchema(required={"threats": LIST_OF_OBJECTS(
 # instead of rendering everything into one prompt and silently dropping the overflow.
 BATCH_MAX_TOKENS = 8000
 BATCH_MAX_SYMBOLS = 15
+AGENT_ID = "blackbox_threat_modeler"
+
+
+def _batches(symbols: Optional[List[CodeSymbol]], root: str) -> List[List[CodeSymbol]]:
+    """路由排在前面，讓攻擊面最先被建模；空的符號清單仍保留一個（沒有程式碼的）批次，讓報告層級的回應仍會產生。
+    Routes first, so the attack surface is modeled first; an empty symbol list keeps one (code-less) batch so a
+    report-level response is still produced."""
+    ordered = sorted(symbols or [], key=lambda s: s.symbol_type != "route")
+    return batch_symbols(ordered, root, BATCH_MAX_TOKENS, BATCH_MAX_SYMBOLS) or [[]]
+
+
+def _listing(symbols: List[CodeSymbol], root: str) -> str:
+    return render_symbols(symbols, root, max_tokens=BATCH_MAX_TOKENS)
 
 # 模型選的威脅 id 會被重複用在測試 id、檔名與報告的程式碼區段中：不在這個純識別字字母表內的 id
 # 會被替換，而不是在每個匯點各自跳脫
@@ -173,7 +186,7 @@ class AutomatedThreatModeler:
         if not symbols:
             return ""
         root = root_dir or os.path.dirname(os.path.abspath(symbols[0].file_path))
-        return f"Target source code:\n{untrusted_block(render_symbols(symbols, root, max_tokens=BATCH_MAX_TOKENS))}\n\n"
+        return f"Target source code:\n{untrusted_block(_listing(symbols, root))}\n\n"
 
     def _model_batch(
         self,
@@ -196,9 +209,20 @@ class AutomatedThreatModeler:
             f"Only include threats that are plausible for the code shown, and name the concrete function/route in attack_vector."
         )
         return self.gateway.generate(
-            "blackbox_threat_modeler", system_prompt, user_prompt, json_output=True, schema=THREATS_SCHEMA,
+            AGENT_ID, system_prompt, user_prompt, json_output=True, schema=THREATS_SCHEMA,
             simulated=_simulated_threat_model,
         )
+
+    def plan(self, symbols: Optional[List[CodeSymbol]], root: str) -> List[PlannedCalls]:
+        """model_system 對這些符號會發出的呼叫：每個威脅建模批次一次，執行前就已知（沒有符號時仍有一個批次）。
+        The calls model_system would make for these symbols: one per threat-model batch, known before the run (one
+        batch even without symbols)."""
+        alias = self.gateway.settings.alias_for(AGENT_ID)
+        return [
+            PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind="threat_modeler", calls=1, json_output=True,
+                         code_tokens=estimate_tokens(_listing(batch, root)) if batch else 0, exact=True)
+            for batch in _batches(symbols, root)
+        ]
 
     def model_system(
         self,
@@ -252,14 +276,11 @@ class AutomatedThreatModeler:
             f"{UNTRUSTED_CODE_POLICY}"
         )
 
-        ordered = sorted(symbols or [], key=lambda s: s.symbol_type != "route")
-        # 空的符號清單仍保留一個（沒有程式碼的）批次，讓報告層級的回應仍會產生
-        # An empty symbol list keeps one (code-less) batch so a report-level response is still produced
-        batches = batch_symbols(ordered, root_dir or os.getcwd(), BATCH_MAX_TOKENS, BATCH_MAX_SYMBOLS) or [[]]
+        batches = _batches(symbols, root_dir or os.getcwd())
 
         logger.info(bi("開始 STRIDE 與 OWASP 威脅建模...", "Initiating STRIDE & OWASP threat modeling..."))
         calls: List[Call[Dict[str, Any]]] = [
-            Call("blackbox_threat_modeler", ("威脅建模批次", "Threat modeler batch"), functools.partial(
+            Call(AGENT_ID, ("威脅建模批次", "Threat modeler batch"), functools.partial(
                 self._model_batch, batch, system_prompt, system_description, entrypoints_summary, routes_summary,
                 root_dir, ai_components))
             for batch in batches

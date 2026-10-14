@@ -8,7 +8,7 @@ import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 import os
 from vibeharness.core.models import ThreatItem, GeneratedTest, CodeSymbol, text_or
-from vibeharness.core.fanout import Call, fan_out
+from vibeharness.core.fanout import Call, PlannedCalls, fan_out
 from vibeharness.core.model_output import STRING, OutputSchema
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.codecheck import check_test_code_for, strip_code_fences
@@ -28,6 +28,7 @@ CODE_SCHEMA = OutputSchema(required={"code": STRING})
 # 每個威脅所顯示目標程式碼的估計 token 預算
 # Estimated-token budget for the target code shown per threat
 CODE_CONTEXT_TOKENS = 4000
+AGENT_ID = "blackbox_test_synthesizer"
 
 
 def validate_base_url(base_url: str) -> str:
@@ -230,6 +231,14 @@ class ThreatScenarioBuilder:
             return port
         return 443 if parts.scheme.lower() == "https" else 80
 
+    def plan(self, threats: int) -> List[PlannedCalls]:
+        """build_test_cases_from_threats 會發出的呼叫：每個威脅一次。威脅數是情境（由威脅建模的回答決定）。
+        The calls build_test_cases_from_threats would make: one per threat. The threat count is a scenario (it comes
+        from the threat model's answer)."""
+        return [PlannedCalls(agent_id=AGENT_ID, model_alias=self.gateway.settings.alias_for(AGENT_ID),
+                             kind="synthesizer", calls=threats, json_output=True, code_tokens=CODE_CONTEXT_TOKENS,
+                             exact=False)]
+
     def build_test_cases_from_threats(
         self,
         threats: List[ThreatItem],
@@ -271,7 +280,7 @@ class ThreatScenarioBuilder:
         # A crashed synthesis reports that threat as untested (fan_out books it as an evidence gap) rather than
         # aborting the other syntheses
         calls: List[Call[Optional[GeneratedTest]]] = [
-            Call("blackbox_test_synthesizer",
+            Call(AGENT_ID,
                  (f"[{threat.threat_id}] 的攻擊合成", f"Attack synthesis for [{threat.threat_id}]"),
                  functools.partial(self._test_for_threat, threat, base_url, server_is_live, mode_label, mode_rules,
                                    symbols, root_dir))
@@ -367,7 +376,7 @@ class ThreatScenarioBuilder:
         )
 
         resp = self.gateway.generate(
-            "blackbox_test_synthesizer", system_prompt, user_prompt, json_output=True, schema=CODE_SCHEMA,
+            AGENT_ID, system_prompt, user_prompt, json_output=True, schema=CODE_SCHEMA,
             simulated=_simulated_attack_test,
         )
 

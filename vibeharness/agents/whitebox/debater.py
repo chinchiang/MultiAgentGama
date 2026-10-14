@@ -1,13 +1,14 @@
 import functools
 import logging
+import math
 import os
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 from vibeharness.core.models import ReviewFinding, MultiModelDebateResult, VerificationVote, CodeSymbol
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import render_symbols, truncate_to_tokens
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
-from vibeharness.core.fanout import Call, fan_out
+from vibeharness.core.fanout import Call, PlannedCalls, fan_out
 from vibeharness.core.model_output import LIST_OF_OBJECTS, OutputSchema
 
 logger = logging.getLogger("VibeHarness.Debater")
@@ -66,6 +67,24 @@ class MultiModelDebater:
                 continue
             self.verifiers[agent_id] = alias
 
+    def plan(self, findings_by_alias: Mapping[str, float]) -> List[PlannedCalls]:
+        """arbitrate 會發出的呼叫，依每個模型別名回報的（去重後）發現數：每個驗證者只裁決其他模型的發現，
+        每 FINDINGS_PER_CALL 筆一次呼叫。發現數是情境（執行前不知道），也不知道哪些會被佐證而不必再問。
+        The calls arbitrate would make, from the number of (deduplicated) findings each model alias reported: every
+        verifier rules on the other models' findings only, FINDINGS_PER_CALL per call. The counts are a scenario (not
+        known before the run), and which findings get corroborated, and so need no ruling, is not known either."""
+        plans = []
+        for agent_id, alias in self.verifiers.items():
+            assigned = sum(n for reporter, n in findings_by_alias.items() if reporter != alias)
+            calls = math.ceil(assigned / self.FINDINGS_PER_CALL) if assigned > 0 else 0
+            plans.append(PlannedCalls(agent_id=agent_id, model_alias=alias, kind="verifier", calls=calls,
+                                      json_output=True, code_tokens=self.LISTING_MAX_TOKENS + self.CODE_CONTEXT_TOKENS,
+                                      exact=False))
+        return plans
+
+    def _chunks(self, idxs: List[int]) -> List[List[int]]:
+        return [idxs[i:i + self.FINDINGS_PER_CALL] for i in range(0, len(idxs), self.FINDINGS_PER_CALL)]
+
     def arbitrate(
         self,
         findings: List[ReviewFinding],
@@ -86,11 +105,7 @@ class MultiModelDebater:
             idxs = [i for i, f in enumerate(findings) if alias != f.model_alias and alias not in f.corroborating_models]
             if idxs:
                 assignments[agent_id] = idxs
-        jobs = [
-            (agent_id, idxs[i:i + self.FINDINGS_PER_CALL])
-            for agent_id, idxs in assignments.items()
-            for i in range(0, len(idxs), self.FINDINGS_PER_CALL)
-        ]
+        jobs = [(agent_id, chunk) for agent_id, idxs in assignments.items() for chunk in self._chunks(idxs)]
 
         votes: Dict[int, List[VerificationVote]] = {
             # 模擬的審查者彼此同意不算證據

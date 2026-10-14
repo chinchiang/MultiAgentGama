@@ -1,6 +1,7 @@
 import ast
 import functools
 import logging
+import math
 import os
 import re
 import textwrap
@@ -13,7 +14,7 @@ from vibeharness.core.codecontext import (
     file_source, fence_language, import_instructions, language_for_file, module_import_name, truncate_to_tokens,
 )
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, prepare_untrusted_code, untrusted_block
-from vibeharness.core.fanout import Call, fan_out
+from vibeharness.core.fanout import Call, PlannedCalls, fan_out
 from vibeharness.core.identity import is_unknown_location
 from vibeharness.core.model_output import LIST_OF_OBJECTS, STRING, OutputSchema
 
@@ -39,6 +40,11 @@ TESTS_SCHEMA = OutputSchema(any_of={
 # 每個發現所顯示目標原始碼的估計 token 預算
 # Estimated-token budget for the target source shown per finding
 CODE_CONTEXT_TOKENS = 4000
+AGENT_ID = "whitebox_test_generator"
+# 無效的測試最多請模型修復幾次（之後原樣保留，由執行器回報為 ERROR）
+# How many times an invalid test is sent back to the model for repair (after that it is kept as is and the executor
+# reports it as ERROR)
+HEAL_ATTEMPTS = 2
 
 
 class WhiteboxTestGenerator:
@@ -63,6 +69,21 @@ class WhiteboxTestGenerator:
         # Findings from the last run for which no usable model-generated test was produced
         self.findings_without_model_tests: List[str] = []
 
+    def plan(self, findings: float, tests_per_finding: float = 1.0) -> List[PlannedCalls]:
+        """generate_tests_for_findings 會發出的呼叫：每個發現一次 JSON 呼叫，以及每個產生的測試在無效時最多
+        HEAL_ATTEMPTS 次修復（不是 JSON，所以不會被重新詢問）。發現數與每個發現的測試數是情境。
+        The calls generate_tests_for_findings would make: one JSON call per finding, and up to HEAL_ATTEMPTS repairs
+        for each generated test that is invalid (not JSON, so never re-asked). The finding count and the tests per
+        finding are a scenario."""
+        alias = self.gateway.settings.alias_for(AGENT_ID)
+        generated = math.ceil(findings)
+        return [
+            PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind="test_generator", calls=generated,
+                         json_output=True, code_tokens=CODE_CONTEXT_TOKENS, exact=False),
+            PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind="heal", calls=math.ceil(generated * tests_per_finding),
+                         json_output=False, code_tokens=0, exact=False, conditional=True, max_per_call=HEAL_ATTEMPTS),
+        ]
+
     def generate_tests_for_findings(
         self,
         findings: List[ReviewFinding],
@@ -83,7 +104,7 @@ class WhiteboxTestGenerator:
         # results are collected in finding order so ids, reports and probes stay deterministic. fan_out books a
         # crashed finding as an invalid call (an evidence gap); strict live mode fails loudly.
         calls = [
-            Call("whitebox_test_generator", (f"{finding.finding_id} 的測試產生", f"Test generation for {finding.finding_id}"),
+            Call(AGENT_ID, (f"{finding.finding_id} 的測試產生", f"Test generation for {finding.finding_id}"),
                  functools.partial(self._tests_for_finding, idx, finding, symbols, root, target_file))
             for idx, finding in enumerate(findings)
         ]
@@ -173,7 +194,7 @@ class WhiteboxTestGenerator:
         # 模擬輸出沒有測試：模擬引擎無法撰寫針對目標的測試，改用由目標推導的確定性探測
         # The Simulated output holds no tests: the simulation engine cannot write target-specific tests, so deterministic, target-derived probes are used instead
         resp = self.gateway.generate(
-            "whitebox_test_generator", system_prompt, user_prompt,
+            AGENT_ID, system_prompt, user_prompt,
             json_output=True, schema=TESTS_SCHEMA, simulated=lambda alias: {"tests": []},
         )
 
@@ -208,7 +229,7 @@ class WhiteboxTestGenerator:
             ))
         return tests, has_valid_test
 
-    def _validate_and_heal(self, code: str, subject: str, max_retries: int = 2, language: str = "python") -> str:
+    def _validate_and_heal(self, code: str, subject: str, max_retries: int = HEAL_ATTEMPTS, language: str = "python") -> str:
         """
         驗證程式碼可以解析並定義模組層級的 test_ 函式。
         失敗時請模型修復。回傳可取得的最佳程式碼；
@@ -245,7 +266,7 @@ class WhiteboxTestGenerator:
                     f"Output the corrected JavaScript code only:\n\n{code_to_check}"
                 )
                 heal_system = "Fix JavaScript Test Code"
-            resp = self.gateway.generate("whitebox_test_generator", heal_system, heal_prompt, json_output=False,
+            resp = self.gateway.generate(AGENT_ID, heal_system, heal_prompt, json_output=False,
                                          simulated=lambda alias: {"tests": []})
             fixed = strip_code_fences(text_or(resp.get("raw"), ""))
             if not fixed:
