@@ -19,6 +19,7 @@
 - 模擬輸出改由各代理以 `generate(..., simulated=fn)` 提供（審查者、威脅建模者、驗證者、測試生成器與攻擊合成器各自的範本），閘道不再依代理名稱編造回答；代理的模型別名統一由 `GatewaySettings.alias_for` 解析。模擬的內容不變。
 - 審查者、驗證者、測試生成器、威脅建模者與攻擊合成器並行的模型呼叫改由新的 `vibeharness/core/fanout.py` 執行：代理只交出呼叫清單（`Call(agent_id, label, run)`）與當掉時的 fallback，執行緒池大小、依呼叫順序收集、取消、live 失敗時的中止、錯誤 log 與 `record_failure` 都在這一個模組裡。刪除 `vibeharness/agents/whitebox/common.py`。這一步本身不改變行為；修正一節的兩個條目是隨後在同一個模組上做的修正。
 - 發現、威脅與靜態命中的身分識別集中到新的 `vibeharness/core/identity.py`：模型文字的正規化（`normalize`、`key_text`）、位置規則、嚴重度順序（`severity_rank`，取代去重與威脅建模各自的一份），以及 `--baseline` 的鍵與 SARIF 的 partialFingerprints（`sarif_static_fingerprint`／`sarif_finding_fingerprint`／`sarif_breach_fingerprint`）並排定義；威脅合併改用同一個 `normalize`，不再有自己的副本。`vibeharness/core/baseline.py` 保留載入、比對與加註，並以舊名稱重新匯出這些函式。每個基準線 fingerprint 與 SARIF 指紋都逐位元組不變，既有的基準與 Code Scanning 警示照常相符；修正一節的兩個條目是隨後在這個模組上做的修正。
+- 模型回答的解析與形狀檢查移到新的 `vibeharness/core/model_output.py`（`parse_json_object`、`OutputSchema`、`check_output`，皆為純函式）：每個代理宣告它期望的回答形狀，`generate(..., schema=)` 取代 `required_keys`／`required_keys_any`；閘道保留重問、回應快取、呼叫紀錄與來源標記。修正一節中形狀錯誤與 `tests` 退回 `code` 兩個條目是隨後在這個模組上做的修正。
 
 ### 修正
 
@@ -39,6 +40,7 @@
 - 新增 `tests/test_transport.py`：每次嘗試一個帶 `agent_id` 的請求、主要模型失敗改試 fallback、轉接器不可用時的 hybrid／live 行為、litellm 轉接器讀回覆、模擬輸出由呼叫端提供，以及 `scripted` fixture 本身。
 - 新增 `tests/test_fanout.py`，只透過 `fan_out` 測試扇出：呼叫順序、當掉換成 fallback 並以代理的 logger 與 `agent_id` 記錄、live 失敗與 Ctrl-C 時佇列中的呼叫不會開始、並行數上限、空清單不開執行緒池。十個重複的測試案例改由它涵蓋；各代理只保留一個接線測試，確認當機記在自己的 `agent_id` 名下，並改經公開的 `gateway.generate` 觸發，不再替換代理的私有批次函式。覆蓋率沒有任何一行下降。
 - 新增 `tests/test_identity.py`，只透過 `core/identity.py` 測試身分識別：任何文字的正規化、改寫措辭與不同文字、模擬項目的英文半、各種鍵與其 SARIF 指紋的性質、嚴重度順序與未知位置，加上一張取自 master、釘住雜湊值的 golden 表，讓之後任何會讓既有基準或 Code Scanning 警示失配的改動都會讓測試失敗。散在其他檔案、直接測試鍵函式的 11 個測試搬進來；測試鍵的使用者（基準的載入與比對、SARIF 端對端、威脅合併、去重）留在原處。覆蓋率沒有任何一行下降。
+- 新增 `tests/test_model_output.py`，只透過 `core/model_output.py` 測試解析與形狀檢查：`parse_json_object` 的各種包裝與退回、`check_output` 對每種型別規格、清單規則與 `any_of` 的判斷與雙語原因、`mark_cached`，以及每個代理的模擬輸出都符合它自己的 schema（因此發現攻擊合成的模擬輸出 `{"tests": []}` 不符合它的 schema，已改為 `{"code": ""}`，行為不變）。原本直接呼叫閘道私有函式的解析與檢查測試搬進來，閘道的兩個包裝函式刪除；`core/model_output.py` 的覆蓋率 100%，沒有任何一行失去覆蓋。
 
 ### 文件
 
@@ -56,6 +58,9 @@
 - 設計文件說明 `vibeharness/core/identity.py`（模組表、去重的位置規則與嚴重度、威脅合併、`--baseline` 一節、SARIF 的位置），重要函式索引新增 `identity.py` 一行，`baseline.py` 一行移除搬走的鍵函式，行號引用也更新為 commit `f6e741b`。
 - README 的專案結構列出 `core/identity.py` 與 `tests/test_identity.py`。
 - `GLOSSARY.md` 新增身分與未知位置。
+- 設計文件說明 `vibeharness/core/model_output.py`（模組表、改寫的第 5.3 節「輸出驗證」、模擬輸出、各代理的回答形狀與可用項目規則），重要函式索引新增 `model_output.py` 一行與各代理的判斷式，行號引用也更新為 commit `67a8ef9`。
+- README 的專案結構列出 `core/model_output.py` 與 `tests/test_model_output.py`。
+- `GLOSSARY.md` 新增可用的輸出與形狀錯誤。
 
 ## [0.12.0] - 2026-10-12
 

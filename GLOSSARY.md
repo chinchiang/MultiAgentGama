@@ -70,6 +70,16 @@ _Avoid_: real response, API call (for a cached answer)
 An agent's fixed fallback answer, given without calling a model; it is always disclosed in the reports and never counts as Executed evidence.
 _Avoid_: mock output, fake response, canned answer
 
+**可用的輸出 ／ Usable output**:
+符合代理宣告形狀的模型回答：必要欄位都在且型別正確，每份清單不為空時至少有一項代理能用的項目（例如有標題或描述的發現）。只有可用的輸出才登記為真實呼叫。
+A model answer that fits the shape its agent declared: the required fields are there with the right types, and every non-empty list has at least one item the agent can use (e.g. a finding with a title or description). Only Usable output is booked as a Live call.
+_Avoid_: valid JSON (for this; valid JSON can still be unusable), successful response
+
+**形狀錯誤 ／ Shape error**:
+鍵在但型別不對，或清單不為空卻沒有任何可用的項目。會以指名欄位的原因重新詢問，仍不合就記為無效呼叫，成為證據缺口，絕不讀成「什麼都沒找到」。
+A key that is there with the wrong type, or a non-empty list with no usable item. It is re-asked with a reason naming the field and, if it still does not fit, booked as an invalid call and an Evidence gap, never read as "nothing found".
+_Avoid_: malformed output (too vague), parse error (for this; the JSON parsed)
+
 ### 基準 ／ Baseline
 
 **基準 ／ Baseline**:
