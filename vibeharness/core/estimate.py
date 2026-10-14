@@ -22,21 +22,23 @@ from typing import Dict, List, Optional, Sequence
 from pydantic import BaseModel, Field
 
 from vibeharness.agents.whitebox.debater import MultiModelDebater
-from vibeharness.core.fanout import PlannedCalls
+from vibeharness.core.fanout import CallKind, PlannedCalls
 from vibeharness.core.i18n import bi
 from vibeharness.core.settings import UNCONFIGURED_ALIAS
 
 # 程式碼清單以外的提示額外負擔（系統提示、結構描述、指引）與典型回答大小，
 # 以估計的 token 計。回答大小是線上執行的平均產出；真正的上限是
-# max_output_tokens，它是天花板而非花費。修復的回答大小（1200）和測試生成器的
+# max_output_tokens，它是天花板而非花費。修復的回答大小和測試生成器的
 # HEAL_CODE_TOKENS 數字相同只是巧合：一個是觀察到的輸出，一個是假設的輸入，各自調整。
 # Prompt overhead beyond the code listing (system prompt, schema, guidance) and typical answer sizes,
 # in estimated tokens. Answer sizes are what live runs produced on average; the real cap is
-# max_output_tokens, which is a ceiling, not a spend. The repair answer size (1200) matching the test
+# max_output_tokens, which is a ceiling, not a spend. The repair answer size matching the test
 # generator's HEAL_CODE_TOKENS is a coincidence: one is an observed output, the other an assumed input,
 # and each is tuned on its own.
-_OVERHEAD = {"reviewer": 450, "verifier": 350, "test_generator": 700, "heal": 300, "threat_modeler": 2200, "synthesizer": 900}
-_TYPICAL_OUTPUT = {"reviewer": 1500, "verifier": 600, "test_generator": 1500, "heal": 1200, "threat_modeler": 2500, "synthesizer": 1500}
+_OVERHEAD = {CallKind.REVIEWER: 450, CallKind.VERIFIER: 350, CallKind.TEST_GENERATOR: 700, CallKind.HEAL: 300,
+             CallKind.THREAT_MODELER: 2200, CallKind.SYNTHESIZER: 900}
+_TYPICAL_OUTPUT = {CallKind.REVIEWER: 1500, CallKind.VERIFIER: 600, CallKind.TEST_GENERATOR: 1500, CallKind.HEAL: 1200,
+                   CallKind.THREAT_MODELER: 2500, CallKind.SYNTHESIZER: 1500}
 
 
 class CallEstimate(BaseModel):

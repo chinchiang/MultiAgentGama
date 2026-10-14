@@ -15,6 +15,7 @@ import logging
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Callable, Generic, List, Optional, Sequence, Tuple, TypeVar, cast
 
 from vibeharness.core.i18n import bi
@@ -33,6 +34,18 @@ class Call(Generic[_T]):
     run: Callable[[], _T]
 
 
+class CallKind(str, Enum):
+    """一個計畫裡是哪一種模型呼叫；`--estimate` 依它查每次呼叫的提示額外負擔與典型回答大小。
+    Which kind of model call a plan holds; `--estimate` looks up each call's prompt overhead and typical answer size
+    by it."""
+    REVIEWER = "reviewer"
+    VERIFIER = "verifier"
+    TEST_GENERATOR = "test_generator"
+    HEAL = "heal"
+    THREAT_MODELER = "threat_modeler"
+    SYNTHESIZER = "synthesizer"
+
+
 @dataclass(frozen=True)
 class PlannedCalls:
     """一個代理對給定輸入會發出的一組呼叫（`--estimate` 加總它們，不發出任何呼叫）。`calls` 是呼叫數；
@@ -48,7 +61,7 @@ class PlannedCalls:
     means the inputs are known before the run (symbols) rather than a scenario from assumptions (findings, threats)."""
     agent_id: str
     model_alias: str
-    kind: str
+    kind: CallKind
     calls: int
     json_output: bool
     code_tokens: int

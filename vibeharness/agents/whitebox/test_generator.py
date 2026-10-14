@@ -14,7 +14,7 @@ from vibeharness.core.codecontext import (
     file_source, fence_language, import_instructions, language_for_file, module_import_name, truncate_to_tokens,
 )
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, prepare_untrusted_code, untrusted_block
-from vibeharness.core.fanout import Call, PlannedCalls, fan_out
+from vibeharness.core.fanout import Call, CallKind, PlannedCalls, fan_out
 from vibeharness.core.identity import is_unknown_location
 from vibeharness.core.model_output import LIST_OF_OBJECTS, STRING, OutputSchema
 
@@ -84,9 +84,9 @@ class WhiteboxTestGenerator:
         alias = self.gateway.settings.alias_for(AGENT_ID)
         generated = math.ceil(findings)
         return [
-            PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind="test_generator", calls=generated,
+            PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind=CallKind.TEST_GENERATOR, calls=generated,
                          json_output=True, code_tokens=CODE_CONTEXT_TOKENS, exact=False),
-            PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind="heal", calls=math.ceil(generated * tests_per_finding),
+            PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind=CallKind.HEAL, calls=math.ceil(generated * tests_per_finding),
                          json_output=False, code_tokens=HEAL_CODE_TOKENS, exact=False, conditional=True,
                          max_per_call=HEAL_ATTEMPTS),
         ]

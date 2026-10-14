@@ -8,7 +8,7 @@ import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 import os
 from vibeharness.core.models import ThreatItem, GeneratedTest, CodeSymbol, text_or
-from vibeharness.core.fanout import Call, PlannedCalls, fan_out
+from vibeharness.core.fanout import Call, CallKind, PlannedCalls, fan_out
 from vibeharness.core.model_output import STRING, OutputSchema
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.codecheck import check_test_code_for, strip_code_fences
@@ -238,7 +238,7 @@ class ThreatScenarioBuilder:
         The calls build_test_cases_from_threats would make: one per threat. The threat count is a scenario (it comes
         from the threat model's answer)."""
         return [PlannedCalls(agent_id=AGENT_ID, model_alias=self.gateway.settings.alias_for(AGENT_ID),
-                             kind="synthesizer", calls=threats, json_output=True, code_tokens=CODE_CONTEXT_TOKENS,
+                             kind=CallKind.SYNTHESIZER, calls=threats, json_output=True, code_tokens=CODE_CONTEXT_TOKENS,
                              exact=False)]
 
     def build_test_cases_from_threats(
