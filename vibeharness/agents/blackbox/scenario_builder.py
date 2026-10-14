@@ -238,8 +238,8 @@ class ThreatScenarioBuilder:
         The calls build_test_cases_from_threats would make: one per threat. The threat count is a scenario (it comes
         from the threat model's answer)."""
         return [PlannedCalls(agent_id=AGENT_ID, model_alias=self.gateway.settings.alias_for(AGENT_ID),
-                             kind=CallKind.SYNTHESIZER, calls=threats, json_output=True, code_tokens=CODE_CONTEXT_TOKENS,
-                             exact=False)]
+                             kind=CallKind.SYNTHESIZER, calls=threats, json_output=True,
+                             code_tokens=CODE_CONTEXT_TOKENS, exact=False)]
 
     def build_test_cases_from_threats(
         self,

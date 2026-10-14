@@ -112,8 +112,8 @@ class HeterogeneousReviewerEnsemble:
             return []
         listing_tokens = [estimate_tokens(self._listing(batch, root)) for batch in self._batches(symbols, root)]
         return [
-            PlannedCalls(agent_id=reviewer["agent_id"], model_alias=reviewer["model_alias"], kind=CallKind.REVIEWER, calls=1,
-                         json_output=True, code_tokens=tokens, exact=True)
+            PlannedCalls(agent_id=reviewer["agent_id"], model_alias=reviewer["model_alias"],
+                         kind=CallKind.REVIEWER, calls=1, json_output=True, code_tokens=tokens, exact=True)
             for reviewer in self.reviewer_agents for tokens in listing_tokens
         ]
 

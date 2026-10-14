@@ -86,9 +86,9 @@ class WhiteboxTestGenerator:
         return [
             PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind=CallKind.TEST_GENERATOR, calls=generated,
                          json_output=True, code_tokens=CODE_CONTEXT_TOKENS, exact=False),
-            PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind=CallKind.HEAL, calls=math.ceil(generated * tests_per_finding),
-                         json_output=False, code_tokens=HEAL_CODE_TOKENS, exact=False, conditional=True,
-                         max_per_call=HEAL_ATTEMPTS),
+            PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind=CallKind.HEAL,
+                         calls=math.ceil(generated * tests_per_finding), json_output=False,
+                         code_tokens=HEAL_CODE_TOKENS, exact=False, conditional=True, max_per_call=HEAL_ATTEMPTS),
         ]
 
     def generate_tests_for_findings(
