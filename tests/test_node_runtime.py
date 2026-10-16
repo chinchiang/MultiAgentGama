@@ -8,6 +8,7 @@ import subprocess
 
 import pytest
 
+from vibeharness.agents.whitebox.ast_extractor import ScopeResult
 from vibeharness.core.harness import VibeHarnessCommander
 from vibeharness.core.models import GeneratedTest
 from vibeharness.core.sandbox import (
@@ -96,10 +97,10 @@ def test_harness_records_the_docker_node_version_for_js_only_targets_too(monkeyp
     commander.sandbox_node_provider = "docker"
     monkeypatch.setattr(NodeDockerSandbox, "_verify_available", lambda self: None)
     monkeypatch.setattr(NodeDockerSandbox, "probe_node_version", lambda self: (22, 9, 0))
-    commander.ast_extractor.analyzed_files = ["/app/x.mjs"]
+    commander.scope = ScopeResult(analyzed_files=("/app/x.mjs",))
     runtime = commander.executor._js_sandbox_factory()
     assert not runtime.sandbox.strip_types and runtime.label == f"docker {DEFAULT_DOCKER_NODE_IMAGE} (node v22.9.0)"
-    commander.ast_extractor.analyzed_files = ["/app/x.ts"]
+    commander.scope = ScopeResult(analyzed_files=("/app/x.ts",))
     assert commander.executor._js_sandbox_factory().sandbox.strip_types
 
 

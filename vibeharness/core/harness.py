@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import subprocess
+from dataclasses import replace
 from typing import Any, Dict, Optional, List, Tuple
 from rich.console import Console
 from rich.markup import escape
@@ -34,7 +35,7 @@ from vibeharness.core.verdict import Verdict
 from vibeharness.core.mutation import run_mutation_testing
 from vibeharness.core.i18n import bi
 from vibeharness.core.stdio import force_utf8_stdio
-from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
+from vibeharness.agents.whitebox.ast_extractor import ASTExtractor, ScopeResult
 from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
 from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
 from vibeharness.agents.whitebox.debater import MultiModelDebater
@@ -108,7 +109,7 @@ class VibeHarnessCommander:
             js_sandbox_factory=lambda: build_node_sandbox(
                 self.sandbox_node_provider, self.node_bin, self.settings.node.image, self.settings.sandbox,
                 has_typescript=any(f.lower().endswith((".ts", ".tsx", ".mts", ".cts"))
-                                   for f in self.ast_extractor.analyzed_files),
+                                   for f in (self.scope.analyzed_files if self.scope else ())),
             ),
         )
         # JS/TS 測試以 Node 內建的執行器執行；沙盒採延遲建立，在第一次需要時才建立（它的設定在載入時就驗證過）
@@ -134,6 +135,10 @@ class VibeHarnessCommander:
         # --baseline：先前的 JSON 報告；其中已包含的問題仍會列出，但不計入
         # --baseline: a previous JSON report; problems it already contains are reported but not counted
         self.baseline: Optional[Baseline] = None
+        # 本次執行第 1 階段選定的範圍；只給延遲建立的 Node 沙盒判斷有沒有 TypeScript（其他地方讀 select_symbols 的回傳值）
+        # The scope phase 1 of this run selected; only the lazily built Node sandbox reads it, to tell whether there is
+        # TypeScript (everything else reads select_symbols' return value)
+        self.scope: Optional[ScopeResult] = None
 
     @staticmethod
     def work_dir_for(target_dir: str) -> str:
@@ -141,11 +146,12 @@ class VibeHarnessCommander:
         The directory tests run from and imports resolve against: the target, or a single file's parent."""
         return target_dir if os.path.isdir(target_dir) else os.path.dirname(os.path.abspath(target_dir))
 
-    def select_symbols(self, target_dir: str) -> Tuple[List[CodeSymbol], List[str]]:
-        """第 1 階段的檔案選取與符號擷取（不涉及模型）：要審查的符號，以及
-        所套用篩選條件的描述。由執行流程與 --estimate 共用。
-        Phase 1 file selection and symbol extraction (no model involved): the symbols to review and a
-        description of the filters that applied. Shared by the run and by --estimate."""
+    def select_symbols(self, target_dir: str) -> Tuple[List[CodeSymbol], ScopeResult]:
+        """第 1 階段的檔案選取與符號擷取（不涉及模型）：要審查的符號，以及這次的範圍（`ScopeResult`，含所套用
+        篩選條件的描述）。由執行流程與 --estimate 共用。
+        Phase 1 file selection and symbol extraction (no model involved): the symbols to review and this run's
+        scope (`ScopeResult`, including a description of the filters that applied). Shared by the run and by
+        --estimate."""
         only_files: Optional[List[str]] = None
         filters: List[str] = []
         if self.changed_since:
@@ -155,11 +161,11 @@ class VibeHarnessCommander:
             filters.append("include=" + ",".join(self.include_patterns))
         if self.exclude_patterns:
             filters.append("exclude=" + ",".join(self.exclude_patterns))
-        symbols = self.ast_extractor.parse_directory(
+        symbols, scope = self.ast_extractor.scan_directory(
             target_dir, max_files=self.max_files, include=self.include_patterns or None,
             exclude=self.exclude_patterns or None, only_files=only_files, max_file_bytes=self.max_file_bytes
         )
-        return symbols, filters
+        return symbols, replace(scope, filters=tuple(filters))
 
     @staticmethod
     def _git(args: List[str], cwd: str) -> Optional[str]:
@@ -292,15 +298,16 @@ class VibeHarnessCommander:
             # 單一檔案的目標會從其所在目錄執行測試
             # A single-file target runs its tests from the containing directory
             work_dir = self.work_dir_for(target_dir)
-            symbols, filters = self.select_symbols(target_dir)
-            if filters:
-                n_out = self.ast_extractor.filtered_out
-                self.console.print(f"[+] {bi('檔案篩選', 'File selection')}: {escape('; '.join(filters))} "
+            symbols, scope = self.select_symbols(target_dir)
+            self.scope = scope
+            if scope.filters:
+                n_out = scope.filtered_out
+                self.console.print(f"[+] {bi('檔案篩選', 'File selection')}: {escape('; '.join(scope.filters))} "
                                    f"({bi(f'{n_out} 個原始碼檔案依要求排除', f'{n_out} source file(s) left out by request')})")
             routes = [s.name for s in symbols if s.symbol_type == "route"]
             # 已排序，使列出的技術堆疊不受集合迭代順序影響而保持確定性
             # Sorted so the reported stack is deterministic regardless of set iteration order
-            detected_langs = sorted(self.ast_extractor.detected_languages) or ["Python"]
+            detected_langs = list(scope.detected_languages) or ["Python"]
             lang_str = ", ".join(detected_langs)
             self.console.print(f"[+] {bi('偵測到的目標技術堆疊', 'Detected Target Stack')}: [bold green]{lang_str}[/bold green]")
             self.console.print(f"[+] {bi(f'已從目標檔案擷取 [bold]{len(symbols)}[/bold] 個程式碼符號。', f'Extracted [bold]{len(symbols)}[/bold] code symbols across target files.')}")
@@ -309,10 +316,10 @@ class VibeHarnessCommander:
 
             # 確定性規則在任何模型看到程式碼之前先執行：它們不會受到提示注入
             # Deterministic rules run before any model sees the code: they cannot be prompt-injected
-            static_findings = self.static_scanner.scan_files(self.ast_extractor.analyzed_files)
+            static_findings = self.static_scanner.scan_files(list(scope.analyzed_files))
             # 設定類檔案（.env、YAML、Dockerfile …）只在本機做密鑰掃描，絕不送給模型
             # Configuration-like files (.env, YAML, Dockerfile ...) only get the local secret scan, never a model
-            static_findings += self.static_scanner.scan_config_files(self.ast_extractor.config_files)
+            static_findings += self.static_scanner.scan_config_files(list(scope.config_files))
             progress.update(phase=1, static_findings=static_findings, symbols=len(symbols))
             ai_components = self.static_scanner.ai_components
             if ai_components:
@@ -500,7 +507,6 @@ class VibeHarnessCommander:
             self.console.print(f"\n[bold blue]=== {bi('第 6 階段：Commander 品質閘門綜合判定', 'Phase 6: Commander Quality Gate Synthesis')} ===[/bold blue]")
             critical_threats = sum(1 for t in threat_report.threats if t.severity == FindingSeverity.CRITICAL)
 
-            ast = self.ast_extractor
             js_reason = wb_suite.js_runner_problem or bb_suite.js_runner_problem
             node_runtime = wb_suite.node_runtime or bb_suite.node_runtime
             gate = evaluate(GateEvidence(
@@ -522,15 +528,15 @@ class VibeHarnessCommander:
                 scope=ScopeDisclosure(
                     symbols_found=bool(symbols),
                     detected_langs=detected_langs,
-                    parse_failures=ast.parse_failures,
-                    oversized_files=ast.oversized_files,
-                    skipped_files=ast.skipped_files,
-                    unsupported_count=ast.unsupported_count,
-                    unsupported_languages=ast.unsupported_languages,
-                    unsupported_files=ast.unsupported_files,
+                    parse_failures=scope.parse_failures,
+                    oversized_files=scope.oversized_files,
+                    skipped_files=scope.skipped_files,
+                    unsupported_count=scope.unsupported_count,
+                    unsupported_languages=dict(scope.unsupported_languages),
+                    unsupported_files=scope.unsupported_files,
                     incomplete_files=self.static_scanner.incomplete_files,
                     config_files_not_fully_scanned=[
-                        *ast.skipped_config_files, *ast.oversized_config_files, *self.static_scanner.incomplete_config_files
+                        *scope.skipped_config_files, *scope.oversized_config_files, *self.static_scanner.incomplete_config_files
                     ],
                 ),
                 static_findings=static_findings,
@@ -564,7 +570,7 @@ class VibeHarnessCommander:
                 target_path=os.path.abspath(target_dir),
                 target_git_commit=commit,
                 target_git_dirty=dirty,
-                file_filters=filters,
+                file_filters=list(scope.filters),
                 node_runtime=node_runtime.label if node_runtime else None,
                 mutation_enabled=self.mutation_testing,
                 mutation_source=self.mutation_source,

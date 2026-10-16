@@ -88,6 +88,55 @@ def test_a_new_walk_resets_the_unsupported_and_config_state(tmp_path):
     assert ex.unsupported_count == 0 and ex.unsupported_languages == {} and ex.config_files == []
 
 
+
+def test_scan_directory_returns_the_walk_scope_as_an_immutable_value(tmp_path):
+    """scan_directory 回傳這次走訪的範圍：分析的檔案、超過大小的、不支援語言的、設定類檔案與偵測到的語言；
+    它是不可變的值，之後的走訪不會改到它。
+    scan_directory returns this walk's scope: the analyzed files, the oversized ones, the unsupported ones, the
+    configuration-like files and the languages detected; it is an immutable value a later walk does not change."""
+    import dataclasses
+    app = _write(tmp_path, "a/app.py", "def f():\n    return 1\n")
+    big = _write(tmp_path, "a/big.py", "x = 1\n" * 400)
+    _write(tmp_path, "a/main.go", "package main\n")
+    env = _write(tmp_path, "a/.env", "X=1\n")
+    _write(tmp_path, "b/ui.js", "function g() { return 2 }\n")
+    ex = ASTExtractor()
+    symbols, scope = ex.scan_directory(str(tmp_path / "a"), max_file_bytes=1000)
+    assert [s.name for s in symbols] == ["f"]
+    assert scope.analyzed_files == (str(app),) and scope.oversized_files == (str(big),)
+    assert (scope.unsupported_count, dict(scope.unsupported_languages)) == (1, {"go": 1})
+    assert scope.config_files == (str(env),) and scope.detected_languages == ("Python",)
+    assert scope.filters == ()  # 篩選條件由 harness 填 ／ the harness fills in the filters
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        scope.analyzed_files = ()
+    ex.scan_directory(str(tmp_path / "b"))
+    assert scope.analyzed_files == (str(app),)
+
+
+def test_detected_languages_belong_to_one_walk(tmp_path):
+    """同一個擷取器走訪兩個目標時，第二次的語言只來自第二個目標（過去會累積上一次的語言）。
+    When one extractor walks two targets, the second walk's languages come from the second target only (they used
+    to accumulate the previous walk's)."""
+    _write(tmp_path, "js/ui.js", "function g() { return 2 }\n")
+    _write(tmp_path, "py/app.py", "def f():\n    return 1\n")
+    ex = ASTExtractor()
+    assert ex.scan_directory(str(tmp_path / "js"))[1].detected_languages == ("TypeScript/JavaScript",)
+    assert ex.scan_directory(str(tmp_path / "py"))[1].detected_languages == ("Python",)
+
+
+def test_select_symbols_returns_the_scope_with_the_filters_applied(tmp_path):
+    """harness 的 select_symbols 回傳的範圍帶著它套用的篩選條件描述，--estimate 與報告都從這裡讀。
+    The harness's select_symbols returns the scope with a description of the filters it applied, which --estimate
+    and the report read."""
+    from vibeharness.core.harness import VibeHarnessCommander
+    _write(tmp_path, "keep.py", "def f():\n    return 1\n")
+    _write(tmp_path, "skip.py", "def g():\n    return 2\n")
+    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
+    commander.exclude_patterns = ["skip.py"]
+    symbols, scope = commander.select_symbols(str(tmp_path))
+    assert [s.name for s in symbols] == ["f"] and scope.filtered_out == 1
+    assert scope.filters == ("exclude=skip.py",) and scope.analyzed_files == (str(tmp_path / "keep.py"),)
+
 # --- 設定類檔案的選取 ／ Selecting configuration-like files --------------------------------------------
 
 def test_config_like_files_are_selected_and_lockfiles_are_not(tmp_path):

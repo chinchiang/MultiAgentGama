@@ -117,7 +117,7 @@ def estimate_run(
     """第 1 階段（符號擷取，不涉及模型）加上各代理的呼叫計畫：精確的部分來自符號，其餘依所述假設推出。
     Phase 1 (symbol extraction, no model) plus the agents' call plans: exact where the symbols decide, from the stated
     assumptions elsewhere."""
-    symbols, filters = commander.select_symbols(target_dir)
+    symbols, scope = commander.select_symbols(target_dir)
     gateway = commander.gateway
     work_dir = commander.work_dir_for(target_dir)
     reviewers = commander.multi_reviewer.reviewer_agents
@@ -132,7 +132,7 @@ def estimate_run(
     heal_rate = 0.3
 
     est = RunEstimate(
-        target_path=target_dir, files_analyzed=len(commander.ast_extractor.analyzed_files), symbols=len(symbols),
+        target_path=target_dir, files_analyzed=len(scope.analyzed_files), symbols=len(symbols),
         whitebox_batches=wb_batches, threat_batches=len(tm_plans),
         assumptions={"findings_per_reviewer_batch": findings_per_batch, "threats_per_batch": threats_per_batch,
                      "confirmed_share": 0.7, "tests_per_finding": 1.0, "heal_rate": heal_rate},
@@ -141,8 +141,8 @@ def estimate_run(
         # One batch per mutant, plus the batch that first confirms the tests pass on the unmutated copy
         mutation_sandbox_runs_max=commander.settings.mutation.max_mutants + 1 if commander.mutation_testing else None,
     )
-    if filters:
-        est.warnings.append(bi("已套用檔案篩選", "File selection applied") + ": " + "; ".join(filters))
+    if scope.filters:
+        est.warnings.append(bi("已套用檔案篩選", "File selection applied") + ": " + "; ".join(scope.filters))
     if not symbols:
         est.warnings.append(bi("沒有可分析的符號：審查者與測試產生器不會發出任何呼叫",
                                "No analyzable symbols: the reviewers and the test generator would make no calls"))
