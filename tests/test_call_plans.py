@@ -5,6 +5,8 @@ import os
 import re
 from collections import Counter
 
+import yaml
+
 from vibeharness.agents.blackbox import scenario_builder, threat_modeler
 from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
 from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
@@ -98,7 +100,25 @@ def test_reviewer_plan_is_one_call_per_reviewer_and_batch(scripted, tmp_path):
     assert set(_planned(plans).values()) == {2}  # 每個審查者兩批 ／ two batches per reviewer
     assert _planned(plans) == _actual(transport)
     assert _planned_code_tokens(plans) == _actual_code_tokens(transport)
+    # 批次數等於每個審查者實際發出的呼叫數 ／ the batch count is what each reviewer actually sent
+    assert set(_actual(transport).values()) == {ensemble.batch_count(symbols, str(tmp_path))} == {2}
     assert ensemble.plan([], str(tmp_path)) == []
+    assert ensemble.batch_count([], str(tmp_path)) == 0
+
+
+def test_reviewer_batch_count_is_zero_without_reviewers(scripted, tmp_path):
+    with open(CONFIG, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    cfg["agents"] = {k: v for k, v in cfg["agents"].items() if not k.startswith("whitebox_reviewer_")}
+    config = tmp_path / "cfg.yaml"
+    config.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    symbols = _symbols(tmp_path, 20)
+    transport = scripted({})
+    ensemble = HeterogeneousReviewerEnsemble(LLMGateway(str(config), execution_mode="live", transport=transport))
+    ensemble.review_symbols(symbols, root_dir=str(tmp_path))
+    # 沒有審查者就不審任何一批 ／ no reviewers review no batch
+    assert not transport.requests
+    assert ensemble.batch_count(symbols, str(tmp_path)) == 0
 
 
 def _unsure_verdicts(request):

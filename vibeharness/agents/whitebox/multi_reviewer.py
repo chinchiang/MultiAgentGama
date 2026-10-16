@@ -117,6 +117,14 @@ class HeterogeneousReviewerEnsemble:
             for reviewer in self.reviewer_agents for tokens in listing_tokens
         ]
 
+    def batch_count(self, symbols: List[CodeSymbol], root: str) -> int:
+        """review_symbols 對這些符號會審幾個白箱批次（每個審查者都審同樣的批次）；沒有符號或沒有審查者時是 0。
+        How many white-box batches review_symbols would review for these symbols (every reviewer reviews the same
+        batches); 0 without symbols or without reviewers."""
+        if not symbols or not self.reviewer_agents:
+            return 0
+        return len(self._batches(symbols, root))
+
     def _batches(self, symbols: List[CodeSymbol], root: str) -> List[List[CodeSymbol]]:
         return batch_symbols(symbols, root, self.BATCH_MAX_TOKENS, self.BATCH_MAX_SYMBOLS)
 

@@ -120,7 +120,7 @@ def estimate_run(
     reask = 1 if gateway.cache_only else 1 + retry
 
     reviewer_plans = commander.multi_reviewer.plan(symbols, work_dir)
-    wb_batches = len(reviewer_plans) // len(reviewers) if reviewers else 0
+    wb_batches = commander.multi_reviewer.batch_count(symbols, work_dir)
     tm_plans = commander.threat_modeler.plan(symbols, work_dir)
     heal_rate = 0.3
 
