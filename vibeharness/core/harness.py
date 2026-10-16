@@ -536,8 +536,8 @@ class VibeHarnessCommander:
                     unsupported_files=scope.unsupported_files,
                     incomplete_files=self.static_scanner.incomplete_files,
                     config_files_not_fully_scanned=[
-                        *scope.skipped_config_files, *scope.oversized_config_files, *self.static_scanner.incomplete_config_files
-                    ],
+                        *scope.skipped_config_files, *scope.oversized_config_files,
+                        *self.static_scanner.incomplete_config_files],
                 ),
                 static_findings=static_findings,
                 execution=ExecutionEvidence(

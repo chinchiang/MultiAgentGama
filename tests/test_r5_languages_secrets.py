@@ -88,18 +88,17 @@ def test_a_new_walk_resets_the_unsupported_and_config_state(tmp_path):
     assert ex.unsupported_count == 0 and ex.unsupported_languages == {} and ex.config_files == []
 
 
-
 def test_scan_directory_returns_the_walk_scope_as_an_immutable_value(tmp_path):
     """scan_directory 回傳這次走訪的範圍：分析的檔案、超過大小的、不支援語言的、設定類檔案與偵測到的語言；
-    它是不可變的值，之後的走訪不會改到它。
+    它是不可變的值（欄位不能重新指定，語言計數也唯讀）。
     scan_directory returns this walk's scope: the analyzed files, the oversized ones, the unsupported ones, the
-    configuration-like files and the languages detected; it is an immutable value a later walk does not change."""
+    configuration-like files and the languages detected; it is an immutable value (fields cannot be reassigned and
+    the language counts are read-only)."""
     import dataclasses
     app = _write(tmp_path, "a/app.py", "def f():\n    return 1\n")
     big = _write(tmp_path, "a/big.py", "x = 1\n" * 400)
     _write(tmp_path, "a/main.go", "package main\n")
     env = _write(tmp_path, "a/.env", "X=1\n")
-    _write(tmp_path, "b/ui.js", "function g() { return 2 }\n")
     ex = ASTExtractor()
     symbols, scope = ex.scan_directory(str(tmp_path / "a"), max_file_bytes=1000)
     assert [s.name for s in symbols] == ["f"]
@@ -109,8 +108,8 @@ def test_scan_directory_returns_the_walk_scope_as_an_immutable_value(tmp_path):
     assert scope.filters == ()  # 篩選條件由 harness 填 ／ the harness fills in the filters
     with pytest.raises(dataclasses.FrozenInstanceError):
         scope.analyzed_files = ()
-    ex.scan_directory(str(tmp_path / "b"))
-    assert scope.analyzed_files == (str(app),)
+    with pytest.raises(TypeError):
+        scope.unsupported_languages["go"] = 2
 
 
 def test_detected_languages_belong_to_one_walk(tmp_path):
@@ -136,6 +135,20 @@ def test_select_symbols_returns_the_scope_with_the_filters_applied(tmp_path):
     symbols, scope = commander.select_symbols(str(tmp_path))
     assert [s.name for s in symbols] == ["f"] and scope.filtered_out == 1
     assert scope.filters == ("exclude=skip.py",) and scope.analyzed_files == (str(tmp_path / "keep.py"),)
+
+
+def test_a_run_keeps_the_scope_phase_1_selected(tmp_path):
+    """一次 mock 執行之後，commander.scope 就是第 1 階段選定的範圍（延遲建立的 Node 沙盒讀它判斷有沒有 TypeScript）。
+    After a mock run, commander.scope is the scope phase 1 selected (the lazily built Node sandbox reads it to tell
+    whether there is TypeScript)."""
+    from vibeharness.core.harness import VibeHarnessCommander
+    _write(tmp_path, "t/ui.ts", "export function g(x: number): number { return x }\n")
+    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
+    assert commander.scope is None
+    commander.run_full_pipeline(str(tmp_path / "t"), output_report_path=str(tmp_path / "r.md"))
+    assert commander.scope == commander.select_symbols(str(tmp_path / "t"))[1]
+    assert commander.scope.analyzed_files == (str(tmp_path / "t" / "ui.ts"),)
+
 
 # --- 設定類檔案的選取 ／ Selecting configuration-like files --------------------------------------------
 

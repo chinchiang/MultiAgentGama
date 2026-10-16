@@ -4,6 +4,7 @@ import logging
 import os
 import re
 from bisect import bisect_left, bisect_right
+from types import MappingProxyType
 from dataclasses import dataclass, field as dataclass_field
 from typing import Dict, Iterable, List, Mapping, Optional, Set, Tuple, Union
 from vibeharness.core.models import CodeSymbol
@@ -245,7 +246,8 @@ class ScopeResult:
     parse_failures: Tuple[str, ...] = ()
     filtered_out: int = 0  # 依要求排除的原始碼檔案（不是證據缺口） ／ source files left out by request (not a gap)
     unsupported_count: int = 0
-    unsupported_languages: Mapping[str, int] = dataclass_field(default_factory=dict)
+    # 唯讀的對照表 ／ a read-only mapping
+    unsupported_languages: Mapping[str, int] = dataclass_field(default_factory=lambda: MappingProxyType({}))
     unsupported_files: Tuple[str, ...] = ()  # 樣本 ／ a sample
     config_files: Tuple[str, ...] = ()
     skipped_config_files: Tuple[str, ...] = ()
@@ -440,7 +442,8 @@ class ASTExtractor:
             analyzed_files=tuple(self.analyzed_files), skipped_files=tuple(self.skipped_files),
             oversized_files=tuple(self.oversized_files), parse_failures=tuple(self.parse_failures),
             filtered_out=self.filtered_out, unsupported_count=self.unsupported_count,
-            unsupported_languages=dict(self.unsupported_languages), unsupported_files=tuple(self.unsupported_files),
+            unsupported_languages=MappingProxyType(dict(self.unsupported_languages)),
+            unsupported_files=tuple(self.unsupported_files),
             config_files=tuple(self.config_files), skipped_config_files=tuple(self.skipped_config_files),
             oversized_config_files=tuple(self.oversized_config_files),
             detected_languages=tuple(sorted(self.detected_languages)),
