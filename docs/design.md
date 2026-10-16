@@ -270,7 +270,7 @@ flowchart TD
 ### 5.3 輸出驗證（`vibeharness/core/model_output.py`）
 
 - **每個代理宣告回答的形狀**：`generate(..., schema=)` 收一個 `OutputSchema`（`vibeharness/core/model_output.py:67-73`）：`required` 的每個鍵都要存在且符合型別；`any_of` 至少要有一個鍵存在且符合型別，其他出現的鍵型別錯也容忍（測試生成的 `tests` 型別錯、`code` 可用時不浪費一次重問）。型別規格（`:41-64`）有 `ANY`（只看鍵在不在）、`STRING`、`OBJECT` 與 `LIST_OF_OBJECTS(usable=, requirement=)`：不是清單，或清單不為空卻沒有任何一項是 `usable` 的物件，就是**形狀錯誤**；空清單（「什麼都沒找到」）與只有部分項目不能用的清單都合格，由代理略過不能用的項目。`usable` 就是代理自己過濾項目用的同一個函式，所以形狀檢查與代理不會不一致（各代理的規則見第 6、8 章）。`check_output`（`:145-169`）回傳指名欄位的雙語原因，例如 `field 'findings' must be a list of objects (got int)`、`field 'findings' has no usable item (3 item(s)): each item needs a non-empty title or description`。
-- `parse_json_object`（`:76-142`）四層容錯：閉合的 code fence、直接 JSON、未閉合的 fence、第一個 `{` 到最後一個 `}`（失敗再逐一試每個 `{`）。全部失敗回 `None`，不回哨兵 dict，因為模型可能剛好回出一個長得像哨兵的 dict；閘道這時記一行「JSON parsing error」（`vibeharness/core/llm_gateway.py:400-428`）。
+- `parse_json_object`（`:76-142`）四層容錯：閉合的 code fence、直接 JSON、未閉合的 fence、第一個 `{` 到最後一個 `}`（失敗再逐一試每個 `{`）。全部失敗回 `None`，不回哨兵 dict，因為模型可能剛好回出一個長得像哨兵的 dict；閘道這時記一行「JSON parsing error」（`vibeharness/core/llm_gateway.py:423-428`）。
 - **無效輸出先重問**：`json_output=True` 的呼叫得到非 JSON、缺欄位、形狀錯誤或空回應時，依 `global.retry_invalid_output`（預設 `DEFAULT_RETRY_INVALID_OUTPUT = 1`，`vibeharness/core/settings.py:39`；啟動時驗證為 0–5 的整數）重問，提示附上 `_RETRY_SUFFIX`（`vibeharness/core/llm_gateway.py:125-128`）說明上次的問題並要求只回 JSON（後綴本身是英文，帶入的原因先經 `en_only` 只取英文半，`:477`，所以提示詞不含中文）；每次重問都經 `_reserve_live_call` 扣 `max_model_calls`，預算用完就不重問，直接記 `invalid`（`:469-478`）。
 - **回應快取裡的舊回答**：快取的 key 不含 schema，所以升級後舊版本存下、現在形狀不合的回答讀出時照樣檢查；登記的原因前面加上「回應快取中的回答已不符合預期的形狀」（`mark_cached`，`vibeharness/core/model_output.py:172-176`），重問的提示不帶這個標記。不帶 `--cache-only` 時重問，可用的回答覆寫那筆快取；`--cache-only` 時直接記 `invalid`。
 - `json_output=False` 時永遠不會被判 invalid，也不重問（測試生成的修復呼叫用這條路徑，見第 16 章）。
@@ -750,7 +750,7 @@ console 輸出另外用 `rich.markup.escape`（`vibeharness/core/harness.py:9`�
 | 白箱審查 | reviewer × batch | `vibeharness/agents/whitebox/multi_reviewer.py:141-151` | `({}, False)`：該批沒有發現 |
 | 交叉驗證 | verifier × 每 15 筆 | `vibeharness/agents/whitebox/debater.py:127-137` | `([], False)`：該批零票 |
 | 白箱測試生成 | 每筆 finding | `vibeharness/agents/whitebox/test_generator.py:107-118` | `([], False)`：該發現進 `findings_without_model_tests` |
-| 威脅建模 | 每批符號 | `vibeharness/agents/blackbox/threat_modeler.py:284-293` | `{}`：該批沒有威脅 |
+| 威脅建模 | 每批符號 | `vibeharness/agents/blackbox/threat_modeler.py:284-293` | `NO_ANSWER`：略過該批，報告層級欄位取自下一個可用的批次 |
 | 攻擊合成 | 每個威脅 | `vibeharness/agents/blackbox/scenario_builder.py:281-291` | `None`：該威脅 untested |
 
 其他確定性措施：偵測語言排序、`ai_components` 排序、靜態 finding 排序、去重結果排序、跨批威脅合併，以及摘要與部分報告中經 `sorted_call_log` 排序的 `agent_calls`（`call_log` 本身仍是完成順序）。

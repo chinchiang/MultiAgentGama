@@ -10,6 +10,6 @@ from vibeharness.core.llm_gateway import ModelAnswer
 
 def answer(data: Optional[Dict[str, Any]] = None, *, mode: str = "live", text: Optional[str] = None,
            reason: Optional[str] = None) -> ModelAnswer:
-    """`data` 為回答的 JSON 物件；預設是真實模型（"live"）的回答 ／ `data` is the answer's JSON object; by default a real
-    model's ("live") answer."""
+    """`data` 為回答的 JSON 物件；預設是真實模型（"live"）的回答。
+    `data` is the answer's JSON object; by default a real model's ("live") answer."""
     return ModelAnswer(mode=mode, model="test-model", data=dict(data or {}), text=text, reason=reason)
