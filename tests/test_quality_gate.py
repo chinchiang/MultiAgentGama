@@ -337,7 +337,7 @@ def test_pipeline_wires_scope_limits_and_review_facts_into_the_gate(tmp_path, mo
         return findings
     monkeypatch.setattr(AISecurityStaticScanner, "scan_files", scan_files)
 
-    commander = VibeHarnessCommander(config_path=str(config), execution_mode="mock")
+    commander = VibeHarnessCommander(config_path=config, execution_mode="mock")
     summary = commander.run_full_pipeline(target_dir=str(target), output_report_path=str(tmp_path / "r.md"))
     assert summary.overall_status != "READY_TO_SHIP"
     reasons = "\n".join(summary.inconclusive_reasons)

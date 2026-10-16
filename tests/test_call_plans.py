@@ -5,7 +5,6 @@ import os
 import re
 from collections import Counter
 
-
 from config_files import load_config, write_config
 from vibeharness.agents.blackbox import scenario_builder, threat_modeler
 from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
@@ -112,7 +111,7 @@ def test_reviewer_batch_count_is_zero_without_reviewers(scripted, tmp_path):
     config = write_config(tmp_path, cfg)
     symbols = _symbols(tmp_path, 20)
     transport = scripted({})
-    ensemble = HeterogeneousReviewerEnsemble(LLMGateway(str(config), execution_mode="live", transport=transport))
+    ensemble = HeterogeneousReviewerEnsemble(LLMGateway(config, execution_mode="live", transport=transport))
     ensemble.review_symbols(symbols, root_dir=str(tmp_path))
     # 沒有審查者就不審任何一批 ／ no reviewers review no batch
     assert not transport.requests

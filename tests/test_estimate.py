@@ -71,7 +71,7 @@ def test_verifier_calls_have_no_float_error(tmp_path):
     target = tmp_path / "target"
     target.mkdir()
     (target / "w.py").write_text("".join(f"def w_{i}(x):\n    return x + {i}\n\n" for i in range(15 * 25)), encoding="utf-8")
-    est = estimate_run(VibeHarnessCommander(config_path=str(config), execution_mode="mock"), str(target))
+    est = estimate_run(VibeHarnessCommander(config_path=config, execution_mode="mock"), str(target))
     assert est.whitebox_batches == 25
     verifiers = {c.model_alias: c.calls_typical for c in est.by_agent if c.agent.startswith("whitebox_verifier_")}
     assert verifiers == {"claude": 8, "deepseek": 8, "glm": 8, "gemini": 12}
