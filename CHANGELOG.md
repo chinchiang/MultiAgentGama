@@ -22,6 +22,7 @@
 - 模型回答的解析與形狀檢查移到新的 `vibeharness/core/model_output.py`（`parse_json_object`、`OutputSchema`、`check_output`，皆為純函式）：每個代理宣告它期望的回答形狀，`generate(..., schema=)` 取代 `required_keys`／`required_keys_any`；閘道保留重問、回應快取、呼叫紀錄與來源標記。修正一節中形狀錯誤與 `tests` 退回 `code` 兩個條目是隨後在這個模組上做的修正。
 - 執行器與沙盒改以回傳值交出結果：`execute_pytest_files` 回傳凍結的 `SandboxRun`（結束碼、stdout、stderr、執行時間、行涵蓋率與 JUnit 報告），取代六元組；執行器只依賴 `vibeharness/core/sandbox.py` 的 `Sandbox` Protocol，不再以 `getattr` 替沙盒補預設值（預設值改由 `LocalSubprocessSandbox` 提供）；`execute_test_suite` 回傳 `SuiteResult`（結果、Python 與 JS/TS 的行涵蓋率、JS/TS 涵蓋率算不出來的原因、JS 執行器的問題與 Node 執行環境），取代 `(結果, Python 涵蓋率)` 加上事後讀取的 `last_js_line_coverage_pct`、`js_coverage_unavailable_reason` 與 `js_runner_unavailable_reason`。Node 執行環境的選擇移到 `sandbox.py` 的 `build_node_sandbox`（回傳 `NodeRuntime`）；docker 映像檔內的 Node 版本由 `NodeDockerSandbox.probe_node_version` 偵測，TypeScript 旗標由沙盒自己設定（`with_probed_node`）。harness 不再呼叫沙盒的私有方法，刪除 `_build_node_sandbox`、`_docker_node_version` 與 `node_runtime`、`node_runtime_problem`、`node_typescript_problem` 屬性，改從 `SuiteResult.node_runtime` 讀取。另刪除沒有任何呼叫者的 `LocalSubprocessSandbox.execute_python_code`（改用 `execute_pytest_files({"test_exec.py": 程式碼})`）。直接呼叫這些方法的程式碼要改讀欄位；報告、`--summary-json`、判定與結束碼不變（修正一節中沒有 Node 時每個測試的原因除外）。
 - `--estimate` 改為加總各代理回報的呼叫計畫，不再抄一份代理的分批與分派規則：審查者、驗證者、測試生成器、威脅建模者與攻擊合成器各有 `plan(...)`，回傳一組 `PlannedCalls`（新定義在 `vibeharness/core/fanout.py`：呼叫數、是否為 JSON 呼叫、每次呼叫的程式碼 token、是否為執行前就已知的精確值、修復這類有條件的呼叫與每次最多幾次），審查者與威脅建模和自己的執行路徑共用同一個分批 helper，驗證者、測試生成器與攻擊合成器依同樣的派工規則計數；`tests/test_call_plans.py` 釘住每個計畫等於實際發出的呼叫。測試生成器、威脅建模者與攻擊合成器公開 `AGENT_ID`（審查者與驗證者的 id 來自設定檔），測試生成器另公開 `HEAL_ATTEMPTS`（2）；`estimate.py` 刪除 `_PER_FINDING_CODE_TOKENS`、`_HEAL_ATTEMPTS_MAX` 與審查者、威脅建模批次排序的副本。這一步本身不改變行為：`--estimate` 的文字與 JSON 輸出逐位元組不變；「修正」中驗證者呼叫數的那一項是之後在驗證者計畫上做的修正。
+- 呼叫計畫的種類改為 `vibeharness/core/fanout.py` 的 `CallKind` 列舉（審查者、驗證者、測試生成、修復、威脅建模、攻擊合成；值和原本的字串相同），`PlannedCalls.kind`、各代理的計畫與 `--estimate` 的提示開銷／典型輸出表都用它，不再是散落各處的字串。修復計畫自己帶被修測試的估計大小（測試生成器的 `HEAL_CODE_TOKENS`，1200），`estimate.py` 刪除 `_HEALED_CODE_TOKENS` 與對修復的特判。僅為內部變更：`--estimate` 的文字與 JSON 輸出逐位元組不變。
 
 ### 修正
 
@@ -70,7 +71,7 @@
 - 設計文件說明 `Sandbox` 接縫、`SandboxRun`、`SuiteResult` 與 `NodeRuntime`（模組表、第 3 章 Phase 3、第 9.2 至 9.5 節、擴充點與測試章節），重要函式索引新增這些名稱並移除 harness 已刪除的兩個方法；同時修正 `test_executor.py` 後段（`_run_individually`、`_aggregate`、`_result` 等）、`transport.py` 與 `GateEvidence` 組成在先前就已偏移的行號。行號改以 commit `af9af80` 為準。
 - README 的專案結構列出 `tests/test_node_runtime.py`，並說明 `sandbox.py` 選擇 Node 執行環境、`test_executor.py` 回傳 `SuiteResult`。
 - `GLOSSARY.md` 新增 Node 執行環境。
-- 設計文件說明各代理的呼叫計畫（模組表的 `PlannedCalls` 與 `plan`、第 14.3 節 `--estimate` 改寫為加總計畫、第 6.6 節的 `HEAL_ATTEMPTS`、測試章節的 `test_call_plans.py`），重要函式索引新增 `PlannedCalls`、`_row` 與各代理的 `plan`，行號引用也更新為 commit `5ea93a9`。
+- 設計文件說明各代理的呼叫計畫（模組表的 `PlannedCalls` 與 `plan`、第 14.3 節 `--estimate` 改寫為加總計畫、第 6.6 節的 `HEAL_ATTEMPTS`、測試章節的 `test_call_plans.py`、模組表與常數表的 `CallKind` 與 `HEAL_CODE_TOKENS`），重要函式索引新增 `PlannedCalls`、`CallKind`、`_row` 與各代理的 `plan`，行號引用也更新為 commit `c6a7adc`。
 - README 的專案結構列出 `tests/test_call_plans.py`，並說明 `estimate.py` 加總各代理的呼叫計畫。
 
 ## [0.12.0] - 2026-10-12

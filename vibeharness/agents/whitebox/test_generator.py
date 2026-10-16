@@ -14,7 +14,7 @@ from vibeharness.core.codecontext import (
     file_source, fence_language, import_instructions, language_for_file, module_import_name, truncate_to_tokens,
 )
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, prepare_untrusted_code, untrusted_block
-from vibeharness.core.fanout import Call, PlannedCalls, fan_out
+from vibeharness.core.fanout import Call, CallKind, PlannedCalls, fan_out
 from vibeharness.core.identity import is_unknown_location
 from vibeharness.core.model_output import LIST_OF_OBJECTS, STRING, OutputSchema
 
@@ -47,6 +47,10 @@ AGENT_ID = "whitebox_test_generator"
 # How many times an invalid test is sent back to the model for repair (after that it is kept as is and the executor
 # reports it as ERROR)
 HEAL_ATTEMPTS = 2
+# 修復提示詞帶的測試程式碼的估計大小（一個典型的測試）；提示詞不截斷，所以這不是上限
+# Estimated size of the test code a repair prompt carries (one typical test); the prompt is not truncated, so this is
+# not a cap
+HEAL_CODE_TOKENS = 1200
 
 
 class WhiteboxTestGenerator:
@@ -80,10 +84,11 @@ class WhiteboxTestGenerator:
         alias = self.gateway.settings.alias_for(AGENT_ID)
         generated = math.ceil(findings)
         return [
-            PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind="test_generator", calls=generated,
+            PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind=CallKind.TEST_GENERATOR, calls=generated,
                          json_output=True, code_tokens=CODE_CONTEXT_TOKENS, exact=False),
-            PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind="heal", calls=math.ceil(generated * tests_per_finding),
-                         json_output=False, code_tokens=0, exact=False, conditional=True, max_per_call=HEAL_ATTEMPTS),
+            PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind=CallKind.HEAL,
+                         calls=math.ceil(generated * tests_per_finding), json_output=False,
+                         code_tokens=HEAL_CODE_TOKENS, exact=False, conditional=True, max_per_call=HEAL_ATTEMPTS),
         ]
 
     def generate_tests_for_findings(

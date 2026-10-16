@@ -6,7 +6,7 @@ import yaml
 from pydantic import ValidationError
 from typing import Any, Dict, List, Optional
 from vibeharness.core.models import ThreatItem, ThreatModelReport, STRIDECategory, FindingSeverity, CodeSymbol
-from vibeharness.core.fanout import Call, PlannedCalls, fan_out
+from vibeharness.core.fanout import Call, CallKind, PlannedCalls, fan_out
 from vibeharness.core.identity import severity_rank, threat_identity
 from vibeharness.core.model_output import LIST_OF_OBJECTS, OutputSchema
 from vibeharness.core.llm_gateway import LLMGateway
@@ -221,7 +221,7 @@ class AutomatedThreatModeler:
         batch even without symbols)."""
         alias = self.gateway.settings.alias_for(AGENT_ID)
         return [
-            PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind="threat_modeler", calls=1, json_output=True,
+            PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind=CallKind.THREAT_MODELER, calls=1, json_output=True,
                          code_tokens=estimate_tokens(_listing(batch, root)) if batch else 0, exact=True)
             for batch in _batches(symbols, root)
         ]

@@ -9,7 +9,7 @@ from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import estimate_tokens, render_symbols, batch_symbols
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
-from vibeharness.core.fanout import Call, PlannedCalls, fan_out
+from vibeharness.core.fanout import Call, CallKind, PlannedCalls, fan_out
 from vibeharness.core.identity import UNKNOWN_FILE
 from vibeharness.core.model_output import LIST_OF_OBJECTS, OutputSchema
 
@@ -112,8 +112,8 @@ class HeterogeneousReviewerEnsemble:
             return []
         listing_tokens = [estimate_tokens(self._listing(batch, root)) for batch in self._batches(symbols, root)]
         return [
-            PlannedCalls(agent_id=reviewer["agent_id"], model_alias=reviewer["model_alias"], kind="reviewer", calls=1,
-                         json_output=True, code_tokens=tokens, exact=True)
+            PlannedCalls(agent_id=reviewer["agent_id"], model_alias=reviewer["model_alias"],
+                         kind=CallKind.REVIEWER, calls=1, json_output=True, code_tokens=tokens, exact=True)
             for reviewer in self.reviewer_agents for tokens in listing_tokens
         ]
 

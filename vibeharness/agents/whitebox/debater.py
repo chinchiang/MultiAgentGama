@@ -8,7 +8,7 @@ from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import render_symbols, truncate_to_tokens
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
-from vibeharness.core.fanout import Call, PlannedCalls, fan_out
+from vibeharness.core.fanout import Call, CallKind, PlannedCalls, fan_out
 from vibeharness.core.model_output import LIST_OF_OBJECTS, OutputSchema
 
 logger = logging.getLogger("VibeHarness.Debater")
@@ -77,7 +77,7 @@ class MultiModelDebater:
         for agent_id, alias in self.verifiers.items():
             assigned = sum(n for reporter, n in findings_by_alias.items() if reporter != alias)
             calls = math.ceil(assigned / self.FINDINGS_PER_CALL) if assigned > 0 else 0
-            plans.append(PlannedCalls(agent_id=agent_id, model_alias=alias, kind="verifier", calls=calls,
+            plans.append(PlannedCalls(agent_id=agent_id, model_alias=alias, kind=CallKind.VERIFIER, calls=calls,
                                       json_output=True, code_tokens=self.LISTING_MAX_TOKENS + self.CODE_CONTEXT_TOKENS,
                                       exact=False))
         return plans
