@@ -316,12 +316,12 @@ class VibeHarnessCommander:
 
             # 確定性規則在任何模型看到程式碼之前先執行：它們不會受到提示注入
             # Deterministic rules run before any model sees the code: they cannot be prompt-injected
-            static_findings = self.static_scanner.scan_files(list(scope.analyzed_files))
             # 設定類檔案（.env、YAML、Dockerfile …）只在本機做密鑰掃描，絕不送給模型
             # Configuration-like files (.env, YAML, Dockerfile ...) only get the local secret scan, never a model
-            static_findings += self.static_scanner.scan_config_files(list(scope.config_files))
+            scan = self.static_scanner.scan(scope.analyzed_files, scope.config_files)
+            static_findings = list(scan.findings)
             progress.update(phase=1, static_findings=static_findings, symbols=len(symbols))
-            ai_components = self.static_scanner.ai_components
+            ai_components = list(scan.ai_components)
             if ai_components:
                 self.console.print(
                     f"[+] {bi('偵測到的 AI/LLM 元件', 'AI/LLM components detected')}: [bold]{escape(', '.join(ai_components))}[/bold] "
@@ -534,10 +534,10 @@ class VibeHarnessCommander:
                     unsupported_count=scope.unsupported_count,
                     unsupported_languages=dict(scope.unsupported_languages),
                     unsupported_files=scope.unsupported_files,
-                    incomplete_files=self.static_scanner.incomplete_files,
+                    incomplete_files=scan.incomplete_files,
                     config_files_not_fully_scanned=[
                         *scope.skipped_config_files, *scope.oversized_config_files,
-                        *self.static_scanner.incomplete_config_files],
+                        *scan.incomplete_config_files],
                 ),
                 static_findings=static_findings,
                 execution=ExecutionEvidence(
