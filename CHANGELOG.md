@@ -26,6 +26,7 @@
 - 呼叫計畫的介面收斂：`WhiteboxTestGenerator.plan` 與 `ThreatScenarioBuilder.plan` 的參數改名為 `finding_count`／`threat_count`（收的是數量，不是清單）；白箱批次數改由 `HeterogeneousReviewerEnsemble.batch_count` 回答（沒有符號或沒有審查者時是 0），不再從計畫數反推；`--estimate` 的說明文字改用 `MultiModelDebater.assigned_findings`（驗證者分到幾筆發現）與 `_typical_calls`（典型呼叫數），不再自己重算一次。僅為內部變更：`--estimate` 的文字與 JSON 輸出逐位元組不變。
 - 主控台串流防護集中在新的 `vibeharness/core/stdio.py`（`force_utf8_stdio`，只用標準函式庫）：CLI、Action runner 與 harness 都用它。過去 `action_runner.py` 從 CLI 匯入私有的 `_force_utf8_stdio`，harness 另有一份只處理 Windows 的同名函式，CLI 兩個都呼叫。`vibeharness.core.harness.force_utf8_stdio` 仍可匯入。CLI 與 Action 的行為不變。
 - 第 1 階段的檔案範圍改為回傳值：`VibeHarnessCommander.select_symbols` 回傳 `(symbols, ScopeResult)`，`ScopeResult`（`vibeharness/agents/whitebox/ast_extractor.py`，不可變）收著這次走訪分析了哪些檔案、哪些因為什麼原因沒有分析、設定類檔案、偵測到的語言與套用的篩選描述；閘門的證據、主控台、Node 沙盒的 TypeScript 判斷與 `--estimate` 都讀它，不再讀擷取器在最後一次呼叫後留下的屬性。新增 `ASTExtractor.scan_directory`；`parse_directory` 與那些屬性保留不變。直接呼叫 `select_symbols` 的程式碼要改讀 `scope.filters`（原本的第二個回傳值）。
+- 確定性規則掃描的結果也改為回傳值：`AISecurityStaticScanner.scan(source_files, config_files)` 回傳不可變的 `ScanResult`（命中、AI 元件、未完整掃描的原始碼與設定類檔案），harness 的第 1 階段與閘門讀它，不再讀掃描器在最後一次呼叫後留下的 `ai_components`／`incomplete_files`／`incomplete_config_files`。`scan_files`、`scan_config_files` 與那些屬性保留不變。
 
 ### 修正
 
@@ -78,7 +79,7 @@
 - 設計文件說明 `Sandbox` 接縫、`SandboxRun`、`SuiteResult` 與 `NodeRuntime`（模組表、第 3 章 Phase 3、第 9.2 至 9.5 節、擴充點與測試章節），重要函式索引新增這些名稱並移除 harness 已刪除的兩個方法；同時修正 `test_executor.py` 後段（`_run_individually`、`_aggregate`、`_result` 等）、`transport.py` 與 `GateEvidence` 組成在先前就已偏移的行號。行號改以 commit `af9af80` 為準。
 - README 的專案結構列出 `tests/test_node_runtime.py`，並說明 `sandbox.py` 選擇 Node 執行環境、`test_executor.py` 回傳 `SuiteResult`。
 - `GLOSSARY.md` 新增 Node 執行環境。
-- 設計文件說明各代理的呼叫計畫（模組表的 `PlannedCalls` 與 `plan`、第 14.3 節 `--estimate` 改寫為加總計畫並說明 `batch_count`、`assigned_findings` 與 `_typical_calls`、第 6.6 節的 `HEAL_ATTEMPTS`、測試章節的 `test_call_plans.py`、模組表與常數表的 `CallKind` 與 `HEAL_CODE_TOKENS`、第 4 章第 1 階段的 `ScopeResult` 與模組表的 `ScopeResult`），重要函式索引新增 `PlannedCalls`、`CallKind`、`_row`、`_typical_calls`、`batch_count`、`assigned_findings`、`ScopeResult`、`scan_directory` 與各代理的 `plan`，行號引用也更新為 commit `f3cdbbb`。
+- 設計文件說明各代理的呼叫計畫（模組表的 `PlannedCalls` 與 `plan`、第 14.3 節 `--estimate` 改寫為加總計畫並說明 `batch_count`、`assigned_findings` 與 `_typical_calls`、第 6.6 節的 `HEAL_ATTEMPTS`、測試章節的 `test_call_plans.py`、模組表與常數表的 `CallKind` 與 `HEAL_CODE_TOKENS`、第 4 章第 1 階段與模組表的 `ScopeResult`、`ScanResult`），重要函式索引新增 `PlannedCalls`、`CallKind`、`_row`、`_typical_calls`、`batch_count`、`assigned_findings`、`ScopeResult`、`scan_directory`、`ScanResult`、`scan` 與各代理的 `plan`，行號引用也更新為 commit `3f22728`。
 - README 的專案結構列出 `tests/test_call_plans.py`，並說明 `estimate.py` 加總各代理的呼叫計畫。
 - 設計文件的模組表、重要函式索引與 README 目錄樹加入 `core/stdio.py`；修正過時的行號引用：第 13 章自動發現設定檔政策的常數與 `_is_sensitive_model_key`，以及索引中呼叫紀錄分類函式的位置。
 

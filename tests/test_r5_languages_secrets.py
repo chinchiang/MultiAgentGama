@@ -150,6 +150,28 @@ def test_a_run_keeps_the_scope_phase_1_selected(tmp_path):
     assert commander.scope.analyzed_files == (str(tmp_path / "t" / "ui.ts"),)
 
 
+def test_scanner_scan_returns_the_rule_scan_as_an_immutable_value(tmp_path):
+    """scan() 一次掃描原始碼與設定類檔案，回傳不可變的 ScanResult：命中等於 scan_files 加上 scan_config_files，
+    AI 元件已排序，無法讀取的設定類檔案列為沒有完整掃描。
+    scan() scans the source and the configuration-like files at once and returns an immutable ScanResult: the hits
+    equal scan_files plus scan_config_files, the AI components are sorted, and an unreadable config-like file is
+    listed as not fully scanned."""
+    import dataclasses
+    app = _write(tmp_path, "app.py", f"import openai\nimport anthropic\nKEY = '{ANTHROPIC_KEY}'\n")
+    env = _write(tmp_path, ".env", f"AWS_ACCESS_KEY_ID={AWS_KEY}\n")
+    gone = str(tmp_path / "gone.yaml")
+    result = AISecurityStaticScanner().scan([str(app)], [str(env), gone])
+    separate = AISecurityStaticScanner()
+    expected = separate.scan_files([str(app)]) + separate.scan_config_files([str(env), gone])
+    assert [(f.rule_id, f.file_path, f.line_number) for f in result.findings] == \
+        [(f.rule_id, f.file_path, f.line_number) for f in expected]
+    assert {f.file_path for f in result.findings} == {str(app), str(env)}
+    assert result.ai_components == tuple(sorted(result.ai_components)) and result.ai_components
+    assert result.incomplete_files == () and result.incomplete_config_files == (gone,)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        result.findings = ()
+
+
 # --- 設定類檔案的選取 ／ Selecting configuration-like files --------------------------------------------
 
 def test_config_like_files_are_selected_and_lockfiles_are_not(tmp_path):

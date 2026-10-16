@@ -25,6 +25,7 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass
 from typing import Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
 from vibeharness.core.models import FindingSeverity, StaticFinding
@@ -579,6 +580,20 @@ class _ScopeIndex:
 
 
 
+@dataclass(frozen=True)
+class ScanResult:
+    """一次確定性規則掃描的結果：去重後的命中、目標匯入的 AI 元件，以及沒有完整掃描的原始碼與設定類檔案
+    （呼叫端應揭露為證據缺口）。harness 的第 1 階段與閘門都讀這個值，而不是掃描器在最後一次呼叫後留下的狀態。
+    One deterministic rule scan's result: the deduplicated hits, the AI components the target imports, and the
+    source and configuration-like files that were not fully scanned (the caller should disclose them as evidence
+    gaps). The harness's phase 1 and gate read this value rather than the state the scanner was left in after its
+    last call."""
+    findings: Tuple[StaticFinding, ...] = ()
+    ai_components: Tuple[str, ...] = ()  # 已排序 ／ sorted
+    incomplete_files: Tuple[str, ...] = ()
+    incomplete_config_files: Tuple[str, ...] = ()
+
+
 class AISecurityStaticScanner:
     """對原始碼檔案執行 VH-AI-* 規則；`ai_components` 列出目標匯入的 AI SDK。
     Runs the VH-AI-* rules over source files; `ai_components` lists the AI SDKs the target imports."""
@@ -647,6 +662,18 @@ class AISecurityStaticScanner:
                 components |= set(_AI_JS_PACKAGE_RE.findall(text))
         self.ai_components = sorted(components)
         return self._dedupe(findings)
+
+    def scan(self, source_files: Iterable[str], config_files: Iterable[str]) -> ScanResult:
+        """原始碼檔案的全部規則（scan_files）加上設定類檔案的密鑰規則（scan_config_files），一次回傳不可變的結果；
+        命中的順序與兩次呼叫相接相同。
+        All the rules over the source files (scan_files) plus the secret rule over the configuration-like files
+        (scan_config_files), returned as one immutable result; the hits are in the same order as the two calls
+        concatenated."""
+        findings = self.scan_files(source_files)
+        findings += self.scan_config_files(config_files)
+        return ScanResult(findings=tuple(findings), ai_components=tuple(self.ai_components),
+                          incomplete_files=tuple(self.incomplete_files),
+                          incomplete_config_files=tuple(self.incomplete_config_files))
 
     def scan_config_files(self, files: Iterable[str]) -> List[StaticFinding]:
         """只對設定類檔案（.env、YAML、JSON、TOML、Dockerfile、Terraform …）執行確定性的密鑰規則 VH-AI-007。
