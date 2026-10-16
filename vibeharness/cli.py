@@ -16,12 +16,13 @@ from typing import TYPE_CHECKING, Any, List, NoReturn, Optional, Tuple
 
 from vibeharness import __version__
 from vibeharness.core.i18n import bi
+from vibeharness.core.stdio import force_utf8_stdio
 from vibeharness.core.verdict import Verdict
 
 if TYPE_CHECKING:
     # 型別檢查器看得到這些名稱；執行時由 _load_dependencies() 放進模組命名空間
     # Type checkers see these names; at run time _load_dependencies() puts them into the module namespace
-    from vibeharness.core.harness import VibeHarnessCommander, force_utf8_stdio
+    from vibeharness.core.harness import VibeHarnessCommander
     from vibeharness.core.llm_gateway import LLMGatewayError, ConfigError
     from vibeharness.core.settings import Origin, Overrides, load_settings
     from vibeharness.core.sandbox import SandboxUnavailableError
@@ -33,7 +34,6 @@ if TYPE_CHECKING:
 # Lazily imported names -> (module, attribute); tests read or replace them as cli.<name>, as with the former module-level imports
 _LAZY_IMPORTS = {
     "VibeHarnessCommander": ("vibeharness.core.harness", "VibeHarnessCommander"),
-    "force_utf8_stdio": ("vibeharness.core.harness", "force_utf8_stdio"),
     "LLMGatewayError": ("vibeharness.core.llm_gateway", "LLMGatewayError"),
     "ConfigError": ("vibeharness.core.llm_gateway", "ConfigError"),
     "Overrides": ("vibeharness.core.settings", "Overrides"),
@@ -233,7 +233,7 @@ def main():
     # 解析參數、--help／--version 與 --init-config 也在防護內：任何意外錯誤都是 5，不是 Python 預設的 1
     # Parsing, --help / --version and --init-config are inside the guard too: any unexpected error is 5, not Python's default 1
     try:
-        _force_utf8_stdio()
+        force_utf8_stdio()
         parser = _build_parser()
         args = parser.parse_args()
         if args.init_config is not None:
@@ -264,46 +264,12 @@ def main():
         ))
         sys.exit(USAGE_ERROR_EXIT_CODE)
     try:
-        force_utf8_stdio()
         _main(parser, args)
     except KeyboardInterrupt:
         print(bi("已中斷。", "Interrupted."), file=sys.stderr)
         sys.exit(INTERRUPTED_EXIT_CODE)
     except Exception as e:
         _crash_exit("harness 意外崩潰", "harness crashed unexpectedly", e)
-
-
-# 能否輸出雙語文字的探測字串（中文、全形斜線、破折號）／ The probe for whether bilingual text can be written
-# (Chinese, the full-width slash, a dash)
-_STDIO_PROBE = "錯誤／—"
-
-
-def _force_utf8_stdio() -> None:
-    """只用標準函式庫的 stdout／stderr 防護，在解析參數（--help 的中文說明）之前執行，不必先載入 harness：
-    Windows 上設為 UTF-8；其他平台上，若串流的編碼寫不出雙語文字（例如 PYTHONIOENCODING=ascii、LANG=C），
-    改以 backslashreplace 輸出無法編碼的字元，而不是以 UnicodeEncodeError 當掉。
-    A standard-library-only stdout / stderr guard that runs before the arguments are parsed (--help's Chinese text),
-    without loading the harness first: on Windows the streams become UTF-8; elsewhere, when a stream's encoding
-    cannot write the bilingual text (e.g. PYTHONIOENCODING=ascii, LANG=C), characters it cannot encode are written
-    with backslashreplace instead of crashing with a UnicodeEncodeError."""
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is None:
-            continue
-        try:
-            if sys.platform == "win32":
-                reconfigure(encoding="utf-8", errors="replace")
-                continue
-            if getattr(stream, "errors", "strict") != "strict":
-                # 已經不會因無法編碼的字元而當掉（例如 stderr 預設的 backslashreplace）
-                # Already cannot crash on an unencodable character (e.g. stderr's default backslashreplace)
-                continue
-            try:
-                _STDIO_PROBE.encode(getattr(stream, "encoding", None) or "ascii")
-            except (UnicodeEncodeError, LookupError):
-                reconfigure(errors="backslashreplace")
-        except (OSError, ValueError):
-            pass
 
 
 class _InspectionParser(argparse.ArgumentParser):

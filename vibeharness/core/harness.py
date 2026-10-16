@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import subprocess
-import sys
 from typing import Any, Dict, Optional, List, Tuple
 from rich.console import Console
 from rich.markup import escape
@@ -34,6 +33,7 @@ from vibeharness.core.transport import ModelTransport
 from vibeharness.core.verdict import Verdict
 from vibeharness.core.mutation import run_mutation_testing
 from vibeharness.core.i18n import bi
+from vibeharness.core.stdio import force_utf8_stdio
 from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
 from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
 from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
@@ -70,27 +70,6 @@ def sorted_call_log(call_log: List[AgentCallRecord]) -> List[AgentCallRecord]:
     return sorted(call_log, key=lambda r: (
         r.agent_id, r.prompt_sha256 or "", r.attempt, r.model_alias, r.model_name, r.mode, r.reason or "", r.cached
     ))
-
-
-def force_utf8_stdio() -> None:
-    """
-    將 stdout/stderr 設為 UTF-8（取代無法呈現的字元），讓 emoji、框線字元與 CJK 輸出
-    在 Windows 上被重導向時（例如 cp950 字碼頁）永不當機或變成亂碼。
-    具冪等性；在串流已能處理 Unicode 或無法重新設定時則不做任何事。
-    Makes stdout/stderr UTF-8 (replacing unrenderable characters) so emoji, box-drawing and
-    CJK output never crashes or garbles when redirected on Windows (e.g. a cp950 codepage).
-    Idempotent, and a no-op where streams already handle Unicode or cannot be reconfigured.
-    """
-    if sys.platform != "win32":
-        return
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is None:
-            continue
-        try:
-            reconfigure(encoding="utf-8", errors="replace")
-        except (OSError, ValueError):
-            pass
 
 
 class VibeHarnessCommander:

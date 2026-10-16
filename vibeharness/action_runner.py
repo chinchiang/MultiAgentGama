@@ -21,6 +21,7 @@ import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
 from vibeharness.core.i18n import bi
+from vibeharness.core.stdio import force_utf8_stdio
 from vibeharness.core.verdict import Verdict
 
 FAIL_ON_VALUES = ("blocked", "needs-fixes", "inconclusive", "never")
@@ -192,8 +193,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     # 雙語的 ::error:: 與摘要在 Windows 的 cp1252 主控台會 UnicodeEncodeError；與 CLI 一樣先把 stdio 改成可寫出它們
     # Bilingual ::error:: lines and the summary raise UnicodeEncodeError on a Windows cp1252 console; make stdio able
     # to write them first, as the CLI does
-    from vibeharness.cli import _force_utf8_stdio
-    _force_utf8_stdio()
+    force_utf8_stdio()
     argv = list(sys.argv[1:] if argv is None else argv)
     fail_on = os.environ.get("VH_FAIL_ON", "needs-fixes")
     if fail_on not in FAIL_ON_VALUES:
