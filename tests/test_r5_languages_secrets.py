@@ -150,7 +150,6 @@ def test_a_run_keeps_the_scope_phase_1_selected(tmp_path):
     assert commander.scope.analyzed_files == (str(tmp_path / "t" / "ui.ts"),)
 
 
-
 def test_scanner_scan_returns_the_rule_scan_as_an_immutable_value(tmp_path):
     """scan() 一次掃描原始碼與設定類檔案，回傳不可變的 ScanResult：命中等於 scan_files 加上 scan_config_files，
     AI 元件已排序，無法讀取的設定類檔案列為沒有完整掃描。
@@ -171,6 +170,7 @@ def test_scanner_scan_returns_the_rule_scan_as_an_immutable_value(tmp_path):
     assert result.incomplete_files == () and result.incomplete_config_files == (gone,)
     with pytest.raises(dataclasses.FrozenInstanceError):
         result.findings = ()
+
 
 # --- 設定類檔案的選取 ／ Selecting configuration-like files --------------------------------------------
 
