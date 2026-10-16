@@ -776,7 +776,7 @@ console 輸出另外用 `rich.markup.escape`（`vibeharness/core/harness.py:9`�
 
 開發流程與提交前檢查見 `CONTRIBUTING.md`；弱點通報見 `SECURITY.md`。
 
-整個套件是 hermetic 的：mock 模式加 `conftest.py` 的兩個 fixture，不需要網路或真實金鑰就能跑 live 路徑。`scripted({代理 glob: 回答})` 回傳一個 `ModelTransport`，以 `transport=` 交給閘道或 Commander：依 `request.agent_id` 回答（完全相符優先，其次依序比對 `*` glob），記錄每個 `ModelRequest`，腳本裡的例外在那次嘗試中拋出，就像供應商錯誤；沒有腳本的代理讓測試失敗。`fake_live`（設假金鑰、用 `_FakeLiteLLM` 替換 `vibeharness.core.transport.litellm`）留給要走過 litellm 轉接器本身的測試。
+整個套件是 hermetic 的：mock 模式加 `conftest.py` 的兩個 fixture，不需要網路或真實金鑰就能跑 live 路徑。`scripted({代理 glob: 回答})` 回傳一個 `ModelTransport`，以 `transport=` 交給閘道或 Commander：依 `request.agent_id` 回答（完全相符優先，其次依序比對 `*` glob），記錄每個 `ModelRequest`，腳本裡的例外在那次嘗試中拋出，就像供應商錯誤；沒有腳本的代理讓測試失敗。`fake_live`（設假金鑰、用 `_FakeLiteLLM` 替換 `vibeharness.core.transport.litellm`）留給要走過 litellm 轉接器本身的測試。需要修改設定的測試用 `tests/config_files.py` 的 `load_config()` 讀出內建設定的新副本，改完以 `write_config(tmp_path, cfg)` 寫成暫存設定檔。
 
 | 檔案 | 涵蓋 |
 | :--- | :--- |
