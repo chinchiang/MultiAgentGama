@@ -78,7 +78,7 @@
 - `GLOSSARY.md` 新增 Node 執行環境。
 - 設計文件說明各代理的呼叫計畫（模組表的 `PlannedCalls` 與 `plan`、第 14.3 節 `--estimate` 改寫為加總計畫並說明 `batch_count`、`assigned_findings` 與 `_typical_calls`、第 6.6 節的 `HEAL_ATTEMPTS`、測試章節的 `test_call_plans.py`、模組表與常數表的 `CallKind` 與 `HEAL_CODE_TOKENS`），重要函式索引新增 `PlannedCalls`、`CallKind`、`_row`、`_typical_calls`、`batch_count`、`assigned_findings` 與各代理的 `plan`，行號引用也更新為 commit `eb34dfb`。
 - README 的專案結構列出 `tests/test_call_plans.py`，並說明 `estimate.py` 加總各代理的呼叫計畫。
-- 設計文件的模組表、重要函式索引與 README 目錄樹加入 `core/stdio.py`；修正 master 上就已偏掉的引用：`settings.py` 自動發現設定檔政策的常數與 `_is_sensitive_model_key`（第 13 章），以及索引中呼叫紀錄分類函式的行號。其餘名稱檢查的提示逐一核對過，是引用使用處而不是定義處，內容正確。行號引用更新為 commit `eb34dfb`。
+- 設計文件的模組表、重要函式索引與 README 目錄樹加入 `core/stdio.py`；修正過時的行號引用：第 13 章自動發現設定檔政策的常數與 `_is_sensitive_model_key`，以及索引中呼叫紀錄分類函式的位置。
 
 ## [0.12.0] - 2026-10-12
 

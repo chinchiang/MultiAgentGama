@@ -440,6 +440,7 @@ def test_stdio_guard_writes_unencodable_text_with_backslashreplace(monkeypatch):
     monkeypatch.setattr(sys, "stdout", ascii_out)
     monkeypatch.setattr(sys, "stderr", utf8_err)
     force_utf8_stdio()
+    force_utf8_stdio()  # 冪等：CLI 與 harness 都會呼叫 ／ idempotent: the CLI and the harness both call it
     assert (ascii_out.errors, utf8_err.errors) == ("backslashreplace", "strict")
     ascii_out.write("錯誤")
     ascii_out.flush()

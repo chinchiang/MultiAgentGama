@@ -78,7 +78,7 @@ All notable changes to this project are documented in this file. The format foll
 - `GLOSSARY.md` adds Node runtime.
 - The design document describes the agents' call plans (`PlannedCalls` and `plan` in the module table, section 14.3 rewritten as adding up the plans, with `batch_count`, `assigned_findings` and `_typical_calls`, `HEAL_ATTEMPTS` in section 6.6, `test_call_plans.py` in the testing chapter, `CallKind` and `HEAL_CODE_TOKENS` in the module and constants tables), the key function index adds `PlannedCalls`, `CallKind`, `_row`, `_typical_calls`, `batch_count`, `assigned_findings` and each agent's `plan`, and the line references are updated to commit `eb34dfb`.
 - The README's project structure lists `tests/test_call_plans.py` and says `estimate.py` adds up the agents' call plans.
-- The design document's module table and key function index, and the README trees, list `core/stdio.py`; refs that were already stale on master are fixed: the discovered-config policy constants and `_is_sensitive_model_key` in `settings.py` (chapter 13), and the line numbers of the call-log classifiers in the index. The name check's other hits were each verified to cite a use rather than the definition, and are correct. The line references are updated to commit `eb34dfb`.
+- The design document's module table and key function index, and the README trees, list `core/stdio.py`; outdated line references are fixed: the discovered-config policy constants and `_is_sensitive_model_key` in chapter 13, and the call-log classifiers in the index.
 
 ## [0.12.0] - 2026-10-12
 
