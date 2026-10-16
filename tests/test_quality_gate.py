@@ -2,12 +2,11 @@
 pipeline，確認各來源的事實確實送進閘門。
 The quality gate (core/gate.py): tested only through evaluate(), with no pipeline, gateway or sandbox; the last
 test runs one mock pipeline to check that each source's facts actually reach the gate."""
-import os
 from dataclasses import replace
 
 import pytest
-import yaml
 
+from config_files import load_config, write_config
 from vibeharness.core.baseline import Baseline, breach_key, finding_key, static_key
 from vibeharness.core.gate import (
     ExecutionEvidence, GapCode, GateEvidence, GateLimits, ReviewEvidence, ScopeDisclosure, evaluate,
@@ -19,7 +18,6 @@ from vibeharness.core.models import (
 )
 from vibeharness.core.verdict import Verdict
 
-CONFIG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vibeharness", "config", "agents_config.yaml")
 
 TARGET = "/srv/app"
 
@@ -317,14 +315,12 @@ def test_pipeline_wires_scope_limits_and_review_facts_into_the_gate(tmp_path, mo
     reach the gate's gaps (the message rules themselves are covered by the tests above)."""
     from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
     from vibeharness.core.harness import VibeHarnessCommander
-    with open(CONFIG, encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_config()
     cfg["global"].update(max_files=4, max_file_bytes=1000)
     for agent_id, meta in cfg["agents"].items():
         if agent_id.startswith(("whitebox_reviewer_", "whitebox_verifier_")):
             meta["model_alias"] = "gemini"
-    config = tmp_path / "single.yaml"
-    config.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    config = write_config(tmp_path, cfg, "single.yaml")
 
     target = tmp_path / "t"
     target.mkdir()
@@ -341,7 +337,7 @@ def test_pipeline_wires_scope_limits_and_review_facts_into_the_gate(tmp_path, mo
         return findings
     monkeypatch.setattr(AISecurityStaticScanner, "scan_files", scan_files)
 
-    commander = VibeHarnessCommander(config_path=str(config), execution_mode="mock")
+    commander = VibeHarnessCommander(config_path=config, execution_mode="mock")
     summary = commander.run_full_pipeline(target_dir=str(target), output_report_path=str(tmp_path / "r.md"))
     assert summary.overall_status != "READY_TO_SHIP"
     reasons = "\n".join(summary.inconclusive_reasons)

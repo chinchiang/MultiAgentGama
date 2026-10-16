@@ -9,8 +9,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-import yaml
 
+from config_files import load_config, write_config
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError, ConfigError, BUDGET_EXHAUSTED_REASON, PROVENANCE_KEY
 from vibeharness.core.models import FindingSeverity, ReviewFinding, STRIDECategory, ThreatItem, CodeSymbol
 from vibeharness.core.i18n import has_cjk
@@ -24,12 +24,9 @@ CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
 
 
 def _config(tmp_path, **global_overrides):
-    with open(CONFIG, encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_config()
     cfg["global"].update(global_overrides)
-    path = tmp_path / "agents_config.yaml"
-    path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
-    return str(path)
+    return write_config(tmp_path, cfg, "agents_config.yaml")
 
 
 def _finding(i):
@@ -241,19 +238,16 @@ def test_invalid_numeric_settings_are_config_errors_at_startup(tmp_path, key, va
 
 
 def test_invalid_per_model_tokens_and_agent_temperature_are_config_errors(tmp_path):
-    with open(CONFIG, encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_config()
     bad_model = dict(cfg, models=dict(cfg["models"], claude=dict(cfg["models"]["claude"], max_output_tokens="lots")))
-    path = tmp_path / "m.yaml"
-    path.write_text(yaml.safe_dump(bad_model), encoding="utf-8")
+    path = write_config(tmp_path, bad_model, "m.yaml")
     with pytest.raises(ConfigError, match="models.claude.max_output_tokens"):
-        LLMGateway(str(path), execution_mode="mock")
+        LLMGateway(path, execution_mode="mock")
     reviewer = dict(cfg["agents"]["whitebox_reviewer_claude"], temperature=3)
     bad_agent = dict(cfg, agents=dict(cfg["agents"], whitebox_reviewer_claude=reviewer))
-    path = tmp_path / "a.yaml"
-    path.write_text(yaml.safe_dump(bad_agent), encoding="utf-8")
+    path = write_config(tmp_path, bad_agent, "a.yaml")
     with pytest.raises(ConfigError, match="whitebox_reviewer_claude.temperature"):
-        LLMGateway(str(path), execution_mode="mock")
+        LLMGateway(path, execution_mode="mock")
     # 隨附的設定檔本身是有效的，而且預期數字的地方給浮點數也沒問題
     # The shipped config itself is valid, and floats are fine where a number is expected
     LLMGateway(_config(tmp_path, timeout_seconds=12.5), execution_mode="mock")
@@ -283,14 +277,12 @@ def test_reviewers_on_one_model_have_one_distinct_model(tmp_path):
     Four reviewer agents on one model count as one distinct model; the gate therefore records a gap (message and
     wiring in test_quality_gate.py, OWASP LLM07:2026)."""
     from vibeharness.core.harness import VibeHarnessCommander
-    with open(CONFIG, encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_config()
     for agent_id, meta in cfg["agents"].items():
         if agent_id.startswith(("whitebox_reviewer_", "whitebox_verifier_")):
             meta["model_alias"] = "gemini"
-    path = tmp_path / "single.yaml"
-    path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
-    commander = VibeHarnessCommander(config_path=str(path), execution_mode="mock")
+    path = write_config(tmp_path, cfg, "single.yaml")
+    commander = VibeHarnessCommander(config_path=path, execution_mode="mock")
     assert commander.multi_reviewer.distinct_models == ["gemini"]
     assert len(commander.multi_reviewer.reviewer_agents) == 4
 
@@ -379,19 +371,17 @@ def test_re_ask_respects_the_call_budget_and_is_configurable(fake_live, tmp_path
 
 
 def test_extra_params_are_passed_to_litellm_and_validated(fake_live, tmp_path):
-    with open(CONFIG, encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_config()
     claude = dict(cfg["models"]["claude"], extra_params={"thinking": {"type": "disabled"}, "reasoning_effort": "low"})
     good = dict(cfg, models=dict(cfg["models"], claude=claude))
-    path = tmp_path / "good.yaml"
-    path.write_text(yaml.safe_dump(good), encoding="utf-8")
+    path = write_config(tmp_path, good, "good.yaml")
     fake = fake_live(lambda s, u: '{"findings": []}')
-    LLMGateway(str(path), execution_mode="live").generate("whitebox_reviewer_claude", "s", "u", schema=OutputSchema(required={"findings": ANY}))
+    LLMGateway(path, execution_mode="live").generate("whitebox_reviewer_claude", "s", "u", schema=OutputSchema(required={"findings": ANY}))
     assert fake.calls[0]["thinking"] == {"type": "disabled"} and fake.calls[0]["reasoning_effort"] == "low"
     bad = dict(cfg, models=dict(cfg["models"], claude=dict(cfg["models"]["claude"], extra_params=["thinking"])))
-    path.write_text(yaml.safe_dump(bad), encoding="utf-8")
+    path = write_config(tmp_path, bad, "good.yaml")
     with pytest.raises(ConfigError, match="extra_params"):
-        LLMGateway(str(path), execution_mode="mock")
+        LLMGateway(path, execution_mode="mock")
 
 
 # --- 檔案選取 -------------------------------------------------------------------------------

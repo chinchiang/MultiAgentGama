@@ -776,7 +776,7 @@ Other determinism measures: sorted detected languages, sorted `ai_components`, s
 
 The development workflow and pre-push checks are in `CONTRIBUTING.md`; vulnerability reporting in `SECURITY.md`.
 
-The suite is hermetic: mock mode plus two fixtures in `conftest.py` exercise the live paths without network or real keys. `scripted({agent_glob: answer})` returns a `ModelTransport` to pass as `transport=` to the gateway or the Commander: it answers by `request.agent_id` (an exact match first, then `*` globs in order), records every `ModelRequest`, and raises an exception from the script in that attempt like a provider error; an agent without a script fails the test. `fake_live` (fake keys, `_FakeLiteLLM` substituted for `vibeharness.core.transport.litellm`) is kept for tests that go through the litellm adapter itself.
+The suite is hermetic: mock mode plus two fixtures in `conftest.py` exercise the live paths without network or real keys. `scripted({agent_glob: answer})` returns a `ModelTransport` to pass as `transport=` to the gateway or the Commander: it answers by `request.agent_id` (an exact match first, then `*` globs in order), records every `ModelRequest`, and raises an exception from the script in that attempt like a provider error; an agent without a script fails the test. `fake_live` (fake keys, `_FakeLiteLLM` substituted for `vibeharness.core.transport.litellm`) is kept for tests that go through the litellm adapter itself. Tests that need an edited config read a fresh copy of the bundled one with `load_config()` from `tests/config_files.py` and write their edit to a temporary config file with `write_config(tmp_path, cfg)`.
 
 | File | Covers |
 | :--- | :--- |

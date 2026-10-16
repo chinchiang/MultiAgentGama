@@ -246,6 +246,7 @@ MultiAgentGama/
 │   ├── design.md                # Design document: architecture, data flow, gate verdicts, sandbox security model (Traditional Chinese)
 │   └── design.en.md             # Design document (English)
 ├── tests/                       # The toolkit's own tests (offline, no API keys needed)
+│   ├── config_files.py          # Read the bundled config, write an edited copy for a test (load_config / write_config)
 │   ├── conftest.py              # Shared fixtures: a fake litellm so the live paths run offline
 │   ├── test_ai_security.py      # OWASP LLM Top 10 2026 / ATLAS controls and the deterministic AI-security rules
 │   ├── test_baseline.py                # --baseline: loading and recomputing, known problems not counted, action.yml structure

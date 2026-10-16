@@ -11,6 +11,7 @@ import tempfile
 import pytest
 import yaml
 
+from config_files import load_config, write_config
 from vibeharness.core import mutation as mut
 from vibeharness.core.harness import VibeHarnessCommander
 from vibeharness.core.models import (
@@ -406,11 +407,10 @@ def _pipeline(tmp_path, monkeypatch, report, enabled=True, global_overrides=None
     target = tmp_path / "t"
     target.mkdir(exist_ok=True)
     (target / "ok.py").write_text("def greet(name):\n    if name is None:\n        raise ValueError('x')\n    return 'hi ' + name\n", encoding="utf-8")
-    cfg = yaml.safe_load(open(CONFIG, encoding="utf-8"))
+    cfg = load_config()
     cfg["global"].update(global_overrides or {})
-    config = tmp_path / "cfg.yaml"
-    config.write_text(yaml.safe_dump(cfg), encoding="utf-8")
-    commander = VibeHarnessCommander(config_path=str(config), execution_mode="mock")
+    config = write_config(tmp_path, cfg)
+    commander = VibeHarnessCommander(config_path=config, execution_mode="mock")
     if enabled is not None:
         commander.set_mutation(enabled)
     monkeypatch.setattr("vibeharness.core.harness.run_mutation_testing", lambda *a, **k: report)
@@ -498,14 +498,13 @@ def test_a_crash_inside_mutation_testing_becomes_a_gap_not_a_failed_audit(tmp_pa
 def test_switch_precedence_cli_then_config_then_off(tmp_path, config_value, cli, expected, source):
     """開關優先順序：CLI 旗標 > 設定檔 > 預設關閉；最終值與來源都被記錄。
     Switch precedence: CLI flag > config file > off by default; the final value and its source are recorded."""
-    cfg = yaml.safe_load(open(CONFIG, encoding="utf-8"))
+    cfg = load_config()
     if config_value is None:
         cfg["global"].pop("mutation_testing", None)
     else:
         cfg["global"]["mutation_testing"] = config_value
-    path = tmp_path / "cfg.yaml"
-    path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
-    commander = VibeHarnessCommander(config_path=str(path), execution_mode="mock")
+    path = write_config(tmp_path, cfg)
+    commander = VibeHarnessCommander(config_path=path, execution_mode="mock")
     if cli is not None:
         commander.set_mutation(cli, "cli")
     assert (commander.mutation_testing, commander.mutation_source) == (expected, source)
@@ -525,12 +524,11 @@ def test_cli_flags_set_the_switch_and_the_cap_and_show_in_the_estimate(monkeypat
     assert "Mutation testing" not in estimate()
     assert "up to 20 mutant(s)" in estimate("--mutation")
     assert "up to 5 mutant(s)" in estimate("--mutation", "--mutation-max-mutants", "5")
-    cfg = yaml.safe_load(open(CONFIG, encoding="utf-8"))
+    cfg = load_config()
     cfg["global"]["mutation_testing"] = True
-    on = tmp_path / "on.yaml"
-    on.write_text(yaml.safe_dump(cfg), encoding="utf-8")
-    assert "up to 20 mutant(s)" in estimate(config=str(on))
-    assert "Mutation testing" not in estimate("--no-mutation", config=str(on))
+    on = write_config(tmp_path, cfg, "on.yaml")
+    assert "up to 20 mutant(s)" in estimate(config=on)
+    assert "Mutation testing" not in estimate("--no-mutation", config=on)
 
 
 def test_cli_rejects_a_bad_mutant_cap(monkeypatch, tmp_path, capsys):
@@ -556,12 +554,11 @@ def test_cli_rejects_a_bad_mutant_cap(monkeypatch, tmp_path, capsys):
 def test_bad_mutation_settings_fail_at_start_up(tmp_path, key, value, match):
     """壞的突變測試設定在啟動時就失敗（exit 5），不會跑到一半才炸。
     Bad mutation settings fail at start-up (exit 5) instead of midway through a run."""
-    cfg = yaml.safe_load(open(CONFIG, encoding="utf-8"))
+    cfg = load_config()
     cfg["global"][key] = value
-    path = tmp_path / "cfg.yaml"
-    path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    path = write_config(tmp_path, cfg)
     with pytest.raises(Exception, match=match):
-        VibeHarnessCommander(config_path=str(path), execution_mode="mock")
+        VibeHarnessCommander(config_path=path, execution_mode="mock")
 
 
 def test_report_json_and_partial_report_carry_the_mutation_result(tmp_path, monkeypatch):

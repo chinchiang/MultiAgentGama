@@ -246,6 +246,7 @@ MultiAgentGama/
 │   ├── design.md                # 設計文件：架構、資料流、閘門判定、沙盒安全模型（正體中文）
 │   └── design.en.md             # Design document (English)
 ├── tests/                       # 工具包本身之測試（離線、不需 API 金鑰）
+│   ├── config_files.py          # 讀出內建設定、寫出修改後的測試用設定檔（load_config／write_config）
 │   ├── conftest.py              # 共用 fixture：以假 litellm 讓 live 路徑離線執行
 │   ├── test_ai_security.py      # OWASP LLM Top 10 2026／ATLAS 控制與確定性 AI 安全規則
 │   ├── test_baseline.py                # --baseline：載入與重算、已知問題不計入、action.yml 結構

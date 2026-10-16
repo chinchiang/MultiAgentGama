@@ -12,6 +12,7 @@ import textwrap
 
 import pytest
 
+from config_files import load_config, write_config
 from vibeharness.core.codecheck import check_js_test_code, check_test_code_for
 from vibeharness.core.codecontext import (
     import_instructions, js_exported_names, js_module_kind, language_for_file, target_file_url,
@@ -774,8 +775,7 @@ def test_bad_node_settings_fail_at_start_up(tmp_path):
     """sandbox_node_provider／sandbox_memory_mb 的設定錯誤在建構時就失敗（exit 5），不會在第一個 JS 測試才變成證據缺口。
     Bad sandbox_node_provider / sandbox_memory_mb settings fail at construction (exit 5) instead of surfacing as an
     evidence gap at the first JS test."""
-    import yaml
-    base = yaml.safe_load(open(CONFIG, encoding="utf-8"))
+    base = load_config()
     for key, value, match in (("sandbox_node_provider", "e2b", "not implemented"), ("sandbox_memory_mb", "abc", "sandbox_memory_mb"),
                               ("docker_pids_limit", "many", "docker_pids_limit"), ("sandbox_timeout_seconds", -1, "sandbox_timeout_seconds"),
                               ("docker_node_image", "", "docker_node_image"), ("docker_network", "", "docker_network"),
@@ -784,10 +784,9 @@ def test_bad_node_settings_fail_at_start_up(tmp_path):
                               ("sandbox_timeout_seconds", "60", "sandbox_timeout_seconds")):
         overrides = {"sandbox_node_provider": "docker"} if key.startswith("docker_") else {}
         cfg = {**base, "global": {**base["global"], **overrides, key: value}}
-        path = tmp_path / f"{key}.yaml"
-        path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+        path = write_config(tmp_path, cfg, f"{key}.yaml")
         with pytest.raises(Exception, match=match):
-            VibeHarnessCommander(config_path=str(path), execution_mode="mock")
+            VibeHarnessCommander(config_path=path, execution_mode="mock")
 
 
 def test_breach_whose_body_mentions_a_target_syntax_error_stays_a_breach():
@@ -878,12 +877,10 @@ def test_load_time_reference_error_wins_over_target_noise():
 def test_stale_docker_keys_do_not_block_a_local_only_run(tmp_path):
     """兩個沙盒都是 local_subprocess 時，設定檔裡殘留的 docker_* 鍵（空值、整數）不會讓啟動失敗。
     When both sandboxes are local_subprocess, stale docker_* keys (null, an int) in the config never fail start-up."""
-    import yaml
-    base = yaml.safe_load(open(CONFIG, encoding="utf-8"))
+    base = load_config()
     cfg = {**base, "global": {**base["global"], "docker_memory": 1024, "docker_network": None, "docker_cpus": "two"}}
-    path = tmp_path / "local.yaml"
-    path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
-    commander = VibeHarnessCommander(config_path=str(path), execution_mode="mock")
+    path = write_config(tmp_path, cfg, "local.yaml")
+    commander = VibeHarnessCommander(config_path=path, execution_mode="mock")
     assert commander.settings.sandbox.docker.memory == "1g" and commander.settings.sandbox.docker.network == "none"
 
 
