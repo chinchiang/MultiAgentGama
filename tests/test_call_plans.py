@@ -121,10 +121,21 @@ def test_reviewer_batch_count_is_zero_without_reviewers(scripted, tmp_path):
     assert ensemble.batch_count(symbols, str(tmp_path)) == 0
 
 
+_TITLE_RE = re.compile(r"Title: title (\w+)")
+
+
 def _unsure_verdicts(request):
     """驗證者的回答：對請求裡的每一筆發現都裁決 unsure ／ A verifier's answer: unsure on every finding in the request."""
-    titles = re.findall(r"Title: title (\w+)", request.messages[1]["content"])
+    titles = _TITLE_RE.findall(request.messages[1]["content"])
     return {"verdicts": [{"index": i, "verdict": "unsure", "reason": "r"} for i in range(len(titles))]}
+
+
+def _ruled_on(transport):
+    """{模型別名: 實際送給該驗證者裁決的發現數} ／ {model alias: findings actually sent to that verifier to rule on}."""
+    ruled = Counter()
+    for r in transport.requests:
+        ruled[r.model_alias] += len(_TITLE_RE.findall(r.messages[1]["content"]))
+    return ruled
 
 
 def test_debater_plan_is_the_verifier_calls_for_the_reported_findings(scripted):
@@ -140,6 +151,12 @@ def test_debater_plan_is_the_verifier_calls_for_the_reported_findings(scripted):
     assert not any(p.exact for p in plans)
     assert len(set(_planned(plans).values())) > 1
     assert _planned(plans) == _actual(transport)
+    # 分到的發現數等於實際送給每個驗證者的發現數（自家模型的不送） ／ the assigned findings are those actually sent
+    # to each verifier (never its own model's)
+    ruled = _ruled_on(transport)
+    assert {p.model_alias: debater.assigned_findings(reported, p.model_alias) for p in plans} == \
+        {p.model_alias: ruled[p.model_alias] for p in plans}
+    assert ruled["claude"] == 1 and ruled["deepseek"] == debater.FINDINGS_PER_CALL + 5
     assert set(_planned(debater.plan({})).values()) == {0}
 
 
