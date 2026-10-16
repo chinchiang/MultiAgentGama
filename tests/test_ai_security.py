@@ -410,7 +410,8 @@ def test_llm_checklist_is_added_only_for_ai_targets(fake_live):
 
 
 def test_threat_rules_catalogue_is_complete():
-    rules = yaml.safe_load(open(os.path.join(REPO_ROOT, "vibeharness", "config", "threat_rules.yaml"), encoding="utf-8"))
+    with open(os.path.join(REPO_ROOT, "vibeharness", "config", "threat_rules.yaml"), encoding="utf-8") as f:
+        rules = yaml.safe_load(f)
     entries = rules["owasp_llm_top10_2026"]
     assert [e["id"] for e in entries] == [f"LLM{i:02d}:2026" for i in range(1, 11)]
     assert entries[7]["name"] == "Hidden Context Exposure"

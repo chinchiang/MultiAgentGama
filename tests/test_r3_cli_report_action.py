@@ -186,7 +186,8 @@ def test_init_config_works_with_a_blocked_dependency(tmp_path):
     proc = subprocess.run([sys.executable, "-c", code, str(target)], cwd=REPO_ROOT, capture_output=True, text=True,
                           encoding="utf-8", env=dict(os.environ, PYTHONPATH=REPO_ROOT))
     assert proc.returncode == 0, proc.stderr
-    assert target.read_text(encoding="utf-8") == open(DEFAULT_CONFIG_PATH, encoding="utf-8").read()
+    with open(DEFAULT_CONFIG_PATH, encoding="utf-8") as f:
+        assert target.read_text(encoding="utf-8") == f.read()
 
 
 # --- 4. --summary-json 機器可讀摘要 ----------------------------------------------------------------------
@@ -387,7 +388,8 @@ def test_action_header_pins_upload_sarif_v4_with_security_events_permission():
     """action.yml 的用法註解：upload-sarif 釘在與 CodeQL workflow 相同的 v4.38.3 commit，並列出 security-events: write。
     action.yml's usage comment pins upload-sarif to the same v4.38.3 commit as the CodeQL workflow and lists
     security-events: write."""
-    text = open(os.path.join(REPO_ROOT, "action.yml"), encoding="utf-8").read()
+    with open(os.path.join(REPO_ROOT, "action.yml"), encoding="utf-8") as f:
+        text = f.read()
     assert "github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3" in text
     assert "security-events: write" in text and "contents: read" in text
     assert "9f759ee644a3e7c15c1390abf49868036c00067b" not in text

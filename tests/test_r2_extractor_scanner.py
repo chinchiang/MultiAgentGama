@@ -6,6 +6,7 @@ budget, VH-AI-006 argv program resolution (interpreters, wrapper prefixes, const
 arguments), and symbol matching of root / wildcard routes.
 Timing bounds are deliberately generous (tens of seconds before the fix, a few seconds after it); they only
 catch a regression back to quadratic time."""
+import sys
 import textwrap
 import time
 
@@ -31,10 +32,21 @@ def _names(symbols):
     return [s.name for s in symbols]
 
 
+# 逐行追蹤器（coverage 預設的 ctrace、除錯器）讓這些純 Python 掃描慢約 2–5 倍；量到的時間先除以 3，
+# 上限只因此稍微放寬，仍攔得住退回平方時間（修正前是數十秒）。sys.monitoring（COVERAGE_CORE=sysmon）不設追蹤器，
+# 不受影響。
+# A line tracer (coverage's default ctrace core, a debugger) makes these pure-Python scans about 2-5x slower; the
+# measured time is divided by 3 first, which loosens the limits only slightly, and they still catch a return to
+# quadratic time (tens of seconds before the fix). sys.monitoring (COVERAGE_CORE=sysmon) sets no tracer and is not
+# affected.
+_TRACER_SLOWDOWN = 3
+
+
 def _timed(fn):
     start = time.perf_counter()
     result = fn()
-    return result, time.perf_counter() - start
+    elapsed = time.perf_counter() - start
+    return result, elapsed / _TRACER_SLOWDOWN if sys.gettrace() is not None else elapsed
 
 
 # --- 1. 樣板字面值不再遞迴；單一檔案的意外錯誤不中止整次執行 ---

@@ -50,6 +50,7 @@
 - 新增 `tests/test_node_runtime.py`，測試 Node 執行環境的選擇：`build_node_sandbox` 依 provider 與版本決定 TypeScript 支援、label 與問題，docker 內的 `probe_node_version`，harness 的工廠，以及 `SuiteResult.node_runtime` 只出現在含 JS/TS 測試的 suite、只有黑箱 suite 含 JS 時 harness 也拿得到它。其中四個測試從 `tests/test_js_execution.py` 與 `tests/test_js_coverage.py` 原樣搬來（三個改名，因為舊名稱指的是已刪除的方法）。測試裡的沙盒替身改回傳 `SandboxRun`，替換 `execute_test_suite` 的假函式改回傳 `SuiteResult`。
 - 新增 `tests/test_call_plans.py`：以 `scripted` fixture 實際執行每個代理，確認它的 `plan` 對同樣輸入算出的呼叫數等於實際發出的呼叫（修復以 `max_per_call` 為上限）；審查者與威脅建模的計畫每次呼叫的程式碼 token 等於實際送出的程式碼清單；驗證者的計畫在有已佐證的發現時是上限（佐證只會讓呼叫變少）。`tests/test_estimate.py` 原有的測試不變，另新增 `test_verifier_calls_have_no_float_error`，釘住「修正」中驗證者呼叫數的那一項。
 - 新增 `tests/config_files.py`：`load_config()` 讀出內建設定的新副本，`write_config(tmp_path, cfg, name)` 把修改後的設定寫成暫存檔。`test_estimate.py`、`test_call_plans.py`、`test_parallel_and_budgets.py`、`test_quality_gate.py`、`test_mutation.py`、`test_js_execution.py` 與 `test_ai_security.py` 改用它，不再各自讀寫 YAML；`test_mutation.py` 與 `test_js_execution.py` 原本開檔後沒有關閉。測試數與涵蓋率不變。
+- 測試不再留下沒關的檔案與 socket：讀 `action.yml`、workflow、`.pre-commit-config.yaml`、內建設定、威脅規則、原始碼與暫存目標的地方改用 `with open(...)` 或 `Path.read_text`，`test_p0_regressions.py` 的兩個本機 `HTTPServer` 在 `shutdown()` 後也呼叫 `server_close()`；以 `-W error::ResourceWarning` 跑完整套件沒有任何警告。`test_r2_extractor_scanner.py` 的時間上限在逐行追蹤器（coverage 預設的 ctrace、除錯器）之下會把量到的時間除以 3（追蹤器讓這些掃描慢約 2–5 倍），仍攔得住退回平方時間；`test_call_plans.py` 的修復測試改為直接斷言修復機會數等於產生的測試數、每個無效的測試用完所有修復次數，且總數不超過計畫的上限。
 
 ### 文件
 
