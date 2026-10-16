@@ -5,6 +5,7 @@ import os
 
 import pytest
 
+from model_answers import answer
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.models import FindingSeverity, STRIDECategory, ThreatItem
 
@@ -82,7 +83,7 @@ def test_crashed_attack_synthesis_is_recorded():
     def crash_t2(agent_id, system, user, **kwargs):
         if "Threat ID: T-2\n" in user:
             raise ValueError("boom")
-        return {"code": "def test_ok():\n    assert True\n"}
+        return answer({"code": "def test_ok():\n    assert True\n"})
     gateway.generate = crash_t2
     tests = ThreatScenarioBuilder(gateway).build_test_cases_from_threats([_threat("T-1"), _threat("T-2"), _threat("T-3")])
     assert [t.source_ref for t in tests] == ["T-1", "T-3"]

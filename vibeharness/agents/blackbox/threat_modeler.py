@@ -9,7 +9,7 @@ from vibeharness.core.models import ThreatItem, ThreatModelReport, STRIDECategor
 from vibeharness.core.fanout import Call, CallKind, PlannedCalls, fan_out
 from vibeharness.core.identity import severity_rank, threat_identity
 from vibeharness.core.model_output import LIST_OF_OBJECTS, OutputSchema
-from vibeharness.core.llm_gateway import LLMGateway
+from vibeharness.core.llm_gateway import NO_ANSWER, LLMGateway, ModelAnswer
 from vibeharness.core.i18n import bi
 from vibeharness.core.codecontext import estimate_tokens, render_symbols, batch_symbols
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
@@ -199,7 +199,7 @@ class AutomatedThreatModeler:
         routes_summary: str,
         root_dir: Optional[str],
         ai_components: Optional[List[str]] = None
-    ) -> Dict[str, Any]:
+    ) -> ModelAnswer:
         user_prompt = (
             f"System Description: {system_description}\n"
             f"Entrypoints: {entrypoints_summary}\n"
@@ -281,7 +281,7 @@ class AutomatedThreatModeler:
         batches = _batches(symbols, root_dir or os.getcwd())
 
         logger.info(bi("開始 STRIDE 與 OWASP 威脅建模...", "Initiating STRIDE & OWASP threat modeling..."))
-        calls: List[Call[Dict[str, Any]]] = [
+        calls: List[Call[ModelAnswer]] = [
             Call(AGENT_ID, ("威脅建模批次", "Threat modeler batch"), functools.partial(
                 self._model_batch, batch, system_prompt, system_description, entrypoints_summary, routes_summary,
                 root_dir, ai_components))
@@ -290,22 +290,21 @@ class AutomatedThreatModeler:
         # 當掉的批次由 fan_out 記成證據缺口；LLMGatewayError 與 KeyboardInterrupt 會在取消尚未開始的批次後往外拋
         # fan_out books a crashed batch as an evidence gap; LLMGatewayError and KeyboardInterrupt propagate after the
         # batches not yet started are cancelled
-        responses: List[Dict[str, Any]] = [
-            resp or {} for resp in fan_out(self.gateway, calls, fallback={}, logger=logger)]
+        answers: List[ModelAnswer] = fan_out(self.gateway, calls, fallback=NO_ANSWER, logger=logger)
 
         report_fields: Optional[Dict[str, Any]] = None
         threats: List[ThreatItem] = []
         used_ids: set = set()
         any_simulated = False
 
-        for resp in responses:
-            any_simulated = any_simulated or self.gateway.is_simulated(resp)
-            if report_fields is None and self.gateway.is_usable(resp):
+        for answer in answers:
+            any_simulated = any_simulated or answer.simulated
+            if report_fields is None and answer.usable:
                 # 報告層級欄位來自第一個產生可用答案的批次
                 # Report-level fields come from the first batch that produced a usable answer
-                report_fields = resp
-            batch = self._parse_threats(resp, used_ids)
-            if self.gateway.is_simulated(resp):
+                report_fields = answer.data
+            batch = self._parse_threats(answer.data, used_ids)
+            if answer.simulated:
                 for threat in batch:
                     threat.is_simulated = True
             threats.extend(batch)

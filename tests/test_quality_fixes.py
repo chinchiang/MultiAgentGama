@@ -5,6 +5,7 @@ import sys
 
 import pytest
 
+from model_answers import answer
 from vibeharness.core.llm_gateway import DEFAULT_CONFIG_PATH
 from vibeharness.core.i18n import en_only
 from vibeharness.agents.blackbox.threat_modeler import DEFAULT_RULES_PATH
@@ -137,7 +138,8 @@ def test_no_base_url_means_in_process_and_no_network_probe(monkeypatch):
     probed = []
     monkeypatch.setattr(builder, "check_server_live", lambda url, *a, **k: probed.append(url) or True)
     prompts = []
-    monkeypatch.setattr(builder.gateway, "generate", lambda agent, system, user, **k: prompts.append(system) or {})
+    monkeypatch.setattr(builder.gateway, "generate",
+                        lambda agent, system, user, **k: prompts.append(system) or answer())
     builder.build_test_cases_from_threats([_threat()])
     assert probed == []
     assert "In-Process Contract" in prompts[0]
@@ -244,7 +246,7 @@ def test_identical_threats_from_several_batches_are_merged_keeping_highest_sever
 
     def responder(agent_id, system_prompt, user_prompt, **k):
         calls["n"] += 1
-        return {"threats": [
+        return answer({"threats": [
             # 同一個威脅，標點／大小寫改寫過，嚴重度每批不同
             # same threat, reworded punctuation/casing, severity differs per batch
             {"threat_id": "THREAT-01", "stride_category": "Tampering", "title": f"Mass Assignment{'!' * calls['n']}",
@@ -253,7 +255,7 @@ def test_identical_threats_from_several_batches_are_merged_keeping_highest_sever
             # a different route is a different threat and must be kept
             {"threat_id": "THREAT-02", "stride_category": "Tampering", "title": "Mass assignment",
              "attack_vector": f"PUT /route{calls['n']}"},
-        ]}
+        ]})
 
     gw.generate = responder
     symbols = [CodeSymbol(name=f"f{i}", symbol_type="function", file_path="app.py", line_start=1, line_end=1,

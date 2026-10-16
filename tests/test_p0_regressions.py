@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import pytest
+from model_answers import answer
 from vibeharness.core.models import GeneratedTest, TestStatus, AgentCallRecord
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
 from vibeharness.core.sandbox import LocalSubprocessSandbox, SandboxRun, TIMEOUT_EXIT_CODE
@@ -389,7 +390,7 @@ def test_live_mode_without_key_raises(monkeypatch):
 def test_simulated_responses_are_flagged_and_logged():
     gateway = LLMGateway(CONFIG, execution_mode="mock")
     resp = gateway.generate("whitebox_reviewer_claude", "sys", "prompt")
-    assert gateway.is_simulated(resp)
+    assert resp.simulated
     assert gateway.used_simulation
     assert gateway.call_log[0].mode == "simulated"
 
@@ -411,7 +412,7 @@ def test_null_config_sections_are_treated_as_empty(tmp_path):
     gateway = LLMGateway(str(cfg), execution_mode="mock")
     assert gateway.models_config == {} and gateway.agents_config == {}
     resp = gateway.generate("any_agent", "sys", "user")
-    assert gateway.is_simulated(resp)
+    assert resp.simulated
 
 
 def test_force_utf8_stdio_is_safe_to_call():
@@ -564,8 +565,8 @@ def test_unparseable_live_output_is_recorded_invalid(fake_live):
     fake_live(lambda s, u: "Sorry, I cannot help with that.")
     gateway = LLMGateway(CONFIG, execution_mode="live")
     resp = gateway.generate("whitebox_reviewer_claude", "sys", "prompt", schema=OutputSchema(required={"findings": ANY}))
-    assert not gateway.is_usable(resp)
-    assert "findings" not in resp
+    assert not resp.usable
+    assert "findings" not in resp.data
     # 無法使用的回答會再問一次（登記為 `retried`），然後登記為 `invalid`
     # The unusable answer is re-asked once (booked as `retried`), then booked as `invalid`
     assert [c.mode for c in gateway.call_log] == ["retried", "invalid"]
@@ -727,7 +728,7 @@ def test_generated_attack_code_targeting_another_host_is_rejected():
         ]
 
         def responder(agent_id, system, user, **k):
-            return {"code": codes.pop(0)}
+            return answer({"code": codes.pop(0)})
 
         gw = LLMGateway(CONFIG, execution_mode="mock")
         gw.generate = responder

@@ -11,7 +11,8 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from config_files import load_config, write_config
-from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError, ConfigError, BUDGET_EXHAUSTED_REASON, PROVENANCE_KEY
+from model_answers import answer
+from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError, ConfigError, BUDGET_EXHAUSTED_REASON
 from vibeharness.core.models import FindingSeverity, ReviewFinding, STRIDECategory, ThreatItem, CodeSymbol
 from vibeharness.core.i18n import has_cjk
 from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
@@ -62,7 +63,7 @@ class _ConcurrencyProbe:
         time.sleep(0.05 * (self.count - index))  # 以相反順序完成 ／ finish in reverse order
         with self.lock:
             self.in_flight -= 1
-        return {"code": f"def test_{index}():\n    assert {index} == {index}\n", "title": f"for {index}"}
+        return answer({"code": f"def test_{index}():\n    assert {index} == {index}\n", "title": f"for {index}"})
 
 
 # --- 並行仍保持結果的確定性 -----------------------------------------------------------------
@@ -113,10 +114,10 @@ def test_threat_modeling_batches_run_concurrently_and_keep_order(tmp_path):
             time.sleep(0.05 * (4 - index))
             with self.lock:
                 self.in_flight -= 1
-            return {
+            return answer({
                 "threats": [{"threat_id": f"THREAT-0{index+1}", "stride_category": "Tampering", "title": f"threat for {index}"}],
                 "entrypoints": [f"/api/{index}"]
-            }
+            })
 
     probe = _ThreatProbe()
     tm.gateway.generate = probe
@@ -146,7 +147,7 @@ def test_a_crashed_test_generation_is_booked_as_an_invalid_call(tmp_path):
     def crash_on_f1(agent_id, system, user, **kwargs):
         if "defect 1" in user:
             raise RuntimeError("parser exploded")
-        return {"code": "def test_ok():\n    assert True\n"}
+        return answer({"code": "def test_ok():\n    assert True\n"})
     gen.gateway.generate = crash_on_f1
     tests = gen.generate_tests_for_findings([_finding(i) for i in range(3)], [], root_dir=str(tmp_path))
     assert [t.source_ref for t in tests if t.test_type == "whitebox_unit"] == ["F0", "F2"]
@@ -339,7 +340,7 @@ def test_unusable_answer_is_re_asked_once_and_the_retry_can_succeed(fake_live):
     fake = fake_live(responder)
     gw = LLMGateway(CONFIG, execution_mode="live")
     resp = gw.generate("whitebox_reviewer_claude", "sys", "audit this", schema=OutputSchema(required={"findings": ANY}))
-    assert gw.is_usable(resp) and resp["findings"] == []
+    assert resp.usable and resp.data["findings"] == []
     assert [c.mode for c in gw.call_log] == ["retried", "live"]
     assert "could not be used (response is not valid JSON)" in prompts[1] and prompts[1].startswith("audit this")
     assert not has_cjk(prompts[1])  # 雙語原因只以英文送達模型 ／ the bilingual reason reaches the model in English only
@@ -545,12 +546,12 @@ def test_response_cache_serves_repeat_prompts_without_a_provider_call(fake_live,
     gw = LLMGateway(_config(tmp_path, cache_dir=str(cache)), execution_mode="live")
     gw.max_model_calls = 1
     first = gw.generate("whitebox_reviewer_claude", "sys", "audit", schema=OutputSchema(required={"findings": ANY}))
-    assert first["findings"] and first[PROVENANCE_KEY]["cached"] is False
+    assert first.data["findings"] and first.cached is False
     assert len(list(cache.glob("*.json"))) == 1 and len(fake.calls) == 1
     # 第二次相同的提示詞：沒有供應商呼叫、不消耗預算，在呼叫紀錄中標示為已快取
     # Second identical prompt: no provider call, no budget consumed, flagged as cached in the call log
     second = gw.generate("whitebox_reviewer_claude", "sys", "audit", schema=OutputSchema(required={"findings": ANY}))
-    assert second["findings"] == first["findings"] and second[PROVENANCE_KEY]["cached"] is True
+    assert second.data["findings"] == first.data["findings"] and second.cached is True
     assert len(fake.calls) == 1 and gw.live_calls_attempted == 1
     assert [c.cached for c in gw.call_log] == [False, True] and gw.call_log[-1].mode == "live"
     assert len(gw.cached_calls) == 1

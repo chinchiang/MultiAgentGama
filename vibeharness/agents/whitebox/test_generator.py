@@ -203,7 +203,7 @@ class WhiteboxTestGenerator:
         resp = self.gateway.generate(
             AGENT_ID, system_prompt, user_prompt,
             json_output=True, schema=TESTS_SCHEMA, simulated=lambda alias: {"tests": []},
-        )
+        ).data
 
         # `tests` 裡可用的項目優先；沒有任何一項可用時（不是清單、空清單，或每一項都沒有 code），改用回答本身的 `code`，
         # 與形狀檢查（TESTS_SCHEMA 的 any_of）接受這個回答的理由一致
@@ -273,9 +273,9 @@ class WhiteboxTestGenerator:
                     f"Output the corrected JavaScript code only:\n\n{code_to_check}"
                 )
                 heal_system = "Fix JavaScript Test Code"
-            resp = self.gateway.generate(AGENT_ID, heal_system, heal_prompt, json_output=False,
-                                         simulated=lambda alias: {"tests": []})
-            fixed = strip_code_fences(text_or(resp.get("raw"), ""))
+            answer = self.gateway.generate(AGENT_ID, heal_system, heal_prompt, json_output=False,
+                                           simulated=lambda alias: {"tests": []})
+            fixed = strip_code_fences(text_or(answer.text, ""))
             if not fixed:
                 break  # 沒有可用來修復的內容（例如模擬引擎） ／ Nothing to repair with (e.g. simulation engine)
             code_to_check = fixed

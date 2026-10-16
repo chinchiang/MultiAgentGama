@@ -228,7 +228,7 @@ def test_gateway_passes_call_options_and_uses_fallback_model(fake_live, monkeypa
     assert calls[0]["timeout"] == 180 and calls[0]["num_retries"] == 2 and calls[0]["max_tokens"] == 16384
     assert gateway.call_log[0].mode == "live"
     assert gateway.call_log[0].model_name == "claude-haiku-4-5-20251001"
-    assert resp["_provenance"]["model"] == "claude-haiku-4-5-20251001"
+    assert resp.model == "claude-haiku-4-5-20251001"
 
 
 def test_missing_config_fails_loudly(tmp_path):
