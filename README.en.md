@@ -215,6 +215,7 @@ MultiAgentGama/
 │   │   ├── sanitize.py              # Trust-boundary hygiene: invisible chars, secret redaction, untrusted-code / model-output channels, output sanitizing
 │   │   ├── sandbox.py               # Sandboxes: local subprocess (not a security boundary) and Docker containers; a Node flavour of each (node --test); choosing and probing the Node runtime
 │   │   ├── settings.py              # Settings: the config file loaded, defaulted and validated once (Discovered config policy, CLI overrides)
+│   │   ├── stdio.py                 # Console-stream guard: stdout / stderr can write the bilingual output (shared by the CLI, the Action and the harness)
 │   │   ├── transport.py             # The ModelTransport model-call seam; the default LiteLLMTransport is the only place that imports litellm
 │   │   └── verdict.py               # The four verdicts and their exit codes (no third-party imports)
 │   ├── agents/

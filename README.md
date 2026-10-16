@@ -215,6 +215,7 @@ MultiAgentGama/
 │   │   ├── sanitize.py              # 信任邊界：去隱形字元、遮蔽密鑰、不受信任程式碼／模型輸出通道、報告消毒
 │   │   ├── sandbox.py               # 沙盒：本機子程序（非安全邊界）與 Docker 容器；Node 版本各一（node --test）；Node 執行環境的選擇與版本偵測
 │   │   ├── settings.py              # 設定：設定檔只載入、套用預設值並驗證一次（探索到的設定檔政策、CLI 覆寫值）
+│   │   ├── stdio.py                 # 主控台串流防護：讓 stdout／stderr 寫得出雙語輸出（CLI、Action、harness 共用）
 │   │   ├── transport.py             # 模型呼叫接縫 ModelTransport；預設的 LiteLLMTransport 是唯一 import litellm 的地方
 │   │   └── verdict.py               # 四種判定結果與其結束碼（不匯入第三方套件）
 │   ├── agents/

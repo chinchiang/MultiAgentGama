@@ -420,6 +420,33 @@ def test_force_utf8_stdio_is_safe_to_call():
     assert sys.stdout.writable()
 
 
+def test_one_stdio_guard_serves_the_cli_the_action_and_the_harness():
+    """CLI、Action runner 與 harness 用同一個串流防護（core/stdio.py），沒有各自的版本。
+    The CLI, the Action runner and the harness share one stream guard (core/stdio.py), not versions of their own."""
+    from vibeharness import action_runner, cli
+    from vibeharness.core import harness, stdio
+    assert cli.force_utf8_stdio is action_runner.force_utf8_stdio is harness.force_utf8_stdio is stdio.force_utf8_stdio
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows 一律改成 UTF-8 ／ Windows always switches to UTF-8")
+def test_stdio_guard_writes_unencodable_text_with_backslashreplace(monkeypatch):
+    """寫不出雙語文字的嚴格串流（例如 LANG=C 的 ASCII）改用 backslashreplace，寫中文不會當掉；UTF-8 串流不變。
+    A strict stream that cannot write the bilingual text (e.g. ASCII under LANG=C) switches to backslashreplace, so
+    writing Chinese no longer crashes; a UTF-8 stream is left as it is."""
+    import io
+    from vibeharness.core.stdio import force_utf8_stdio
+    ascii_out = io.TextIOWrapper(io.BytesIO(), encoding="ascii", errors="strict")
+    utf8_err = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="strict")
+    monkeypatch.setattr(sys, "stdout", ascii_out)
+    monkeypatch.setattr(sys, "stderr", utf8_err)
+    force_utf8_stdio()
+    force_utf8_stdio()  # 冪等：CLI 與 harness 都會呼叫 ／ idempotent: the CLI and the harness both call it
+    assert (ascii_out.errors, utf8_err.errors) == ("backslashreplace", "strict")
+    ascii_out.write("錯誤")
+    ascii_out.flush()
+    assert ascii_out.buffer.getvalue() == b"\\u932f\\u8aa4"
+
+
 # --- 沒有寫死的範例應用程式測試 -------------------------------------------------
 # --- No hardcoded sample-app tests -------------------------------------------
 
