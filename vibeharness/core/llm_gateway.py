@@ -99,13 +99,15 @@ class ModelAnswer:
 
     @property
     def usable(self) -> bool:
-        """模型有回答但其輸出無法使用時為 False ／ False when the model answered but its output could not be used."""
-        return self.mode != "invalid"
+        """有可用的回答（真實模型或模擬輸出）時為 True；回答無法使用，或根本沒有回答（NO_ANSWER）時為 False。
+        True when there is a usable answer (a real model's or Simulated output); False when the answer could not be
+        used or there was no answer at all (NO_ANSWER)."""
+        return self.mode in ("live", "simulated")
 
 
-# 沒有拿到閘道回答的呼叫（例如在閘道之外當掉，由 fan_out 記成無效呼叫）：沒有資料、不是模擬、也不算無法使用
+# 沒有拿到閘道回答的呼叫（例如在閘道之外當掉，由 fan_out 記成無效呼叫）：沒有資料、不是模擬，也不可用
 # A call that got no answer from the gateway (e.g. it crashed outside it, booked as an invalid call by fan_out): no
-# data, not simulated, and not counted as unusable
+# data, not simulated, and not usable
 NO_ANSWER = ModelAnswer(mode="none", model="")
 
 

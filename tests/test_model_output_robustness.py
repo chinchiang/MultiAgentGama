@@ -146,6 +146,28 @@ def test_invalid_batch_does_not_kill_threat_modeling():
     assert report.entrypoints == ["/api/valid"]
 
 
+
+def test_a_crashed_batch_does_not_blank_the_report_fields():
+    """在閘道之外當掉的批次沒有回答（fan_out 已把它記成無效呼叫）：和無法使用的批次一樣略過，報告層級欄位仍來自下一個
+    可用的批次，而不是被當掉的批次換成空的預設值。
+    A batch that crashed outside the gateway has no answer (fan_out already booked it as an invalid call): like an
+    unusable batch it is skipped, and the report-level fields still come from the next usable batch instead of the
+    crashed one turning them into the empty defaults."""
+    gw = LLMGateway(CONFIG, execution_mode="mock")
+
+    def responder(agent_id, system_prompt, user_prompt, **k):
+        if "Symbol: a " in user_prompt:
+            raise RuntimeError("parser exploded")
+        return model_answer({"threats": [{"threat_id": "THREAT-01", "stride_category": "Tampering", "title": "b"}],
+                             "entrypoints": ["/api/from-b"]})
+
+    gw.generate = responder
+    report = AutomatedThreatModeler(gw).model_system("desc", ["/api/users"], symbols=[_big_symbol("a"), _big_symbol("b")],
+                                                     root_dir=".")
+    assert [t.title for t in report.threats] == ["b"]
+    assert report.entrypoints == ["/api/from-b"]
+    assert [c.agent_id for c in gw.invalid_calls] == ["blackbox_threat_modeler"]
+
 def test_wrong_typed_threat_fields_are_coerced_not_fatal():
     gw = LLMGateway(CONFIG, execution_mode="mock")
     gw.generate = lambda *a, **k: model_answer({"threats": [{
