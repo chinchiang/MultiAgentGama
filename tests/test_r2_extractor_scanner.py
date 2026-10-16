@@ -32,12 +32,14 @@ def _names(symbols):
     return [s.name for s in symbols]
 
 
-# 逐行追蹤器（coverage 預設的 ctrace、除錯器）讓這些純 Python 掃描慢約 4 倍；量到的時間先除掉這個倍數，
-# 時間上限仍是沒有追蹤時的數字。sys.monitoring（COVERAGE_CORE=sysmon）不設追蹤器，不受影響。
-# A line tracer (coverage's default ctrace core, a debugger) makes these pure-Python scans about 4x slower; the
-# measured time is divided by that factor first, so the limits stay the untraced figures. sys.monitoring
-# (COVERAGE_CORE=sysmon) sets no tracer and is not affected.
-_TRACER_SLOWDOWN = 4
+# 逐行追蹤器（coverage 預設的 ctrace、除錯器）讓這些純 Python 掃描慢約 2–5 倍；量到的時間先除以 3，
+# 上限只因此稍微放寬，仍攔得住退回平方時間（修正前是數十秒）。sys.monitoring（COVERAGE_CORE=sysmon）不設追蹤器，
+# 不受影響。
+# A line tracer (coverage's default ctrace core, a debugger) makes these pure-Python scans about 2-5x slower; the
+# measured time is divided by 3 first, which loosens the limits only slightly, and they still catch a return to
+# quadratic time (tens of seconds before the fix). sys.monitoring (COVERAGE_CORE=sysmon) sets no tracer and is not
+# affected.
+_TRACER_SLOWDOWN = 3
 
 
 def _timed(fn):
