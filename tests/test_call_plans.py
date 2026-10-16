@@ -151,8 +151,8 @@ def test_debater_plan_is_the_verifier_calls_for_the_reported_findings(scripted):
     assert not any(p.exact for p in plans)
     assert len(set(_planned(plans).values())) > 1
     assert _planned(plans) == _actual(transport)
-    # 分到的發現數等於實際送給每個驗證者的發現數（自家模型的不送） ／ the assigned findings are those actually sent
-    # to each verifier (never its own model's)
+    # 分到的發現數等於實際送給每個驗證者的發現數（自家模型的不送）
+    # The assigned findings are those actually sent to each verifier (never its own model's)
     ruled = _ruled_on(transport)
     assert {p.model_alias: debater.assigned_findings(reported, p.model_alias) for p in plans} == \
         {p.model_alias: ruled[p.model_alias] for p in plans}

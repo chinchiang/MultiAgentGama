@@ -72,7 +72,7 @@
 - 設計文件說明 `Sandbox` 接縫、`SandboxRun`、`SuiteResult` 與 `NodeRuntime`（模組表、第 3 章 Phase 3、第 9.2 至 9.5 節、擴充點與測試章節），重要函式索引新增這些名稱並移除 harness 已刪除的兩個方法；同時修正 `test_executor.py` 後段（`_run_individually`、`_aggregate`、`_result` 等）、`transport.py` 與 `GateEvidence` 組成在先前就已偏移的行號。行號改以 commit `af9af80` 為準。
 - README 的專案結構列出 `tests/test_node_runtime.py`，並說明 `sandbox.py` 選擇 Node 執行環境、`test_executor.py` 回傳 `SuiteResult`。
 - `GLOSSARY.md` 新增 Node 執行環境。
-- 設計文件說明各代理的呼叫計畫（模組表的 `PlannedCalls` 與 `plan`、第 14.3 節 `--estimate` 改寫為加總計畫、第 6.6 節的 `HEAL_ATTEMPTS`、測試章節的 `test_call_plans.py`、模組表與常數表的 `CallKind` 與 `HEAL_CODE_TOKENS`、第 14.3 節的 `batch_count`、`assigned_findings` 與 `_typical_calls`），重要函式索引新增 `PlannedCalls`、`CallKind`、`_row`、`_typical_calls`、`batch_count`、`assigned_findings` 與各代理的 `plan`，行號引用也更新為 commit `75189d4`。
+- 設計文件說明各代理的呼叫計畫（模組表的 `PlannedCalls` 與 `plan`、第 14.3 節 `--estimate` 改寫為加總計畫並說明 `batch_count`、`assigned_findings` 與 `_typical_calls`、第 6.6 節的 `HEAL_ATTEMPTS`、測試章節的 `test_call_plans.py`、模組表與常數表的 `CallKind` 與 `HEAL_CODE_TOKENS`），重要函式索引新增 `PlannedCalls`、`CallKind`、`_row`、`_typical_calls`、`batch_count`、`assigned_findings` 與各代理的 `plan`，行號引用也更新為 commit `75189d4`。
 - README 的專案結構列出 `tests/test_call_plans.py`，並說明 `estimate.py` 加總各代理的呼叫計畫。
 
 ## [0.12.0] - 2026-10-12
