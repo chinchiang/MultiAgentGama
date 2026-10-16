@@ -82,7 +82,9 @@ def test_every_action_is_pinned_to_a_commit_sha_with_a_version_comment():
     reusable workflows excepted)."""
     offenders = []
     for path in _workflow_files():
-        for lineno, line in enumerate(open(path, encoding="utf-8"), 1):
+        with open(path, encoding="utf-8") as f:
+            lines = list(f)
+        for lineno, line in enumerate(lines, 1):
             m = re.match(r"^\s*(?:-\s+)?uses:\s*(\S+)(.*)$", line)
             if not m or m.group(1).startswith("./"):
                 continue
@@ -95,7 +97,8 @@ def test_pypi_publish_is_not_pinned_to_the_annotated_tag_object():
     """v1.13.0 的 annotated tag 物件 SHA（106e0b0…）不是 commit；釘版必須是它指向的 commit。
     The annotated tag object SHA of v1.13.0 (106e0b0...) is not a commit; the pin must be the commit it points to."""
     for path in _workflow_files():
-        assert "106e0b0b7c337fa67ed433972f777c6357f78598" not in open(path, encoding="utf-8").read(), path
+        with open(path, encoding="utf-8") as f:
+            assert "106e0b0b7c337fa67ed433972f777c6357f78598" not in f.read(), path
 
 
 def test_no_expression_is_interpolated_into_a_run_script():
@@ -104,7 +107,8 @@ def test_no_expression_is_interpolated_into_a_run_script():
     shell injection (some steps hold secrets)."""
     offenders = []
     for path in _workflow_files():
-        doc = yaml.safe_load(open(path, encoding="utf-8"))
+        with open(path, encoding="utf-8") as f:
+            doc = yaml.safe_load(f)
         for job, step in _steps(doc):
             if "${{" in str(step.get("run", "")):
                 offenders.append(f"{os.path.relpath(path, REPO_ROOT)}:{job}:{step.get('name', step.get('run', '')[:40])}")
@@ -186,7 +190,8 @@ def test_pre_commit_ruff_matches_the_dev_pin():
     path = os.path.join(REPO_ROOT, ".pre-commit-config.yaml")
     if not os.path.exists(path):
         pytest.skip(".pre-commit-config.yaml is not shipped in the sdist")
-    text = open(path, encoding="utf-8").read()
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
     config = yaml.safe_load(text)
     rev = next(r["rev"] for r in config["repos"] if r["repo"].endswith("/ruff-pre-commit"))
     assert re.fullmatch(r"[0-9a-f]{40}", rev), rev

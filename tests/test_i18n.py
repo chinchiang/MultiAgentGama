@@ -276,7 +276,8 @@ def test_every_python_docstring_is_bilingual():
     import ast
     offenders = []
     for path in _repo_python_files():
-        tree = ast.parse(open(path, encoding="utf-8").read())
+        with open(path, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
         for node in ast.walk(tree):
             if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -297,7 +298,8 @@ def test_every_comment_line_is_bilingual():
     import tokenize
     offenders = []
     for path in _repo_python_files():
-        source = open(path, encoding="utf-8").read()
+        with open(path, encoding="utf-8") as f:
+            source = f.read()
         lines = source.splitlines()
         comment_lines = {
             tok.start[0]: tok.string

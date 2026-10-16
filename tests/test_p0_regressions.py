@@ -627,6 +627,7 @@ def test_server_returning_404_counts_as_live():
         assert ThreatScenarioBuilder(None).check_server_live(f"http://127.0.0.1:{server.server_port}")
     finally:
         server.shutdown()
+        server.server_close()
 
 
 def test_server_probe_retries_before_giving_up(monkeypatch):
@@ -712,6 +713,7 @@ def test_generated_attack_code_targeting_another_host_is_rejected():
         assert "evil.example.com" not in "".join(t.code for t in tests)
     finally:
         server.shutdown()
+        server.server_close()
 
 
 def test_url_guard_resolves_ipv6_literals_and_userinfo():

@@ -807,7 +807,8 @@ def _action_split(tmp_path, value):
     """執行 action.yml 兩個標記之間的 extra-args 切字區塊，回傳 (exit code, 切出的參數)。
     Runs action.yml's extra-args splitting block (between its two markers); returns (exit code, the split arguments)."""
     import sys
-    lines = open("action.yml", encoding="utf-8").read().splitlines()
+    with open("action.yml", encoding="utf-8") as f:
+        lines = f.read().splitlines()
     begin = next(i for i, line in enumerate(lines) if "extra-args-split-begin" in line)
     end = next(i for i, line in enumerate(lines) if "extra-args-split-end" in line)
     block = "\n".join(line.strip() for line in lines[begin + 1:end]).replace("python -c", f'"{sys.executable}" -c')

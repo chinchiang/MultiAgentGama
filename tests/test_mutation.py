@@ -3,6 +3,7 @@ Mutation testing: sites, text splicing, the isolated copy, killed / survived jud
 switch precedence and the report."""
 import json
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
@@ -190,7 +191,7 @@ def test_strong_tests_kill_mutants_and_weak_tests_let_them_survive(tmp_path):
     content and mtime are untouched."""
     root = _setup(tmp_path)
     shop = os.path.join(root, "shop.py")
-    before, mtime = open(shop, encoding="utf-8").read(), os.stat(shop).st_mtime_ns
+    before, mtime = pathlib.Path(shop).read_text(encoding="utf-8"), os.stat(shop).st_mtime_ns
     tests = [_test("T1", STRONG.format(root=root), "F1"), _test("T2", WEAK, "F2")]
     report = _run(tmp_path, tests, root)
     assert report.skipped_reason is None and report.total == 7 and report.invalid == 0
@@ -203,7 +204,7 @@ def test_strong_tests_kill_mutants_and_weak_tests_let_them_survive(tmp_path):
     assert not report.truncated and report.candidate_sites == 7
     survivor = next(m for m in report.mutants if m.status == "survived")
     assert survivor.original != survivor.mutated and survivor.file == "shop.py"
-    assert open(shop, encoding="utf-8").read() == before and os.stat(shop).st_mtime_ns == mtime
+    assert pathlib.Path(shop).read_text(encoding="utf-8") == before and os.stat(shop).st_mtime_ns == mtime
 
 
 def test_path_rewrite_makes_embedded_absolute_paths_hit_the_mutated_copy(tmp_path):
@@ -240,12 +241,12 @@ def test_scratch_copy_is_removed_and_the_target_is_restored_after_an_error(tmp_p
         if calls["n"] == 1:
             return "survived"  # 未變異複本的檢查 ／ the unmutated-copy check
         raise RuntimeError("sandbox exploded")
-    before = open(os.path.join(root, "shop.py"), encoding="utf-8").read()
+    before = pathlib.Path(root, "shop.py").read_text(encoding="utf-8")
     with pytest.raises(RuntimeError):
         mut.run_mutation_testing(flaky, [_test("T1", WEAK, "F1")], _passed([_test("T1", WEAK, "F1")]),
                                  [_finding("F1", root, "discount")], _symbols(root), root, 5, 5)
     assert made and not os.path.exists(made[0])
-    assert open(os.path.join(root, "shop.py"), encoding="utf-8").read() == before
+    assert pathlib.Path(root, "shop.py").read_text(encoding="utf-8") == before
 
 
 def test_copy_leaves_out_skipped_dirs_bytecode_and_directory_symlinks(tmp_path):

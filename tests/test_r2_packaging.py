@@ -64,7 +64,9 @@ def test_every_pinned_release_reference_matches_the_package_version():
         path = os.path.join(REPO_ROOT, *rel.split("/"))
         if not os.path.exists(path):
             continue
-        for lineno, line in enumerate(open(path, encoding="utf-8"), 1):
+        with open(path, encoding="utf-8") as f:
+            lines = list(f)
+        for lineno, line in enumerate(lines, 1):
             for pattern in _REF_RES:
                 for version in pattern.findall(line):
                     found.append(rel)

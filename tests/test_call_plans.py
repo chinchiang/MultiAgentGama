@@ -189,9 +189,12 @@ def test_test_generator_plan_is_one_call_per_finding_and_bounds_the_heals(script
     (heal,) = [p for p in plans if p.kind is CallKind.HEAL]
     assert heal.conditional and not heal.json_output and heal.max_per_call == test_generator.HEAL_ATTEMPTS
     assert heal.code_tokens > 0  # 修復提示詞帶著被修的測試 ／ a repair prompt carries the test being repaired
-    # 每次產生的回答有一個無效的測試：用了計畫上限的一半 ／ one invalid test per generated answer: half the plan's cap
+    # 修復的機會數就是產生的測試數（每次回答兩個） ／ the repair opportunities are the generated tests (two per answer)
+    assert heal.calls == 2 * sum(generation.values())
+    # 每個無效的測試用完所有修復次數，總數沒有超過計畫的上限
+    # Every invalid test uses every attempt, and the total stays within the plan's cap
     healed = sum(_actual(transport, "Fix Python Test Code").values())
-    assert healed == len(findings) * test_generator.HEAL_ATTEMPTS == heal.calls * heal.max_per_call // 2
+    assert healed == len(findings) * test_generator.HEAL_ATTEMPTS <= heal.calls * heal.max_per_call
 
 
 def test_threat_modeler_plan_is_one_call_per_batch(scripted, tmp_path):
