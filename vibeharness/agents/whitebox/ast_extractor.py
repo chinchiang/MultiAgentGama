@@ -4,7 +4,9 @@ import logging
 import os
 import re
 from bisect import bisect_left, bisect_right
-from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
+from types import MappingProxyType
+from dataclasses import dataclass, field as dataclass_field
+from typing import Dict, Iterable, List, Mapping, Optional, Set, Tuple, Union
 from vibeharness.core.models import CodeSymbol
 from vibeharness.core.i18n import bi
 
@@ -229,6 +231,31 @@ class _RegexCloser:
         return outside
 
 
+@dataclass(frozen=True)
+class ScopeResult:
+    """一次走訪的檔案範圍：分析了哪些原始碼檔案、哪些因為什麼原因沒有分析，以及偵測到的語言。harness 的閘門、
+    主控台、Node 沙盒的 TypeScript 判斷與 --estimate 都讀這個值，而不是擷取器在最後一次呼叫後留下的狀態。
+    `filters` 是 harness 套用的檔案篩選條件的描述（擷取器本身不填）。
+    One walk's file scope: which source files were analyzed, which were not and why, and the languages detected.
+    The harness's gate, console, the Node sandbox's TypeScript choice and --estimate read this value rather than
+    the state the extractor was left in after its last call. `filters` describes the file selection the harness
+    applied (the extractor itself leaves it empty)."""
+    analyzed_files: Tuple[str, ...] = ()
+    skipped_files: Tuple[str, ...] = ()  # 超過 max_files ／ beyond max_files
+    oversized_files: Tuple[str, ...] = ()  # 超過 max_file_bytes ／ over max_file_bytes
+    parse_failures: Tuple[str, ...] = ()
+    filtered_out: int = 0  # 依要求排除的原始碼檔案（不是證據缺口） ／ source files left out by request (not a gap)
+    unsupported_count: int = 0
+    # 唯讀的對照表 ／ a read-only mapping
+    unsupported_languages: Mapping[str, int] = dataclass_field(default_factory=lambda: MappingProxyType({}))
+    unsupported_files: Tuple[str, ...] = ()  # 樣本 ／ a sample
+    config_files: Tuple[str, ...] = ()
+    skipped_config_files: Tuple[str, ...] = ()
+    oversized_config_files: Tuple[str, ...] = ()
+    detected_languages: Tuple[str, ...] = ()  # 已排序 ／ sorted
+    filters: Tuple[str, ...] = ()
+
+
 class ASTExtractor:
     """
     把原始碼解析成結構化的 CodeSymbol 物件。
@@ -332,6 +359,7 @@ class ASTExtractor:
         source files in unsupported languages (`unsupported_*`, an evidence gap) and configuration-like files that
         only get the local secret scan (`config_files`, at most max_config_files).
         """
+        self.detected_languages = set()
         self.parse_failures, self.skipped_files, self.analyzed_files = [], [], []
         self.oversized_files, self.filtered_out = [], 0
         self.unsupported_count, self.unsupported_languages, self.unsupported_files = 0, {}, []
@@ -394,6 +422,32 @@ class ASTExtractor:
                 if full_path not in self.parse_failures:
                     self.parse_failures.append(full_path)
         return all_symbols
+
+    def scan_directory(
+        self,
+        dir_path: str,
+        max_files: int = DEFAULT_MAX_FILES,
+        include: Optional[List[str]] = None,
+        exclude: Optional[List[str]] = None,
+        only_files: Optional[Iterable[str]] = None,
+        max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+        max_config_files: int = DEFAULT_MAX_CONFIG_FILES,
+    ) -> Tuple[List[CodeSymbol], ScopeResult]:
+        """parse_directory 的符號，加上這次走訪的範圍（不可變）。參數與 parse_directory 相同。
+        parse_directory's symbols plus this walk's scope (immutable). Same arguments as parse_directory."""
+        symbols = self.parse_directory(dir_path, max_files=max_files, include=include, exclude=exclude,
+                                       only_files=only_files, max_file_bytes=max_file_bytes,
+                                       max_config_files=max_config_files)
+        return symbols, ScopeResult(
+            analyzed_files=tuple(self.analyzed_files), skipped_files=tuple(self.skipped_files),
+            oversized_files=tuple(self.oversized_files), parse_failures=tuple(self.parse_failures),
+            filtered_out=self.filtered_out, unsupported_count=self.unsupported_count,
+            unsupported_languages=MappingProxyType(dict(self.unsupported_languages)),
+            unsupported_files=tuple(self.unsupported_files),
+            config_files=tuple(self.config_files), skipped_config_files=tuple(self.skipped_config_files),
+            oversized_config_files=tuple(self.oversized_config_files),
+            detected_languages=tuple(sorted(self.detected_languages)),
+        )
 
     @staticmethod
     def _file_kind(name: str) -> Optional[str]:

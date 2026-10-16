@@ -25,6 +25,7 @@
 - 呼叫計畫的種類改為 `vibeharness/core/fanout.py` 的 `CallKind` 列舉（審查者、驗證者、測試生成、修復、威脅建模、攻擊合成；值和原本的字串相同），`PlannedCalls.kind`、各代理的計畫與 `--estimate` 的提示開銷／典型輸出表都用它，不再是散落各處的字串。修復計畫自己帶被修測試的估計大小（測試生成器的 `HEAL_CODE_TOKENS`，1200），`estimate.py` 刪除 `_HEALED_CODE_TOKENS` 與對修復的特判。僅為內部變更：`--estimate` 的文字與 JSON 輸出逐位元組不變。
 - 呼叫計畫的介面收斂：`WhiteboxTestGenerator.plan` 與 `ThreatScenarioBuilder.plan` 的參數改名為 `finding_count`／`threat_count`（收的是數量，不是清單）；白箱批次數改由 `HeterogeneousReviewerEnsemble.batch_count` 回答（沒有符號或沒有審查者時是 0），不再從計畫數反推；`--estimate` 的說明文字改用 `MultiModelDebater.assigned_findings`（驗證者分到幾筆發現）與 `_typical_calls`（典型呼叫數），不再自己重算一次。僅為內部變更：`--estimate` 的文字與 JSON 輸出逐位元組不變。
 - 主控台串流防護集中在新的 `vibeharness/core/stdio.py`（`force_utf8_stdio`，只用標準函式庫）：CLI、Action runner 與 harness 都用它。過去 `action_runner.py` 從 CLI 匯入私有的 `_force_utf8_stdio`，harness 另有一份只處理 Windows 的同名函式，CLI 兩個都呼叫。`vibeharness.core.harness.force_utf8_stdio` 仍可匯入。CLI 與 Action 的行為不變。
+- 第 1 階段的檔案範圍改為回傳值：`VibeHarnessCommander.select_symbols` 回傳 `(symbols, ScopeResult)`，`ScopeResult`（`vibeharness/agents/whitebox/ast_extractor.py`，不可變）收著這次走訪分析了哪些檔案、哪些因為什麼原因沒有分析、設定類檔案、偵測到的語言與套用的篩選描述；閘門的證據、主控台、Node 沙盒的 TypeScript 判斷與 `--estimate` 都讀它，不再讀擷取器在最後一次呼叫後留下的屬性。新增 `ASTExtractor.scan_directory`；`parse_directory` 與那些屬性保留不變。直接呼叫 `select_symbols` 的程式碼要改讀 `scope.filters`（原本的第二個回傳值）。
 
 ### 修正
 
@@ -38,6 +39,7 @@
 - 沒有可用的 Node 執行環境時，每個 JS/TS 測試的原因現在寫出缺了什麼，與閘門的證據缺口相同（例如「找不到 node_bin '/usr/local/bin/node' 可用的 Node 執行環境（需要 Node >= 20.0.0）」或「Node v18.0.0 低於最低需求 20.0.0」）；過去報告與 JSON 裡每個測試只寫「找不到可用的 Node 執行環境」，詳細原因只出現在證據缺口。判定結果、證據缺口與結束碼不變；docker 映像檔不存在時的原因原本就是詳細的，也不變。
 - `--estimate` 的驗證者呼叫數在某些審查者數與批次數下多算一次：發現數以「去重後的發現數 ×（1 − 自家份額）」計算，浮點誤差讓整數變成略大一點的值，無條件進位後多出一次呼叫。例如 3 個別名不同的審查者、25 個白箱批次與預設的每批 3 個發現：每位驗證者分到 120 筆發現，應為 8 次呼叫，卻估成 9 次（120.00000000000001 筆）。現在發現數改由驗證者自己的呼叫計畫依每個模型回報的數量加總，估出 8 次。只影響這類組合的驗證者呼叫數與其 token、花費與總計；預設的 4 個審查者不受影響。
 - 以函式庫方式使用 harness（直接建立 `VibeHarnessCommander`）時，非 Windows 上寫不出中文的嚴格串流（例如 `PYTHONIOENCODING=ascii`、`LANG=C`）原本維持原樣，雙語輸出可能以 `UnicodeEncodeError` 當掉；現在和 CLI、Action 一樣改用 backslashreplace 輸出無法編碼的字元。
+- 擷取器偵測到的語言從不重設：同一個 `ASTExtractor`（或 `VibeHarnessCommander`）用於第二個目標時，會帶著前一個目標的語言，影響顯示的技術堆疊與 JS/TS 相關的證據缺口。現在每次走訪都重新偵測。
 
 ### 測試
 
@@ -76,7 +78,7 @@
 - 設計文件說明 `Sandbox` 接縫、`SandboxRun`、`SuiteResult` 與 `NodeRuntime`（模組表、第 3 章 Phase 3、第 9.2 至 9.5 節、擴充點與測試章節），重要函式索引新增這些名稱並移除 harness 已刪除的兩個方法；同時修正 `test_executor.py` 後段（`_run_individually`、`_aggregate`、`_result` 等）、`transport.py` 與 `GateEvidence` 組成在先前就已偏移的行號。行號改以 commit `af9af80` 為準。
 - README 的專案結構列出 `tests/test_node_runtime.py`，並說明 `sandbox.py` 選擇 Node 執行環境、`test_executor.py` 回傳 `SuiteResult`。
 - `GLOSSARY.md` 新增 Node 執行環境。
-- 設計文件說明各代理的呼叫計畫（模組表的 `PlannedCalls` 與 `plan`、第 14.3 節 `--estimate` 改寫為加總計畫並說明 `batch_count`、`assigned_findings` 與 `_typical_calls`、第 6.6 節的 `HEAL_ATTEMPTS`、測試章節的 `test_call_plans.py`、模組表與常數表的 `CallKind` 與 `HEAL_CODE_TOKENS`），重要函式索引新增 `PlannedCalls`、`CallKind`、`_row`、`_typical_calls`、`batch_count`、`assigned_findings` 與各代理的 `plan`，行號引用也更新為 commit `eb34dfb`。
+- 設計文件說明各代理的呼叫計畫（模組表的 `PlannedCalls` 與 `plan`、第 14.3 節 `--estimate` 改寫為加總計畫並說明 `batch_count`、`assigned_findings` 與 `_typical_calls`、第 6.6 節的 `HEAL_ATTEMPTS`、測試章節的 `test_call_plans.py`、模組表與常數表的 `CallKind` 與 `HEAL_CODE_TOKENS`、第 4 章第 1 階段的 `ScopeResult` 與模組表的 `ScopeResult`），重要函式索引新增 `PlannedCalls`、`CallKind`、`_row`、`_typical_calls`、`batch_count`、`assigned_findings`、`ScopeResult`、`scan_directory` 與各代理的 `plan`，行號引用也更新為 commit `f3cdbbb`。
 - README 的專案結構列出 `tests/test_call_plans.py`，並說明 `estimate.py` 加總各代理的呼叫計畫。
 - 設計文件的模組表、重要函式索引與 README 目錄樹加入 `core/stdio.py`；修正過時的行號引用：第 13 章自動發現設定檔政策的常數與 `_is_sensitive_model_key`，以及索引中呼叫紀錄分類函式的位置。
 
