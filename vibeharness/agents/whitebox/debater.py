@@ -75,12 +75,21 @@ class MultiModelDebater:
         known before the run), and which findings get corroborated, and so need no ruling, is not known either."""
         plans = []
         for agent_id, alias in self.verifiers.items():
-            assigned = sum(n for reporter, n in findings_by_alias.items() if reporter != alias)
+            assigned = self.assigned_findings(findings_by_alias, alias)
             calls = math.ceil(assigned / self.FINDINGS_PER_CALL) if assigned > 0 else 0
             plans.append(PlannedCalls(agent_id=agent_id, model_alias=alias, kind=CallKind.VERIFIER, calls=calls,
                                       json_output=True, code_tokens=self.LISTING_MAX_TOKENS + self.CODE_CONTEXT_TOKENS,
                                       exact=False))
         return plans
+
+    @staticmethod
+    def assigned_findings(findings_by_alias: Mapping[str, float], alias: str) -> float:
+        """計畫裡模型別名 `alias` 的驗證者分到幾筆發現：其他模型回報的總和（絕不裁決自家模型的發現）。這是計畫的
+        算式；arbitrate 實際執行時還會略過該驗證者已佐證的發現。
+        How many findings the plan assigns to the verifier of model alias `alias`: the sum of what the other models
+        reported (it never rules on its own model's). This is the plan's arithmetic; at run time arbitrate also skips
+        the findings that verifier already corroborated."""
+        return sum(n for reporter, n in findings_by_alias.items() if reporter != alias)
 
     def _chunks(self, idxs: List[int]) -> List[List[int]]:
         return [idxs[i:i + self.FINDINGS_PER_CALL] for i in range(0, len(idxs), self.FINDINGS_PER_CALL)]

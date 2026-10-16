@@ -233,12 +233,12 @@ class ThreatScenarioBuilder:
             return port
         return 443 if parts.scheme.lower() == "https" else 80
 
-    def plan(self, threats: int) -> List[PlannedCalls]:
-        """build_test_cases_from_threats 會發出的呼叫：每個威脅一次。威脅數是情境（由威脅建模的回答決定）。
-        The calls build_test_cases_from_threats would make: one per threat. The threat count is a scenario (it comes
-        from the threat model's answer)."""
+    def plan(self, threat_count: int) -> List[PlannedCalls]:
+        """build_test_cases_from_threats 會發出的呼叫：每個威脅一次。威脅數 `threat_count` 是情境（由威脅建模的回答決定）。
+        The calls build_test_cases_from_threats would make: one per threat. The number of threats, `threat_count`, is
+        a scenario (it comes from the threat model's answer)."""
         return [PlannedCalls(agent_id=AGENT_ID, model_alias=self.gateway.settings.alias_for(AGENT_ID),
-                             kind=CallKind.SYNTHESIZER, calls=threats, json_output=True,
+                             kind=CallKind.SYNTHESIZER, calls=threat_count, json_output=True,
                              code_tokens=CODE_CONTEXT_TOKENS, exact=False)]
 
     def build_test_cases_from_threats(

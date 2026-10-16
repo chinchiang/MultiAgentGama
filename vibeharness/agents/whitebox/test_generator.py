@@ -75,14 +75,14 @@ class WhiteboxTestGenerator:
         # Findings from the last run for which no usable model-generated test was produced
         self.findings_without_model_tests: List[str] = []
 
-    def plan(self, findings: float, tests_per_finding: float = 1.0) -> List[PlannedCalls]:
+    def plan(self, finding_count: float, tests_per_finding: float = 1.0) -> List[PlannedCalls]:
         """generate_tests_for_findings 會發出的呼叫：每個發現一次 JSON 呼叫，以及每個產生的測試在無效時最多
-        HEAL_ATTEMPTS 次修復（不是 JSON，所以不會被重新詢問）。發現數與每個發現的測試數是情境。
+        HEAL_ATTEMPTS 次修復（不是 JSON，所以不會被重新詢問）。發現數 `finding_count` 與 `tests_per_finding` 是情境。
         The calls generate_tests_for_findings would make: one JSON call per finding, and up to HEAL_ATTEMPTS repairs
-        for each generated test that is invalid (not JSON, so never re-asked). The finding count and the tests per
-        finding are a scenario."""
+        for each generated test that is invalid (not JSON, so never re-asked). The number of findings,
+        `finding_count`, and `tests_per_finding` are a scenario."""
         alias = self.gateway.settings.alias_for(AGENT_ID)
-        generated = math.ceil(findings)
+        generated = math.ceil(finding_count)
         return [
             PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind=CallKind.TEST_GENERATOR, calls=generated,
                          json_output=True, code_tokens=CODE_CONTEXT_TOKENS, exact=False),

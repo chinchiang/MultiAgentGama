@@ -83,6 +83,13 @@ class RunEstimate(BaseModel):
     warnings: List[str] = Field(default_factory=list)
 
 
+def _typical_calls(plan: PlannedCalls, heal_rate: float) -> int:
+    """一個計畫的典型呼叫數：有條件的呼叫（修復）取機會數的 heal_rate，其餘就是呼叫數。
+    A plan's typical number of calls: conditional calls (repairs) take heal_rate of their opportunities, the rest are
+    the number of calls."""
+    return math.ceil(plan.calls * heal_rate) if plan.conditional else plan.calls
+
+
 def _row(agent_id: str, model_alias: str, plans: Sequence[PlannedCalls], reask: int, heal_rate: float,
          basis: str) -> CallEstimate:
     """一個代理的計畫加總成一列：有條件的呼叫（修復）典型值乘上 heal_rate，JSON 呼叫的最大值乘上重新詢問次數，
@@ -91,7 +98,7 @@ def _row(agent_id: str, model_alias: str, plans: Sequence[PlannedCalls], reask: 
     typical figure, JSON calls are multiplied by the re-asks in the worst case, and each call's tokens are its code
     listing plus the prompt overhead, with the typical answer size as output. No plans (e.g. no symbols) is a row of
     zeros."""
-    typical = [math.ceil(p.calls * heal_rate) if p.conditional else p.calls for p in plans]
+    typical = [_typical_calls(p, heal_rate) for p in plans]
     return CallEstimate(
         agent=agent_id, model_alias=model_alias,
         calls_exact=sum(p.calls for p in plans) if all(p.exact for p in plans) else None,
@@ -120,7 +127,7 @@ def estimate_run(
     reask = 1 if gateway.cache_only else 1 + retry
 
     reviewer_plans = commander.multi_reviewer.plan(symbols, work_dir)
-    wb_batches = len(reviewer_plans) // len(reviewers) if reviewers else 0
+    wb_batches = commander.multi_reviewer.batch_count(symbols, work_dir)
     tm_plans = commander.threat_modeler.plan(symbols, work_dir)
     heal_rate = 0.3
 
@@ -160,7 +167,7 @@ def estimate_run(
     for plan in commander.debater.plan(by_alias):
         # 說明裡的發現數：其他模型回報的（驗證者絕不裁決自家模型的發現）
         # The finding count in the basis: those other models reported (a verifier never rules on its own model's)
-        assigned = sum(n for alias, n in by_alias.items() if alias != plan.model_alias)
+        assigned = commander.debater.assigned_findings(by_alias, plan.model_alias)
         est.by_agent.append(_row(plan.agent_id, plan.model_alias, [plan], reask, heal_rate, bi(
             f"來自其他模型的 ~{assigned:.0f} 筆發現 / 每次呼叫 {per_call} 筆",
             f"~{assigned:.0f} finding(s) from other models / {per_call} per call")))
@@ -170,7 +177,7 @@ def estimate_run(
     confirmed = distinct * est.assumptions["confirmed_share"]
     tg_plans = commander.whitebox_test_gen.plan(confirmed, tests_per_finding=est.assumptions["tests_per_finding"])
     heal = next(p for p in tg_plans if p.conditional)
-    heal_typical = math.ceil(heal.calls * heal_rate)
+    heal_typical = _typical_calls(heal, heal_rate)
     est.by_agent.append(_row(heal.agent_id, heal.model_alias, tg_plans, reask, heal_rate, bi(
         f"~{confirmed:.0f} 筆已確認的發現 × 1 次呼叫，+ 修復（典型 {heal_typical}，每個測試最多 {heal.max_per_call}）",
         f"~{confirmed:.0f} confirmed finding(s) × 1 call, + heals (typical {heal_typical}, max {heal.max_per_call} per test)")))
