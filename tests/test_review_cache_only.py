@@ -51,12 +51,12 @@ def test_cache_hit_is_served_without_calling_litellm(tmp_path, fake_live):
     """第一次執行填好快取後，--cache-only 從快取取用同一個回答，假 litellm 一次也沒被呼叫。
     Once a first run filled the cache, --cache-only serves the same answer and the fake litellm is never called."""
     fake_live(lambda system, user: '{"ok": 1}')
-    assert _gateway(tmp_path).generate("x", "s", "u", schema=OutputSchema(required={"ok": ANY}))["ok"] == 1
+    assert _gateway(tmp_path).generate("x", "s", "u", schema=OutputSchema(required={"ok": ANY})).data["ok"] == 1
 
     replay = _gateway(tmp_path, cache_only=True)
     fake = fake_live(lambda system, user: pytest.fail("cache-only must not call litellm"))
     result = replay.generate("x", "s", "u", schema=OutputSchema(required={"ok": ANY}))
-    assert result["ok"] == 1 and result["_provenance"]["cached"] is True
+    assert result.data["ok"] == 1 and result.cached is True
     assert fake.calls == [] and replay.live_calls_attempted == 0
     assert [rec.mode for rec in replay.call_log] == ["live"] and replay.call_log[0].cached
 
@@ -67,7 +67,7 @@ def test_cache_hit_needs_no_api_key(tmp_path, fake_live, monkeypatch):
     fake_live(lambda system, user: '{"ok": 1}')
     _gateway(tmp_path).generate("x", "s", "u")
     monkeypatch.delenv("ANTHROPIC_API_KEY")
-    assert _gateway(tmp_path, cache_only=True).generate("x", "s", "u")["ok"] == 1
+    assert _gateway(tmp_path, cache_only=True).generate("x", "s", "u").data["ok"] == 1
 
 
 def test_cache_miss_in_hybrid_is_simulated_and_recorded_as_a_gap(tmp_path, fake_live):
@@ -77,7 +77,7 @@ def test_cache_miss_in_hybrid_is_simulated_and_recorded_as_a_gap(tmp_path, fake_
     gw = _gateway(tmp_path, mode="hybrid", cache_only=True)
     result = gw.generate("x", "s", "u")
     assert fake.calls == [] and gw.live_calls_attempted == 0
-    assert result["_provenance"]["mode"] == "simulated"
+    assert result.mode == "simulated"
     assert [rec.reason for rec in gw.cache_miss_calls] == [CACHE_MISS_REASON]
     assert gw.used_simulation and not gw.budget_exhausted_calls
 
@@ -98,7 +98,7 @@ def test_unusable_cached_answer_is_never_re_asked(tmp_path, fake_live):
     _gateway(tmp_path).generate("x", "s", "u")
     fake = fake_live(lambda system, user: pytest.fail("cache-only must not call litellm"))
     gw = _gateway(tmp_path, cache_only=True)
-    assert gw.generate("x", "s", "u", schema=OutputSchema(required={"ok": ANY}))["_provenance"]["mode"] == "invalid"
+    assert gw.generate("x", "s", "u", schema=OutputSchema(required={"ok": ANY})).mode == "invalid"
     assert fake.calls == [] and [rec.mode for rec in gw.call_log] == ["invalid"]
 
 
@@ -108,9 +108,10 @@ def test_a_re_asked_answer_is_cached_under_the_original_prompt(tmp_path, fake_li
     not miss the first attempt."""
     answers = iter(["not json", '{"ok": 2}'])
     fake_live(lambda system, user: next(answers))
-    assert _gateway(tmp_path).generate("x", "s", "u", schema=OutputSchema(required={"ok": ANY}))["ok"] == 2
+    assert _gateway(tmp_path).generate("x", "s", "u", schema=OutputSchema(required={"ok": ANY})).data["ok"] == 2
     fake = fake_live(lambda system, user: pytest.fail("cache-only must not call litellm"))
-    assert _gateway(tmp_path, cache_only=True).generate("x", "s", "u", schema=OutputSchema(required={"ok": ANY}))["ok"] == 2
+    replay = _gateway(tmp_path, cache_only=True)
+    assert replay.generate("x", "s", "u", schema=OutputSchema(required={"ok": ANY})).data["ok"] == 2
     assert fake.calls == []
 
 

@@ -254,11 +254,11 @@ class HeterogeneousReviewerEnsemble:
         logger.info(bi(f"以審查者 {name} 執行白箱稽核（{len(batch)} 個符號）",
                        f"Running white-box audit with reviewer: {name} ({len(batch)} symbols)"))
         agent_id = reviewer["agent_id"]
-        resp = self.gateway.generate(
+        answer = self.gateway.generate(
             agent_id, system_prompt, user_prompt, json_output=True, schema=FINDINGS_SCHEMA,
             simulated=lambda alias: _simulated_review(agent_id, alias),
         )
-        return resp, self.gateway.is_simulated(resp)
+        return answer.data, answer.simulated
 
     @staticmethod
     def _match_symbol(name: Any, batch: List[CodeSymbol]) -> Optional[CodeSymbol]:

@@ -5,6 +5,7 @@ import json
 import tempfile
 import logging
 import threading
+from dataclasses import dataclass, field
 from typing import Callable, Dict, Any, Optional, List
 # 設定檔的 yaml 在 core/settings.py 才延遲匯入；這裡仍在匯入時載入它，缺少 yaml 的安裝才會在 main() 的防護內被認出是
 # 安裝不完整（exit 5 並說明如何重新安裝），而不是在讀設定檔時才當掉
@@ -74,9 +75,40 @@ from vibeharness.core.sanitize import clean_model_text, redact_secrets
 logger = logging.getLogger("VibeHarness.LLMGateway")
 
 
-# 加到每個回應的鍵，讓呼叫端能分辨模擬輸出與真實模型輸出
-# Key added to every response so callers can tell simulated output from real model output
-PROVENANCE_KEY = "_provenance"
+@dataclass(frozen=True)
+class ModelAnswer:
+    """generate 的回答：模型回答的 JSON 物件（`data`；json_output=False 時是空的，原文在 `text`），以及它的來源：
+    `mode` 是 "live"（真實模型或回應快取，`cached` 標明後者）、"simulated"（代理自己的模擬輸出；`reason` 說明為何
+    沒有呼叫模型）或 "invalid"（模型有回答但重新詢問後仍無法使用；`data` 是空的，`reason` 說明原因），`model` 是
+    模型字串。來源不再混進回答的資料裡。
+    generate's answer: the JSON object the model answered (`data`; empty with json_output=False, where the raw reply
+    is in `text`), and its provenance: `mode` is "live" (a real model or the response cache, which `cached` marks),
+    "simulated" (the agent's own Simulated output; `reason` says why no model was called) or "invalid" (the model
+    answered but the answer was still unusable after the re-asks; `data` is empty and `reason` says why), and
+    `model` is the model string. The provenance is no longer mixed into the answer's data."""
+    mode: str
+    model: str
+    data: Dict[str, Any] = field(default_factory=dict)
+    text: Optional[str] = None
+    reason: Optional[str] = None
+    cached: bool = False
+
+    @property
+    def simulated(self) -> bool:
+        return self.mode == "simulated"
+
+    @property
+    def usable(self) -> bool:
+        """有可用的回答（真實模型或模擬輸出）時為 True；回答無法使用，或根本沒有回答（NO_ANSWER）時為 False。
+        True when there is a usable answer (a real model's or Simulated output); False when the answer could not be
+        used or there was no answer at all (NO_ANSWER)."""
+        return self.mode in ("live", "simulated")
+
+
+# 沒有拿到閘道回答的呼叫（例如在閘道之外當掉，由 fan_out 記成無效呼叫）：沒有資料、不是模擬，也不可用
+# A call that got no answer from the gateway (e.g. it crashed outside it, booked as an invalid call by fan_out): no
+# data, not simulated, and not usable
+NO_ANSWER = ModelAnswer(mode="none", model="")
 
 
 
@@ -269,16 +301,6 @@ class LLMGateway:
         First attempts whose answer was unusable and that were re-asked (disclosed, not an evidence gap)."""
         return [rec for rec in self.call_log if rec.mode == "retried"]
 
-    @staticmethod
-    def is_simulated(resp: Dict[str, Any]) -> bool:
-        return resp.get(PROVENANCE_KEY, {}).get("mode") == "simulated"
-
-    @staticmethod
-    def is_usable(resp: Dict[str, Any]) -> bool:
-        """模型有回答但其輸出無法使用時為 False。
-        False when the model answered but its output could not be used."""
-        return resp.get(PROVENANCE_KEY, {}).get("mode") != "invalid"
-
     def is_live_configured(self, model_alias: str) -> bool:
         """檢查所要求的模型是否具備憑證：其 API 金鑰，或 AWS 設定檔
         （Bedrock 透過 AWS 憑證鏈驗證，而非 API 金鑰）。
@@ -298,23 +320,24 @@ class LLMGateway:
         json_output: bool = True,
         schema: Optional[OutputSchema] = None,
         simulated: Optional[Callable[[str], Dict[str, Any]]] = None,
-    ) -> Dict[str, Any]:
+    ) -> ModelAnswer:
         """
         針對指定代理所設定的 LLM 執行提示。
         線上回應若不是有效的 JSON，或不合代理宣告的 `schema`（core/model_output.py 的 `OutputSchema`：
         `required` 的鍵全部都必須存在、`any_of` 至少要有一個存在），重新詢問之後仍不合時會以 mode "invalid" 記錄，
-        回傳只含 PROVENANCE_KEY（mode "invalid"、model、reason）的 dict，讓呼叫端與品質閘門絕不會把無法使用的回答
-        誤認為真正的空結果（以 is_usable() 判斷）。
+        回傳 mode "invalid"、`data` 為空的 ModelAnswer，讓呼叫端與品質閘門絕不會把無法使用的回答誤認為真正的空結果
+        （以 `usable` 判斷）。json_output=False 時不檢查形狀，回答原文放在 `text`。
         Executes a prompt targeting the designated agent's configured LLM.
         A live response that is not valid JSON or does not fit the agent's `schema` (an `OutputSchema` from
         core/model_output.py: every `required` key must be present, at least one `any_of` key must be) is, when it
-        still does not fit after the re-asks, recorded with mode "invalid" and returned as a dict holding only PROVENANCE_KEY (mode "invalid", model, reason), so
-        callers and the quality gate never mistake an unusable answer for a genuine empty result (check is_usable()).
+        still does not fit after the re-asks, recorded with mode "invalid" and returned as a ModelAnswer with mode
+        "invalid" and empty `data`, so callers and the quality gate never mistake an unusable answer for a genuine
+        empty result (check `usable`). With json_output=False the shape is not checked and the raw reply is in `text`.
         `simulated(model_alias)` 是代理自己的模擬輸出（不呼叫模型時回傳的固定備援回答，每次呼叫都是新的 dict）；
-        省略時回傳一個通用的狀態 dict。閘道一律加上 PROVENANCE_KEY 並登記為 simulated。
+        省略時是一個通用的狀態 dict。閘道把它放進 mode "simulated" 的 ModelAnswer，並登記為 simulated。
         `simulated(model_alias)` is the agent's own Simulated output (the fixed fallback answer given without calling a
-        model, a new dict on every call); when omitted a generic status dict is returned. The gateway always adds
-        PROVENANCE_KEY and books the call as simulated.
+        model, a new dict on every call); when omitted it is a generic status dict. The gateway puts it in a ModelAnswer
+        with mode "simulated" and books the call as simulated.
         """
         agent_meta = self.agents_config.get(agent_id) or {}
         model_alias = self.settings.alias_for(agent_id)
@@ -397,7 +420,7 @@ class LLMGateway:
                 # 必須明確失敗，而不是被掩蓋成退回模擬。
                 # Only the network call is guarded above: a bug in parsing/validation/booking
                 # must fail loudly instead of being masked as a fallback to simulation.
-                result = parse_json_object(raw_text) if json_output else {"raw": raw_text}
+                result = parse_json_object(raw_text) if json_output else {}
                 if json_output and result is None:
                     shown = raw_text.strip()[:200]
                     logger.error(bi(f"JSON 解析錯誤：無法擷取有效的 JSON。原始內容：{shown}",
@@ -418,8 +441,9 @@ class LLMGateway:
                             self._cache_write(key, agent_id, model_name, raw_text, finish_reason, prompt_hash)
                     self._record(agent_id, model_alias, model_name, "live", prompt_sha256=prompt_hash, cached=from_cache,
                                  attempt=attempt)
-                    result[PROVENANCE_KEY] = {"mode": "live", "model": model_name, "cached": from_cache}
-                    return result
+                    if not json_output:
+                        return ModelAnswer(mode="live", model=model_name, text=raw_text, cached=from_cache)
+                    return ModelAnswer(mode="live", model=model_name, data=result, cached=from_cache)
                 reason = problem or REASON_NOT_VALID_JSON
                 if not raw_text.strip():
                     # 例如供應商的安全過濾器阻擋了攻擊測試程式碼；finish reason 會說明是哪一種
@@ -455,7 +479,7 @@ class LLMGateway:
                 logger.error(bi(f"[{agent_id}] {model_name} 回傳無法使用的輸出：{booked}",
                                 f"[{agent_id}] {model_name} returned unusable output: {booked}"))
                 self._record(agent_id, model_alias, model_name, "invalid", booked, prompt_sha256=prompt_hash, attempt=attempt)
-                return {PROVENANCE_KEY: {"mode": "invalid", "model": model_name, "reason": booked}}
+                return ModelAnswer(mode="invalid", model=model_name, reason=booked)
         elif self.execution_mode == "live":
             raise LLMGatewayError(f"[{agent_id}] {bi(f'無法以 {model_name} 執行線上模式', f'cannot run live with {model_name}')}: {fallback_reason}")
 
@@ -468,8 +492,7 @@ class LLMGateway:
             result = simulated(model_alias)
         else:
             result = {"status": "ok", "message": bi(f"{agent_id} 的模擬輸出", f"Simulated output for {agent_id}")}
-        result[PROVENANCE_KEY] = {"mode": "simulated", "model": model_name, "reason": fallback_reason}
-        return result
+        return ModelAnswer(mode="simulated", model=model_name, data=result, reason=fallback_reason)
 
     def _complete(self, agent_id: str, model_alias: str, model_info: Dict[str, Any], model_name: str,
                   messages: List[Dict[str, str]], temperature: float):

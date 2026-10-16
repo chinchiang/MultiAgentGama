@@ -7,6 +7,7 @@ import sys
 
 import pytest
 
+from model_answers import answer
 from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
 from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
 from vibeharness.agents.whitebox.deduplicator import deduplicate_findings
@@ -127,7 +128,7 @@ def test_test_generation_for_an_unknown_location_uses_the_target_file(tmp_path, 
     symbols = ASTExtractor().parse_directory(str(tmp_path))
     gateway = LLMGateway(CONFIG, execution_mode="mock")
     systems = []
-    gateway.generate = lambda agent_id, system, user, **k: systems.append(system) or {"tests": []}
+    gateway.generate = lambda agent_id, system, user, **k: systems.append(system) or answer({"tests": []})
     WhiteboxTestGenerator(gateway).generate_tests_for_findings([_review("A", path, "login echoes", "login")], symbols,
                                                                root_dir=str(tmp_path))
     assert systems and "JavaScript/TypeScript QA Engineer" in systems[0]

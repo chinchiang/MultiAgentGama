@@ -544,7 +544,7 @@ def test_truncated_answer_is_reported_as_truncation(fake_live, monkeypatch):
     _fake_completion(monkeypatch, calls, '{"findings": [{"title": "cut', "length")
     gw = LLMGateway(CONFIG, execution_mode="live")
     resp = gw.generate("whitebox_reviewer_gemini", "s", "u", schema=OutputSchema(required={"findings": ANY}))
-    assert not gw.is_usable(resp)
+    assert not resp.usable
     assert "output truncated at the max_output_tokens limit (16384)" in gw.call_log[-1].reason
 
 
@@ -553,7 +553,7 @@ def test_empty_answer_reports_the_finish_reason(fake_live, monkeypatch):
     _fake_completion(monkeypatch, calls, None, "content_filter")
     gw = LLMGateway(CONFIG, execution_mode="live")
     resp = gw.generate("blackbox_test_synthesizer", "s", "u", schema=OutputSchema(required={"code": ANY}))
-    assert not gw.is_usable(resp)
+    assert not resp.usable
     reason = gw.call_log[-1].reason
     assert has_cjk(reason) and en_only(reason) == "model returned an empty response (finish_reason: content_filter)"
 

@@ -380,7 +380,7 @@ class ThreatScenarioBuilder:
         resp = self.gateway.generate(
             AGENT_ID, system_prompt, user_prompt, json_output=True, schema=CODE_SCHEMA,
             simulated=_simulated_attack_test,
-        )
+        ).data
 
         raw_code = resp.get("code")
         code_str = strip_code_fences(raw_code if isinstance(raw_code, str) else "")

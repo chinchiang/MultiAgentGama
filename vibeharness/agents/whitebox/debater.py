@@ -230,11 +230,11 @@ class MultiModelDebater:
         # 模擬輸出沒有裁決：樣板無法評判針對目標的發現，辯論者會略過模擬的裁決
         # The Simulated output holds no verdicts: a template cannot judge target-specific findings, and the debater
         # ignores simulated verdicts
-        resp = self.gateway.generate(agent_id, system_prompt, user_prompt, json_output=True, schema=verdicts_schema(len(idxs)),
-                                     simulated=lambda alias: {"verdicts": []})
-        simulated = self.gateway.is_simulated(resp)
-        if simulated or not self.gateway.is_usable(resp):
-            return [], simulated
+        answer = self.gateway.generate(agent_id, system_prompt, user_prompt, json_output=True,
+                                       schema=verdicts_schema(len(idxs)), simulated=lambda alias: {"verdicts": []})
+        if answer.simulated or not answer.usable:
+            return [], answer.simulated
+        resp = answer.data
 
         votes: List[Tuple[int, VerificationVote]] = []
         seen = set()

@@ -316,7 +316,7 @@ def test_reask_after_a_fallback_answer_tries_the_primary_again(tmp_path, monkeyp
     )
     gw = LLMGateway(_write_config(tmp_path, text))
     result = gw.generate("x", "s", "u", schema=OutputSchema(required={"ok": ANY}))
-    assert result["ok"] == 1
+    assert result.data["ok"] == 1
     assert fake.models == ["primary-model", "fallback-model", "primary-model", "fallback-model"]
 
 

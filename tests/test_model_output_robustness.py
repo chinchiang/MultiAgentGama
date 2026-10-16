@@ -6,7 +6,8 @@ import threading
 
 import pytest
 
-from vibeharness.core.llm_gateway import LLMGateway, PROVENANCE_KEY
+from model_answers import answer as model_answer
+from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.i18n import bi, en_only, has_cjk
 from vibeharness.core.models import (
     AgentCallRecord,
@@ -56,20 +57,21 @@ def _threat():
 
 def test_malformed_threat_entries_are_skipped():
     gw = LLMGateway(CONFIG, execution_mode="mock")
-    gw.generate = lambda *a, **k: {"threats": ["BOLA", 7, {"threat_id": "T1", "stride_category": "Tampering"}]}
+    gw.generate = lambda *a, **k: model_answer(
+        {"threats": ["BOLA", 7, {"threat_id": "T1", "stride_category": "Tampering"}]})
     report = AutomatedThreatModeler(gw).model_system("desc", ["/api/users"])
     assert [t.threat_id for t in report.threats] == ["T1"]
 
 
 def test_non_list_threats_and_string_list_fields_fall_back():
     gw = LLMGateway(CONFIG, execution_mode="mock")
-    gw.generate = lambda *a, **k: {
+    gw.generate = lambda *a, **k: model_answer({
         "threats": {"threat_id": "T1"},  # 物件而非清單 ／ object instead of a list
         "system_description": 42,
         "entrypoints": "not a list",
         "trust_boundaries": [1, 2],
         "assets": "db",
-    }
+    })
     report = AutomatedThreatModeler(gw).model_system("desc", ["/api/users"])
     assert report.threats == []
     assert report.system_description == "desc"
@@ -104,10 +106,10 @@ def test_large_targets_are_threat_modeled_in_batches():
             prompts.append(user_prompt)
         # 每個批次都回報相同且衝突的 threat_id，以證明重新編號有效
         # every batch reports the same colliding threat_id to prove renumbering works
-        return {
+        return model_answer({
             "threats": [{"threat_id": "THREAT-01", "stride_category": "Tampering", "title": f"t{n}"}],
             "entrypoints": ["/api/batch"],
-        }
+        })
 
     gw.generate = responder
     symbols = [_big_symbol(f"f{i}") for i in range(30)]
@@ -126,12 +128,11 @@ def test_large_targets_are_threat_modeled_in_batches():
 
 
 def test_invalid_batch_does_not_kill_threat_modeling():
-    from vibeharness.core.llm_gateway import PROVENANCE_KEY
     gw = LLMGateway(CONFIG, execution_mode="mock")
     responses = [
-        {PROVENANCE_KEY: {"mode": "invalid", "model": "m", "reason": "bad json"}},
-        {"threats": [{"threat_id": "THREAT-01", "stride_category": "Tampering", "title": "later"}],
-         "entrypoints": ["/api/valid"]},
+        model_answer(mode="invalid", reason="bad json"),
+        model_answer({"threats": [{"threat_id": "THREAT-01", "stride_category": "Tampering", "title": "later"}],
+                      "entrypoints": ["/api/valid"]}),
     ]
 
     def responder(*a, **k):
@@ -145,12 +146,34 @@ def test_invalid_batch_does_not_kill_threat_modeling():
     assert report.entrypoints == ["/api/valid"]
 
 
+def test_a_crashed_batch_does_not_blank_the_report_fields():
+    """在閘道之外當掉的批次沒有回答（fan_out 已把它記成無效呼叫）：和無法使用的批次一樣略過，報告層級欄位仍來自下一個
+    可用的批次，而不是被當掉的批次換成空的預設值。
+    A batch that crashed outside the gateway has no answer (fan_out already booked it as an invalid call): like an
+    unusable batch it is skipped, and the report-level fields still come from the next usable batch instead of the
+    crashed one turning them into the empty defaults."""
+    gw = LLMGateway(CONFIG, execution_mode="mock")
+
+    def responder(agent_id, system_prompt, user_prompt, **k):
+        if "Symbol: a " in user_prompt:
+            raise RuntimeError("parser exploded")
+        return model_answer({"threats": [{"threat_id": "THREAT-01", "stride_category": "Tampering", "title": "b"}],
+                             "entrypoints": ["/api/from-b"]})
+
+    gw.generate = responder
+    symbols = [_big_symbol("a"), _big_symbol("b")]
+    report = AutomatedThreatModeler(gw).model_system("desc", ["/api/users"], symbols=symbols, root_dir=".")
+    assert [t.title for t in report.threats] == ["b"]
+    assert report.entrypoints == ["/api/from-b"]
+    assert [c.agent_id for c in gw.invalid_calls] == ["blackbox_threat_modeler"]
+
+
 def test_wrong_typed_threat_fields_are_coerced_not_fatal():
     gw = LLMGateway(CONFIG, execution_mode="mock")
-    gw.generate = lambda *a, **k: {"threats": [{
+    gw.generate = lambda *a, **k: model_answer({"threats": [{
         "threat_id": "T1", "severity": None, "owasp_mapping": {"id": "API1"}, "title": 42,
         "attack_vector": ["PUT"], "stride_category": "Not-A-STRIDE-Category",
-    }]}
+    }]})
     t = AutomatedThreatModeler(gw).model_system("desc", ["/api/users"]).threats[0]
     assert t.severity == FindingSeverity.HIGH
     assert t.owasp_mapping is None
@@ -161,7 +184,8 @@ def test_wrong_typed_threat_fields_are_coerced_not_fatal():
 
 def test_missing_threat_id_gets_a_positional_default():
     gw = LLMGateway(CONFIG, execution_mode="mock")
-    gw.generate = lambda *a, **k: {"threats": [{"title": "first"}, {"threat_id": "  ", "title": "second"}]}
+    gw.generate = lambda *a, **k: model_answer(
+        {"threats": [{"title": "first"}, {"threat_id": "  ", "title": "second"}]})
     report = AutomatedThreatModeler(gw).model_system("desc", ["/api/users"])
     assert [t.threat_id for t in report.threats] == ["THREAT-01", "THREAT-02"]
 
@@ -193,7 +217,7 @@ def test_non_list_verdicts_leave_findings_unfiltered(fake_live):
 
 def test_non_string_synthesizer_code_leaves_threat_untested():
     gw = LLMGateway(CONFIG, execution_mode="mock")
-    gw.generate = lambda *a, **k: {"code": 42, "title": "t"}
+    gw.generate = lambda *a, **k: model_answer({"code": 42, "title": "t"})
     tests = ThreatScenarioBuilder(gw).build_test_cases_from_threats([_threat()], base_url="http://localhost:59999")
     assert tests == []
 
@@ -432,7 +456,7 @@ def test_garbage_json_object_is_recorded_as_invalid_call(fake_live):
     fake_live(lambda s, u: json.dumps({"sorry": "no tests in here"}))
     result = gw.generate("whitebox_test_generator", "sys", "user", json_output=True,
                          schema=OutputSchema(any_of={"tests": ANY, "code": ANY}))
-    assert set(result.keys()) == {PROVENANCE_KEY}
+    assert result.mode == "invalid" and result.data == {} and not result.usable
     assert gw.call_log[-1].mode == "invalid"
     assert "none of the expected" in gw.call_log[-1].reason
 
@@ -537,7 +561,7 @@ def test_a_shape_error_is_reasked_with_the_reason_then_booked_invalid(scripted, 
     transport = scripted({"*": answer})
     gw = LLMGateway(CONFIG, execution_mode="live", transport=transport)
     resp = gw.generate(agent_id, "sys", "user", schema=schema)
-    assert not gw.is_usable(resp)
+    assert not resp.usable
     assert [c.mode for c in gw.call_log] == ["retried", "invalid"]
     assert reason in gw.call_log[-1].reason and reason in transport.prompts()[1][1]
     assert not has_cjk(transport.prompts()[1][1])  # 模型只看到英文半 ／ the model sees the English half only
@@ -550,7 +574,7 @@ def test_a_shape_error_is_reasked_with_the_reason_then_booked_invalid(scripted, 
 def test_an_empty_or_partly_usable_list_is_not_reasked(scripted, answer):
     from vibeharness.agents.whitebox.multi_reviewer import FINDINGS_SCHEMA
     gw = LLMGateway(CONFIG, execution_mode="live", transport=scripted({"*": answer}))
-    assert gw.is_usable(gw.generate("whitebox_reviewer_claude", "sys", "user", schema=FINDINGS_SCHEMA))
+    assert gw.generate("whitebox_reviewer_claude", "sys", "user", schema=FINDINGS_SCHEMA).usable
     assert [c.mode for c in gw.call_log] == ["live"]
 
 
@@ -583,18 +607,20 @@ def test_a_cached_answer_that_no_longer_fits_is_invalid_under_cache_only_and_rea
         gw.cache_only = cache_only
         return gw, transport
     old, _ = gateway({"findings": 5})  # 舊版本只檢查鍵是否存在 ／ the older version only checked that the key is there
-    assert old.is_usable(old.generate("whitebox_reviewer_claude", "sys", "user", schema=OutputSchema(required={"findings": ANY})))
+    assert old.generate("whitebox_reviewer_claude", "sys", "user",
+                        schema=OutputSchema(required={"findings": ANY})).usable
     replay, transport = gateway(pytest.fail, cache_only=True)
-    assert not replay.is_usable(replay.generate("whitebox_reviewer_claude", "sys", "user", schema=FINDINGS_SCHEMA))
+    assert not replay.generate("whitebox_reviewer_claude", "sys", "user", schema=FINDINGS_SCHEMA).usable
     assert [c.mode for c in replay.call_log] == ["invalid"] and not transport.requests
     assert replay.call_log[0].reason.startswith(CACHED_ANSWER_PREFIX.split(" ／ ")[0]) and en_only(CACHED_ANSWER_PREFIX) in replay.call_log[0].reason
     fresh, transport = gateway({"findings": [{"title": "ok"}]})
-    assert fresh.is_usable(fresh.generate("whitebox_reviewer_claude", "sys", "user", schema=FINDINGS_SCHEMA))
+    assert fresh.generate("whitebox_reviewer_claude", "sys", "user", schema=FINDINGS_SCHEMA).usable
     assert [c.mode for c in fresh.call_log] == ["retried", "live"]
     assert en_only(CACHED_ANSWER_PREFIX) in fresh.call_log[0].reason
     assert en_only(CACHED_ANSWER_PREFIX) not in transport.prompts()[0][1]
     again, _ = gateway(pytest.fail, cache_only=True)
-    assert again.generate("whitebox_reviewer_claude", "sys", "user", schema=FINDINGS_SCHEMA)["findings"] == [{"title": "ok"}]
+    replayed = again.generate("whitebox_reviewer_claude", "sys", "user", schema=FINDINGS_SCHEMA)
+    assert replayed.data["findings"] == [{"title": "ok"}]
 
 
 def test_test_generation_falls_back_to_code_when_tests_has_no_usable_item(tmp_path):
@@ -614,7 +640,7 @@ def test_test_generation_falls_back_to_code_when_tests_has_no_usable_item(tmp_pa
 
     def generator(answer):
         gw = LLMGateway(CONFIG, execution_mode="mock")
-        gw.generate = lambda *a, **k: answer
+        gw.generate = lambda *a, **k: model_answer(answer)
         return WhiteboxTestGenerator(gw)
     fallback = generator({"tests": ["not an object", {"title": "no code"}], "code": code})
     tests = fallback.generate_tests_for_findings([finding], symbols, root_dir=str(tmp_path))
