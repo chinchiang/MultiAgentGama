@@ -5,8 +5,8 @@ import os
 import sys
 
 import pytest
-import yaml
 
+from config_files import load_config, write_config
 from vibeharness.core.estimate import estimate_lines, estimate_run
 from vibeharness.core.harness import VibeHarnessCommander
 from vibeharness.core.llm_gateway import ConfigError, LLMGateway
@@ -17,14 +17,11 @@ EXAMPLES = os.path.join(REPO_ROOT, "examples")
 
 
 def _config(tmp_path, global_overrides=None, model_overrides=None):
-    with open(CONFIG, encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_config()
     cfg["global"].update(global_overrides or {})
     for alias, extra in (model_overrides or {}).items():
         cfg["models"][alias] = dict(cfg["models"][alias], **extra)
-    path = tmp_path / "cfg.yaml"
-    path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
-    return str(path)
+    return write_config(tmp_path, cfg)
 
 
 def test_exact_figures_match_what_a_real_run_spends(tmp_path):
@@ -68,11 +65,9 @@ def test_verifier_calls_have_no_float_error(tmp_path):
     以 distinct × (1 - 自家份額) 計算時浮點誤差得到 120.00000000000001，多算成 9 次。
     3 reviewers × 25 batches × 3 findings × 0.8 = 180 findings; a verifier rules on the other two models' 120 only,
     15 per call = 8 calls. Computed as distinct × (1 - own share), float error gave 120.00000000000001 and so 9."""
-    with open(CONFIG, encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_config()
     del cfg["agents"]["whitebox_reviewer_gemini"]
-    config = tmp_path / "cfg.yaml"
-    config.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    config = write_config(tmp_path, cfg)
     target = tmp_path / "target"
     target.mkdir()
     (target / "w.py").write_text("".join(f"def w_{i}(x):\n    return x + {i}\n\n" for i in range(15 * 25)), encoding="utf-8")

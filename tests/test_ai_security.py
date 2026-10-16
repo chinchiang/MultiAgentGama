@@ -10,6 +10,7 @@ import os
 import pytest
 import yaml
 
+from config_files import load_config
 from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
 from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
 from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
@@ -145,7 +146,7 @@ def test_default_ensemble_is_claude_deepseek_glm_gemini():
     ensemble = HeterogeneousReviewerEnsemble(LLMGateway(CONFIG, execution_mode="mock"))
     assert [r["model_alias"] for r in ensemble.reviewer_agents] == ["claude", "deepseek", "glm", "gemini"]
     assert ensemble.distinct_models == ["claude", "deepseek", "gemini", "glm"]
-    config = yaml.safe_load(open(CONFIG, encoding="utf-8"))
+    config = load_config()
     assert not {"nemotron", "chatgpt"} & set(config["models"])
     assert all(a.get("model_alias") in config["models"] for a in config["agents"].values())
 
