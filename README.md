@@ -201,6 +201,7 @@ MultiAgentGama/
 │   │   ├── harness.py               # 指揮官：六個階段加上選用的階段 3.5；把本次執行的證據交給品質閘門
 │   │   ├── llm_gateway.py           # 統一模型閘道：路由、fallback、模擬回退、呼叫預算與 call_log（模型呼叫經 transport.py）
 │   │   ├── model_output.py          # 模型回答的解析與形狀檢查：擷取 JSON 物件、對照代理宣告的 OutputSchema（純函式）
+│   │   ├── agent_call.py            # 代理呼叫：代理宣告一種呼叫，ask 組好提示（不可信內容依種類走各自的通道）、經閘道呼叫，交回型別化的 items 與來源
 │   │   ├── models.py                # Pydantic 數據模型
 │   │   ├── baseline.py              # --baseline：載入、比對與加註指紋，已知問題不計入（鍵在 identity.py）
 │   │   ├── codecheck.py             # 生成測試的靜態檢查（每個 test_ 函式／方法都要有斷言；拒絕安裝套件）
@@ -249,6 +250,7 @@ MultiAgentGama/
 ├── tests/                       # 工具包本身之測試（離線、不需 API 金鑰）
 │   ├── config_files.py          # 讀出內建設定、寫出修改後的測試用設定檔（load_config／write_config）
 │   ├── conftest.py              # 共用 fixture：以假 litellm 讓 live 路徑離線執行
+│   ├── test_agent_call.py       # 透過 ask／ask_text 測試代理呼叫：提示組裝與通道、只有可用的 items 到 mapper、模擬輸出、純文字呼叫
 │   ├── test_ai_security.py      # OWASP LLM Top 10 2026／ATLAS 控制與確定性 AI 安全規則
 │   ├── test_baseline.py                # --baseline：載入與重算、已知問題不計入、action.yml 結構
 │   ├── test_call_plans.py              # 每個代理的呼叫計畫（plan）等於它實際發出的呼叫

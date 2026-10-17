@@ -6,6 +6,23 @@
 
 ## [Unreleased]
 
+### 變更
+
+- 五個代理的模型呼叫改經新的 `vibeharness/core/agent_call.py`：代理以 `AgentCall` 宣告一種呼叫（回答的 schema、items 在哪裡、把一次呼叫的 items 對應成模型的 mapper、用到的不可信通道、略過項目時的訊息與模擬輸出），`ask` 依內容種類把不可信片段包進對應的通道、依宣告插入通道的 policy、經閘道呼叫，只把可用的 items 交給 mapper，回傳 `AgentReply`（型別化的 items、來源與唯讀的頂層欄位）；測試生成的修復呼叫改走純文字的 `ask_text`。過去每個代理各自組提示、各自再檢查一次清單的型別、各自讀來源，交給 `fan_out` 的 fallback 也有五種形狀。送給模型的提示、報告、JSON、SARIF、呼叫紀錄與結束碼都不變。
+- 審查者的一次呼叫已被閘道記成無效，或批次在閘道之外當掉之後，審查者不再多記一行「略過 … 無法使用的發現清單（收到 NoneType）」；威脅建模同樣不再多記「略過模型無法使用的威脅清單（收到 NoneType）」。那次失敗仍由閘道（或 `fan_out` 的錯誤 log）記錄一次。
+- `LLMGateway.generate` 回答的 `ModelAnswer.data` 改為唯讀的 mapping，共用的 `NO_ANSWER` 因此不可能被改到。直接呼叫 `generate` 並修改 `data` 的程式要先複製一份（`dict(answer.data)`）。
+
+### 測試
+
+- 新增 `tests/test_agent_call.py`，只透過 `ask`／`ask_text` 測試代理呼叫：items 從宣告的鍵取出並交給 mapper、提示的組裝與 policy 的順序、內容種類對應的通道與偽造標籤的中和、只有可用的 items 到 mapper（含位置與兩種略過訊息）、重問後仍不合形狀時不呼叫 mapper、模擬輸出、兩種回答即 item 的來源、唯讀的頂層欄位與 `NO_REPLY`，以及純文字呼叫。
+- 十七個以假的 `gateway.generate` 給回答的測試，改成真的閘道加 `scripted` transport、依請求回答；原本依並行呼叫的順序取回答的，改依提示內容取，不再有競爭條件。兩個原本鎖定閘道會拒絕之形狀的測試，改成經 transport 送出那個回答，並斷言它是一筆無效呼叫。測試在閘道之外當掉的六個測試仍在 `gateway.generate` 注入錯誤（transport 無法表達這種當機），但只讓當掉的那次呼叫拋出例外，其他呼叫照常經過閘道。`tests/model_answers.py` 不再使用，已刪除。
+
+### 文件
+
+- 設計文件描述 `vibeharness/core/agent_call.py`（module 表、新的第 5.8 節，以及第 5.3、5.7、6、8、12、14.1、16 章與測試章節），關鍵函式索引加上它與各代理的呼叫宣告與 mapper，行號引用改對到 commit `5aefd37`。
+- `GLOSSARY.md` 加上「代理呼叫 ／ Agent call」。
+- README 的專案結構列出 `core/agent_call.py` 與 `tests/test_agent_call.py`。
+
 ## [0.13.0] - 2026-10-17
 
 架構整理輪：品質閘門、設定、模型呼叫的傳輸、並行的模型呼叫、發現的身分識別與模型回答的形狀檢查各自集中到一個模組；沙盒、檔案範圍、規則掃描與模型回答改以型別化的值回傳。鍵在、形狀卻不對的模型回答不再被讀成「零個發現」而放行；`--estimate` 不再多算驗證者的呼叫；使用 `--baseline` 時，報告的規則命中列分開新的與已知的命中；第一個威脅建模批次當掉時，報告欄位不再被清成預設值。基準線與 SARIF 的 fingerprint 完全不變。直接呼叫 `LLMGateway.generate`、`execute_pytest_files`、`execute_test_suite` 或 `select_symbols` 的函式庫程式要改讀新的回傳型別（見「變更」）。

@@ -6,6 +6,23 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Changed
+
+- The five agents' model calls go through the new `vibeharness/core/agent_call.py`: an agent declares one kind of call with `AgentCall` (the answer's schema, where its items are, the mapper turning one call's items into models, the untrusted channels it uses, the messages for skipped items and its Simulated output), and `ask` wraps each untrusted part in its kind's channel, inserts the declared channels' policies, calls the gateway, hands only the usable items to the mapper and returns an `AgentReply` (typed items, the provenance and the read-only top-level fields); the test generator's repair calls use the plain-text `ask_text`. Each agent used to assemble its own prompt, check the list type a second time, read the provenance its own way and hand `fan_out` one of five fallback shapes. The prompts sent to the models, the reports, JSON, SARIF, the call log and the exit codes are unchanged.
+- After a reviewer call the gateway already booked as invalid, or a batch that crashed outside the gateway, the reviewer no longer logs a second "Ignoring unusable findings list ... (got NoneType)" line, nor does the threat modeler log "Ignoring unusable threat list from model (got NoneType)". The failure is still logged once by the gateway (or by `fan_out`'s error line).
+- `ModelAnswer.data` in `LLMGateway.generate`'s answer is now a read-only mapping, so the shared `NO_ANSWER` can never be changed. Code calling `generate` directly that changes `data` has to copy it first (`dict(answer.data)`).
+
+### Tests
+
+- New `tests/test_agent_call.py` tests agent calls through `ask` / `ask_text` only: items taken from the declared key and handed to the mapper, prompt assembly and policy order, each content kind's channel with forged tags neutralized, only usable items reaching the mapper (with their positions and the two skip messages), no mapper call for an answer still misshaped after the re-ask, Simulated output, the two whole-answer item sources, the read-only top-level fields and `NO_REPLY`, and the plain-text call.
+- Seventeen tests that gave answers through a fake `gateway.generate` now run a real gateway over the `scripted` transport, answering by request; those that picked answers by the order of concurrent calls pick them by prompt instead, so they no longer race. Two tests that pinned shapes the gateway rejects now send that answer through the transport and assert it is an invalid call. The six tests of a crash outside the gateway still inject it at `gateway.generate` (the transport cannot express such a crash), but only the crashing call raises and the others go through the gateway. `tests/model_answers.py`, no longer used, is deleted.
+
+### Documentation
+
+- The design document describes `vibeharness/core/agent_call.py` (the module table, a new section 5.8, and sections 5.3 and 5.7, chapters 6, 8, 12, 14.1 and 16 and the testing chapter), the key function index adds it and each agent's call declaration and mapper, and the line references are updated to commit `5aefd37`.
+- `GLOSSARY.md` adds Agent call.
+- The README's project structure lists `core/agent_call.py` and `tests/test_agent_call.py`.
+
 ## [0.13.0] - 2026-10-17
 
 Architecture round: the quality gate, the settings, the model-call transport, the concurrent model calls, the identity of findings and the shape checks of model answers each live in one module, and the sandbox, the file scope, the rule scan and the model answers are returned as typed values. A model answer with the keys but the wrong shape is no longer read as "zero findings" and let through; `--estimate` no longer overcounts the verifiers' calls; with `--baseline`, the report's rule-hit row separates new and known hits; a crash in the first threat-model batch no longer resets the report fields to the defaults. Baseline and SARIF fingerprints are unchanged. Library code calling `LLMGateway.generate`, `execute_pytest_files`, `execute_test_suite` or `select_symbols` directly has to read the new return types (see Changed).
