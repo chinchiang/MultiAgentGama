@@ -116,7 +116,8 @@ class WhiteboxTestGenerator:
         # crashed finding as an invalid call (an evidence gap); strict live mode fails loudly.
         calls = [
             Call(AGENT_ID, (f"{finding.finding_id} 的測試產生", f"Test generation for {finding.finding_id}"),
-                 functools.partial(self._tests_for_finding, idx, finding, symbols, root, target_file))
+                 functools.partial(self._tests_for_finding, idx, finding, symbols, root, target_file),
+                 CallKind.TEST_GENERATOR)
             for idx, finding in enumerate(findings)
         ]
         outcomes = fan_out(self.gateway, calls, fallback=([], False), logger=logger)
@@ -253,7 +254,7 @@ class WhiteboxTestGenerator:
                     f"Output the corrected JavaScript code only:\n\n{code_to_check}"
                 )
                 heal_system = "Fix JavaScript Test Code"
-            reply = ask_text(self.gateway, AGENT_ID, system=(heal_system, ""), prompt=[heal_prompt])
+            reply = ask_text(self.gateway, AGENT_ID, system=(heal_system, ""), prompt=[heal_prompt], kind=CallKind.HEAL)
             fixed = strip_code_fences(reply.text)
             if not fixed:
                 break  # 沒有可用來修復的內容（例如模擬引擎） ／ Nothing to repair with (e.g. simulation engine)
@@ -427,7 +428,7 @@ def _test_drafts(items: List[Mapping[str, Any]], ctx: CallContext) -> List[Gener
 # number, finding, default target file, language)
 TESTS_CALL = AgentCall(
     schema=TESTS_SCHEMA, items=ItemSource.key_or_answer("tests"), mapper=_test_drafts,
-    channels=(Channel.TARGET_CODE,),
+    channels=(Channel.TARGET_CODE,), kind=CallKind.TEST_GENERATOR,
     # 模擬輸出沒有測試：模擬引擎無法撰寫針對目標的測試，改用由目標推導的確定性探測
     # The Simulated output holds no tests: the simulation engine cannot write target-specific tests, so
     # deterministic, target-derived probes are used instead

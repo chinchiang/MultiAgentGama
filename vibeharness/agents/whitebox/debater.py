@@ -152,7 +152,7 @@ class MultiModelDebater:
             # "unsure"); live-mode failures still propagate so the run fails loudly.
             calls = [
                 Call(job[0], (f"{job[0]} 的驗證批次", f"Verifier batch for {job[0]}"),
-                     functools.partial(self._verify, job[0], findings, job[1], symbols, root_dir))
+                     functools.partial(self._verify, job[0], findings, job[1], symbols, root_dir), CallKind.VERIFIER)
                 for job in jobs
             ]
             replies: List[AgentReply] = fan_out(self.gateway, calls, fallback=NO_REPLY, logger=logger)
@@ -359,7 +359,7 @@ def _verify_call(count: int) -> AgentCall:
     its own; the context is (alias, finding indices)."""
     return AgentCall(
         schema=verdicts_schema(count), items=ItemSource.key("verdicts"), mapper=_verdict_votes,
-        channels=(Channel.TARGET_CODE,),
+        channels=(Channel.TARGET_CODE,), kind=CallKind.VERIFIER,
         # 模擬輸出沒有裁決：樣板無法評判針對目標的發現
         # The Simulated output holds no verdicts: a template cannot judge target-specific findings
         simulated=lambda agent_id, alias: {"verdicts": []},

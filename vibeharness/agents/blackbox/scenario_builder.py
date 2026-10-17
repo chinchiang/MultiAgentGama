@@ -284,7 +284,8 @@ class ThreatScenarioBuilder:
             Call(AGENT_ID,
                  (f"[{threat.threat_id}] 的攻擊合成", f"Attack synthesis for [{threat.threat_id}]"),
                  functools.partial(self._test_for_threat, threat, base_url, server_is_live, mode_label, mode_rules,
-                                   symbols, root_dir))
+                                   symbols, root_dir),
+                 CallKind.SYNTHESIZER)
             for threat in threats
         ]
         return [test for test in fan_out(self.gateway, calls, fallback=None, logger=logger) if test is not None]
@@ -441,6 +442,6 @@ def _simulated_attack_test(model_alias: str) -> Dict[str, Any]:
 # model-written and travel in the model-output channel; the context is (threat, test language)
 ATTACK_CALL = AgentCall(
     schema=CODE_SCHEMA, items=ItemSource.answer(), mapper=_attack_test,
-    channels=(Channel.TARGET_CODE, Channel.MODEL_OUTPUT),
+    channels=(Channel.TARGET_CODE, Channel.MODEL_OUTPUT), kind=CallKind.SYNTHESIZER,
     simulated=lambda agent_id, alias: _simulated_attack_test(alias),
 )

@@ -171,6 +171,20 @@ class TestExecutionResult(BaseModel):
     language: str = "python"
 
 
+class CallKind(str, Enum):
+    """是哪一種模型呼叫：代理在宣告與計畫上標明，閘道把它寫進每一筆呼叫紀錄（JSON 報告的 agent_calls[].kind）；
+    `--estimate` 依它查每次呼叫的提示額外負擔與典型回答大小。值是對外契約，改名要升 schema_version。
+    Which kind of model call this is: agents mark it on their declarations and plans, and the gateway writes it into
+    every call record (agent_calls[].kind in the JSON report); `--estimate` looks up each call's prompt overhead and
+    typical answer size by it. The values are a public contract: renaming one bumps schema_version."""
+    REVIEWER = "reviewer"
+    VERIFIER = "verifier"
+    TEST_GENERATOR = "test_generator"
+    HEAL = "heal"
+    THREAT_MODELER = "threat_modeler"
+    SYNTHESIZER = "synthesizer"
+
+
 class AgentCallRecord(BaseModel):
     """透過 LLM 閘道進行的單次代理呼叫的來源紀錄。
     Provenance of a single agent invocation through the LLM gateway."""
@@ -195,6 +209,9 @@ class AgentCallRecord(BaseModel):
     # (agent, original prompt SHA, attempt), so a call's "retried" entries always precede its final "live" /
     # "invalid" one, independent of thread completion order
     attempt: int = 0
+    # 這次呼叫的種類（代理宣告的）；直接呼叫 generate 而沒有給 kind 時為 None
+    # This call's kind (as the agent declared it); None when generate is called directly without one
+    kind: Optional[CallKind] = None
 
 
 class StaticFinding(BaseModel):

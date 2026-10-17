@@ -158,7 +158,7 @@ class HeterogeneousReviewerEnsemble:
         # missing, not absent); live-mode failures still propagate so the run fails loudly.
         calls = [
             Call(reviewer["agent_id"], (f"{reviewer['name']} 的審查批次", f"Reviewer batch for {reviewer['name']}"),
-                 functools.partial(self._review_batch, reviewer, batch, root))
+                 functools.partial(self._review_batch, reviewer, batch, root), CallKind.REVIEWER)
             for reviewer, batch in jobs
         ]
         replies: List[AgentReply] = fan_out(self.gateway, calls, fallback=NO_REPLY, logger=logger)
@@ -371,7 +371,7 @@ def _review_findings(items: List[Mapping[str, Any]], ctx: CallContext) -> List[O
 # The reviewers' call: one per reviewer and white-box batch; the context is (reviewer, batch)
 REVIEW_CALL = AgentCall(
     schema=FINDINGS_SCHEMA, items=ItemSource.key("findings"), mapper=_review_findings,
-    channels=(Channel.TARGET_CODE,), logger=logger,
+    channels=(Channel.TARGET_CODE,), logger=logger, kind=CallKind.REVIEWER,
     skip_message=lambda ctx: bi(
         f"略過 {ctx.context[0]['name']} 沒有可用標題或描述的發現",
         f"Skipping finding without a usable title or description from {ctx.context[0]['name']}"),

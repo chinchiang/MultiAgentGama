@@ -15,35 +15,25 @@ import logging
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any, Callable, Generic, List, Optional, Sequence, Tuple, TypeVar, cast
 
 from vibeharness.core.i18n import bi
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
+from vibeharness.core.models import CallKind  # noqa: F401  # 也從這裡匯出 ／ re-exported here too
 
 _T = TypeVar("_T")
 
 
 @dataclass(frozen=True)
 class Call(Generic[_T]):
-    """一個代理呼叫：失敗時記在哪個代理名下、錯誤訊息的雙語標籤（中文, 英文），以及不帶參數的工作。
+    """一個代理呼叫：失敗時記在哪個代理名下、錯誤訊息的雙語標籤（中文, 英文）、不帶參數的工作，以及這份工作的
+    呼叫種類（當掉時的紀錄帶著它）。
     One agent call: which agent a failure is booked under, the bilingual label (Chinese, English) of the error line,
-    and the zero-argument work."""
+    the zero-argument work, and the kind of call the work is (a crash's record carries it)."""
     agent_id: str
     label: Tuple[str, str]
     run: Callable[[], _T]
-
-
-class CallKind(str, Enum):
-    """一個計畫裡是哪一種模型呼叫；`--estimate` 依它查每次呼叫的提示額外負擔與典型回答大小。
-    Which kind of model call a plan holds; `--estimate` looks up each call's prompt overhead and typical answer size
-    by it."""
-    REVIEWER = "reviewer"
-    VERIFIER = "verifier"
-    TEST_GENERATOR = "test_generator"
-    HEAL = "heal"
-    THREAT_MODELER = "threat_modeler"
-    SYNTHESIZER = "synthesizer"
+    kind: Optional[CallKind] = None
 
 
 @dataclass(frozen=True)
@@ -102,7 +92,7 @@ def _book(gateway: LLMGateway, call: "Call[Any]", error: Exception, logger: logg
     logger.error(bi(f"{zh}失敗：{type(error).__name__}: {error}", f"{en} failed: {type(error).__name__}: {error}"))
     # 記入 call_log，讓品質閘門把缺少的結果視為證據缺口
     # Booked in call_log so the quality gate sees the missing result as an evidence gap
-    gateway.record_failure(call.agent_id, f"{type(error).__name__}: {error}")
+    gateway.record_failure(call.agent_id, f"{type(error).__name__}: {error}", kind=call.kind)
 
 
 def _run_ordered(calls: List[Callable[[], _T]], max_workers: int) -> List[Tuple[Optional[_T], Optional[Exception]]]:
