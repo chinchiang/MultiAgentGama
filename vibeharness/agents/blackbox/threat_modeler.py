@@ -221,7 +221,7 @@ class AutomatedThreatModeler:
         alias = self.gateway.settings.alias_for(AGENT_ID)
         return [
             PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind=CallKind.THREAT_MODELER, calls=1, json_output=True,
-                         code_tokens=estimate_tokens(_listing(batch, root)) if batch else 0, exact=True)
+                         code_tokens=estimate_tokens(_listing(batch, root)), exact=True)
             for batch in _batches(symbols, root)
         ]
 
