@@ -5,7 +5,7 @@ import math
 import os
 import re
 import textwrap
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, List, Mapping, Optional, Set, Tuple
 from vibeharness.core.models import ReviewFinding, GeneratedTest, CodeSymbol, text_or
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.codecheck import check_test_code_for, strip_code_fences
@@ -21,7 +21,7 @@ from vibeharness.core.model_output import LIST_OF_OBJECTS, STRING, OutputSchema
 logger = logging.getLogger("VibeHarness.TestGenerator")
 
 
-def is_usable_test(item: Dict[str, Any]) -> bool:
+def is_usable_test(item: Mapping[str, Any]) -> bool:
     """模型寫的一項測試可以使用：有非空的 `code`。測試生成器略過其他項目，閘道的形狀檢查也用同一個判斷。
     A test item the model wrote is usable: it has non-empty `code`. The test generator skips the others, and the
     gateway's shape check uses the same rule."""
@@ -210,7 +210,7 @@ class WhiteboxTestGenerator:
         # The usable items of `tests` come first; when none is usable (not a list, an empty list, or no item with code),
         # the answer's own `code` is used, matching why the shape check (TESTS_SCHEMA's any_of) accepted the answer
         raw_tests = resp.get("tests")
-        tests_data = [t for t in raw_tests if isinstance(t, dict) and is_usable_test(t)] if isinstance(raw_tests, list) else []
+        tests_data: List[Mapping[str, Any]] = [t for t in raw_tests if isinstance(t, dict) and is_usable_test(t)] if isinstance(raw_tests, list) else []
         if not tests_data and is_usable_test(resp):
             tests_data = [resp]
 

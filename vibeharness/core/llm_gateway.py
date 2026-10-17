@@ -6,7 +6,8 @@ import tempfile
 import logging
 import threading
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Any, Optional, List
+from types import MappingProxyType
+from typing import Callable, Dict, Any, Mapping, Optional, List
 # 設定檔的 yaml 在 core/settings.py 才延遲匯入；這裡仍在匯入時載入它，缺少 yaml 的安裝才會在 main() 的防護內被認出是
 # 安裝不完整（exit 5 並說明如何重新安裝），而不是在讀設定檔時才當掉
 # yaml is imported lazily in core/settings.py; it is still loaded here at import time so an install without yaml is
@@ -88,10 +89,16 @@ class ModelAnswer:
     `model` is the model string. The provenance is no longer mixed into the answer's data."""
     mode: str
     model: str
-    data: Dict[str, Any] = field(default_factory=dict)
+    data: Mapping[str, Any] = field(default_factory=dict)
     text: Optional[str] = None
     reason: Optional[str] = None
     cached: bool = False
+
+    def __post_init__(self) -> None:
+        # `data` 是淺層唯讀的：回答在呼叫端之間共用（NO_ANSWER 是單一實例），任何一處都不能改到別處看到的內容
+        # `data` is shallowly read-only: answers are shared between callers (NO_ANSWER is a single instance), so no
+        # caller can change what another one sees
+        object.__setattr__(self, "data", MappingProxyType(dict(self.data)))
 
     @property
     def simulated(self) -> bool:

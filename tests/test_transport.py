@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
+from vibeharness.core.llm_gateway import NO_ANSWER, LLMGateway, LLMGatewayError
 from vibeharness.core.transport import LiteLLMTransport, ModelReply, ModelRequest
 from vibeharness.core.model_output import ANY, OutputSchema
 
@@ -34,6 +34,17 @@ class _Recording:
 def keys(monkeypatch):
     for var in ("ANTHROPIC_API_KEY", "ZAI_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY"):
         monkeypatch.setenv(var, "test-key")
+
+
+def test_an_answers_data_is_read_only_so_the_shared_no_answer_cannot_change(keys):
+    gw = LLMGateway(CONFIG, execution_mode="live", transport=_Recording())
+    answer = gw.generate("whitebox_reviewer_claude", "s", "u")
+
+    with pytest.raises(TypeError):
+        answer.data["ok"] = 2
+    with pytest.raises(TypeError):
+        NO_ANSWER.data["ok"] = 2
+    assert answer.data["ok"] == 1 and dict(NO_ANSWER.data) == {}
 
 
 def test_each_attempt_is_one_request_carrying_the_agent(keys):

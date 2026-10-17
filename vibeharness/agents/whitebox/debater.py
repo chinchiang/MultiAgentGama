@@ -312,7 +312,7 @@ class MultiModelDebater:
         return f"Code the findings refer to:\n{untrusted_block(listing)}\n\n"
 
 
-def is_usable_verdict(item: Dict[str, object], count: int) -> bool:
+def is_usable_verdict(item: Mapping[str, object], count: int) -> bool:
     """驗證者的一項裁決可以使用：`index` 能解析成 0 到 `count`（這次列出的發現數）之間的整數，`verdict` 是
     confirm、reject 或 unsure（不分大小寫）。辯論者略過其他項目，閘道的形狀檢查也用同一個判斷。
     A verifier's ruling is usable: its `index` parses to an integer from 0 to `count` (the findings listed in this

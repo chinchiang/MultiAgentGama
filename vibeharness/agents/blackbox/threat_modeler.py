@@ -4,7 +4,7 @@ import os
 import re
 import yaml
 from pydantic import ValidationError
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 from vibeharness.core.models import ThreatItem, ThreatModelReport, STRIDECategory, FindingSeverity, CodeSymbol
 from vibeharness.core.fanout import Call, CallKind, PlannedCalls, fan_out
 from vibeharness.core.identity import severity_rank, threat_identity
@@ -292,7 +292,7 @@ class AutomatedThreatModeler:
         # batches not yet started are cancelled
         answers: List[ModelAnswer] = fan_out(self.gateway, calls, fallback=NO_ANSWER, logger=logger)
 
-        report_fields: Optional[Dict[str, Any]] = None
+        report_fields: Optional[Mapping[str, Any]] = None
         threats: List[ThreatItem] = []
         used_ids: set = set()
         any_simulated = False
@@ -348,7 +348,7 @@ class AutomatedThreatModeler:
                            f"Merged {len(threats)} threats from all batches into {len(merged)} distinct threats."))
         return list(merged.values())
 
-    def _parse_threats(self, resp: Dict[str, Any], used_ids: set) -> List[ThreatItem]:
+    def _parse_threats(self, resp: Mapping[str, Any], used_ids: set) -> List[ThreatItem]:
         """來自一個模型回應、經驗證的 ThreatItem；與先前批次衝突的 id 會重新編號。
         Validated ThreatItems from one model response; ids that collide with earlier batches are renumbered."""
         raw_threats = resp.get("threats")

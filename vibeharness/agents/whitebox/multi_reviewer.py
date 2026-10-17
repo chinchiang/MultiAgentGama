@@ -2,7 +2,7 @@ import functools
 import logging
 import os
 import re
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Mapping, Optional
 from pydantic import ValidationError
 from vibeharness.core.models import CodeSymbol, ReviewFinding, FindingSeverity, text_or
 from vibeharness.core.llm_gateway import LLMGateway
@@ -16,7 +16,7 @@ from vibeharness.core.model_output import LIST_OF_OBJECTS, OutputSchema
 logger = logging.getLogger("VibeHarness.MultiReviewer")
 
 
-def is_usable_finding(item: Dict[str, Any]) -> bool:
+def is_usable_finding(item: Mapping[str, Any]) -> bool:
     """模型回報的一項發現可以使用：有非空的 title 或 description（驗證者與測試生成器才有內容可據以行動）。
     審查者略過其他項目；閘道的形狀檢查也用同一個判斷，所以兩者不會不一致。
     A reported finding item is usable: it has a non-empty title or description (something the verifiers and the
