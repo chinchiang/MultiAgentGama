@@ -212,3 +212,29 @@ def test_ask_text_without_a_model_is_simulated_with_no_text():
     reply = ask_text(LLMGateway(CONFIG, execution_mode="mock"), "whitebox_test_generator", system=("", ""), prompt=[""])
 
     assert (reply.status, reply.text) == ("simulated", "")
+
+
+def test_the_mapper_sees_each_items_position_in_the_answers_list(scripted):
+    # MIXED 的第 2 項不可用、第 3 項不是物件：位置仍是原始清單裡的位置（從 1 開始）
+    # MIXED's item 2 is unusable and item 3 is not an object: positions are still those in the raw list (from 1)
+    call = AgentCall(schema=FINDINGS, items=ItemSource.key("findings"),
+                     mapper=lambda items, ctx: list(zip(ctx.positions, [item["title"] for item in items], strict=True)))
+    transport = scripted({REVIEWER: MIXED})
+
+    reply = ask(_live(transport), call, REVIEWER, system=("", ""), prompt=[""])
+
+    assert reply.items == ((1, "a"), (4, "b"))
+
+
+def test_a_declared_malformed_message_is_logged_with_the_position_of_each_item_that_is_not_an_object(scripted, caplog):
+    agent_logger = logging.getLogger("VibeHarness.AgentUnderTest")
+    call = AgentCall(schema=FINDINGS, items=ItemSource.key("findings"), mapper=_titles, logger=agent_logger,
+                     malformed_message=lambda ctx, position: f"entry #{position} is not an object")
+    transport = scripted({REVIEWER: MIXED})
+
+    with caplog.at_level(logging.WARNING):
+        ask(_live(transport), call, REVIEWER, system=("", ""), prompt=[""])
+
+    assert [(r.name, r.getMessage()) for r in caplog.records] == [
+        ("VibeHarness.AgentUnderTest", "entry #3 is not an object"),
+    ]

@@ -665,3 +665,32 @@ def test_test_generation_falls_back_to_code_when_tests_has_no_usable_item(tmp_pa
     preferred = generator({"tests": [{"title": "from tests", "code": code}], "code": "def test_other():\n    assert 2\n"})
     tests = preferred.generate_tests_for_findings([finding], symbols, root_dir=str(tmp_path))
     assert [t.title for t in tests if t.test_type == "whitebox_unit"] == ["from tests"]
+
+
+def test_an_invalid_threat_model_answer_is_booked_by_the_gateway_and_not_warned_about_again(scripted, caplog):
+    """重問後仍無法使用的回答只由閘道記成 invalid 呼叫；威脅建模不再對同一次失敗另外記一行「略過無法使用的威脅清單」。
+    An answer still unusable after the re-ask is only booked as an invalid call by the gateway; the threat modeler no
+    longer logs a second "ignoring unusable threat list" line for the same failure."""
+    import logging
+    gw = LLMGateway(CONFIG, execution_mode="live", transport=scripted({"blackbox_threat_modeler": {"threats": 5}}))
+
+    with caplog.at_level(logging.WARNING):
+        report = AutomatedThreatModeler(gw).model_system("desc", ["/api/users"])
+
+    assert report.threats == [] and [c.agent_id for c in gw.invalid_calls] == ["blackbox_threat_modeler"]
+    assert [r.getMessage() for r in caplog.records if r.name == "VibeHarness.ThreatModeler"] == []
+
+
+def test_threat_entries_that_are_not_objects_are_logged_with_their_position(scripted, caplog):
+    import logging
+    answer = {"threats": ["BOLA", {"threat_id": "THREAT-07", "title": "t", "stride_category": "Tampering"}, 7]}
+    gw = LLMGateway(CONFIG, execution_mode="live", transport=scripted({"blackbox_threat_modeler": answer}))
+
+    with caplog.at_level(logging.WARNING):
+        report = AutomatedThreatModeler(gw).model_system("desc", ["/api/users"])
+
+    assert [t.threat_id for t in report.threats] == ["THREAT-07"]
+    assert [r.getMessage().split(" ／ ")[1] for r in caplog.records if r.name == "VibeHarness.ThreatModeler"] == [
+        "Skipping malformed threat entry #1 (not a JSON object)",
+        "Skipping malformed threat entry #3 (not a JSON object)",
+    ]

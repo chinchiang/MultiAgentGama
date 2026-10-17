@@ -3,7 +3,7 @@
 Agent calls: an agent declares one model call (the answer's shape, where its items are, how they map to models), and
 `ask` assembles the prompt, calls the gateway and hands back typed items with the call's provenance."""
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from types import MappingProxyType
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
@@ -86,6 +86,10 @@ class CallContext:
     patched afterwards)."""
     context: Any
     simulated: bool = False
+    # 交給 mapper 的每個 item 在回答的清單裡的位置（從 1 開始，略過的項目也佔位置）；整個回答就是那一個 item 時是 (1,)
+    # Where each item handed to the mapper sits in the answer's list (from 1, skipped entries keep their place);
+    # (1,) when the whole answer is the one item
+    positions: Tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -100,11 +104,14 @@ class AgentCall:
     # The channels this kind of call uses: their policies go between the system prompt's head and tail, in Channel
     # order
     channels: Tuple[Channel, ...] = ()
-    # 有宣告時，每個不可用的物件 item 以代理自己的 logger 記一行 warning；不是物件的 item 一律靜默略過
-    # When declared, each unusable object item logs one warning with the agent's own logger; items that are not
-    # objects are always skipped silently
+    # 有宣告時，每個不可用的物件 item 以代理自己的 logger 記一行 warning
+    # When declared, each unusable object item logs one warning with the agent's own logger
     logger: Optional[logging.Logger] = None
     skip_message: Optional[Callable[[CallContext], str]] = None
+    # 有宣告時，每個不是物件的 item 以代理自己的 logger 記一行 warning，帶著它在清單裡的位置
+    # When declared, each item that is not an object logs one warning with the agent's own logger, with its position
+    # in the list
+    malformed_message: Optional[Callable[[CallContext, int], str]] = None
     # 沒有呼叫模型時的模擬輸出，依 (agent id, 模型別名) 產生；它也必須符合 `schema`
     # The Simulated output used when no model is called, built from (agent id, model alias); it must fit `schema` too
     simulated: Optional[Callable[[str, str], Dict[str, Any]]] = None
@@ -160,28 +167,38 @@ def ask(gateway: LLMGateway, call: AgentCall, agent_id: str, system: Tuple[str, 
         # Still unusable after the re-asks: the gateway booked an invalid call, and there are no items to map
         return AgentReply(status=answer.mode)
     ctx = CallContext(context, simulated=answer.simulated)
-    return AgentReply(status=answer.mode, items=tuple(call.mapper(_usable_items(call, answer.data, ctx), ctx)),
+    items, positions = _usable_items(call, answer.data, ctx)
+    return AgentReply(status=answer.mode, items=tuple(call.mapper(items, replace(ctx, positions=positions))),
                       fields=MappingProxyType(dict(answer.data)))
 
 
-def _usable_items(call: AgentCall, data: Mapping[str, Any], ctx: CallContext) -> List[Mapping[str, Any]]:
+def _usable_items(call: AgentCall, data: Mapping[str, Any],
+                  ctx: CallContext) -> Tuple[List[Mapping[str, Any]], Tuple[int, ...]]:
     name = call.items.name
     if name is None:
-        return [data]
+        return [data], (1,)
     field_type = call.schema.required.get(name) or call.schema.any_of.get(name)
     usable = field_type.usable if field_type and field_type.usable else (lambda item: True)
     items: List[Mapping[str, Any]] = []
-    for item in data.get(name) or []:
+    positions: List[int] = []
+    # 閘道的形狀檢查已保證可用回答的這個鍵是清單；不是清單時（例如替換閘道的測試）就當作沒有 items
+    # The gateway's shape check already makes this key a list in a usable answer; anything else (e.g. a test replacing
+    # the gateway) counts as no items
+    raw = data.get(name)
+    for position, item in enumerate(raw if isinstance(raw, list) else [], start=1):
         if not isinstance(item, dict):
+            if call.logger and call.malformed_message:
+                call.logger.warning(call.malformed_message(ctx, position))
             continue
         if not usable(item):
             if call.logger and call.skip_message:
                 call.logger.warning(call.skip_message(ctx))
             continue
         items.append(item)
+        positions.append(position)
     if not items and call.items.or_answer and usable(data):
-        return [data]
-    return items
+        return [data], (1,)
+    return items, tuple(positions)
 
 
 @dataclass(frozen=True)
