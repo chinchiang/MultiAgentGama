@@ -336,7 +336,7 @@ pip install vibeharness-mas
 vibeharness --version
 ```
 
-當作獨立的命令列工具安裝：`pipx install vibeharness-mas` 或 `uv tool install vibeharness-mas`。CI 要可重現時請釘版本：`pip install vibeharness-mas==0.13.0`。`python -m vibeharness …` 與 `vibeharness …` 相同；安裝不完整（缺少相依套件）時以 exit 5 結束並說明如何重新安裝，不會丟出 traceback；`--help`、`--version` 與 `--init-config` 不載入相依套件，這時照樣可用。
+當作獨立的命令列工具安裝：`pipx install vibeharness-mas` 或 `uv tool install vibeharness-mas`。CI 要可重現時請釘版本：`pip install vibeharness-mas==0.14.0`。`python -m vibeharness …` 與 `vibeharness …` 相同；安裝不完整（缺少相依套件）時以 exit 5 結束並說明如何重新安裝，不會丟出 traceback；`--help`、`--version` 與 `--init-config` 不載入相依套件，這時照樣可用。
 
 從原始碼安裝（開發用；在 checkout 裡也可以直接 `python main.py`）：
 
@@ -438,7 +438,7 @@ steps:
   with:
     fetch-depth: 0                             # changed-since 需要完整歷史才能與該 ref 比對
     persist-credentials: false
-- uses: chinchiang/MultiAgentGama@v0.13.0      # 從 action 本身的 checkout 安裝套件（相依套件帶雜湊驗證）並執行稽核
+- uses: chinchiang/MultiAgentGama@v0.14.0      # 從 action 本身的 checkout 安裝套件（相依套件帶雜湊驗證）並執行稽核
   with:
     target: src
     mode: hybrid
@@ -487,7 +487,7 @@ Action 的 inputs（都可省略）：
 | `report` | 這次稽核寫出的報告路徑（`output` 留空時為推導出的名稱）；`ERROR` 或沒有寫出該檔案時為空 |
 | `sarif` | 這次稽核寫出的 SARIF 檔路徑；未啟用、`ERROR` 或沒有寫出該檔案時為空 |
 
-第一個 `prep` step 在安裝任何東西或建置 Docker 映像之前，以純 bash 驗證 `fail-on`、`mutation`、`sandbox`、`mode`、`format` 與數值 input，打錯字直接 exit 5（這時不會設定 outputs）；含換行的 `output` 或 `sarif` 路徑也會被拒絕。`mode`、`max-model-calls` 與 `max-files` 只有填了才傳給 CLI，所以設定檔的 `execution_mode`、`max_model_calls` 成本防護與 `max_files` 絕不會被悄悄蓋掉。`fail-on` 符合判定時 job 以 exit 1 失敗；CLI 以 4 以上結束時不論 `fail-on` 為何，一律以該碼失敗並發出 `::error::`；step summary（判定、exit code、報告與 SARIF 路徑，或「沒有寫出報告 ／ No report was written」）兩種情況都會寫出。不用 Action 的話，`pip install vibeharness-mas==0.13.0` 後直接呼叫 `vibeharness` 即可。
+第一個 `prep` step 在安裝任何東西或建置 Docker 映像之前，以純 bash 驗證 `fail-on`、`mutation`、`sandbox`、`mode`、`format` 與數值 input，打錯字直接 exit 5（這時不會設定 outputs）；含換行的 `output` 或 `sarif` 路徑也會被拒絕。`mode`、`max-model-calls` 與 `max-files` 只有填了才傳給 CLI，所以設定檔的 `execution_mode`、`max_model_calls` 成本防護與 `max_files` 絕不會被悄悄蓋掉。`fail-on` 符合判定時 job 以 exit 1 失敗；CLI 以 4 以上結束時不論 `fail-on` 為何，一律以該碼失敗並發出 `::error::`；step summary（判定、exit code、報告與 SARIF 路徑，或「沒有寫出報告 ／ No report was written」）兩種情況都會寫出。不用 Action 的話，`pip install vibeharness-mas==0.14.0` 後直接呼叫 `vibeharness` 即可。
 
 稽核 step 以 `exec` 把持有金鑰的 bash 換成稽核行程本身（`python -I -m vibeharness.action_runner`，在同一個行程內執行 CLI 再寫出 outputs），生成的測試因此讀不到父行程 environ 裡的金鑰；action 裡的 Python 片段一律不從工作區匯入模組。判定為 `INCONCLUSIVE` 而 `fail-on` 不會因此讓 job 失敗時，action 會發出 `::warning::`；`hybrid` 或 `live` 模式下每次模型呼叫都是模擬的時候也會發出警告。**來自 fork 的 PR**：GitHub 不會把 secrets 交給 fork 的 PR，hybrid 模式下每次模型呼叫都會是模擬的，action 發出「every model call was simulated」的 `::warning::`；判定不會是 `READY_TO_SHIP`（為 `INCONCLUSIVE`，或確定性的 `WB-PROBE` 探針、HIGH 以上的規則命中暴露了缺陷時為 `NEEDS_FIXES`，這些仍是執行過的證據）。要有真正的模型證據，請在有金鑰的事件（例如推送到預設分支或維護者觸發的 workflow）上執行，不要為了 fork PR 改用 `pull_request_target` 把 secrets 交給不受信任的程式碼。CLI 的 `--summary-json PATH` 會寫出 action 用來判斷這些情況的機器可讀摘要：`tool`、`version`、`verdict`、`exit_code`、`execution_mode`、`model_calls`（`total`、`live`、`simulated`、`invalid`、`cached`；同一次呼叫中 `retried` 的詢問不計入）、`all_simulated` 與 `inconclusive_reasons`。它在報告之後寫出，與 `--format` 無關，寫入位置與 `--output`／`--sarif` 一樣在任何模型呼叫前就檢查。
 

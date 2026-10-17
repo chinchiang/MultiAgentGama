@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-17
+
+Agent-call round: the five agents' model calls go through one agent-call module, and each agent's call plan and its actual run share one set of rules; every `agent_calls` entry in the JSON report and in the partial report written on a crash gains the call's `kind` (`schema_version` stays "2"). The prompts sent to the models, the rest of the reports, SARIF and the exit codes are unchanged. Library code calling `LLMGateway.generate` directly that changes the answer's `data` has to copy it first (see Changed).
+
 ### Added
 
 - Every `agent_calls` entry in the JSON report and in the partial report written on a crash (`.partial.json`) gains `kind`: the kind of that model call, one of `reviewer`, `verifier`, `test_generator`, `heal` (a call that repairs an invalid test), `threat_modeler` or `synthesizer`; calls that crashed outside the gateway have it too. It is a new field, so `schema_version` stays "2".
@@ -605,7 +609,8 @@ Initial release.
 - CI matrix: ubuntu / windows × Python 3.10 / 3.13, with lint and coverage reporting
 - MIT license
 
-[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.1...v0.11.0

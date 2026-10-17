@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-17
+
+代理呼叫整理輪：五個代理的模型呼叫改經同一個代理呼叫模組，每個代理的呼叫計畫與實際執行共用同一套規則；JSON 報告與崩潰時的部分報告裡，每筆 `agent_calls` 多了這次呼叫的種類 `kind`（`schema_version` 維持 "2"）。送給模型的提示、報告的其他內容、SARIF 與結束碼都不變。直接呼叫 `LLMGateway.generate` 並修改回答 `data` 的函式庫程式要先複製一份（見「變更」）。
+
 ### 新增
 
 - JSON 報告與崩潰時的部分報告（`.partial.json`）裡，每筆 `agent_calls` 多了 `kind`：這次模型呼叫的種類，值為 `reviewer`、`verifier`、`test_generator`、`heal`（修復無效測試的呼叫）、`threat_modeler` 或 `synthesizer`；在閘道之外當掉的呼叫也有。屬於新增欄位，`schema_version` 維持 "2"。
@@ -605,7 +609,8 @@ CI 整合（`--baseline`、GitHub Action）、`--estimate`、JS/TS 動態測試�
 - CI 矩陣：ubuntu / windows × Python 3.10 / 3.13，含 lint 與覆蓋率報告
 - MIT 授權
 
-[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.1...v0.11.0
