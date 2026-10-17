@@ -80,7 +80,7 @@ class MultiModelDebater:
             plans.append(PlannedCalls(agent_id=agent_id, model_alias=alias, kind=CallKind.VERIFIER,
                                       calls=self._call_count(assigned), json_output=True,
                                       code_tokens=self.LISTING_MAX_TOKENS + self.CODE_CONTEXT_TOKENS, exact=False,
-                                      items=assigned, items_per_call=self.FINDINGS_PER_CALL))
+                                      assigned=assigned, per_call=self.FINDINGS_PER_CALL))
         return plans
 
     @staticmethod
@@ -101,16 +101,18 @@ class MultiModelDebater:
         return alias != reporter_alias
 
     def _chunks(self, idxs: List[int]) -> List[List[int]]:
-        """一次驗證呼叫列出的發現：每 FINDINGS_PER_CALL 筆一次。計畫的呼叫數也由它算出（_call_count）。
-        The findings one verification call lists: FINDINGS_PER_CALL per call. The plan's call count comes from it
-        too (_call_count)."""
+        """一次驗證呼叫列出的發現：每 FINDINGS_PER_CALL 筆一次。計畫的呼叫數（_call_count）以同一個批次大小算出。
+        The findings one verification call lists: FINDINGS_PER_CALL per call. The plan's call count (_call_count) is
+        computed with the same batch size."""
         return [idxs[i:i + self.FINDINGS_PER_CALL] for i in range(0, len(idxs), self.FINDINGS_PER_CALL)]
 
     def _call_count(self, assigned: float) -> int:
-        """分到 `assigned` 筆發現（情境數，可能不是整數）時的呼叫數：與 arbitrate 把同樣多筆發現切成幾批相同。
+        """分到 `assigned` 筆發現（情境數，可能不是整數）時的呼叫數：與 _chunks 把同樣多筆發現切成的批數相同
+        （同一個 FINDINGS_PER_CALL）；不是正數（含 NaN）時沒有呼叫。直接算出，不列出每一筆。
         The number of calls for `assigned` findings (a scenario count, possibly not whole): as many as the batches
-        arbitrate cuts that many findings into."""
-        return len(self._chunks(list(range(math.ceil(assigned)))))
+        _chunks cuts that many findings into (the same FINDINGS_PER_CALL); none unless it is positive (NaN included).
+        Computed directly, without listing every finding."""
+        return math.ceil(assigned / self.FINDINGS_PER_CALL) if assigned > 0 else 0
 
     def arbitrate(
         self,

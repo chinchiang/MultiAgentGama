@@ -182,8 +182,8 @@ def estimate_run(
         # The finding count in the basis: those other models reported (a verifier never rules on its own model's), as
         # the verifier's plan states it
         est.by_agent.append(_row(plan.agent_id, plan.model_alias, [plan], reask, heal_rate, bi(
-            f"來自其他模型的 ~{plan.items:.0f} 筆發現 / 每次呼叫 {plan.items_per_call} 筆",
-            f"~{plan.items:.0f} finding(s) from other models / {plan.items_per_call} per call")))
+            f"來自其他模型的 ~{plan.assigned:.0f} 筆發現 / 每次呼叫 {plan.per_call} 筆",
+            f"~{plan.assigned:.0f} finding(s) from other models / {plan.per_call} per call")))
 
     # 3. 每筆已確認發現的測試產生（+ 修復）
     # 3. Test generation per confirmed finding (+ heals)

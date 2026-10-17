@@ -151,10 +151,21 @@ def test_debater_plan_is_the_verifier_calls_for_the_reported_findings(scripted):
     # 分到的發現數等於實際送給每個驗證者的發現數（自家模型的不送）
     # The assigned findings are those actually sent to each verifier (never its own model's)
     ruled = _ruled_on(transport)
-    assert {p.model_alias: p.items for p in plans} == {p.model_alias: ruled[p.model_alias] for p in plans}
-    assert {p.items_per_call for p in plans} == {15}
-    assert ruled["claude"] == 1 and ruled["deepseek"] == debater.FINDINGS_PER_CALL + 5
+    assert {p.model_alias: p.assigned for p in plans} == {p.model_alias: ruled[p.model_alias] for p in plans}
+    assert {p.per_call for p in plans} == {15}
+    assert ruled["claude"] == 1 and ruled["deepseek"] == 20
     assert set(_planned(debater.plan({})).values()) == {0}
+
+
+def test_debater_plan_counts_no_calls_for_nan_findings_and_stays_cheap_for_huge_ones():
+    """情境數是函式庫呼叫端給的浮點數：NaN 算成沒有發現（0 次呼叫），極大的數立刻算出，不必列出每一筆。
+    Scenario counts are floats from library callers: NaN counts as no findings (0 calls), and a huge count is
+    computed at once, without listing every finding."""
+    debater = MultiModelDebater(LLMGateway(CONFIG, execution_mode="mock"))
+    # 先斷言 NaN：極大值那一行在 NaN 修好之前不會執行
+    # NaN is asserted first: the huge-count line does not run before NaN is fixed
+    assert {p.calls for p in debater.plan({"claude": float("nan")})} == {0}
+    assert {p.model_alias: p.calls for p in debater.plan({"claude": 1e12})}["deepseek"] == 66666666667
 
 
 def test_debater_plan_is_an_upper_bound_when_findings_are_corroborated(scripted):
