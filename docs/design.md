@@ -2,7 +2,7 @@
 
 [English](design.en.md) ｜ 正體中文（臺灣）
 
-本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.13.0`（`CHANGELOG.md` 的 `[0.13.0]`，2026-10-17，架構整理輪：品質閘門、設定、模型呼叫傳輸、並行呼叫、身分識別與模型回答的形狀檢查各自集中到一個模組，沙盒、檔案範圍、規則掃描與模型回答以型別化的值回傳，形狀不對的模型回答不再被讀成零個發現；`[0.12.0]`，2026-10-12，第六輪審查：中文的威脅與發現不再被誤合併、`--changed-since` 收得到非 ASCII 檔名與 symlink 目標下的檔案、探針的基準線鍵含檔案、`--estimate` 計入未變異複本的那一批、保留名稱含 `key` 的 litellm 參數；`[0.11.0]`，2026-10-11，第五輪審查：Action 的判定只取自稽核摘要、`extra-args` 以 CLI 的解析器檢查、自動發現的設定檔只能調低花費、保留 litellm 的 callback 參數、揭露不支援語言的檔案與設定檔裡的密鑰、強化報告讀回與 Docker 輸出上限；`[0.10.1]`，2026-10-11，為修正版：Windows 的 JS/TS 涵蓋率也收得到 `node_modules` 底下的目標；`[0.10.0]` 為更嚴格的自動發現設定檔、Action 不再蓋掉設定檔的成本防護、null 保留預設值；`[0.9.0]` 為第三輪審查修正：自動發現設定檔的防護、Action 以 `exec` 執行稽核、SARIF 不收模擬項目、VH-AI-006 改寫、確定性規則的單檔時間上限、`--summary-json`；`[0.8.0]` 新增 JS/TS 行涵蓋率；`[0.7.1]` 為修正版：剩餘逾時預算不再多出一秒、`--init-config` 的提示；`[0.7.0]` 為第二輪審查修正、PyPI 打包、`--init-config` 與設定檔自動尋找；`[0.6.0]` 為依審查結果的強化並新增 `--cache-only`，`[0.5.1]` 為修正版，`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。文中的 `path:line` 引用以 commit `5aefd37` 的檔案為準（發布時改為 release tag）。
+本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.13.0`（`CHANGELOG.md` 的 `[0.13.0]`，2026-10-17，架構整理輪：品質閘門、設定、模型呼叫傳輸、並行呼叫、身分識別與模型回答的形狀檢查各自集中到一個模組，沙盒、檔案範圍、規則掃描與模型回答以型別化的值回傳，形狀不對的模型回答不再被讀成零個發現；`[0.12.0]`，2026-10-12，第六輪審查：中文的威脅與發現不再被誤合併、`--changed-since` 收得到非 ASCII 檔名與 symlink 目標下的檔案、探針的基準線鍵含檔案、`--estimate` 計入未變異複本的那一批、保留名稱含 `key` 的 litellm 參數；`[0.11.0]`，2026-10-11，第五輪審查：Action 的判定只取自稽核摘要、`extra-args` 以 CLI 的解析器檢查、自動發現的設定檔只能調低花費、保留 litellm 的 callback 參數、揭露不支援語言的檔案與設定檔裡的密鑰、強化報告讀回與 Docker 輸出上限；`[0.10.1]`，2026-10-11，為修正版：Windows 的 JS/TS 涵蓋率也收得到 `node_modules` 底下的目標；`[0.10.0]` 為更嚴格的自動發現設定檔、Action 不再蓋掉設定檔的成本防護、null 保留預設值；`[0.9.0]` 為第三輪審查修正：自動發現設定檔的防護、Action 以 `exec` 執行稽核、SARIF 不收模擬項目、VH-AI-006 改寫、確定性規則的單檔時間上限、`--summary-json`；`[0.8.0]` 新增 JS/TS 行涵蓋率；`[0.7.1]` 為修正版：剩餘逾時預算不再多出一秒、`--init-config` 的提示；`[0.7.0]` 為第二輪審查修正、PyPI 打包、`--init-config` 與設定檔自動尋找；`[0.6.0]` 為依審查結果的強化並新增 `--cache-only`，`[0.5.1]` 為修正版，`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。文中的 `path:line` 引用以 commit `acd371e` 的檔案為準（發布時改為 release tag）。
 
 與其他文件的分工：
 
@@ -320,10 +320,10 @@ flowchart TD
 五個代理的每一次模型呼叫都經這個 module；本節只寫 `:行號` 的引用都指這個檔案。
 
 - **宣告**：`AgentCall`（`:96-117`）是代理對一種呼叫的宣告：回答的 `schema`、items 在哪裡（`ItemSource`，`:58-77`：某個鍵的物件清單；該鍵沒有可用項目時改用整個回答；或整個回答就是唯一的 item）、把一次呼叫的 items 對應成模型的 `mapper`、用到的不可信通道、選用的 `skip_message`（不可用的物件）與 `malformed_message`（不是物件的項目，帶它在清單裡的位置），以及模擬輸出 `simulated(agent_id, model_alias)`。每次呼叫的 system prompt、提示片段與 context 是 `ask` 的參數，所以 agent id 或 system prompt 隨呼叫而變的代理（審查者、攻擊合成）也只宣告一次；驗證者的 index 範圍隨呼叫而變，所以每次呼叫各建一個 `AgentCall`。
-- **提示組裝**：user prompt 是一串片段，一般字串原樣串接，`Untrusted(kind, text)` 依內容種類包進通道（`_CHANNEL_OF`，`:37-41`）：目標程式碼與審查者寫的發現走 `<untrusted_target_code>`（後者是 0.6.0 的設計），威脅項目走 `<untrusted_model_output>`（第 12 章）。system prompt 是 `(head, tail)`，兩者之間依 `Channel` 的順序插入代理宣告的通道的 policy（`_system_prompt`，`:148-150`）；插入哪幾段由宣告靜態決定，不從這次實際出現的片段推導，所以沒有程式碼片段的那次攻擊合成仍帶著兩段 policy。遮蔽不在這裡做：目標原始碼在 codecontext 產生時就經過 `prepare_untrusted_code`。
-- **只把可用的 items 交給 mapper**（`_usable_items`，`:175-201`）：閘道的形狀檢查已經擋掉不是清單或沒有任何可用項目的回答（第 5.3 節）；清單裡只有部分項目可用時，`ask` 用 schema 上同一個 `usable` 逐項過濾，宣告了訊息時以代理自己的 logger 記錄（CLI 的 log 格式會顯示 logger 名稱）。`CallContext`（`:81-92`）帶著代理給的 context、這次是否為模擬輸出，以及每個 item 在原始清單裡的位置（`positions`），威脅建模的 warning 以它編號。回答不可用（`invalid`）時不呼叫 mapper（`ask`，`:157-172`）。
-- **回傳**：`AgentReply`（`:121-139`）只有對應好的 `items`、來源 `status`（`live`／`simulated`／`invalid`，以及 `NO_REPLY`（`:145`）的 `none`：給 `fan_out` 當在閘道之外當掉的呼叫的 fallback）、`simulated`／`usable`，以及唯讀的 `fields`（回答的頂層欄位，威脅建模的報告層級欄位從這裡讀）；不露出底層的 `ModelAnswer`。mapper 在工作執行緒裡執行，所以不決定 id：需要依序看全部結果的步驟（審查者的連續編號、威脅 id 的重新編號與合併）在 `fan_out` 之後依呼叫順序做。
-- **純文字呼叫**：`ask_text`（`:213-219`）給測試生成的修復呼叫用，回傳 `TextReply`（`:205-210`：回答原文與來源）；它的模擬輸出沒有文字，也不接受 schema。
+- **提示組裝**：user prompt 是一串片段，一般字串原樣串接，`Untrusted(kind, text)` 依內容種類包進通道（`_CHANNEL_OF`，`:37-41`）：目標程式碼與審查者寫的發現走 `<untrusted_target_code>`（後者是 0.6.0 的設計），威脅項目走 `<untrusted_model_output>`（第 12 章）。system prompt 是 `(head, tail)`，兩者之間依 `Channel` 的順序插入代理宣告的通道的 policy（`_system_prompt`，`:151-153`）；插入哪幾段由宣告靜態決定，不從這次實際出現的片段推導，所以沒有程式碼片段的那次攻擊合成仍帶著兩段 policy。遮蔽不在這裡做：目標原始碼在 codecontext 產生時就經過 `prepare_untrusted_code`。
+- **只把可用的 items 交給 mapper**（`_usable_items`，`:178-204`）：閘道的形狀檢查已經擋掉不是清單或沒有任何可用項目的回答（第 5.3 節）；清單裡只有部分項目可用時，`ask` 用 schema 上同一個 `usable` 逐項過濾，宣告了訊息時以代理自己的 logger 記錄（CLI 的 log 格式會顯示 logger 名稱）。`CallContext`（`:81-92`）帶著代理給的 context、這次是否為模擬輸出，以及每個 item 在原始清單裡的位置（`positions`），威脅建模的 warning 以它編號。回答不可用（`invalid`）時不呼叫 mapper（`ask`，`:160-175`）。
+- **回傳**：`AgentReply`（`:124-142`）只有對應好的 `items`、來源 `status`（`live`／`simulated`／`invalid`，以及 `NO_REPLY`（`:148`）的 `none`：給 `fan_out` 當在閘道之外當掉的呼叫的 fallback）、`simulated`／`usable`，以及唯讀的 `fields`（回答的頂層欄位，威脅建模的報告層級欄位從這裡讀）；不露出底層的 `ModelAnswer`。mapper 在工作執行緒裡執行，所以不決定 id：需要依序看全部結果的步驟（審查者的連續編號、威脅 id 的重新編號與合併）在 `fan_out` 之後依呼叫順序做。
+- **純文字呼叫**：`ask_text`（`:216-222`）給測試生成的修復呼叫用，回傳 `TextReply`（`:208-213`：回答原文與來源）；它的模擬輸出沒有文字，也不接受 schema。
 
 ---
 
@@ -972,7 +972,7 @@ DAST／fuzzing、以 hypothesis 為測試策略（Docker 沙盒映像已附 `hyp
 
 ## 18. 附錄
 
-行號對應 commit `5aefd37` 的程式碼（發布時改為 release tag）；核對方式為 `grep -n "def 名稱" 檔案`。
+行號對應 commit `acd371e` 的程式碼（發布時改為 release tag）；核對方式為 `grep -n "def 名稱" 檔案`。
 
 ### 18.1 關鍵常數
 
@@ -1045,7 +1045,7 @@ DAST／fuzzing、以 hypothesis 為測試策略（Docker 沙盒映像已附 `hyp
 - `vibeharness/core/llm_gateway.py`：`ModelAnswer` 80、`NO_ANSWER` 118、`budget_exhausted_calls`／`cache_miss_calls`／`simulated_calls`／`invalid_calls`（呼叫紀錄的分類）155-170、`set_cache_dir` 225、`_cache_key` 230、`_cache_read` 244、`_cache_write` 255、`_safe_reason` 273、`_reserve_live_call` 280、`cache_miss_calls` 294、`is_live_configured` 311、`generate` 322、`_complete` 504、`_max_output_tokens` 579、`record_failure` 592、`_record` 604
 - `vibeharness/core/model_output.py`：`FieldType` 28、`LIST_OF_OBJECTS` 52、`OutputSchema` 72、`parse_json_object` 80、`check_output` 149、`mark_cached` 176
 - `vibeharness/core/transport.py`：`ModelRequest` 32、`ModelReply` 47、`ModelTransport` 52、`LiteLLMTransport` 64
-- `vibeharness/core/agent_call.py`：`Channel` 18、`Content` 26、`Untrusted` 47、`ItemSource` 58、`CallContext` 81、`AgentCall` 96、`AgentReply` 121、`NO_REPLY` 145、`_system_prompt` 148、`_user_prompt` 153、`ask` 157、`_usable_items` 175、`TextReply` 205、`ask_text` 213
+- `vibeharness/core/agent_call.py`：`Channel` 18、`Content` 26、`Untrusted` 47、`ItemSource` 58、`CallContext` 81、`AgentCall` 96、`AgentReply` 124、`NO_REPLY` 148、`_system_prompt` 151、`_user_prompt` 156、`ask` 160、`_usable_items` 178、`TextReply` 208、`ask_text` 216
 - `vibeharness/core/fanout.py`：`Call` 28、`CallKind` 37、`PlannedCalls` 50、`fan_out` 73、`_book` 93、`_run_ordered` 101、`_fatal_error` 153
 - `vibeharness/core/settings.py`：`_is_reserved_param_name` 167、`is_reserved_extra_param` 177、`ConfigError` 187、`load_config_file` 201、`_builtin_cost_default` 300、`_effective_cost_limit` 311、`_raises_limit` 321、`discovered_config_violations` 344、`check_discovered_config` 415、`relative_executable_warnings` 448、`FrozenDict` 474、`freeze` 493、`positive_int` 504、`number` 515、`prepare_cache_dir` 533、`Overrides` 554、`GatewaySettings` 570、`Settings` 638、`load_settings` 652、`_gateway_settings` 718、`_validate_endpoints` 754、`_validate_models_and_agents` 781、`_per_test_timeout` 868、`_sandbox_settings` 877、`_docker_settings` 919、`_mutation_settings` 947、`_pattern_list` 972、`GatewaySettings.alias_for` 583
 - `vibeharness/core/i18n.py`：`bi` 18、`_bilingual_split` 24、`en_only` 41、`zh_only` 48、`has_cjk` 55
