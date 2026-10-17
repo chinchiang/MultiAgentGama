@@ -214,7 +214,7 @@ class WhiteboxTestGenerator:
             tests.append(draft.model_copy(update={"code": validated_code}))
         return tests, has_valid_test
 
-    def _validate_and_heal(self, code: str, subject: str, max_retries: int = HEAL_ATTEMPTS, language: str = "python") -> str:
+    def _validate_and_heal(self, code: str, subject: str, language: str = "python") -> str:
         """
         驗證程式碼可以解析並定義模組層級的 test_ 函式。
         失敗時請模型修復。回傳可取得的最佳程式碼；
@@ -227,13 +227,15 @@ class WhiteboxTestGenerator:
         """
         code_to_check = strip_code_fences(code)
 
-        for attempt in range(max_retries + 1):
+        # 最多 HEAL_ATTEMPTS 次修復；計畫的 max_per_call 也是它
+        # At most HEAL_ATTEMPTS repairs; the plan's max_per_call is the same constant
+        for attempt in range(HEAL_ATTEMPTS + 1):
             is_valid, problem = check_test_code_for(code_to_check, language)
             if is_valid:
                 return code_to_check
             logger.warning(bi(f"為 {subject} 產生的測試無效（第 {attempt+1} 次嘗試）：{problem}",
                               f"Generated test for {subject} is invalid (attempt {attempt+1}): {problem}"))
-            if attempt == max_retries:
+            if attempt == HEAL_ATTEMPTS:
                 break
             if language == "python":
                 heal_prompt = (

@@ -77,7 +77,7 @@ class MultiModelDebater:
         plans = []
         for agent_id, alias in self.verifiers.items():
             assigned = self.assigned_findings(findings_by_alias, alias)
-            calls = math.ceil(assigned / self.FINDINGS_PER_CALL) if assigned > 0 else 0
+            calls = self._call_count(assigned)
             plans.append(PlannedCalls(agent_id=agent_id, model_alias=alias, kind=CallKind.VERIFIER, calls=calls,
                                       json_output=True, code_tokens=self.LISTING_MAX_TOKENS + self.CODE_CONTEXT_TOKENS,
                                       exact=False))
@@ -90,10 +90,27 @@ class MultiModelDebater:
         How many findings the plan assigns to the verifier of model alias `alias`: the sum of what the other models
         reported (it never rules on its own model's). This is the plan's arithmetic; at run time arbitrate also skips
         the findings that verifier already corroborated."""
-        return sum(n for reporter, n in findings_by_alias.items() if reporter != alias)
+        return sum(n for reporter, n in findings_by_alias.items() if MultiModelDebater._rules_on(alias, reporter))
+
+    @staticmethod
+    def _rules_on(alias: str, reporter_alias: str) -> bool:
+        """模型別名 `alias` 的驗證者會不會裁決 `reporter_alias` 回報的發現：絕不裁決自家模型的發現。計畫與
+        arbitrate 都以此為準（arbitrate 另外略過已佐證的發現）。
+        Whether the verifier of model alias `alias` rules on findings reported by `reporter_alias`: never on its
+        own model's. The plan and arbitrate both go by it (arbitrate also skips the findings already corroborated)."""
+        return alias != reporter_alias
 
     def _chunks(self, idxs: List[int]) -> List[List[int]]:
+        """一次驗證呼叫列出的發現：每 FINDINGS_PER_CALL 筆一次。計畫的呼叫數也由它算出（_call_count）。
+        The findings one verification call lists: FINDINGS_PER_CALL per call. The plan's call count comes from it
+        too (_call_count)."""
         return [idxs[i:i + self.FINDINGS_PER_CALL] for i in range(0, len(idxs), self.FINDINGS_PER_CALL)]
+
+    def _call_count(self, assigned: float) -> int:
+        """分到 `assigned` 筆發現（情境數，可能不是整數）時的呼叫數：與 arbitrate 把同樣多筆發現切成幾批相同。
+        The number of calls for `assigned` findings (a scenario count, possibly not whole): as many as the batches
+        arbitrate cuts that many findings into."""
+        return len(self._chunks(list(range(math.ceil(assigned)))))
 
     def arbitrate(
         self,
@@ -112,7 +129,8 @@ class MultiModelDebater:
         # Which findings each verifier must rule on: never its own, never ones it already corroborated
         assignments: Dict[str, List[int]] = {}
         for agent_id, alias in self.verifiers.items():
-            idxs = [i for i, f in enumerate(findings) if alias != f.model_alias and alias not in f.corroborating_models]
+            idxs = [i for i, f in enumerate(findings)
+                    if self._rules_on(alias, f.model_alias) and alias not in f.corroborating_models]
             if idxs:
                 assignments[agent_id] = idxs
         jobs = [(agent_id, chunk) for agent_id, idxs in assignments.items() for chunk in self._chunks(idxs)]
