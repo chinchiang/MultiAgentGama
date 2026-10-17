@@ -62,11 +62,10 @@ def _planned(plans, kind=None):
     return planned
 
 
-def _actual(transport, system=None):
-    """{(代理 id, 模型別名): 實際的呼叫數}，可只取某個系統提示詞的呼叫。
-    {(agent id, model alias): actual calls}, optionally of one system prompt."""
-    return Counter((r.agent_id, r.model_alias) for r in transport.requests
-                   if system is None or r.messages[0]["content"] == system)
+def _actual(transport, kind=None):
+    """{(代理 id, 模型別名): 實際的呼叫數}，可只取某一種呼叫（請求帶著的 kind）。
+    {(agent id, model alias): actual calls}, optionally of one kind (the kind each request carries)."""
+    return Counter((r.agent_id, r.model_alias) for r in transport.requests if kind is None or r.kind == kind)
 
 
 def _planned_code_tokens(plans):
@@ -151,10 +150,21 @@ def test_debater_plan_is_the_verifier_calls_for_the_reported_findings(scripted):
     # 分到的發現數等於實際送給每個驗證者的發現數（自家模型的不送）
     # The assigned findings are those actually sent to each verifier (never its own model's)
     ruled = _ruled_on(transport)
-    assert {p.model_alias: debater.assigned_findings(reported, p.model_alias) for p in plans} == \
-        {p.model_alias: ruled[p.model_alias] for p in plans}
-    assert ruled["claude"] == 1 and ruled["deepseek"] == debater.FINDINGS_PER_CALL + 5
+    assert {p.model_alias: p.assigned for p in plans} == {p.model_alias: ruled[p.model_alias] for p in plans}
+    assert {p.per_call for p in plans} == {15}
+    assert ruled["claude"] == 1 and ruled["deepseek"] == 20
     assert set(_planned(debater.plan({})).values()) == {0}
+
+
+def test_debater_plan_counts_no_calls_for_nan_findings_and_stays_cheap_for_huge_ones():
+    """情境數是函式庫呼叫端給的浮點數：NaN 算成沒有發現（0 次呼叫），極大的數立刻算出，不必列出每一筆。
+    Scenario counts are floats from library callers: NaN counts as no findings (0 calls), and a huge count is
+    computed at once, without listing every finding."""
+    debater = MultiModelDebater(LLMGateway(CONFIG, execution_mode="mock"))
+    # 先斷言 NaN：極大值那一行在 NaN 修好之前不會執行
+    # NaN is asserted first: the huge-count line does not run before NaN is fixed
+    assert {p.calls for p in debater.plan({"claude": float("nan")})} == {0}
+    assert {p.model_alias: p.calls for p in debater.plan({"claude": 1e12})}["deepseek"] == 66666666667
 
 
 def test_debater_plan_is_an_upper_bound_when_findings_are_corroborated(scripted):
@@ -176,7 +186,7 @@ def test_debater_plan_is_an_upper_bound_when_findings_are_corroborated(scripted)
 
 def test_test_generator_plan_is_one_call_per_finding_and_bounds_the_heals(scripted, tmp_path):
     def answer(request):
-        if request.messages[0]["content"] == "Fix Python Test Code":
+        if request.kind is CallKind.HEAL:
             return _INVALID_TEST  # 修復一直失敗，用完所有修復次數 ／ healing keeps failing and uses every attempt
         return {"tests": [{"code": _INVALID_TEST}, {"code": _VALID_TEST}]}
     transport = scripted({test_generator.AGENT_ID: answer})
@@ -184,7 +194,7 @@ def test_test_generator_plan_is_one_call_per_finding_and_bounds_the_heals(script
     findings = [_finding(i) for i in range(3)]
     plans = gen.plan(len(findings), tests_per_finding=2)
     gen.generate_tests_for_findings(findings, [], root_dir=str(tmp_path))
-    generation = _actual(transport) - _actual(transport, "Fix Python Test Code")
+    generation = _actual(transport, CallKind.TEST_GENERATOR)
     assert _planned(plans, CallKind.TEST_GENERATOR) == generation
     (heal,) = [p for p in plans if p.kind is CallKind.HEAL]
     assert heal.conditional and not heal.json_output and heal.max_per_call == test_generator.HEAL_ATTEMPTS
@@ -193,7 +203,7 @@ def test_test_generator_plan_is_one_call_per_finding_and_bounds_the_heals(script
     assert heal.calls == 2 * sum(generation.values())
     # 每個無效的測試用完所有修復次數，總數沒有超過計畫的上限
     # Every invalid test uses every attempt, and the total stays within the plan's cap
-    healed = sum(_actual(transport, "Fix Python Test Code").values())
+    healed = sum(_actual(transport, CallKind.HEAL).values())
     assert healed == len(findings) * test_generator.HEAL_ATTEMPTS <= heal.calls * heal.max_per_call
 
 

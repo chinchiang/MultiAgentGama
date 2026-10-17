@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Protocol
 
 from vibeharness.core.i18n import bi
+from vibeharness.core.models import CallKind
 
 # litellm 在匯入時就會以 HTTPS 從 GitHub 抓取模型價格表（失敗還會重試、拖慢啟動），即使是 mock 或 --estimate
 # 這種完全不呼叫模型的執行也一樣。改用 litellm 套件內附的本機價格表；使用者自己設定的環境變數優先（setdefault）
@@ -41,6 +42,9 @@ class ModelRequest:
     # The litellm keyword arguments as is (temperature, timeout, num_retries, max_tokens, endpoint and credentials,
     # the filtered extra_params)
     params: Dict[str, Any]
+    # 這次呼叫的種類（代理宣告的）；轉接器不使用它，測試的 transport 可依它回答
+    # This call's kind (as the agent declared it); adapters do not use it, a test transport may answer by it
+    kind: Optional[CallKind] = None
 
 
 @dataclass(frozen=True)

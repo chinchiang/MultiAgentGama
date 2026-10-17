@@ -85,6 +85,11 @@ _Avoid_: malformed output (too vague), parse error (for this; the JSON parsed)
 One question an agent puts to a model: its role, the untrusted content the model must read (each kind in a provenance-labeled channel) and the answer shape it expects. It ends as a Live call, Simulated output or an invalid call (a call that crashed before producing an answer counts as one too).
 _Avoid_: LLM call, generate call; request (that is one attempt at one model)
 
+**修復呼叫 ／ Heal call**:
+模型寫的測試沒通過執行前的檢查（例如無法解析）時，附上檢查的錯誤、請模型修正該測試的一次代理呼叫；每個測試最多兩次，仍無效的測試原樣保留並回報為 ERROR，絕不換成會通過的空測試。它在呼叫紀錄中自成一類，不是對形狀錯誤的重新詢問。
+An Agent call that asks the model to fix a test it wrote that failed the pre-run check (e.g. it does not parse), with the check's error attached; at most two per test, and a test that stays invalid is kept as is and reported as ERROR, never swapped for a no-op test that passes. It is a kind of its own in the call log, not the re-ask that follows a Shape error.
+_Avoid_: retry, re-ask (for this; a re-ask answers a Shape error), self-heal loop
+
 ### 基準 ／ Baseline
 
 **基準 ／ Baseline**:

@@ -76,24 +76,43 @@ class MultiModelDebater:
         known before the run), and which findings get corroborated, and so need no ruling, is not known either."""
         plans = []
         for agent_id, alias in self.verifiers.items():
-            assigned = self.assigned_findings(findings_by_alias, alias)
-            calls = math.ceil(assigned / self.FINDINGS_PER_CALL) if assigned > 0 else 0
-            plans.append(PlannedCalls(agent_id=agent_id, model_alias=alias, kind=CallKind.VERIFIER, calls=calls,
-                                      json_output=True, code_tokens=self.LISTING_MAX_TOKENS + self.CODE_CONTEXT_TOKENS,
-                                      exact=False))
+            assigned = self._assigned_findings(findings_by_alias, alias)
+            plans.append(PlannedCalls(agent_id=agent_id, model_alias=alias, kind=CallKind.VERIFIER,
+                                      calls=self._call_count(assigned), json_output=True,
+                                      code_tokens=self.LISTING_MAX_TOKENS + self.CODE_CONTEXT_TOKENS, exact=False,
+                                      assigned=assigned, per_call=self.FINDINGS_PER_CALL))
         return plans
 
     @staticmethod
-    def assigned_findings(findings_by_alias: Mapping[str, float], alias: str) -> float:
+    def _assigned_findings(findings_by_alias: Mapping[str, float], alias: str) -> float:
         """計畫裡模型別名 `alias` 的驗證者分到幾筆發現：其他模型回報的總和（絕不裁決自家模型的發現）。這是計畫的
         算式；arbitrate 實際執行時還會略過該驗證者已佐證的發現。
         How many findings the plan assigns to the verifier of model alias `alias`: the sum of what the other models
         reported (it never rules on its own model's). This is the plan's arithmetic; at run time arbitrate also skips
         the findings that verifier already corroborated."""
-        return sum(n for reporter, n in findings_by_alias.items() if reporter != alias)
+        return sum(n for reporter, n in findings_by_alias.items() if MultiModelDebater._rules_on(alias, reporter))
+
+    @staticmethod
+    def _rules_on(alias: str, reporter_alias: str) -> bool:
+        """模型別名 `alias` 的驗證者會不會裁決 `reporter_alias` 回報的發現：絕不裁決自家模型的發現。計畫與
+        arbitrate 都以此為準（arbitrate 另外略過已佐證的發現）。
+        Whether the verifier of model alias `alias` rules on findings reported by `reporter_alias`: never on its
+        own model's. The plan and arbitrate both go by it (arbitrate also skips the findings already corroborated)."""
+        return alias != reporter_alias
 
     def _chunks(self, idxs: List[int]) -> List[List[int]]:
+        """一次驗證呼叫列出的發現：每 FINDINGS_PER_CALL 筆一次。計畫的呼叫數（_call_count）以同一個批次大小算出。
+        The findings one verification call lists: FINDINGS_PER_CALL per call. The plan's call count (_call_count) is
+        computed with the same batch size."""
         return [idxs[i:i + self.FINDINGS_PER_CALL] for i in range(0, len(idxs), self.FINDINGS_PER_CALL)]
+
+    def _call_count(self, assigned: float) -> int:
+        """分到 `assigned` 筆發現（情境數，可能不是整數）時的呼叫數：與 _chunks 把同樣多筆發現切成的批數相同
+        （同一個 FINDINGS_PER_CALL）；不是正數（含 NaN）時沒有呼叫。直接算出，不列出每一筆。
+        The number of calls for `assigned` findings (a scenario count, possibly not whole): as many as the batches
+        _chunks cuts that many findings into (the same FINDINGS_PER_CALL); none unless it is positive (NaN included).
+        Computed directly, without listing every finding."""
+        return math.ceil(assigned / self.FINDINGS_PER_CALL) if assigned > 0 else 0
 
     def arbitrate(
         self,
@@ -112,7 +131,8 @@ class MultiModelDebater:
         # Which findings each verifier must rule on: never its own, never ones it already corroborated
         assignments: Dict[str, List[int]] = {}
         for agent_id, alias in self.verifiers.items():
-            idxs = [i for i, f in enumerate(findings) if alias != f.model_alias and alias not in f.corroborating_models]
+            idxs = [i for i, f in enumerate(findings)
+                    if self._rules_on(alias, f.model_alias) and alias not in f.corroborating_models]
             if idxs:
                 assignments[agent_id] = idxs
         jobs = [(agent_id, chunk) for agent_id, idxs in assignments.items() for chunk in self._chunks(idxs)]
@@ -132,7 +152,7 @@ class MultiModelDebater:
             # "unsure"); live-mode failures still propagate so the run fails loudly.
             calls = [
                 Call(job[0], (f"{job[0]} 的驗證批次", f"Verifier batch for {job[0]}"),
-                     functools.partial(self._verify, job[0], findings, job[1], symbols, root_dir))
+                     functools.partial(self._verify, job[0], findings, job[1], symbols, root_dir), CallKind.VERIFIER)
                 for job in jobs
             ]
             replies: List[AgentReply] = fan_out(self.gateway, calls, fallback=NO_REPLY, logger=logger)
@@ -339,7 +359,7 @@ def _verify_call(count: int) -> AgentCall:
     its own; the context is (alias, finding indices)."""
     return AgentCall(
         schema=verdicts_schema(count), items=ItemSource.key("verdicts"), mapper=_verdict_votes,
-        channels=(Channel.TARGET_CODE,),
+        channels=(Channel.TARGET_CODE,), kind=CallKind.VERIFIER,
         # 模擬輸出沒有裁決：樣板無法評判針對目標的發現
         # The Simulated output holds no verdicts: a template cannot judge target-specific findings
         simulated=lambda agent_id, alias: {"verdicts": []},

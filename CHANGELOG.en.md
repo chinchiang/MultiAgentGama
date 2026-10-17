@@ -6,19 +6,27 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Added
+
+- Every `agent_calls` entry in the JSON report and in the partial report written on a crash (`.partial.json`) gains `kind`: the kind of that model call, one of `reviewer`, `verifier`, `test_generator`, `heal` (a call that repairs an invalid test), `threat_modeler` or `synthesizer`; calls that crashed outside the gateway have it too. It is a new field, so `schema_version` stays "2".
+- Every `ModelRequest` a custom `ModelTransport` receives carries `kind` too, so it can tell a heal from a test generation.
+
 ### Changed
 
-- The five agents' model calls go through one new module, `vibeharness/core/agent_call.py`: prompt assembly (each kind of untrusted content in its own provenance-labeled channel), the per-item filtering of answers and the marking of Simulated output happen there only. The prompts sent to the models, the reports, JSON, SARIF, the call log and the exit codes are unchanged.
+- The five agents' model calls go through one new module, `vibeharness/core/agent_call.py`: prompt assembly (each kind of untrusted content in its own provenance-labeled channel), the per-item filtering of answers and the marking of Simulated output happen there only. The prompts sent to the models, the reports, JSON, SARIF and the exit codes are unchanged.
 - When a model answer is still unusable after the re-ask, or an agent call crashes outside the gateway, the reviewers and the threat modeler no longer log an extra "Ignoring unusable ... list ... (got NoneType)" line; the failure is still logged once as before.
 - `ModelAnswer.data` in `LLMGateway.generate`'s answer is now read-only. Library code calling `generate` directly that changes `data` has to copy it first (`dict(answer.data)`).
+- `CallKind` moves to `vibeharness.core.models`; importing it from `vibeharness.core.fanout` still works.
 
 ### Tests
 
 - New `tests/test_agent_call.py`; the agents' tests drive a real gateway through the `scripted` transport.
+- New `tests/test_call_kinds.py`: every call record, every request sent and both reports carry the right kind of call.
 
 ### Documentation
 
 - The design document gains section 5.8, "Agent calls", and updates the agents' sections; `GLOSSARY.md` adds Agent call; the READMEs' project structure lists the new module and test.
+- The design document records the call log's `kind` and the rules each agent's plan shares with its run; `GLOSSARY.md` adds Heal call.
 
 ## [0.13.0] - 2026-10-17
 

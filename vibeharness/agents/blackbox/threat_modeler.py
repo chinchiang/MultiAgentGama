@@ -221,7 +221,7 @@ class AutomatedThreatModeler:
         alias = self.gateway.settings.alias_for(AGENT_ID)
         return [
             PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind=CallKind.THREAT_MODELER, calls=1, json_output=True,
-                         code_tokens=estimate_tokens(_listing(batch, root)) if batch else 0, exact=True)
+                         code_tokens=estimate_tokens(_listing(batch, root)), exact=True)
             for batch in _batches(symbols, root)
         ]
 
@@ -282,7 +282,7 @@ class AutomatedThreatModeler:
         calls: List[Call[AgentReply]] = [
             Call(AGENT_ID, ("威脅建模批次", "Threat modeler batch"), functools.partial(
                 self._model_batch, batch, system_prompt, system_description, entrypoints_summary, routes_summary,
-                root_dir, ai_components))
+                root_dir, ai_components), CallKind.THREAT_MODELER)
             for batch in batches
         ]
         # 當掉的批次由 fan_out 記成證據缺口；LLMGatewayError 與 KeyboardInterrupt 會在取消尚未開始的批次後往外拋
@@ -488,7 +488,7 @@ def _simulated_threat_model(model_alias: str) -> Dict[str, Any]:
 # in the list
 THREAT_MODEL_CALL = AgentCall(
     schema=THREATS_SCHEMA, items=ItemSource.key("threats"), mapper=_threat_drafts,
-    channels=(Channel.TARGET_CODE,), logger=logger,
+    channels=(Channel.TARGET_CODE,), logger=logger, kind=CallKind.THREAT_MODELER,
     malformed_message=lambda ctx, position: bi(f"略過格式錯誤的威脅項目 #{position}（不是 JSON 物件）",
                                                f"Skipping malformed threat entry #{position} (not a JSON object)"),
     simulated=lambda agent_id, alias: _simulated_threat_model(alias),

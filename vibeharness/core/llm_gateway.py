@@ -14,7 +14,7 @@ from typing import Callable, Dict, Any, Mapping, Optional, List
 # recognised as broken inside main()'s guard (exit 5 with reinstall instructions) instead of crashing while reading the config
 import yaml  # noqa: F401
 
-from vibeharness.core.models import AgentCallRecord
+from vibeharness.core.models import AgentCallRecord, CallKind
 # 模型呼叫走 core/transport.py 的接縫；只有那裡知道 litellm ／ model calls go through the seam in core/transport.py; only it knows litellm
 from vibeharness.core.transport import LiteLLMTransport, ModelRequest, ModelTransport
 # 回答的解析與形狀檢查在 core/model_output.py；REASON_NOT_VALID_JSON 以舊名稱重新匯出
@@ -327,6 +327,7 @@ class LLMGateway:
         json_output: bool = True,
         schema: Optional[OutputSchema] = None,
         simulated: Optional[Callable[[str], Dict[str, Any]]] = None,
+        kind: Optional[CallKind] = None,
     ) -> ModelAnswer:
         """
         針對指定代理所設定的 LLM 執行提示。
@@ -414,7 +415,7 @@ class LLMGateway:
                                        f"[{agent_id}] answer served from the response cache ({model_name})"))
                     else:
                         raw_text, model_name, finish_reason = self._complete(agent_id, model_alias, model_info, primary_model,
-                                                                             messages, temperature)
+                                                                             messages, temperature, kind)
                 except Exception as e:
                     fallback_reason = f"{bi('線上呼叫失敗', 'live invocation failed')}: {self._safe_reason(str(e))}"
                     if self.execution_mode == "live":
@@ -446,8 +447,8 @@ class LLMGateway:
                         )]
                         for key in keys:
                             self._cache_write(key, agent_id, model_name, raw_text, finish_reason, prompt_hash)
-                    self._record(agent_id, model_alias, model_name, "live", prompt_sha256=prompt_hash, cached=from_cache,
-                                 attempt=attempt)
+                    self._record(agent_id, model_alias, model_name, "live", prompt_sha256=prompt_hash,
+                                 cached=from_cache, attempt=attempt, kind=kind)
                     if not json_output:
                         return ModelAnswer(mode="live", model=model_name, text=raw_text, cached=from_cache)
                     return ModelAnswer(mode="live", model=model_name, data=result, cached=from_cache)
@@ -475,7 +476,8 @@ class LLMGateway:
                 # --cache-only never re-asks: a re-ask is a network call
                 if (not self.cache_only and json_output and attempt < self.retry_invalid_output
                         and self._reserve_live_call()):
-                    self._record(agent_id, model_alias, model_name, "retried", booked, prompt_sha256=prompt_hash, attempt=attempt)
+                    self._record(agent_id, model_alias, model_name, "retried", booked, prompt_sha256=prompt_hash,
+                                 attempt=attempt, kind=kind)
                     attempt += 1
                     logger.warning(bi(f"[{agent_id}] {model_name} 回傳無法使用的輸出（{booked}）；重新詢問（{attempt}/{self.retry_invalid_output}）",
                                       f"[{agent_id}] {model_name} returned unusable output ({booked}); re-asking ({attempt}/{self.retry_invalid_output})"))
@@ -485,7 +487,8 @@ class LLMGateway:
                     continue
                 logger.error(bi(f"[{agent_id}] {model_name} 回傳無法使用的輸出：{booked}",
                                 f"[{agent_id}] {model_name} returned unusable output: {booked}"))
-                self._record(agent_id, model_alias, model_name, "invalid", booked, prompt_sha256=prompt_hash, attempt=attempt)
+                self._record(agent_id, model_alias, model_name, "invalid", booked, prompt_sha256=prompt_hash,
+                             attempt=attempt, kind=kind)
                 return ModelAnswer(mode="invalid", model=model_name, reason=booked)
         elif self.execution_mode == "live":
             raise LLMGatewayError(f"[{agent_id}] {bi(f'無法以 {model_name} 執行線上模式', f'cannot run live with {model_name}')}: {fallback_reason}")
@@ -494,7 +497,8 @@ class LLMGateway:
         # Offline / Mock Fallback
         logger.info(bi(f"將 [{agent_id}] 派送至模擬引擎（模型別名：{model_alias}；原因：{fallback_reason}）",
                        f"Dispatching [{agent_id}] to Simulation Engine (Model Alias: {model_alias}; reason: {fallback_reason})"))
-        self._record(agent_id, model_alias, model_name, "simulated", fallback_reason, prompt_sha256=prompt_hash, attempt=attempt)
+        self._record(agent_id, model_alias, model_name, "simulated", fallback_reason, prompt_sha256=prompt_hash,
+                     attempt=attempt, kind=kind)
         if simulated is not None:
             result = simulated(model_alias)
         else:
@@ -502,7 +506,7 @@ class LLMGateway:
         return ModelAnswer(mode="simulated", model=model_name, data=result, reason=fallback_reason)
 
     def _complete(self, agent_id: str, model_alias: str, model_info: Dict[str, Any], model_name: str,
-                  messages: List[Dict[str, str]], temperature: float):
+                  messages: List[Dict[str, str]], temperature: float, kind: Optional[CallKind] = None):
         """
         呼叫主要模型（含 litellm 自身的重試），主要模型失敗時再呼叫一次 `fallback_model`。
         API 金鑰會明確傳入，因此 litellm 預設環境變數與 `api_key_env` 不同的供應商
@@ -563,7 +567,8 @@ class LLMGateway:
         for candidate in candidates:
             try:
                 reply = self.transport.complete(ModelRequest(
-                    agent_id=agent_id, model_alias=model_alias, model=candidate, messages=messages, params=dict(kwargs)))
+                    agent_id=agent_id, model_alias=model_alias, model=candidate, messages=messages, params=dict(kwargs),
+                    kind=kind))
                 return reply.text, candidate, reply.finish_reason
             except Exception as e:
                 last_error = e
@@ -589,7 +594,7 @@ class LLMGateway:
             value = self.settings.max_output_tokens
         return int(value)
 
-    def record_failure(self, agent_id: str, reason: str) -> None:
+    def record_failure(self, agent_id: str, reason: str, kind: Optional[CallKind] = None) -> None:
         """登記一次在閘道能回答之前就當掉的代理呼叫（例如呼叫端執行緒池批次中的
         例外）。記錄為 `invalid` 呼叫，讓品質閘門把缺少的結果視為證據缺口，
         而不是把沉默誤認為「沒有發現」。
@@ -599,16 +604,17 @@ class LLMGateway:
         model_alias = self.settings.alias_for(agent_id)
         model_info = self.models_config.get(model_alias) or {}
         model_name = model_info.get("model") or f"(no model configured for alias '{model_alias}')"
-        self._record(agent_id, model_alias, model_name, "invalid", f"{REASON_CALL_CRASHED}: {reason}")
+        self._record(agent_id, model_alias, model_name, "invalid", f"{REASON_CALL_CRASHED}: {reason}", kind=kind)
 
     def _record(
         self, agent_id: str, model_alias: str, model_name: str, mode: str,
-        reason: Optional[str] = None, prompt_sha256: Optional[str] = None, cached: bool = False, attempt: int = 0
+        reason: Optional[str] = None, prompt_sha256: Optional[str] = None, cached: bool = False, attempt: int = 0,
+        kind: Optional[CallKind] = None,
     ):
         self.call_log.append(AgentCallRecord(
             agent_id=agent_id, model_alias=model_alias, model_name=model_name, mode=mode,
             reason=self._safe_reason(reason) if reason is not None else None,
-            prompt_sha256=prompt_sha256, cached=cached, attempt=attempt
+            prompt_sha256=prompt_sha256, cached=cached, attempt=attempt, kind=kind
         ))
 
     @property

@@ -6,19 +6,27 @@
 
 ## [Unreleased]
 
+### 新增
+
+- JSON 報告與崩潰時的部分報告（`.partial.json`）裡，每筆 `agent_calls` 多了 `kind`：這次模型呼叫的種類，值為 `reviewer`、`verifier`、`test_generator`、`heal`（修復無效測試的呼叫）、`threat_modeler` 或 `synthesizer`；在閘道之外當掉的呼叫也有。屬於新增欄位，`schema_version` 維持 "2"。
+- 自訂 `ModelTransport` 收到的每個 `ModelRequest` 也帶 `kind`，可以分辨修復呼叫與測試產生。
+
 ### 變更
 
-- 五個代理的模型呼叫改經同一個新模組 `vibeharness/core/agent_call.py`：提示的組裝（不可信內容依種類走各自標示來源的通道）、回答的逐項過濾與模擬輸出的標記都只在這裡做。送給模型的提示、報告、JSON、SARIF、呼叫紀錄與結束碼都不變。
+- 五個代理的模型呼叫改經同一個新模組 `vibeharness/core/agent_call.py`：提示的組裝（不可信內容依種類走各自標示來源的通道）、回答的逐項過濾與模擬輸出的標記都只在這裡做。送給模型的提示、報告、JSON、SARIF 與結束碼都不變。
 - 模型的回答在重問後仍無法使用，或代理呼叫在閘道之外當掉時，審查者與威脅建模不再多記一行「略過 … 無法使用的 … 清單（收到 NoneType）」；那次失敗仍照常記錄一次。
 - `LLMGateway.generate` 回答的 `ModelAnswer.data` 改為唯讀。直接呼叫 `generate` 並修改 `data` 的函式庫程式要先複製一份（`dict(answer.data)`）。
+- `CallKind` 移到 `vibeharness.core.models`；從 `vibeharness.core.fanout` 匯入仍然可以。
 
 ### 測試
 
 - 新增 `tests/test_agent_call.py`；代理的測試改由 `scripted` transport 驅動真的閘道。
+- 新增 `tests/test_call_kinds.py`：每筆呼叫紀錄、每個送出的請求與兩種報告都帶著正確的呼叫種類。
 
 ### 文件
 
 - 設計文件新增第 5.8 節「代理呼叫」，並更新各代理的章節；`GLOSSARY.md` 加上「代理呼叫 ／ Agent call」；README 的專案結構列出新的模組與測試。
+- 設計文件記載呼叫紀錄的 `kind` 與各代理的計畫和執行共用的規則；`GLOSSARY.md` 加上「修復呼叫 ／ Heal call」。
 
 ## [0.13.0] - 2026-10-17
 

@@ -1,7 +1,7 @@
 import functools
 import logging
 import re
-from typing import List, Dict, Any, Mapping, Optional
+from typing import List, Dict, Any, Mapping, Optional, Sequence, Tuple, TypeVar
 from pydantic import ValidationError
 from vibeharness.core.models import CodeSymbol, ReviewFinding, FindingSeverity, text_or
 from vibeharness.core.llm_gateway import LLMGateway
@@ -15,6 +15,8 @@ from vibeharness.core.identity import UNKNOWN_FILE
 from vibeharness.core.model_output import LIST_OF_OBJECTS, OutputSchema
 
 logger = logging.getLogger("VibeHarness.MultiReviewer")
+
+T = TypeVar("T")
 
 
 def is_usable_finding(item: Mapping[str, Any]) -> bool:
@@ -109,25 +111,33 @@ class HeterogeneousReviewerEnsemble:
         """review_symbols 對這些符號會發出的呼叫：每個審查者、每個白箱批次一次，執行前就已知。
         The calls review_symbols would make for these symbols: one per reviewer and white-box batch, known before
         the run."""
-        if not symbols or not self.reviewer_agents:
-            return []
-        listing_tokens = [estimate_tokens(self._listing(batch, root)) for batch in self._batches(symbols, root)]
+        listing_tokens = [estimate_tokens(self._listing(batch, root)) for batch in self._review_batches(symbols, root)]
         return [
             PlannedCalls(agent_id=reviewer["agent_id"], model_alias=reviewer["model_alias"],
                          kind=CallKind.REVIEWER, calls=1, json_output=True, code_tokens=tokens, exact=True)
-            for reviewer in self.reviewer_agents for tokens in listing_tokens
+            for reviewer, tokens in self._jobs(listing_tokens)
         ]
 
     def batch_count(self, symbols: List[CodeSymbol], root: str) -> int:
         """review_symbols 對這些符號會審幾個白箱批次（每個審查者都審同樣的批次）；沒有符號或沒有審查者時是 0。
         How many white-box batches review_symbols would review for these symbols (every reviewer reviews the same
         batches); 0 without symbols or without reviewers."""
-        if not symbols or not self.reviewer_agents:
-            return 0
-        return len(self._batches(symbols, root))
+        return len(self._review_batches(symbols, root))
 
-    def _batches(self, symbols: List[CodeSymbol], root: str) -> List[List[CodeSymbol]]:
+    def _review_batches(self, symbols: List[CodeSymbol], root: str) -> List[List[CodeSymbol]]:
+        """每個審查者都要審的白箱批次；沒有符號或沒有審查者時沒有批次。plan、batch_count 與 review_symbols 都從這裡取。
+        The white-box batches every reviewer reviews; none without symbols or without reviewers. plan, batch_count and
+        review_symbols all take them from here."""
+        if not symbols or not self.reviewer_agents:
+            return []
         return batch_symbols(symbols, root, self.BATCH_MAX_TOKENS, self.BATCH_MAX_SYMBOLS)
+
+    def _jobs(self, per_batch: Sequence[T]) -> List[Tuple[Dict[str, str], T]]:
+        """一次審查呼叫一筆：每個審查者、每個批次一次，依審查者再依批次的順序；`per_batch` 是每個批次對應的值
+        （執行時是批次本身，計畫時是它的程式碼 token 數）。
+        One entry per review call: one per reviewer and batch, reviewer by reviewer and then batch by batch;
+        `per_batch` holds one value per batch (the batch itself when running, its code tokens when planning)."""
+        return [(reviewer, item) for reviewer in self.reviewer_agents for item in per_batch]
 
     def _listing(self, batch: List[CodeSymbol], root: str) -> str:
         return render_symbols(batch, root, max_tokens=self.BATCH_MAX_TOKENS)
@@ -136,8 +146,7 @@ class HeterogeneousReviewerEnsemble:
         if not symbols or not self.reviewer_agents:
             return []
         root = target_root(root_dir, symbols[0].file_path)
-        batches = self._batches(symbols, root)
-        jobs = [(reviewer, batch) for reviewer in self.reviewer_agents for batch in batches]
+        jobs = self._jobs(self._review_batches(symbols, root))
 
         # 審查者是彼此獨立的模型，所以它們的呼叫並行執行。一個當掉的批次不能丟掉其他所有批次（已經付費的）結果：
         # fan_out 把它記成無效呼叫（該批次的發現是缺漏，而不是不存在）；live 模式的失敗仍會往上傳遞，讓執行大聲地失敗。
@@ -146,7 +155,7 @@ class HeterogeneousReviewerEnsemble:
         # missing, not absent); live-mode failures still propagate so the run fails loudly.
         calls = [
             Call(reviewer["agent_id"], (f"{reviewer['name']} 的審查批次", f"Reviewer batch for {reviewer['name']}"),
-                 functools.partial(self._review_batch, reviewer, batch, root))
+                 functools.partial(self._review_batch, reviewer, batch, root), CallKind.REVIEWER)
             for reviewer, batch in jobs
         ]
         replies: List[AgentReply] = fan_out(self.gateway, calls, fallback=NO_REPLY, logger=logger)
@@ -359,7 +368,7 @@ def _review_findings(items: List[Mapping[str, Any]], ctx: CallContext) -> List[O
 # The reviewers' call: one per reviewer and white-box batch; the context is (reviewer, batch)
 REVIEW_CALL = AgentCall(
     schema=FINDINGS_SCHEMA, items=ItemSource.key("findings"), mapper=_review_findings,
-    channels=(Channel.TARGET_CODE,), logger=logger,
+    channels=(Channel.TARGET_CODE,), logger=logger, kind=CallKind.REVIEWER,
     skip_message=lambda ctx: bi(
         f"略過 {ctx.context[0]['name']} 沒有可用標題或描述的發現",
         f"Skipping finding without a usable title or description from {ctx.context[0]['name']}"),

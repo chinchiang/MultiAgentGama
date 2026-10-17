@@ -116,7 +116,8 @@ class WhiteboxTestGenerator:
         # crashed finding as an invalid call (an evidence gap); strict live mode fails loudly.
         calls = [
             Call(AGENT_ID, (f"{finding.finding_id} 的測試產生", f"Test generation for {finding.finding_id}"),
-                 functools.partial(self._tests_for_finding, idx, finding, symbols, root, target_file))
+                 functools.partial(self._tests_for_finding, idx, finding, symbols, root, target_file),
+                 CallKind.TEST_GENERATOR)
             for idx, finding in enumerate(findings)
         ]
         outcomes = fan_out(self.gateway, calls, fallback=([], False), logger=logger)
@@ -214,7 +215,7 @@ class WhiteboxTestGenerator:
             tests.append(draft.model_copy(update={"code": validated_code}))
         return tests, has_valid_test
 
-    def _validate_and_heal(self, code: str, subject: str, max_retries: int = HEAL_ATTEMPTS, language: str = "python") -> str:
+    def _validate_and_heal(self, code: str, subject: str, language: str = "python") -> str:
         """
         驗證程式碼可以解析並定義模組層級的 test_ 函式。
         失敗時請模型修復。回傳可取得的最佳程式碼；
@@ -227,13 +228,15 @@ class WhiteboxTestGenerator:
         """
         code_to_check = strip_code_fences(code)
 
-        for attempt in range(max_retries + 1):
+        # 最多 HEAL_ATTEMPTS 次修復；計畫的 max_per_call 也是它
+        # At most HEAL_ATTEMPTS repairs; the plan's max_per_call is the same constant
+        for attempt in range(HEAL_ATTEMPTS + 1):
             is_valid, problem = check_test_code_for(code_to_check, language)
             if is_valid:
                 return code_to_check
             logger.warning(bi(f"為 {subject} 產生的測試無效（第 {attempt+1} 次嘗試）：{problem}",
                               f"Generated test for {subject} is invalid (attempt {attempt+1}): {problem}"))
-            if attempt == max_retries:
+            if attempt == HEAL_ATTEMPTS:
                 break
             if language == "python":
                 heal_prompt = (
@@ -251,7 +254,7 @@ class WhiteboxTestGenerator:
                     f"Output the corrected JavaScript code only:\n\n{code_to_check}"
                 )
                 heal_system = "Fix JavaScript Test Code"
-            reply = ask_text(self.gateway, AGENT_ID, system=(heal_system, ""), prompt=[heal_prompt])
+            reply = ask_text(self.gateway, AGENT_ID, system=(heal_system, ""), prompt=[heal_prompt], kind=CallKind.HEAL)
             fixed = strip_code_fences(reply.text)
             if not fixed:
                 break  # 沒有可用來修復的內容（例如模擬引擎） ／ Nothing to repair with (e.g. simulation engine)
@@ -425,7 +428,7 @@ def _test_drafts(items: List[Mapping[str, Any]], ctx: CallContext) -> List[Gener
 # number, finding, default target file, language)
 TESTS_CALL = AgentCall(
     schema=TESTS_SCHEMA, items=ItemSource.key_or_answer("tests"), mapper=_test_drafts,
-    channels=(Channel.TARGET_CODE,),
+    channels=(Channel.TARGET_CODE,), kind=CallKind.TEST_GENERATOR,
     # 模擬輸出沒有測試：模擬引擎無法撰寫針對目標的測試，改用由目標推導的確定性探測
     # The Simulated output holds no tests: the simulation engine cannot write target-specific tests, so
     # deterministic, target-derived probes are used instead

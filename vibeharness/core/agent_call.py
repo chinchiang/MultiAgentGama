@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 from vibeharness.core.llm_gateway import LLMGateway
+from vibeharness.core.models import CallKind
 from vibeharness.core.model_output import OutputSchema
 from vibeharness.core.sanitize import (
     UNTRUSTED_CODE_POLICY, UNTRUSTED_MODEL_POLICY, untrusted_block, untrusted_model_block,
@@ -115,9 +116,10 @@ class AgentCall:
     # 沒有呼叫模型時的模擬輸出，依 (agent id, 模型別名) 產生；它也必須符合 `schema`
     # The Simulated output used when no model is called, built from (agent id, model alias); it must fit `schema` too
     simulated: Optional[Callable[[str, str], Dict[str, Any]]] = None
-    # 呼叫的種類（core/fanout.py 的 CallKind）之後會加在這個宣告上，讓呼叫計畫與呼叫紀錄都帶著它
-    # The kind of call (CallKind in core/fanout.py) is to be added to this declaration, so the call plans and the call
-    # log both carry it
+    # 這種呼叫的種類：ask 把它交給閘道，寫進每一筆呼叫紀錄與每個送給 transport 的請求
+    # The kind of this call: ask hands it to the gateway, which writes it into every call record and every request
+    # sent to the transport
+    kind: Optional[CallKind] = None
 
 
 @dataclass(frozen=True)
@@ -164,7 +166,8 @@ def ask(gateway: LLMGateway, call: AgentCall, agent_id: str, system: Tuple[str, 
     simulated = call.simulated
     answer = gateway.generate(agent_id, _system_prompt(call, system), _user_prompt(prompt), json_output=True,
                               schema=call.schema,
-                              simulated=(lambda alias: simulated(agent_id, alias)) if simulated else None)
+                              simulated=(lambda alias: simulated(agent_id, alias)) if simulated else None,
+                              kind=call.kind)
     if not answer.usable:
         # 重問後仍無法使用：閘道已經記成 invalid 呼叫，這裡沒有 items 可對應
         # Still unusable after the re-asks: the gateway booked an invalid call, and there are no items to map
@@ -213,10 +216,12 @@ class TextReply:
     text: str = ""
 
 
-def ask_text(gateway: LLMGateway, agent_id: str, system: Tuple[str, str], prompt: Sequence[Part]) -> TextReply:
-    """為 `agent_id` 問一次模型、要純文字回答（不檢查形狀）；它的模擬輸出沒有文字。
-    Asks the model once for `agent_id` for a plain-text reply (no shape check); its Simulated output has no text."""
+def ask_text(gateway: LLMGateway, agent_id: str, system: Tuple[str, str], prompt: Sequence[Part],
+             kind: Optional[CallKind] = None) -> TextReply:
+    """為 `agent_id` 問一次模型、要純文字回答（不檢查形狀），`kind` 是這次呼叫的種類；它的模擬輸出沒有文字。
+    Asks the model once for `agent_id` for a plain-text reply (no shape check), `kind` being the kind of call; its
+    Simulated output has no text."""
     head, tail = system
     answer = gateway.generate(agent_id, head + tail, _user_prompt(prompt), json_output=False,
-                              simulated=lambda alias: {})
+                              simulated=lambda alias: {}, kind=kind)
     return TextReply(status=answer.mode, text=answer.text or "")

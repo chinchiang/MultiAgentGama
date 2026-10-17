@@ -253,6 +253,7 @@ MultiAgentGama/
 │   ├── test_agent_call.py       # 透過 ask／ask_text 測試代理呼叫：提示組裝與通道、只有可用的 items 到 mapper、模擬輸出、純文字呼叫
 │   ├── test_ai_security.py      # OWASP LLM Top 10 2026／ATLAS 控制與確定性 AI 安全規則
 │   ├── test_baseline.py                # --baseline：載入與重算、已知問題不計入、action.yml 結構
+│   ├── test_call_kinds.py              # 每筆呼叫紀錄、送出的請求與報告都帶著呼叫的種類（含修復與當掉的呼叫）
 │   ├── test_call_plans.py              # 每個代理的呼叫計畫（plan）等於它實際發出的呼叫
 │   ├── test_cross_verification.py      # 交叉驗證：模型不評審自己的發現、依票數判定
 │   ├── test_dedup_and_budget.py        # 重複發現合併與 token 預算內的提示上下文
