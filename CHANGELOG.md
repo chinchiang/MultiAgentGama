@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-17
+
+架構整理輪：品質閘門、設定、模型呼叫的傳輸、並行的模型呼叫、發現的身分識別與模型回答的形狀檢查各自集中到一個模組；沙盒、檔案範圍、規則掃描與模型回答改以型別化的值回傳。鍵在、形狀卻不對的模型回答不再被讀成「零個發現」而放行；`--estimate` 不再多算驗證者的呼叫；使用 `--baseline` 時，報告的規則命中列分開新的與已知的命中；第一個威脅建模批次當掉時，報告欄位不再被清成預設值。基準線與 SARIF 的 fingerprint 完全不變。直接呼叫 `LLMGateway.generate`、`execute_pytest_files`、`execute_test_suite` 或 `select_symbols` 的函式庫程式要改讀新的回傳型別（見「變更」）。
+
 ### 新增
 
 - JSON 報告的 `summary.new_blocking_rule_hits`：計入判定結果的 HIGH 以上確定性規則命中數（有 `--baseline` 時只算基準中沒有的）。屬於新增欄位，`schema_version` 維持 "2"。
@@ -579,7 +583,8 @@ CI 整合（`--baseline`、GitHub Action）、`--estimate`、JS/TS 動態測試�
 - CI 矩陣：ubuntu / windows × Python 3.10 / 3.13，含 lint 與覆蓋率報告
 - MIT 授權
 
-[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.0...v0.10.1

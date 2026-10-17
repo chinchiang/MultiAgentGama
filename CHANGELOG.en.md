@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-17
+
+Architecture round: the quality gate, the settings, the model-call transport, the concurrent model calls, the identity of findings and the shape checks of model answers each live in one module, and the sandbox, the file scope, the rule scan and the model answers are returned as typed values. A model answer with the keys but the wrong shape is no longer read as "zero findings" and let through; `--estimate` no longer overcounts the verifiers' calls; with `--baseline`, the report's rule-hit row separates new and known hits; a crash in the first threat-model batch no longer resets the report fields to the defaults. Baseline and SARIF fingerprints are unchanged. Library code calling `LLMGateway.generate`, `execute_pytest_files`, `execute_test_suite` or `select_symbols` directly has to read the new return types (see Changed).
+
 ### Added
 
 - `summary.new_blocking_rule_hits` in the JSON report: the number of HIGH+ deterministic rule hits that counted toward the verdict (with `--baseline`, only the ones the baseline does not contain). An addition, so `schema_version` stays "2".
@@ -579,7 +583,8 @@ Initial release.
 - CI matrix: ubuntu / windows × Python 3.10 / 3.13, with lint and coverage reporting
 - MIT license
 
-[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/chinchiang/MultiAgentGama/compare/v0.10.0...v0.10.1
