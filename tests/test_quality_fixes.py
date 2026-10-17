@@ -1,5 +1,6 @@
 """打包、模型輸出穩健性、執行與 SARIF 修正的回歸測試。
 Regression tests for the packaging, model-output robustness, execution and SARIF fixes."""
+import logging
 import os
 import sys
 
@@ -506,7 +507,7 @@ def test_reviewer_ensemble_skips_empty_symbols_without_model_calls():
     assert HeterogeneousReviewerEnsemble(gw).review_symbols([]) == []
 
 
-def test_one_crashed_reviewer_batch_does_not_abort_the_review(scripted, tmp_path):
+def test_one_crashed_reviewer_batch_does_not_abort_the_review(scripted, tmp_path, caplog):
     """某位審查者批次中的非 LLM 當機不得丟掉其他審查者的發現，並記在該審查者名下（接線測試；
     扇出本身見 test_fanout.py）。
     A non-LLM crash in one reviewer's batch must not discard the other reviewers' findings, and is booked under that
@@ -525,7 +526,12 @@ def test_one_crashed_reviewer_batch_does_not_abort_the_review(scripted, tmp_path
             raise RuntimeError("simulated thread crash")
         return generate(agent_id, *args, **kwargs)
     gateway.generate = crash_deepseek
-    findings = HeterogeneousReviewerEnsemble(gateway).review_symbols(symbols, root_dir=str(tmp_path))
+    with caplog.at_level(logging.WARNING):
+        findings = HeterogeneousReviewerEnsemble(gateway).review_symbols(symbols, root_dir=str(tmp_path))
+    # 當掉只由 fan_out 記錄；審查者不再對沒有回答的批次另外記一行 warning
+    # The crash is logged by fan_out only; the reviewer no longer logs a warning of its own for the batch with no answer
+    reviewer_records = [(r.levelname, r.getMessage()) for r in caplog.records if r.name == "VibeHarness.MultiReviewer"]
+    assert [level for level, _ in reviewer_records] == ["ERROR"] and "simulated thread crash" in reviewer_records[0][1]
     assert [f.title for f in findings] == ["ok", "ok", "ok"]  # claude、glm 與 gemini 仍保留 ／ claude, glm and gemini survived
     assert all(not f.is_simulated for f in findings)
     (crashed,) = gateway.invalid_calls

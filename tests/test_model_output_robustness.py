@@ -591,6 +591,22 @@ def test_a_reviewer_answering_a_non_list_is_an_evidence_gap_not_zero_findings(sc
     assert [c.agent_id for c in gw.invalid_calls] == ["whitebox_reviewer_claude"]
 
 
+def test_an_invalid_reviewer_answer_is_booked_by_the_gateway_and_not_warned_about_again(scripted, tmp_path, caplog):
+    """重問後仍無法使用的回答只由閘道記成 invalid 呼叫；審查者不再對同一次失敗另外記一行「略過無法使用的發現清單」。
+    An answer still unusable after the re-ask is only booked as an invalid call by the gateway; the reviewer no longer
+    logs a second "ignoring unusable findings list" line for the same failure."""
+    import logging
+    (tmp_path / "svc.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
+    symbols = ASTExtractor().parse_file(str(tmp_path / "svc.py"))
+    gw = LLMGateway(CONFIG, execution_mode="live",
+                    transport=scripted({"whitebox_reviewer_claude": {"findings": 5}, "*": {"findings": []}}))
+
+    with caplog.at_level(logging.WARNING):
+        assert HeterogeneousReviewerEnsemble(gw).review_symbols(symbols, root_dir=str(tmp_path)) == []
+
+    assert [r.getMessage() for r in caplog.records if r.name == "VibeHarness.MultiReviewer"] == []
+
+
 def test_a_cached_answer_that_no_longer_fits_is_invalid_under_cache_only_and_reasked_otherwise(scripted, tmp_path):
     """舊版本存進回應快取、現在形狀已不合的回答：--cache-only 下記為 invalid，原因標明來自快取（重新詢問的提示不帶這個
     標記）；不帶 --cache-only 時重新詢問，可用的回答覆寫那筆快取。

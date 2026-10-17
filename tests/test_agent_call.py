@@ -106,7 +106,8 @@ def test_a_declared_skip_message_is_logged_once_per_unusable_object_with_the_age
 def test_an_answer_still_misshaped_after_the_re_ask_is_invalid_and_never_reaches_the_mapper(scripted, caplog):
     mapped = []
     agent_logger = logging.getLogger("VibeHarness.AgentUnderTest")
-    call = AgentCall(schema=FINDINGS, items=ItemSource.key("findings"), mapper=lambda items, ctx: mapped.append(items) or [],
+    call = AgentCall(schema=FINDINGS, items=ItemSource.key("findings"),
+                     mapper=lambda items, ctx: mapped.append(items) or [],
                      logger=agent_logger, skip_message=lambda ctx: "skipping")
     transport = scripted({REVIEWER: {"findings": 5}})
 
