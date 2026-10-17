@@ -1,14 +1,15 @@
 import functools
 import logging
-import os
 import re
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Mapping, Optional
 from pydantic import ValidationError
 from vibeharness.core.models import CodeSymbol, ReviewFinding, FindingSeverity, text_or
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.i18n import bi, en_only
-from vibeharness.core.codecontext import estimate_tokens, render_symbols, batch_symbols
-from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
+from vibeharness.core.codecontext import estimate_tokens, render_symbols, batch_symbols, target_root
+from vibeharness.core.agent_call import (
+    NO_REPLY, AgentCall, AgentReply, CallContext, Channel, Content, ItemSource, Part, Untrusted, ask,
+)
 from vibeharness.core.fanout import Call, CallKind, PlannedCalls, fan_out
 from vibeharness.core.identity import UNKNOWN_FILE
 from vibeharness.core.model_output import LIST_OF_OBJECTS, OutputSchema
@@ -16,7 +17,7 @@ from vibeharness.core.model_output import LIST_OF_OBJECTS, OutputSchema
 logger = logging.getLogger("VibeHarness.MultiReviewer")
 
 
-def is_usable_finding(item: Dict[str, Any]) -> bool:
+def is_usable_finding(item: Mapping[str, Any]) -> bool:
     """模型回報的一項發現可以使用：有非空的 title 或 description（驗證者與測試生成器才有內容可據以行動）。
     審查者略過其他項目；閘道的形狀檢查也用同一個判斷，所以兩者不會不一致。
     A reported finding item is usable: it has a non-empty title or description (something the verifiers and the
@@ -134,7 +135,7 @@ class HeterogeneousReviewerEnsemble:
     def review_symbols(self, symbols: List[CodeSymbol], root_dir: Optional[str] = None) -> List[ReviewFinding]:
         if not symbols or not self.reviewer_agents:
             return []
-        root = root_dir or os.path.dirname(os.path.abspath(symbols[0].file_path))
+        root = target_root(root_dir, symbols[0].file_path)
         batches = self._batches(symbols, root)
         jobs = [(reviewer, batch) for reviewer in self.reviewer_agents for batch in batches]
 
@@ -148,61 +149,24 @@ class HeterogeneousReviewerEnsemble:
                  functools.partial(self._review_batch, reviewer, batch, root))
             for reviewer, batch in jobs
         ]
-        responses = fan_out(self.gateway, calls, fallback=({}, False), logger=logger)
+        replies: List[AgentReply] = fan_out(self.gateway, calls, fallback=NO_REPLY, logger=logger)
 
+        # 編號依呼叫順序在這裡補上（mapper 在工作執行緒裡並行執行，不能決定 id）
+        # Ids are assigned here in call order (the mapper runs concurrently in the worker threads, so it cannot)
         all_findings: List[ReviewFinding] = []
         counters: Dict[str, int] = {}
-        for (reviewer, batch), (resp, simulated) in zip(jobs, responses, strict=True):
-            model_alias = reviewer["model_alias"]
-            raw_findings = resp.get("findings")
-            if not isinstance(raw_findings, list):
-                logger.warning(bi(f"略過 {reviewer['name']} 無法使用的發現清單（收到 {type(raw_findings).__name__}）",
-                                  f"Ignoring unusable findings list from {reviewer['name']} (got {type(raw_findings).__name__})"))
-                raw_findings = []
-            for item in raw_findings:
-                if not isinstance(item, dict):
-                    continue
-                if not is_usable_finding(item):
-                    # 沒有驗證者或測試產生器可據以行動的內容
-                    # Nothing a verifier or test generator could act on
-                    logger.warning(bi(f"略過 {reviewer['name']} 沒有可用標題或描述的發現",
-                                      f"Skipping finding without a usable title or description from {reviewer['name']}"))
-                    continue
-                raw_severity = item.get("severity", "MEDIUM")
-                parsed = parse_severity(raw_severity)
-                if parsed is None:
-                    shown = str(raw_severity).strip()[:40]
-                    logger.warning(bi(f"{reviewer['name']} 回傳未知的嚴重度 '{shown}'；改用 MEDIUM",
-                                      f"Unknown severity '{shown}' from {reviewer['name']}; using MEDIUM"))
-                severity = parsed or _DEFAULT_SEVERITY
-
-                reported_symbol = item.get("symbol_name") if isinstance(item.get("symbol_name"), str) else None
-                symbol = self._match_symbol(reported_symbol, batch)
+        for (reviewer, _batch), reply in zip(jobs, replies, strict=True):
+            for draft in reply.items:
                 # 計數器以審查者代理為鍵，因此兩個共用同一 model_alias 的代理
                 # 仍會產生不同的發現 id
                 # Counters are keyed per reviewer agent, so two agents sharing a model_alias
                 # still generate distinct finding ids
                 counters[reviewer["agent_id"]] = counters.get(reviewer["agent_id"], 0) + 1
-                try:
-                    all_findings.append(ReviewFinding(
-                        finding_id=f"WB-{model_alias[:3].upper()}-{counters[reviewer['agent_id']]:02d}",
-                        reviewer_name=reviewer["name"],
-                        model_alias=model_alias,
-                        file_path=symbol.file_path if symbol else UNKNOWN_FILE,
-                        symbol_name=symbol.name if symbol else reported_symbol,
-                        line_number=symbol.line_start if symbol else None,
-                        severity=severity,
-                        title=text_or(item.get("title"), bi("潛在缺陷", "Potential Defect")),
-                        description=text_or(item.get("description"), ""),
-                        root_cause=text_or(item.get("root_cause"), ""),
-                        suspected_vibe_flaw=text_or(item.get("suspected_vibe_flaw"), ""),
-                        suggested_test_scenario=text_or(item.get("suggested_test_scenario"), ""),
-                        owasp_mapping=text_or(item.get("owasp_mapping"), "") or None,
-                        is_simulated=simulated
-                    ))
-                except ValidationError as e:
-                    logger.warning(bi(f"略過 {reviewer['name']} 無法使用的發現：{e}",
-                                      f"Skipping unusable finding from {reviewer['name']}: {e}"))
+                if draft is None:
+                    # 建構失敗的發現仍用掉它的號碼 ／ A finding that failed to build still uses up its number
+                    continue
+                all_findings.append(draft.model_copy(update={
+                    "finding_id": f"WB-{reviewer['model_alias'][:3].upper()}-{counters[reviewer['agent_id']]:02d}"}))
 
         return self._unique_finding_ids(all_findings)
 
@@ -218,7 +182,7 @@ class HeterogeneousReviewerEnsemble:
             unique.append(f if count == 1 else f.model_copy(update={"finding_id": f"{f.finding_id}-{count}"}))
         return unique
 
-    def _review_batch(self, reviewer: Dict[str, str], batch: List[CodeSymbol], root: str):
+    def _review_batch(self, reviewer: Dict[str, str], batch: List[CodeSymbol], root: str) -> AgentReply:
         name = reviewer["name"]
         # 模型提示詞：維持英文（雙語的預設名稱／專注領域只貢獻其英文半）
         # Model prompt: stays English (a bilingual default name / focus contributes its English half only)
@@ -244,21 +208,15 @@ class HeterogeneousReviewerEnsemble:
             f'  ]\n'
             f"}}\n"
             f'Return {{"findings": []}} if you find no defect.'
-            f"{UNTRUSTED_CODE_POLICY}"
         )
-        user_prompt = (
-            f"Target Codebase Extract:\n\n"
-            f"{untrusted_block(self._listing(batch, root))}\n\n"
-            f"Please audit against your specialty."
-        )
+        prompt: List[Part] = [
+            "Target Codebase Extract:\n\n", Untrusted(Content.TARGET_CODE, self._listing(batch, root)),
+            "\n\nPlease audit against your specialty.",
+        ]
         logger.info(bi(f"以審查者 {name} 執行白箱稽核（{len(batch)} 個符號）",
                        f"Running white-box audit with reviewer: {name} ({len(batch)} symbols)"))
-        agent_id = reviewer["agent_id"]
-        answer = self.gateway.generate(
-            agent_id, system_prompt, user_prompt, json_output=True, schema=FINDINGS_SCHEMA,
-            simulated=lambda alias: _simulated_review(agent_id, alias),
-        )
-        return answer.data, answer.simulated
+        return ask(self.gateway, REVIEW_CALL, reviewer["agent_id"], system=(system_prompt, ""), prompt=prompt,
+                   context=(reviewer, batch))
 
     @staticmethod
     def _match_symbol(name: Any, batch: List[CodeSymbol]) -> Optional[CodeSymbol]:
@@ -353,3 +311,57 @@ def _simulated_review(agent_id: str, model_alias: str) -> Dict[str, Any]:
     - Gemini: AI/LLM integration (OWASP Top 10 for LLM Applications 2026)."""
     template = _SIMULATED_REVIEWS.get(model_alias) or _SIMULATED_REVIEWS.get(agent_id.rsplit("_", 1)[-1])
     return {"findings": [dict(template)] if template else []}
+
+
+def _review_findings(items: List[Mapping[str, Any]], ctx: CallContext) -> List[Optional[ReviewFinding]]:
+    """把一次審查呼叫的可用 items 對應成沒有 id 的發現草稿（id 由 review_symbols 依呼叫順序補上）；
+    建構失敗的項目在原位置留下 None，讓它仍用掉一個號碼。
+    Maps one review call's usable items to findings without an id (review_symbols assigns them in call order); an item
+    that fails to build leaves a None in its place, so it still uses up a number."""
+    reviewer, batch = ctx.context
+    drafts: List[Optional[ReviewFinding]] = []
+    for item in items:
+        raw_severity = item.get("severity", "MEDIUM")
+        parsed = parse_severity(raw_severity)
+        if parsed is None:
+            shown = str(raw_severity).strip()[:40]
+            logger.warning(bi(f"{reviewer['name']} 回傳未知的嚴重度 '{shown}'；改用 MEDIUM",
+                              f"Unknown severity '{shown}' from {reviewer['name']}; using MEDIUM"))
+        severity = parsed or _DEFAULT_SEVERITY
+
+        reported_symbol = item.get("symbol_name") if isinstance(item.get("symbol_name"), str) else None
+        symbol = HeterogeneousReviewerEnsemble._match_symbol(reported_symbol, batch)
+        try:
+            drafts.append(ReviewFinding(
+                finding_id="",
+                reviewer_name=reviewer["name"],
+                model_alias=reviewer["model_alias"],
+                file_path=symbol.file_path if symbol else UNKNOWN_FILE,
+                symbol_name=symbol.name if symbol else reported_symbol,
+                line_number=symbol.line_start if symbol else None,
+                severity=severity,
+                title=text_or(item.get("title"), bi("潛在缺陷", "Potential Defect")),
+                description=text_or(item.get("description"), ""),
+                root_cause=text_or(item.get("root_cause"), ""),
+                suspected_vibe_flaw=text_or(item.get("suspected_vibe_flaw"), ""),
+                suggested_test_scenario=text_or(item.get("suggested_test_scenario"), ""),
+                owasp_mapping=text_or(item.get("owasp_mapping"), "") or None,
+                is_simulated=ctx.simulated
+            ))
+        except ValidationError as e:
+            logger.warning(bi(f"略過 {reviewer['name']} 無法使用的發現：{e}",
+                              f"Skipping unusable finding from {reviewer['name']}: {e}"))
+            drafts.append(None)
+    return drafts
+
+
+# 審查者的呼叫：一個審查者、一個白箱批次一次；context 是 (審查者, 批次)
+# The reviewers' call: one per reviewer and white-box batch; the context is (reviewer, batch)
+REVIEW_CALL = AgentCall(
+    schema=FINDINGS_SCHEMA, items=ItemSource.key("findings"), mapper=_review_findings,
+    channels=(Channel.TARGET_CODE,), logger=logger,
+    skip_message=lambda ctx: bi(
+        f"略過 {ctx.context[0]['name']} 沒有可用標題或描述的發現",
+        f"Skipping finding without a usable title or description from {ctx.context[0]['name']}"),
+    simulated=_simulated_review,
+)

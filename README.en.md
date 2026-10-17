@@ -201,6 +201,7 @@ MultiAgentGama/
 │   │   ├── harness.py               # Commander: six phases plus optional Phase 3.5; hands the run's evidence to the quality gate
 │   │   ├── llm_gateway.py           # Unified model gateway: routing, fallback, simulation fallback, call budget and call_log (model calls go through transport.py)
 │   │   ├── model_output.py          # Parsing and shape checking of model answers: JSON extraction, the agent's OutputSchema (pure)
+│   │   ├── agent_call.py            # Agent calls: an agent declares a call; ask assembles the prompt (each kind of untrusted content in its channel), calls the gateway, returns typed items and provenance
 │   │   ├── models.py                # Pydantic data models
 │   │   ├── baseline.py              # --baseline: loading, comparison and fingerprint annotation, known problems not counted (keys in identity.py)
 │   │   ├── codecheck.py             # Static checks on generated tests (every test_ function / method asserts; refuses package installs)
@@ -249,6 +250,7 @@ MultiAgentGama/
 ├── tests/                       # The toolkit's own tests (offline, no API keys needed)
 │   ├── config_files.py          # Read the bundled config, write an edited copy for a test (load_config / write_config)
 │   ├── conftest.py              # Shared fixtures: a fake litellm so the live paths run offline
+│   ├── test_agent_call.py       # Agent calls through ask / ask_text: prompt assembly and channels, only usable items to the mapper, Simulated output, the plain-text call
 │   ├── test_ai_security.py      # OWASP LLM Top 10 2026 / ATLAS controls and the deterministic AI-security rules
 │   ├── test_baseline.py                # --baseline: loading and recomputing, known problems not counted, action.yml structure
 │   ├── test_call_plans.py              # Each agent's call plan (plan) equals the calls it actually makes

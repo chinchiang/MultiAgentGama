@@ -31,6 +31,10 @@ class FieldType:
     does not fit, None when it does."""
     name: str
     problem: Callable[[str, Any], Optional[str]]
+    # 物件清單的可用項目規則（LIST_OF_OBJECTS 才有）：core/agent_call.py 以它過濾交給 mapper 的 items
+    # The usable-item rule of a list of objects (only LIST_OF_OBJECTS has one): core/agent_call.py filters the items it
+    # hands the mapper with it
+    usable: Optional[Callable[[Mapping[str, Any]], bool]] = None
 
 
 def _type_name(value: Any) -> str:
@@ -45,7 +49,7 @@ OBJECT = FieldType("object", lambda key, value: None if isinstance(value, dict) 
     f"欄位 '{key}' 必須是物件（收到 {_type_name(value)}）", f"field '{key}' must be an object (got {_type_name(value)})"))
 
 
-def LIST_OF_OBJECTS(usable: Callable[[Dict[str, Any]], bool], requirement: str) -> FieldType:  # noqa: N802
+def LIST_OF_OBJECTS(usable: Callable[[Mapping[str, Any]], bool], requirement: str) -> FieldType:  # noqa: N802
     """物件清單：不是清單就不合；清單不為空、卻沒有任何一項是 `usable` 的物件也不合（`requirement` 是雙語的規則說明，
     寫進原因裡，重新詢問時模型看得到英文半）。空清單合格（「什麼都沒找到」）；只有部分項目不能用時合格，由代理略過那些項目。
     `usable` 就是代理自己過濾項目用的同一個函式。
@@ -61,7 +65,7 @@ def LIST_OF_OBJECTS(usable: Callable[[Dict[str, Any]], bool], requirement: str) 
             return bi(f"欄位 '{key}' 沒有任何可用的項目（共 {len(value)} 項）：{zh_only(requirement)}",
                       f"field '{key}' has no usable item ({len(value)} item(s)): {en_only(requirement)}")
         return None
-    return FieldType("list of objects", problem)
+    return FieldType("list of objects", problem, usable)
 
 
 @dataclass(frozen=True)

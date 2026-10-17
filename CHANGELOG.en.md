@@ -6,6 +6,20 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Changed
+
+- The five agents' model calls go through one new module, `vibeharness/core/agent_call.py`: prompt assembly (each kind of untrusted content in its own provenance-labeled channel), the per-item filtering of answers and the marking of Simulated output happen there only. The prompts sent to the models, the reports, JSON, SARIF, the call log and the exit codes are unchanged.
+- When a model answer is still unusable after the re-ask, or an agent call crashes outside the gateway, the reviewers and the threat modeler no longer log an extra "Ignoring unusable ... list ... (got NoneType)" line; the failure is still logged once as before.
+- `ModelAnswer.data` in `LLMGateway.generate`'s answer is now read-only. Library code calling `generate` directly that changes `data` has to copy it first (`dict(answer.data)`).
+
+### Tests
+
+- New `tests/test_agent_call.py`; the agents' tests drive a real gateway through the `scripted` transport.
+
+### Documentation
+
+- The design document gains section 5.8, "Agent calls", and updates the agents' sections; `GLOSSARY.md` adds Agent call; the READMEs' project structure lists the new module and test.
+
 ## [0.13.0] - 2026-10-17
 
 Architecture round: the quality gate, the settings, the model-call transport, the concurrent model calls, the identity of findings and the shape checks of model answers each live in one module, and the sandbox, the file scope, the rule scan and the model answers are returned as typed values. A model answer with the keys but the wrong shape is no longer read as "zero findings" and let through; `--estimate` no longer overcounts the verifiers' calls; with `--baseline`, the report's rule-hit row separates new and known hits; a crash in the first threat-model batch no longer resets the report fields to the defaults. Baseline and SARIF fingerprints are unchanged. Library code calling `LLMGateway.generate`, `execute_pytest_files`, `execute_test_suite` or `select_symbols` directly has to read the new return types (see Changed).

@@ -4,7 +4,6 @@ import json
 import os
 import sys
 import pytest
-from model_answers import answer
 from vibeharness.core.models import GeneratedTest, TestStatus, AgentCallRecord
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
 from vibeharness.core.sandbox import LocalSubprocessSandbox, SandboxRun, TIMEOUT_EXIT_CODE
@@ -689,7 +688,7 @@ def test_server_probe_retries_before_giving_up(monkeypatch):
     assert fake.calls == 2  # 失敗一次，重試後成功 ／ failed once, succeeded on the retry
 
 
-def test_generated_attack_code_targeting_another_host_is_rejected():
+def test_generated_attack_code_targeting_another_host_is_rejected(scripted):
     """「絕不以其他主機為目標」由靜態檢查強制執行，而不只靠提示詞指示。
     'Never target any other host' is enforced by a static check, not only by prompt instruction."""
     import threading
@@ -716,6 +715,8 @@ def test_generated_attack_code_targeting_another_host_is_rejected():
             trust_boundary_crossed="b", severity=FindingSeverity.CRITICAL,
             attack_scenario="fetch other users' orders", test_verification_goal="403"
         )
+        # THREAT-01 的攻擊指向外部主機，THREAT-02 的指向宣告的目標
+        # THREAT-01's attack aims at a foreign host, THREAT-02's at the declared target
         codes = [
             "import requests\n"
             "def test_steal():\n"
@@ -727,11 +728,10 @@ def test_generated_attack_code_targeting_another_host_is_rejected():
             "    assert r.status_code == 403\n",       # 宣告的目標 -> 保留 ／ declared target -> kept
         ]
 
-        def responder(agent_id, system, user, **k):
-            return answer({"code": codes.pop(0)})
+        def responder(request):
+            return {"code": codes[0] if "Threat ID: THREAT-01\n" in request.messages[1]["content"] else codes[1]}
 
-        gw = LLMGateway(CONFIG, execution_mode="mock")
-        gw.generate = responder
+        gw = LLMGateway(CONFIG, execution_mode="live", transport=scripted({"blackbox_test_synthesizer": responder}))
         builder = ThreatScenarioBuilder(gw)
         tests = builder.build_test_cases_from_threats(
             [threat, threat.model_copy(update={"threat_id": "THREAT-02"})],
@@ -786,7 +786,8 @@ def test_symbol_relevance_uses_word_boundaries():
     # Whole-word matching: only validate_username is named; "user" inside "username" must not
     # drag in get_user, and unnamed symbols stay out.
     symbols = [sym("get_user"), sym("validate_username"), sym("process_payment")]
-    context, language = ThreatScenarioBuilder._code_context(threat, symbols, root_dir=".")
+    parts, language = ThreatScenarioBuilder._code_context(threat, symbols, root_dir=".")
+    context = "".join(part if isinstance(part, str) else part.text for part in parts)
     assert language == "python"
     assert "Symbol: validate_username" in context
     assert "Symbol: get_user" not in context

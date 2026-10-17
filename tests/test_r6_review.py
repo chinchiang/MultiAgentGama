@@ -7,7 +7,6 @@ import sys
 
 import pytest
 
-from model_answers import answer
 from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
 from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
 from vibeharness.agents.whitebox.deduplicator import deduplicate_findings
@@ -120,17 +119,17 @@ def test_dedup_merges_findings_at_an_unknown_location_only_on_an_identical_title
 
 
 @pytest.mark.parametrize("path", ["", "   ", " unknown "])
-def test_test_generation_for_an_unknown_location_uses_the_target_file(tmp_path, path):
+def test_test_generation_for_an_unknown_location_uses_the_target_file(scripted, tmp_path, path):
     """位置未知的發現改用目標檔案決定語言與匯入方式（與 "unknown" 相同），不會把空白當成檔名。
     A finding with an unknown location takes its language and import from the target file (as with "unknown"),
     not from a blank file name."""
     (tmp_path / "auth.mjs").write_text("export function login(u) { return u; }\n", encoding="utf-8")
     symbols = ASTExtractor().parse_directory(str(tmp_path))
-    gateway = LLMGateway(CONFIG, execution_mode="mock")
-    systems = []
-    gateway.generate = lambda agent_id, system, user, **k: systems.append(system) or answer({"tests": []})
+    transport = scripted({"whitebox_test_generator": {"tests": []}})
+    gateway = LLMGateway(CONFIG, execution_mode="live", transport=transport)
     WhiteboxTestGenerator(gateway).generate_tests_for_findings([_review("A", path, "login echoes", "login")], symbols,
                                                                root_dir=str(tmp_path))
+    systems = [system for system, _ in transport.prompts()]
     assert systems and "JavaScript/TypeScript QA Engineer" in systems[0]
 
 

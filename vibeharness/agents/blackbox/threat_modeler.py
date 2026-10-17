@@ -4,15 +4,17 @@ import os
 import re
 import yaml
 from pydantic import ValidationError
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from vibeharness.core.models import ThreatItem, ThreatModelReport, STRIDECategory, FindingSeverity, CodeSymbol
 from vibeharness.core.fanout import Call, CallKind, PlannedCalls, fan_out
 from vibeharness.core.identity import severity_rank, threat_identity
 from vibeharness.core.model_output import LIST_OF_OBJECTS, OutputSchema
-from vibeharness.core.llm_gateway import NO_ANSWER, LLMGateway, ModelAnswer
+from vibeharness.core.llm_gateway import LLMGateway
+from vibeharness.core.agent_call import (
+    NO_REPLY, AgentCall, AgentReply, CallContext, Channel, Content, ItemSource, Part, Untrusted, ask,
+)
 from vibeharness.core.i18n import bi
-from vibeharness.core.codecontext import estimate_tokens, render_symbols, batch_symbols
-from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, untrusted_block
+from vibeharness.core.codecontext import estimate_tokens, render_symbols, batch_symbols, target_root
 
 DEFAULT_RULES_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config", "threat_rules.yaml")
 
@@ -184,11 +186,11 @@ class AutomatedThreatModeler:
         )
 
     @staticmethod
-    def _code_guidance(symbols: Optional[List[CodeSymbol]], root_dir: Optional[str]) -> str:
+    def _code_guidance(symbols: Optional[List[CodeSymbol]], root_dir: Optional[str]) -> List[Part]:
         if not symbols:
-            return ""
-        root = root_dir or os.path.dirname(os.path.abspath(symbols[0].file_path))
-        return f"Target source code:\n{untrusted_block(_listing(symbols, root))}\n\n"
+            return []
+        root = target_root(root_dir, symbols[0].file_path)
+        return ["Target source code:\n", Untrusted(Content.TARGET_CODE, _listing(symbols, root)), "\n\n"]
 
     def _model_batch(
         self,
@@ -199,21 +201,18 @@ class AutomatedThreatModeler:
         routes_summary: str,
         root_dir: Optional[str],
         ai_components: Optional[List[str]] = None
-    ) -> ModelAnswer:
-        user_prompt = (
+    ) -> AgentReply:
+        prompt: List[Part] = [
             f"System Description: {system_description}\n"
             f"Entrypoints: {entrypoints_summary}\n"
             f"Detected Routes: {routes_summary}\n\n"
             f"{self._rules_guidance()}"
-            f"{self._llm_rules_guidance(ai_components)}"
-            f"{self._code_guidance(batch, root_dir)}"
-            f"Perform comprehensive threat modeling identifying vibe-coding vulnerabilities. "
-            f"Only include threats that are plausible for the code shown, and name the concrete function/route in attack_vector."
-        )
-        return self.gateway.generate(
-            AGENT_ID, system_prompt, user_prompt, json_output=True, schema=THREATS_SCHEMA,
-            simulated=_simulated_threat_model,
-        )
+            f"{self._llm_rules_guidance(ai_components)}",
+            *self._code_guidance(batch, root_dir),
+            "Perform comprehensive threat modeling identifying vibe-coding vulnerabilities. "
+            "Only include threats that are plausible for the code shown, and name the concrete function/route in attack_vector.",
+        ]
+        return ask(self.gateway, THREAT_MODEL_CALL, AGENT_ID, system=(system_prompt, ""), prompt=prompt)
 
     def plan(self, symbols: Optional[List[CodeSymbol]], root: str) -> List[PlannedCalls]:
         """model_system 對這些符號會發出的呼叫：每個威脅建模批次一次，執行前就已知（沒有符號時仍有一個批次）。
@@ -275,13 +274,12 @@ class AutomatedThreatModeler:
             "    }\n"
             "  ]\n"
             "}"
-            f"{UNTRUSTED_CODE_POLICY}"
         )
 
         batches = _batches(symbols, root_dir or os.getcwd())
 
         logger.info(bi("開始 STRIDE 與 OWASP 威脅建模...", "Initiating STRIDE & OWASP threat modeling..."))
-        calls: List[Call[ModelAnswer]] = [
+        calls: List[Call[AgentReply]] = [
             Call(AGENT_ID, ("威脅建模批次", "Threat modeler batch"), functools.partial(
                 self._model_batch, batch, system_prompt, system_description, entrypoints_summary, routes_summary,
                 root_dir, ai_components))
@@ -290,24 +288,20 @@ class AutomatedThreatModeler:
         # 當掉的批次由 fan_out 記成證據缺口；LLMGatewayError 與 KeyboardInterrupt 會在取消尚未開始的批次後往外拋
         # fan_out books a crashed batch as an evidence gap; LLMGatewayError and KeyboardInterrupt propagate after the
         # batches not yet started are cancelled
-        answers: List[ModelAnswer] = fan_out(self.gateway, calls, fallback=NO_ANSWER, logger=logger)
+        replies: List[AgentReply] = fan_out(self.gateway, calls, fallback=NO_REPLY, logger=logger)
 
-        report_fields: Optional[Dict[str, Any]] = None
+        report_fields: Optional[Mapping[str, Any]] = None
         threats: List[ThreatItem] = []
         used_ids: set = set()
         any_simulated = False
 
-        for answer in answers:
-            any_simulated = any_simulated or answer.simulated
-            if report_fields is None and answer.usable:
+        for reply in replies:
+            any_simulated = any_simulated or reply.simulated
+            if report_fields is None and reply.usable:
                 # 報告層級欄位來自第一個產生可用答案的批次
                 # Report-level fields come from the first batch that produced a usable answer
-                report_fields = answer.data
-            batch = self._parse_threats(answer.data, used_ids)
-            if answer.simulated:
-                for threat in batch:
-                    threat.is_simulated = True
-            threats.extend(batch)
+                report_fields = reply.fields
+            threats.extend(_assign_threat_ids(reply.items, used_ids))
 
         threats = self._merge_duplicate_threats(threats)
 
@@ -348,74 +342,80 @@ class AutomatedThreatModeler:
                            f"Merged {len(threats)} threats from all batches into {len(merged)} distinct threats."))
         return list(merged.values())
 
-    def _parse_threats(self, resp: Dict[str, Any], used_ids: set) -> List[ThreatItem]:
-        """來自一個模型回應、經驗證的 ThreatItem；與先前批次衝突的 id 會重新編號。
-        Validated ThreatItems from one model response; ids that collide with earlier batches are renumbered."""
-        raw_threats = resp.get("threats")
-        if not isinstance(raw_threats, list):
-            logger.warning(bi(f"略過模型無法使用的威脅清單（收到 {type(raw_threats).__name__}）",
-                              f"Ignoring unusable threat list from model (got {type(raw_threats).__name__})"))
-            raw_threats = []
 
-        threat_items: List[ThreatItem] = []
-        next_fallback = 1
-        for position, item in enumerate(raw_threats, start=1):
-            if not isinstance(item, dict):
-                logger.warning(bi(f"略過格式錯誤的威脅項目 #{position}（不是 JSON 物件）",
-                                  f"Skipping malformed threat entry #{position} (not a JSON object)"))
-                continue
 
-            parsed_category = _stride_category(str(item.get("stride_category") or "Tampering"))
-            if parsed_category is None:
-                logger.warning(bi(f"'{item.get('threat_id')}' 的 STRIDE 類別 '{item.get('stride_category')}' 未知；改用 Tampering",
-                                  f"Unknown STRIDE category '{item.get('stride_category')}' on '{item.get('threat_id')}'; using Tampering"))
-            category = parsed_category or STRIDECategory.TAMPERING
+def _threat_drafts(items: List[Mapping[str, Any]], ctx: CallContext) -> List[Tuple[Any, Optional[ThreatItem]]]:
+    """把一次威脅建模呼叫的可用項目對應成 (模型給的 threat_id, 沒有最終 id 的威脅)；建構失敗的項目在原位置留下 None，
+    但它的 id 仍參與重新編號（_assign_threat_ids）。項目的編號是它在回答清單裡的位置。
+    Maps one threat-modeling call's usable items to (the model's threat_id, a threat without its final id); an item
+    that fails to build leaves a None in its place, while its id still takes part in renumbering (_assign_threat_ids).
+    An entry's number is its position in the answer's list."""
+    drafts: List[Tuple[Any, Optional[ThreatItem]]] = []
+    for position, item in zip(ctx.positions, items, strict=True):
+        parsed_category = _stride_category(str(item.get("stride_category") or "Tampering"))
+        if parsed_category is None:
+            logger.warning(bi(f"'{item.get('threat_id')}' 的 STRIDE 類別 '{item.get('stride_category')}' 未知；改用 Tampering",
+                              f"Unknown STRIDE category '{item.get('stride_category')}' on '{item.get('threat_id')}'; using Tampering"))
+        category = parsed_category or STRIDECategory.TAMPERING
 
-            try:
-                # 模型常帶空白或小寫（"CRITICAL "、"critical"）：正規化後才解析，免得默默降成 HIGH
-                # Models add whitespace or lower case ("CRITICAL ", "critical"): normalize before parsing so it
-                # is not silently downgraded to HIGH
-                severity = FindingSeverity(str(item.get("severity") or "HIGH").strip().upper())
-            except ValueError:
-                logger.warning(bi(f"'{item.get('threat_id')}' 的嚴重度 '{item.get('severity')}' 未知；改用 HIGH",
-                                  f"Unknown severity '{item.get('severity')}' on '{item.get('threat_id')}'; using HIGH"))
-                severity = FindingSeverity.HIGH
+        try:
+            # 模型常帶空白或小寫（"CRITICAL "、"critical"）：正規化後才解析，免得默默降成 HIGH
+            # Models add whitespace or lower case ("CRITICAL ", "critical"): normalize before parsing so it
+            # is not silently downgraded to HIGH
+            severity = FindingSeverity(str(item.get("severity") or "HIGH").strip().upper())
+        except ValueError:
+            logger.warning(bi(f"'{item.get('threat_id')}' 的嚴重度 '{item.get('severity')}' 未知；改用 HIGH",
+                              f"Unknown severity '{item.get('severity')}' on '{item.get('threat_id')}'; using HIGH"))
+            severity = FindingSeverity.HIGH
 
-            threat_id = item.get("threat_id")
-            if isinstance(threat_id, str):
-                threat_id = threat_id.strip()
-            if not isinstance(threat_id, str) or not _THREAT_ID_RE.fullmatch(threat_id) or threat_id in used_ids:
-                # 只在實際用掉一個後備 id 時才推進後備計數器，
-                # 否則模型提供的 id 會在 THREAT-XX 序列中留下空缺。
-                # Only advance the fallback counter when a fallback id is actually consumed,
-                # otherwise model-supplied ids leave gaps in the THREAT-XX sequence.
-                while f"THREAT-{next_fallback:02d}" in used_ids:
-                    next_fallback += 1
-                threat_id = f"THREAT-{next_fallback:02d}"
+        owasp_mapping = item.get("owasp_mapping")
+        atlas_mapping = item.get("atlas_mapping")
+        try:
+            draft: Optional[ThreatItem] = ThreatItem(
+                threat_id="",
+                stride_category=category,
+                owasp_mapping=owasp_mapping if isinstance(owasp_mapping, str) and owasp_mapping.strip() else None,
+                atlas_mapping=atlas_mapping if isinstance(atlas_mapping, str) and atlas_mapping.strip() else None,
+                title=_text(item.get("title"), bi("未分類的威脅", "Unclassified Threat")),
+                description=_text(item.get("description"), ""),
+                asset_at_risk=_text(item.get("asset_at_risk"), "Application Data"),
+                attack_vector=_text(item.get("attack_vector"), "REST API"),
+                trust_boundary_crossed=_text(item.get("trust_boundary_crossed"), "Internet to Server"),
+                severity=severity,
+                attack_scenario=_text(item.get("attack_scenario"), ""),
+                test_verification_goal=_text(item.get("test_verification_goal"), ""),
+                is_simulated=ctx.simulated,
+            )
+        except ValidationError as e:
+            logger.warning(bi(f"略過無法使用的威脅項目 #{position}：{e}", f"Skipping unusable threat entry #{position}: {e}"))
+            draft = None
+        drafts.append((item.get("threat_id"), draft))
+    return drafts
+
+
+def _assign_threat_ids(drafts: Sequence[Tuple[Any, Optional[ThreatItem]]], used_ids: set) -> List[ThreatItem]:
+    """依序為一個批次的威脅決定最終 id：模型給的 id 不合格式或與先前批次衝突時，改用下一個未用過的 THREAT-XX。
+    建構失敗的項目也用掉它的 id。
+    Decides the final ids of one batch's threats in order: a model id that does not fit the format or collides with
+    an earlier batch is replaced by the next unused THREAT-XX. An item that failed to build still uses up its id."""
+    threats: List[ThreatItem] = []
+    next_fallback = 1
+    for threat_id, draft in drafts:
+        if isinstance(threat_id, str):
+            threat_id = threat_id.strip()
+        if not isinstance(threat_id, str) or not _THREAT_ID_RE.fullmatch(threat_id) or threat_id in used_ids:
+            # 只在實際用掉一個後備 id 時才推進後備計數器，
+            # 否則模型提供的 id 會在 THREAT-XX 序列中留下空缺。
+            # Only advance the fallback counter when a fallback id is actually consumed,
+            # otherwise model-supplied ids leave gaps in the THREAT-XX sequence.
+            while f"THREAT-{next_fallback:02d}" in used_ids:
                 next_fallback += 1
-            used_ids.add(threat_id)
-
-            owasp_mapping = item.get("owasp_mapping")
-            atlas_mapping = item.get("atlas_mapping")
-            try:
-                threat_items.append(ThreatItem(
-                    threat_id=threat_id,
-                    stride_category=category,
-                    owasp_mapping=owasp_mapping if isinstance(owasp_mapping, str) and owasp_mapping.strip() else None,
-                    atlas_mapping=atlas_mapping if isinstance(atlas_mapping, str) and atlas_mapping.strip() else None,
-                    title=_text(item.get("title"), bi("未分類的威脅", "Unclassified Threat")),
-                    description=_text(item.get("description"), ""),
-                    asset_at_risk=_text(item.get("asset_at_risk"), "Application Data"),
-                    attack_vector=_text(item.get("attack_vector"), "REST API"),
-                    trust_boundary_crossed=_text(item.get("trust_boundary_crossed"), "Internet to Server"),
-                    severity=severity,
-                    attack_scenario=_text(item.get("attack_scenario"), ""),
-                    test_verification_goal=_text(item.get("test_verification_goal"), ""),
-                ))
-            except ValidationError as e:
-                logger.warning(bi(f"略過無法使用的威脅項目 #{position}：{e}", f"Skipping unusable threat entry #{position}: {e}"))
-
-        return threat_items
+            threat_id = f"THREAT-{next_fallback:02d}"
+            next_fallback += 1
+        used_ids.add(threat_id)
+        if draft is not None:
+            threats.append(draft.model_copy(update={"threat_id": threat_id}))
+    return threats
 
 
 def _simulated_threat_model(model_alias: str) -> Dict[str, Any]:
@@ -481,3 +481,15 @@ def _simulated_threat_model(model_alias: str) -> Dict[str, Any]:
             }
         ]
     }
+
+
+# 威脅建模的呼叫：每個符號批次一次；不是物件的項目以它在清單裡的位置記一行 warning
+# The threat modeler's call: one per symbol batch; an entry that is not an object logs one warning with its position
+# in the list
+THREAT_MODEL_CALL = AgentCall(
+    schema=THREATS_SCHEMA, items=ItemSource.key("threats"), mapper=_threat_drafts,
+    channels=(Channel.TARGET_CODE,), logger=logger,
+    malformed_message=lambda ctx, position: bi(f"略過格式錯誤的威脅項目 #{position}（不是 JSON 物件）",
+                                               f"Skipping malformed threat entry #{position} (not a JSON object)"),
+    simulated=lambda agent_id, alias: _simulated_threat_model(alias),
+)

@@ -6,6 +6,20 @@
 
 ## [Unreleased]
 
+### 變更
+
+- 五個代理的模型呼叫改經同一個新模組 `vibeharness/core/agent_call.py`：提示的組裝（不可信內容依種類走各自標示來源的通道）、回答的逐項過濾與模擬輸出的標記都只在這裡做。送給模型的提示、報告、JSON、SARIF、呼叫紀錄與結束碼都不變。
+- 模型的回答在重問後仍無法使用，或代理呼叫在閘道之外當掉時，審查者與威脅建模不再多記一行「略過 … 無法使用的 … 清單（收到 NoneType）」；那次失敗仍照常記錄一次。
+- `LLMGateway.generate` 回答的 `ModelAnswer.data` 改為唯讀。直接呼叫 `generate` 並修改 `data` 的函式庫程式要先複製一份（`dict(answer.data)`）。
+
+### 測試
+
+- 新增 `tests/test_agent_call.py`；代理的測試改由 `scripted` transport 驅動真的閘道。
+
+### 文件
+
+- 設計文件新增第 5.8 節「代理呼叫」，並更新各代理的章節；`GLOSSARY.md` 加上「代理呼叫 ／ Agent call」；README 的專案結構列出新的模組與測試。
+
 ## [0.13.0] - 2026-10-17
 
 架構整理輪：品質閘門、設定、模型呼叫的傳輸、並行的模型呼叫、發現的身分識別與模型回答的形狀檢查各自集中到一個模組；沙盒、檔案範圍、規則掃描與模型回答改以型別化的值回傳。鍵在、形狀卻不對的模型回答不再被讀成「零個發現」而放行；`--estimate` 不再多算驗證者的呼叫；使用 `--baseline` 時，報告的規則命中列分開新的與已知的命中；第一個威脅建模批次當掉時，報告欄位不再被清成預設值。基準線與 SARIF 的 fingerprint 完全不變。直接呼叫 `LLMGateway.generate`、`execute_pytest_files`、`execute_test_suite` 或 `select_symbols` 的函式庫程式要改讀新的回傳型別（見「變更」）。

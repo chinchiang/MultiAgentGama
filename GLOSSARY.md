@@ -80,6 +80,11 @@ _Avoid_: valid JSON (for this; valid JSON can still be unusable), successful res
 A key that is there with the wrong type, or a non-empty list with no usable item. It is re-asked with a reason naming the field and, if it still does not fit, booked as an invalid call and an Evidence gap, never read as "nothing found".
 _Avoid_: malformed output (too vague), parse error (for this; the JSON parsed)
 
+**代理呼叫 ／ Agent call**:
+代理向模型的一次提問：它的角色、要模型讀的不可信內容（每一種都走標示來源的通道）與期望的回答形狀。結果只有三種：真實呼叫、模擬輸出，或無效呼叫（在產生回答前就當掉的呼叫也算）。
+One question an agent puts to a model: its role, the untrusted content the model must read (each kind in a provenance-labeled channel) and the answer shape it expects. It ends as a Live call, Simulated output or an invalid call (a call that crashed before producing an answer counts as one too).
+_Avoid_: LLM call, generate call; request (that is one attempt at one model)
+
 ### 基準 ／ Baseline
 
 **基準 ／ Baseline**:

@@ -11,7 +11,6 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from config_files import load_config, write_config
-from model_answers import answer
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError, ConfigError, BUDGET_EXHAUSTED_REASON
 from vibeharness.core.models import FindingSeverity, ReviewFinding, STRIDECategory, ThreatItem, CodeSymbol
 from vibeharness.core.i18n import has_cjk
@@ -55,24 +54,27 @@ class _ConcurrencyProbe:
         self.lock = threading.Lock()
         self.in_flight = self.peak = 0
 
-    def __call__(self, agent_id, system, user, **kwargs):
-        index = int(re.search(re.escape(self.key) + r"\s*(\d+)", user).group(1))
+    def __call__(self, request):
+        index = int(re.search(re.escape(self.key) + r"\s*(\d+)", request.messages[1]["content"]).group(1))
         with self.lock:
             self.in_flight += 1
             self.peak = max(self.peak, self.in_flight)
         time.sleep(0.05 * (self.count - index))  # 以相反順序完成 ／ finish in reverse order
         with self.lock:
             self.in_flight -= 1
-        return answer({"code": f"def test_{index}():\n    assert {index} == {index}\n", "title": f"for {index}"})
+        return {"code": f"def test_{index}():\n    assert {index} == {index}\n", "title": f"for {index}"}
 
 
 # --- 並行仍保持結果的確定性 -----------------------------------------------------------------
 # --- Concurrency keeps results deterministic -----------------------------------------------------
 
-def test_whitebox_generation_runs_concurrently_and_keeps_finding_order(tmp_path):
-    gen = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="mock"))
+def _live(transport, config=CONFIG):
+    return LLMGateway(config, execution_mode="live", transport=transport)
+
+
+def test_whitebox_generation_runs_concurrently_and_keeps_finding_order(scripted, tmp_path):
     probe = _ConcurrencyProbe(6, "defect")
-    gen.gateway.generate = probe
+    gen = WhiteboxTestGenerator(_live(scripted({"whitebox_test_generator": probe})))
     tests = gen.generate_tests_for_findings([_finding(i) for i in range(6)], [], root_dir=str(tmp_path))
     assert probe.peak > 1
     assert [(t.test_id, t.source_ref, t.title) for t in tests] == [
@@ -80,17 +82,15 @@ def test_whitebox_generation_runs_concurrently_and_keeps_finding_order(tmp_path)
     ]
 
 
-def test_blackbox_synthesis_runs_concurrently_and_keeps_threat_order():
-    builder = ThreatScenarioBuilder(LLMGateway(CONFIG, execution_mode="mock"))
+def test_blackbox_synthesis_runs_concurrently_and_keeps_threat_order(scripted):
     probe = _ConcurrencyProbe(6, "Threat ID: T")
-    builder.gateway.generate = probe
+    builder = ThreatScenarioBuilder(_live(scripted({"blackbox_test_synthesizer": probe})))
     tests = builder.build_test_cases_from_threats([_threat(i) for i in range(6)])
     assert probe.peak > 1
     assert [t.source_ref for t in tests] == [f"T{i}" for i in range(6)]
 
 
-def test_threat_modeling_batches_run_concurrently_and_keep_order(tmp_path):
-    tm = AutomatedThreatModeler(LLMGateway(CONFIG, execution_mode="mock"))
+def test_threat_modeling_batches_run_concurrently_and_keep_order(scripted, tmp_path):
     symbols = [
         CodeSymbol(
             name=f"func_{i}", symbol_type="function", file_path="app.py",
@@ -105,8 +105,8 @@ def test_threat_modeling_batches_run_concurrently_and_keep_order(tmp_path):
             self.lock = threading.Lock()
             self.in_flight = self.peak = 0
 
-        def __call__(self, agent_id, system, user, **kwargs):
-            match = re.search(r"Symbol: func_(\d+)", user)
+        def __call__(self, request):
+            match = re.search(r"Symbol: func_(\d+)", request.messages[1]["content"])
             index = int(match.group(1)) if match else 0
             with self.lock:
                 self.in_flight += 1
@@ -114,41 +114,46 @@ def test_threat_modeling_batches_run_concurrently_and_keep_order(tmp_path):
             time.sleep(0.05 * (4 - index))
             with self.lock:
                 self.in_flight -= 1
-            return answer({
+            return {
                 "threats": [{"threat_id": f"THREAT-0{index+1}", "stride_category": "Tampering", "title": f"threat for {index}"}],
                 "entrypoints": [f"/api/{index}"]
-            })
+            }
 
     probe = _ThreatProbe()
-    tm.gateway.generate = probe
+    tm = AutomatedThreatModeler(_live(scripted({"blackbox_threat_modeler": probe})))
     report = tm.model_system("desc", ["/api"], symbols=symbols, root_dir=str(tmp_path))
     assert probe.peak > 1
     assert [t.title for t in report.threats] == [f"threat for {i}" for i in range(4)]
     assert report.entrypoints == ["/api/0"]
 
 
-def test_max_concurrent_calls_bounds_the_worker_pool(tmp_path):
-    gen = WhiteboxTestGenerator(LLMGateway(_config(tmp_path, max_concurrent_calls=1), execution_mode="mock"))
+def test_max_concurrent_calls_bounds_the_worker_pool(scripted, tmp_path):
     probe = _ConcurrencyProbe(4, "defect")
-    gen.gateway.generate = probe
+    gen = WhiteboxTestGenerator(_live(scripted({"whitebox_test_generator": probe}),
+                                      _config(tmp_path, max_concurrent_calls=1)))
     gen.generate_tests_for_findings([_finding(i) for i in range(4)], [], root_dir=str(tmp_path))
     assert probe.peak == 1
 
 
-def test_a_crashed_test_generation_is_booked_as_an_invalid_call(tmp_path):
+def test_a_crashed_test_generation_is_booked_as_an_invalid_call(scripted, tmp_path):
     """測試生成在閘道之外當掉時，與其他代理一樣記成一次無效呼叫（證據缺口），而不只是「沒有模型測試」；
     其他發現的測試保留（接線測試；扇出本身見 test_fanout.py）。
     A test generation that crashes outside the gateway is booked as an invalid call (an evidence gap), like the other
     agents, not only as "no model test"; the other findings keep their tests (a wiring test; the fan-out itself is in
     test_fanout.py)."""
     from vibeharness.core.llm_gateway import REASON_CALL_CRASHED
-    gen = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="mock"))
+    gateway = _live(scripted({"whitebox_test_generator": {"code": "def test_ok():\n    assert True\n"}}))
+    generate = gateway.generate
 
+    # 閘道之外的當機無法經 transport 表達：只讓 F1 的呼叫拋出例外，其他呼叫照常經過閘道
+    # A crash outside the gateway cannot be expressed through the transport: only F1's call raises, the others go
+    # through the gateway as usual
     def crash_on_f1(agent_id, system, user, **kwargs):
         if "defect 1" in user:
             raise RuntimeError("parser exploded")
-        return answer({"code": "def test_ok():\n    assert True\n"})
-    gen.gateway.generate = crash_on_f1
+        return generate(agent_id, system, user, **kwargs)
+    gateway.generate = crash_on_f1
+    gen = WhiteboxTestGenerator(gateway)
     tests = gen.generate_tests_for_findings([_finding(i) for i in range(3)], [], root_dir=str(tmp_path))
     assert [t.source_ref for t in tests if t.test_type == "whitebox_unit"] == ["F0", "F2"]
     (record,) = gen.gateway.invalid_calls
