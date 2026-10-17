@@ -115,6 +115,9 @@ class AgentCall:
     # 沒有呼叫模型時的模擬輸出，依 (agent id, 模型別名) 產生；它也必須符合 `schema`
     # The Simulated output used when no model is called, built from (agent id, model alias); it must fit `schema` too
     simulated: Optional[Callable[[str, str], Dict[str, Any]]] = None
+    # 呼叫的種類（core/fanout.py 的 CallKind）之後會加在這個宣告上，讓呼叫計畫與呼叫紀錄都帶著它
+    # The kind of call (CallKind in core/fanout.py) is to be added to this declaration, so the call plans and the call
+    # log both carry it
 
 
 @dataclass(frozen=True)

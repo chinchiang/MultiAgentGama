@@ -2,10 +2,10 @@
 Agent calls (core/agent_call.py): an agent declares one model call, and `ask` assembles the prompt, calls the gateway
 and hands back typed items with their provenance."""
 import logging
-import os
 
 import pytest
 
+from config_files import CONFIG
 from vibeharness.core.agent_call import (
     NO_REPLY, AgentCall, Channel, Content, ItemSource, Untrusted, ask, ask_text,
 )
@@ -14,7 +14,6 @@ from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.model_output import LIST_OF_OBJECTS, STRING, OutputSchema
 from vibeharness.core.sanitize import UNTRUSTED_CODE_POLICY, UNTRUSTED_MODEL_POLICY
 
-CONFIG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vibeharness", "config", "agents_config.yaml")
 REVIEWER = "whitebox_reviewer_claude"
 
 FINDINGS = OutputSchema(required={"findings": LIST_OF_OBJECTS(
