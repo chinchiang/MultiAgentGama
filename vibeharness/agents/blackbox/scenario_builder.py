@@ -5,7 +5,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 import os
 from vibeharness.core.models import ThreatItem, GeneratedTest, CodeSymbol, text_or
 from vibeharness.core.fanout import Call, CallKind, PlannedCalls, fan_out
@@ -14,9 +14,7 @@ from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.codecheck import check_test_code_for, strip_code_fences
 from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import render_symbols, import_instructions, language_for_file
-from vibeharness.core.sanitize import (
-    UNTRUSTED_CODE_POLICY, UNTRUSTED_MODEL_POLICY, untrusted_block, untrusted_model_block,
-)
+from vibeharness.core.agent_call import AgentCall, CallContext, Channel, Content, ItemSource, Part, Untrusted, ask
 
 logger = logging.getLogger("VibeHarness.ScenarioBuilder")
 
@@ -90,13 +88,14 @@ class ThreatScenarioBuilder:
         return False
 
     @staticmethod
-    def _code_context(threat: ThreatItem, symbols: Optional[List[CodeSymbol]], root_dir: Optional[str]) -> Tuple[str, str]:
+    def _code_context(threat: ThreatItem, symbols: Optional[List[CodeSymbol]],
+                      root_dir: Optional[str]) -> Tuple[List[Part], str]:
         """（威脅攻擊向量所指名符號的匯入路徑與原始碼，否則為所有進入點；
         第一個相關符號所在檔案的語言：混合語言的目標以該檔案為準）。
         (import paths and source for the symbols the threat's attack vector names, else all entry points;
         the language of the first relevant symbol's file: a mixed target follows that file)."""
         if not symbols:
-            return "", "python"
+            return [], "python"
         root = root_dir or os.path.dirname(os.path.abspath(symbols[0].file_path))
         text = f"{threat.attack_vector} {threat.attack_scenario}"
         relevant = ThreatScenarioBuilder._named_symbols(symbols, text)
@@ -106,7 +105,8 @@ class ThreatScenarioBuilder:
         files = sorted({s.file_path for s in relevant if language_for_file(s.file_path) == language})
         imports = "\n".join(import_instructions(f, root) for f in files)
         listing = render_symbols(relevant, root, max_tokens=CODE_CONTEXT_TOKENS)
-        return f"How to import the target:\n{imports}\n\nRelevant target code:\n{untrusted_block(listing)}\n\n", language
+        return [f"How to import the target:\n{imports}\n\nRelevant target code:\n",
+                Untrusted(Content.TARGET_CODE, listing), "\n\n"], language
 
     @staticmethod
     def _symbol_keys(sym: CodeSymbol) -> List[str]:
@@ -345,8 +345,6 @@ class ThreatScenarioBuilder:
             '  "expected_outcome": "Defensive condition that must be met",\n'
             f'  "code": {example}\n'
             "}"
-            f"{UNTRUSTED_CODE_POLICY}"
-            f"{UNTRUSTED_MODEL_POLICY}"
         )
 
         # 威脅模型的欄位是模型寫的（可能轉述目標程式碼中的注入文字），所以放進 <untrusted_model_output> 通道；
@@ -367,31 +365,29 @@ class ThreatScenarioBuilder:
             f"Attack Scenario: {field(threat.attack_scenario)}\n"
             f"Defense Verification Goal: {field(threat.test_verification_goal)}"
         )
-        user_prompt = (
+        prompt: List[Part] = [
             f"Target Base URL: {base_url or 'none (in-process only)'}\n"
             f"Server Live Status: {server_is_live}\n"
             f"Threat ID: {threat.threat_id}\n"
             f"STRIDE Category: {threat.stride_category.value}\n"
-            f"Threat model item:\n{untrusted_model_block(threat_text)}\n\n"
-            f"{context}"
-            f"{closing}"
-        )
+            f"Threat model item:\n",
+            Untrusted(Content.THREAT_ITEM, threat_text),
+            "\n\n",
+            *context,
+            closing,
+        ]
 
-        resp = self.gateway.generate(
-            AGENT_ID, system_prompt, user_prompt, json_output=True, schema=CODE_SCHEMA,
-            simulated=_simulated_attack_test,
-        ).data
-
-        raw_code = resp.get("code")
-        code_str = strip_code_fences(raw_code if isinstance(raw_code, str) else "")
-        if not code_str:
+        reply = ask(self.gateway, ATTACK_CALL, AGENT_ID, system=(system_prompt, ""), prompt=prompt,
+                    context=(threat, language))
+        if not reply.items:
             # 不捏造後備：沒有合成出測試的威脅回報為 NOT TESTED
             # No fabricated fallback: a threat without a synthesized test is reported as NOT TESTED
             logger.warning(bi(f"[{threat.threat_id}] 沒有合成出可執行的測試；此威脅仍未測試。",
                               f"No executable test synthesized for [{threat.threat_id}]; threat remains untested."))
             return None
+        test: GeneratedTest = reply.items[0]
         if server_is_live:
-            offenders = self._hosts_outside_base_url(code_str, base_url or "")
+            offenders = self._hosts_outside_base_url(test.code, base_url or "")
             if offenders:
                 logger.warning(bi(
                     f"[{threat.threat_id}] 合成的測試指向非目標主機 {', '.join(offenders)}；已拒絕，此威脅仍未測試。",
@@ -399,24 +395,38 @@ class ThreatScenarioBuilder:
                     f"{', '.join(offenders)}; rejected and the threat remains untested."
                 ))
                 return None
-        is_valid, problem = check_test_code_for(code_str, language)
+        is_valid, problem = check_test_code_for(test.code, language)
         if not is_valid:
             # 保留下來，讓執行器回報為 ERROR，而不是默默丟掉
             # Kept so the executor reports it as ERROR rather than silently dropping it
             logger.warning(bi(f"[{threat.threat_id}] 合成的測試無法執行：{problem}",
                               f"Synthesized test for [{threat.threat_id}] is not executable: {problem}"))
+        return test
 
-        return GeneratedTest(
+
+def _attack_test(items: List[Mapping[str, Any]], ctx: CallContext) -> List[GeneratedTest]:
+    """把一次攻擊合成的回答（整個回答就是那一個 item）對應成攻擊測試；`code` 為空（模型表達不出攻擊，或模擬輸出）時沒有測試。
+    Maps one attack synthesis's answer (the whole answer is the one item) to an attack test; no test when `code` is
+    empty (the model could not express the attack, or Simulated output)."""
+    threat, language = ctx.context
+    tests: List[GeneratedTest] = []
+    for item in items:
+        raw_code = item.get("code")
+        code_str = strip_code_fences(raw_code if isinstance(raw_code, str) else "")
+        if not code_str:
+            continue
+        tests.append(GeneratedTest(
             test_id=f"BB-TEST-{threat.threat_id}",
             test_type="blackbox_security",
             target_component=threat.attack_vector,
-            title=text_or(resp.get("title"), bi(f"{threat.title} 的安全測試", f"Security test for {threat.title}")),
+            title=text_or(item.get("title"), bi(f"{threat.title} 的安全測試", f"Security test for {threat.title}")),
             code=code_str,
-            rationale=text_or(resp.get("rationale"), threat.attack_scenario),
-            expected_outcome=text_or(resp.get("expected_outcome"), threat.test_verification_goal),
+            rationale=text_or(item.get("rationale"), threat.attack_scenario),
+            expected_outcome=text_or(item.get("expected_outcome"), threat.test_verification_goal),
             source_ref=threat.threat_id,
             language=language,
-        )
+        ))
+    return tests
 
 
 def _simulated_attack_test(model_alias: str) -> Dict[str, Any]:
@@ -424,3 +434,14 @@ def _simulated_attack_test(model_alias: str) -> Dict[str, Any]:
     The attack synthesizer's Simulated output: an empty `code` (it fits CODE_SCHEMA). The simulation engine cannot
     write a target-specific attack test, so the threat is recorded as untested."""
     return {"code": ""}
+
+
+# 攻擊合成的呼叫：每個威脅一次；整個回答就是那一個 item；威脅模型的欄位是模型寫的，走模型輸出的通道；
+# context 是 (威脅, 測試的語言)
+# The attack synthesizer's call: one per threat; the whole answer is the one item; the threat model's fields are
+# model-written and travel in the model-output channel; the context is (threat, test language)
+ATTACK_CALL = AgentCall(
+    schema=CODE_SCHEMA, items=ItemSource.answer(), mapper=_attack_test,
+    channels=(Channel.TARGET_CODE, Channel.MODEL_OUTPUT),
+    simulated=lambda agent_id, alias: _simulated_attack_test(alias),
+)

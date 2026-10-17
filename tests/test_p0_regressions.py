@@ -786,7 +786,8 @@ def test_symbol_relevance_uses_word_boundaries():
     # Whole-word matching: only validate_username is named; "user" inside "username" must not
     # drag in get_user, and unnamed symbols stay out.
     symbols = [sym("get_user"), sym("validate_username"), sym("process_payment")]
-    context, language = ThreatScenarioBuilder._code_context(threat, symbols, root_dir=".")
+    parts, language = ThreatScenarioBuilder._code_context(threat, symbols, root_dir=".")
+    context = "".join(part if isinstance(part, str) else part.text for part in parts)
     assert language == "python"
     assert "Symbol: validate_username" in context
     assert "Symbol: get_user" not in context
