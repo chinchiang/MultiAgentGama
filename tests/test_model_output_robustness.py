@@ -6,7 +6,6 @@ import threading
 
 import pytest
 
-from model_answers import answer as model_answer
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.i18n import bi, en_only, has_cjk
 from vibeharness.core.models import (
@@ -55,29 +54,42 @@ def _threat():
 # --- 威脅建模器：格式錯誤的輸出必須降級，不得讓管線當機 -----------------------------------
 # --- Threat modeler: malformed output must degrade, not crash the pipeline -----------------------
 
-def test_malformed_threat_entries_are_skipped():
-    gw = LLMGateway(CONFIG, execution_mode="mock")
-    gw.generate = lambda *a, **k: model_answer(
-        {"threats": ["BOLA", 7, {"threat_id": "T1", "stride_category": "Tampering"}]})
+def _live(transport):
+    return LLMGateway(CONFIG, execution_mode="live", transport=transport)
+
+
+def _user(request):
+    return request.messages[1]["content"]
+
+
+def test_malformed_threat_entries_are_skipped(scripted):
+    gw = _live(scripted({"blackbox_threat_modeler": {
+        "threats": ["BOLA", 7, {"threat_id": "T1", "stride_category": "Tampering"}]}}))
     report = AutomatedThreatModeler(gw).model_system("desc", ["/api/users"])
     assert [t.threat_id for t in report.threats] == ["T1"]
 
 
-def test_non_list_threats_and_string_list_fields_fall_back():
-    gw = LLMGateway(CONFIG, execution_mode="mock")
-    gw.generate = lambda *a, **k: model_answer({
-        "threats": {"threat_id": "T1"},  # 物件而非清單 ／ object instead of a list
+def test_wrong_typed_report_fields_fall_back_to_the_harness_defaults(scripted):
+    gw = _live(scripted({"blackbox_threat_modeler": {
+        "threats": [],
         "system_description": 42,
         "entrypoints": "not a list",
         "trust_boundaries": [1, 2],
         "assets": "db",
-    })
+    }}))
     report = AutomatedThreatModeler(gw).model_system("desc", ["/api/users"])
     assert report.threats == []
     assert report.system_description == "desc"
     assert report.entrypoints == ["/api/users"]
     assert report.trust_boundaries == DEFAULT_TRUST_BOUNDARIES
     assert report.assets == DEFAULT_ASSETS
+
+
+def test_a_threats_object_instead_of_a_list_is_an_invalid_call(scripted):
+    gw = _live(scripted({"blackbox_threat_modeler": {"threats": {"threat_id": "T1"}}}))  # 物件而非清單 ／ object, not a list
+    report = AutomatedThreatModeler(gw).model_system("desc", ["/api/users"])
+    assert report.threats == [] and report.entrypoints == ["/api/users"]
+    assert [c.agent_id for c in gw.invalid_calls] == ["blackbox_threat_modeler"]
 
 
 def _big_symbol(name, lines=500):
@@ -87,31 +99,30 @@ def _big_symbol(name, lines=500):
     )
 
 
-def test_large_targets_are_threat_modeled_in_batches():
+def test_large_targets_are_threat_modeled_in_batches(scripted):
     """每個符號都必須讓威脅建模器看得到：和審查者一樣，符號會分批，
     單一提示詞的 token 上限不能再悄悄丟掉目標的大部分內容。
     Every symbol must be visible to the threat modeler: like the reviewers, symbols are
     batched so a single-prompt token cap can no longer silently drop most of the target."""
-    gw = LLMGateway(CONFIG, execution_mode="mock")
     prompts = []
     state = {"n": 0}
     # 批次會並行執行：計數要上鎖，否則兩個批次可能拿到同一個標題而被合併
     # batches run concurrently: the counter takes a lock, or two batches could get the same title and be merged
     lock = threading.Lock()
 
-    def responder(agent_id, system_prompt, user_prompt, **k):
+    def responder(request):
         with lock:
             state["n"] += 1
             n = state["n"]
-            prompts.append(user_prompt)
+            prompts.append(_user(request))
         # 每個批次都回報相同且衝突的 threat_id，以證明重新編號有效
         # every batch reports the same colliding threat_id to prove renumbering works
-        return model_answer({
+        return {
             "threats": [{"threat_id": "THREAT-01", "stride_category": "Tampering", "title": f"t{n}"}],
             "entrypoints": ["/api/batch"],
-        })
+        }
 
-    gw.generate = responder
+    gw = _live(scripted({"blackbox_threat_modeler": responder}))
     symbols = [_big_symbol(f"f{i}") for i in range(30)]
     report = AutomatedThreatModeler(gw).model_system("desc", ["/api/users"], symbols=symbols, root_dir=".")
     assert state["n"] > 1  # 確實有分批 ／ batching actually happened
@@ -127,18 +138,16 @@ def test_large_targets_are_threat_modeled_in_batches():
     assert report.entrypoints == ["/api/batch"]
 
 
-def test_invalid_batch_does_not_kill_threat_modeling():
-    gw = LLMGateway(CONFIG, execution_mode="mock")
-    responses = [
-        model_answer(mode="invalid", reason="bad json"),
-        model_answer({"threats": [{"threat_id": "THREAT-01", "stride_category": "Tampering", "title": "later"}],
-                      "entrypoints": ["/api/valid"]}),
-    ]
+def test_invalid_batch_does_not_kill_threat_modeling(scripted):
+    def responder(request):
+        # 批次 a 的回答重問後仍不是 JSON（invalid）；批次 b 可用
+        # Batch a's answer is still not JSON after the re-ask (invalid); batch b's is usable
+        if "Symbol: a " in _user(request):
+            return "not json"
+        return {"threats": [{"threat_id": "THREAT-01", "stride_category": "Tampering", "title": "later"}],
+                "entrypoints": ["/api/valid"]}
 
-    def responder(*a, **k):
-        return responses.pop(0)
-
-    gw.generate = responder
+    gw = _live(scripted({"blackbox_threat_modeler": responder}))
     report = AutomatedThreatModeler(gw).model_system("desc", ["/api/users"], symbols=[_big_symbol("a"), _big_symbol("b")], root_dir=".")
     # 批次 1 無法使用，批次 2 仍貢獻了它的威脅與報告層級欄位
     # batch 1 was unusable, batch 2 still contributed its threat and the report-level fields
@@ -146,21 +155,26 @@ def test_invalid_batch_does_not_kill_threat_modeling():
     assert report.entrypoints == ["/api/valid"]
 
 
-def test_a_crashed_batch_does_not_blank_the_report_fields():
+def test_a_crashed_batch_does_not_blank_the_report_fields(scripted):
     """在閘道之外當掉的批次沒有回答（fan_out 已把它記成無效呼叫）：和無法使用的批次一樣略過，報告層級欄位仍來自下一個
     可用的批次，而不是被當掉的批次換成空的預設值。
     A batch that crashed outside the gateway has no answer (fan_out already booked it as an invalid call): like an
     unusable batch it is skipped, and the report-level fields still come from the next usable batch instead of the
     crashed one turning them into the empty defaults."""
-    gw = LLMGateway(CONFIG, execution_mode="mock")
+    gw = _live(scripted({"blackbox_threat_modeler": {
+        "threats": [{"threat_id": "THREAT-01", "stride_category": "Tampering", "title": "b"}],
+        "entrypoints": ["/api/from-b"]}}))
+    generate = gw.generate
 
-    def responder(agent_id, system_prompt, user_prompt, **k):
+    # 閘道之外的當機無法經 transport 表達：只讓批次 a 的呼叫拋出例外，其他呼叫照常經過閘道
+    # A crash outside the gateway cannot be expressed through the transport: only batch a's call raises, the others
+    # go through the gateway as usual
+    def crash_batch_a(agent_id, system_prompt, user_prompt, **k):
         if "Symbol: a " in user_prompt:
             raise RuntimeError("parser exploded")
-        return model_answer({"threats": [{"threat_id": "THREAT-01", "stride_category": "Tampering", "title": "b"}],
-                             "entrypoints": ["/api/from-b"]})
+        return generate(agent_id, system_prompt, user_prompt, **k)
 
-    gw.generate = responder
+    gw.generate = crash_batch_a
     symbols = [_big_symbol("a"), _big_symbol("b")]
     report = AutomatedThreatModeler(gw).model_system("desc", ["/api/users"], symbols=symbols, root_dir=".")
     assert [t.title for t in report.threats] == ["b"]
@@ -168,12 +182,11 @@ def test_a_crashed_batch_does_not_blank_the_report_fields():
     assert [c.agent_id for c in gw.invalid_calls] == ["blackbox_threat_modeler"]
 
 
-def test_wrong_typed_threat_fields_are_coerced_not_fatal():
-    gw = LLMGateway(CONFIG, execution_mode="mock")
-    gw.generate = lambda *a, **k: model_answer({"threats": [{
+def test_wrong_typed_threat_fields_are_coerced_not_fatal(scripted):
+    gw = _live(scripted({"blackbox_threat_modeler": {"threats": [{
         "threat_id": "T1", "severity": None, "owasp_mapping": {"id": "API1"}, "title": 42,
         "attack_vector": ["PUT"], "stride_category": "Not-A-STRIDE-Category",
-    }]})
+    }]}}))
     t = AutomatedThreatModeler(gw).model_system("desc", ["/api/users"]).threats[0]
     assert t.severity == FindingSeverity.HIGH
     assert t.owasp_mapping is None
@@ -182,10 +195,9 @@ def test_wrong_typed_threat_fields_are_coerced_not_fatal():
     assert t.stride_category == STRIDECategory.TAMPERING
 
 
-def test_missing_threat_id_gets_a_positional_default():
-    gw = LLMGateway(CONFIG, execution_mode="mock")
-    gw.generate = lambda *a, **k: model_answer(
-        {"threats": [{"title": "first"}, {"threat_id": "  ", "title": "second"}]})
+def test_missing_threat_id_gets_a_positional_default(scripted):
+    gw = _live(scripted({"blackbox_threat_modeler": {
+        "threats": [{"title": "first"}, {"threat_id": "  ", "title": "second"}]}}))
     report = AutomatedThreatModeler(gw).model_system("desc", ["/api/users"])
     assert [t.threat_id for t in report.threats] == ["THREAT-01", "THREAT-02"]
 
@@ -215,11 +227,11 @@ def test_non_list_verdicts_leave_findings_unfiltered(fake_live):
     assert [f.finding_id for f in result.confirmed_findings] == ["A"]
 
 
-def test_non_string_synthesizer_code_leaves_threat_untested():
-    gw = LLMGateway(CONFIG, execution_mode="mock")
-    gw.generate = lambda *a, **k: model_answer({"code": 42, "title": "t"})
+def test_non_string_synthesizer_code_is_an_invalid_call_and_leaves_threat_untested(scripted):
+    gw = _live(scripted({"blackbox_test_synthesizer": {"code": 42, "title": "t"}}))
     tests = ThreatScenarioBuilder(gw).build_test_cases_from_threats([_threat()], base_url="http://localhost:59999")
     assert tests == []
+    assert [c.agent_id for c in gw.invalid_calls] == ["blackbox_test_synthesizer"]
 
 
 def test_non_string_generator_tests_fall_back_to_probes(fake_live, tmp_path):
@@ -639,7 +651,7 @@ def test_a_cached_answer_that_no_longer_fits_is_invalid_under_cache_only_and_rea
     assert replayed.data["findings"] == [{"title": "ok"}]
 
 
-def test_test_generation_falls_back_to_code_when_tests_has_no_usable_item(tmp_path):
+def test_test_generation_falls_back_to_code_when_tests_has_no_usable_item(scripted, tmp_path):
     """`tests` 是清單、卻沒有任何一項有 code 時，改用回答裡非空的 `code`：形狀檢查已經因為 `code` 可用而接受這個回答，
     代理過去卻因為 `tests` 不是空清單就忽略 `code`，那個發現因此沒有模型測試。`tests` 有可用的項目時仍忽略 `code`。
     When `tests` is a list but no item has code, the answer's non-empty `code` is used: the shape check already
@@ -655,9 +667,7 @@ def test_test_generation_falls_back_to_code_when_tests_has_no_usable_item(tmp_pa
                             suggested_test_scenario="s")
 
     def generator(answer):
-        gw = LLMGateway(CONFIG, execution_mode="mock")
-        gw.generate = lambda *a, **k: model_answer(answer)
-        return WhiteboxTestGenerator(gw)
+        return WhiteboxTestGenerator(_live(scripted({"whitebox_test_generator": answer})))
     fallback = generator({"tests": ["not an object", {"title": "no code"}], "code": code})
     tests = fallback.generate_tests_for_findings([finding], symbols, root_dir=str(tmp_path))
     assert [t.code.strip() for t in tests if t.test_type == "whitebox_unit"] == [code.strip()]

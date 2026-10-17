@@ -1,13 +1,12 @@
 import functools
 import logging
-import os
 import re
 from typing import List, Dict, Any, Mapping, Optional
 from pydantic import ValidationError
 from vibeharness.core.models import CodeSymbol, ReviewFinding, FindingSeverity, text_or
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.i18n import bi, en_only
-from vibeharness.core.codecontext import estimate_tokens, render_symbols, batch_symbols
+from vibeharness.core.codecontext import estimate_tokens, render_symbols, batch_symbols, target_root
 from vibeharness.core.agent_call import (
     NO_REPLY, AgentCall, AgentReply, CallContext, Channel, Content, ItemSource, Part, Untrusted, ask,
 )
@@ -136,7 +135,7 @@ class HeterogeneousReviewerEnsemble:
     def review_symbols(self, symbols: List[CodeSymbol], root_dir: Optional[str] = None) -> List[ReviewFinding]:
         if not symbols or not self.reviewer_agents:
             return []
-        root = root_dir or os.path.dirname(os.path.abspath(symbols[0].file_path))
+        root = target_root(root_dir, symbols[0].file_path)
         batches = self._batches(symbols, root)
         jobs = [(reviewer, batch) for reviewer in self.reviewer_agents for batch in batches]
 

@@ -11,7 +11,8 @@ from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.codecheck import check_test_code_for, strip_code_fences
 from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import (
-    file_source, fence_language, import_instructions, language_for_file, module_import_name, truncate_to_tokens,
+    file_source, fence_language, import_instructions, language_for_file, module_import_name, target_root,
+    truncate_to_tokens,
 )
 from vibeharness.core.sanitize import prepare_untrusted_code
 from vibeharness.core.agent_call import (
@@ -105,7 +106,7 @@ class WhiteboxTestGenerator:
             return []
 
         target_file = symbols[0].file_path if symbols else "main.py"
-        root = root_dir or os.path.dirname(os.path.abspath(target_file))
+        root = target_root(root_dir, target_file)
 
         # 發現彼此獨立，所以它們的產生—驗證—修復迴圈並行執行；
         # 結果依發現順序收集，讓 id、報告與探測維持確定性。當掉的發現由 fan_out 記成無效呼叫（證據缺口），

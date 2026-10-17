@@ -52,6 +52,14 @@ def fence_language(file_path: str) -> str:
     return _FENCE_LANG.get(os.path.splitext(file_path)[1].lower(), "")
 
 
+def target_root(root_dir: Optional[str], file_path: str) -> str:
+    """呈現目標程式碼時路徑的相對基準：呼叫端給的 `root_dir`，沒有時是 `file_path` 所在的目錄
+    （harness 一律給 root_dir；這只是函式庫呼叫端的退路）。
+    The base that paths are shown relative to when presenting target code: the caller's `root_dir`, else the
+    directory of `file_path` (the harness always passes root_dir; this is only a fallback for library callers)."""
+    return root_dir or os.path.dirname(os.path.abspath(file_path))
+
+
 def import_root(root_dir: str) -> str:
     """產生的測試要能以名稱匯入目標，sys.path 上必須有的那個目錄。
 

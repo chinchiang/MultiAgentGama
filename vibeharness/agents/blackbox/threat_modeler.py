@@ -14,7 +14,7 @@ from vibeharness.core.agent_call import (
     NO_REPLY, AgentCall, AgentReply, CallContext, Channel, Content, ItemSource, Part, Untrusted, ask,
 )
 from vibeharness.core.i18n import bi
-from vibeharness.core.codecontext import estimate_tokens, render_symbols, batch_symbols
+from vibeharness.core.codecontext import estimate_tokens, render_symbols, batch_symbols, target_root
 
 DEFAULT_RULES_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config", "threat_rules.yaml")
 
@@ -189,7 +189,7 @@ class AutomatedThreatModeler:
     def _code_guidance(symbols: Optional[List[CodeSymbol]], root_dir: Optional[str]) -> List[Part]:
         if not symbols:
             return []
-        root = root_dir or os.path.dirname(os.path.abspath(symbols[0].file_path))
+        root = target_root(root_dir, symbols[0].file_path)
         return ["Target source code:\n", Untrusted(Content.TARGET_CODE, _listing(symbols, root)), "\n\n"]
 
     def _model_batch(

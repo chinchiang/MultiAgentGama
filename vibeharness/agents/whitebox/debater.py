@@ -1,12 +1,11 @@
 import functools
 import logging
 import math
-import os
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 from vibeharness.core.models import ReviewFinding, MultiModelDebateResult, VerificationVote, CodeSymbol
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.i18n import bi, en_only
-from vibeharness.core.codecontext import render_symbols, truncate_to_tokens
+from vibeharness.core.codecontext import render_symbols, truncate_to_tokens, target_root
 from vibeharness.core.agent_call import (
     NO_REPLY, AgentCall, AgentReply, CallContext, Channel, Content, ItemSource, Part, Untrusted, ask,
 )
@@ -284,7 +283,7 @@ class MultiModelDebater:
         relevant = [s for s in symbols if (s.file_path, s.name) in wanted]
         if not relevant:
             return []
-        root = root_dir or os.path.dirname(os.path.abspath(relevant[0].file_path))
+        root = target_root(root_dir, relevant[0].file_path)
         listing = render_symbols(relevant, root, max_tokens=self.CODE_CONTEXT_TOKENS)
         return ["Code the findings refer to:\n", Untrusted(Content.TARGET_CODE, listing), "\n\n"]
 

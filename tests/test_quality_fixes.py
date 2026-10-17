@@ -3,10 +3,10 @@ Regression tests for the packaging, model-output robustness, execution and SARIF
 import logging
 import os
 import sys
+import threading
 
 import pytest
 
-from model_answers import answer
 from vibeharness.core.llm_gateway import DEFAULT_CONFIG_PATH
 from vibeharness.core.i18n import en_only
 from vibeharness.agents.blackbox.threat_modeler import DEFAULT_RULES_PATH
@@ -132,18 +132,16 @@ def test_null_reviewer_fields_fall_back_but_empty_findings_are_dropped(fake_live
 # --- 黑箱：沒有隱含的 live HTTP 目標 ---------------------------------------------------------
 # --- Black-box: no implicit live-HTTP target -----------------------------------------------------
 
-def test_no_base_url_means_in_process_and_no_network_probe(monkeypatch):
+def test_no_base_url_means_in_process_and_no_network_probe(monkeypatch, scripted):
     from vibeharness.core.llm_gateway import LLMGateway
     from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
-    builder = ThreatScenarioBuilder(LLMGateway(CONFIG, execution_mode="mock"))
+    transport = scripted({"blackbox_test_synthesizer": {"code": ""}})
+    builder = ThreatScenarioBuilder(LLMGateway(CONFIG, execution_mode="live", transport=transport))
     probed = []
     monkeypatch.setattr(builder, "check_server_live", lambda url, *a, **k: probed.append(url) or True)
-    prompts = []
-    monkeypatch.setattr(builder.gateway, "generate",
-                        lambda agent, system, user, **k: prompts.append(system) or answer())
     builder.build_test_cases_from_threats([_threat()])
     assert probed == []
-    assert "In-Process Contract" in prompts[0]
+    assert "In-Process Contract" in transport.prompts()[0][0]
 
 
 @pytest.mark.parametrize("url", ["file:///etc/hostname", "ftp://host/x", "localhost:8000", "http://", "data:text/plain,hi"])
@@ -238,27 +236,30 @@ def test_header_still_precedes_code_without_future_imports():
 # --- 威脅建模：來自多個批次的同一個威脅會被合併 ----------------------------------------------
 # --- Threat modeling: the same threat from several batches is merged ---------------------------
 
-def test_identical_threats_from_several_batches_are_merged_keeping_highest_severity():
+def test_identical_threats_from_several_batches_are_merged_keeping_highest_severity(scripted):
     from vibeharness.core.llm_gateway import LLMGateway
     from vibeharness.core.models import CodeSymbol, FindingSeverity
     from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
-    gw = LLMGateway(CONFIG, execution_mode="mock")
     calls = {"n": 0}
+    lock = threading.Lock()
 
-    def responder(agent_id, system_prompt, user_prompt, **k):
-        calls["n"] += 1
-        return answer({"threats": [
+    def responder(request):
+        # 批次並行執行：計數要上鎖 ／ Batches run concurrently: the counter takes a lock
+        with lock:
+            calls["n"] += 1
+            n = calls["n"]
+        return {"threats": [
             # 同一個威脅，標點／大小寫改寫過，嚴重度每批不同
             # same threat, reworded punctuation/casing, severity differs per batch
-            {"threat_id": "THREAT-01", "stride_category": "Tampering", "title": f"Mass Assignment{'!' * calls['n']}",
-             "attack_vector": "PUT /users", "severity": "CRITICAL" if calls["n"] == 2 else "MEDIUM"},
+            {"threat_id": "THREAT-01", "stride_category": "Tampering", "title": f"Mass Assignment{'!' * n}",
+             "attack_vector": "PUT /users", "severity": "CRITICAL" if n == 2 else "MEDIUM"},
             # 不同的路由是不同的威脅，必須保留
             # a different route is a different threat and must be kept
             {"threat_id": "THREAT-02", "stride_category": "Tampering", "title": "Mass assignment",
-             "attack_vector": f"PUT /route{calls['n']}"},
-        ]})
+             "attack_vector": f"PUT /route{n}"},
+        ]}
 
-    gw.generate = responder
+    gw = LLMGateway(CONFIG, execution_mode="live", transport=scripted({"blackbox_threat_modeler": responder}))
     symbols = [CodeSymbol(name=f"f{i}", symbol_type="function", file_path="app.py", line_start=1, line_end=1,
                           signature="f()", source_code="def f():\n" + "    x = 1\n" * 2500) for i in range(3)]
     report = AutomatedThreatModeler(gw).model_system("desc", [], symbols=symbols, root_dir=".")
@@ -495,16 +496,14 @@ def test_one_crashed_verifier_batch_does_not_abort_arbitration(scripted):
 # --- 覆蓋率補強：審查者集成與威脅建模器的降級與退回路徑 ------------------------------------
 # --- Coverage push: degradation and fallback paths of the reviewer ensemble and threat modeler ----
 
-def test_reviewer_ensemble_skips_empty_symbols_without_model_calls():
+def test_reviewer_ensemble_skips_empty_symbols_without_model_calls(scripted):
     from vibeharness.core.llm_gateway import LLMGateway
     from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
-    gw = LLMGateway(CONFIG, execution_mode="mock")
-
-    def must_not_be_called(*a, **k):
-        raise AssertionError("no model call may be made for an empty symbol list")
-
-    gw.generate = must_not_be_called
+    # 空的腳本：任何模型呼叫都會讓測試失敗 ／ An empty script: any model call fails the test
+    transport = scripted({})
+    gw = LLMGateway(CONFIG, execution_mode="live", transport=transport)
     assert HeterogeneousReviewerEnsemble(gw).review_symbols([]) == []
+    assert transport.requests == [] and gw.call_log == []
 
 
 def test_one_crashed_reviewer_batch_does_not_abort_the_review(scripted, tmp_path, caplog):

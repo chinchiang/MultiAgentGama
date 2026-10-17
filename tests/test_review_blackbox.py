@@ -5,7 +5,6 @@ import os
 
 import pytest
 
-from model_answers import answer
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.models import FindingSeverity, STRIDECategory, ThreatItem
 
@@ -72,18 +71,23 @@ def test_crashed_threat_modeling_batch_is_recorded():
     (crashed,) = gateway.invalid_calls
     assert crashed.agent_id == "blackbox_threat_modeler" and "RuntimeError: simulated thread crash" in (crashed.reason or "")
 
-def test_crashed_attack_synthesis_is_recorded():
+def test_crashed_attack_synthesis_is_recorded(scripted):
     """一個威脅的攻擊合成當掉時記在 blackbox_test_synthesizer 名下，其他威脅的測試保留（接線測試；
     扇出本身見 test_fanout.py）。
     A crashed attack synthesis for one threat is booked under blackbox_test_synthesizer and the other threats keep
     their tests (a wiring test; the fan-out itself is in test_fanout.py)."""
     from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
-    gateway = LLMGateway(CONFIG, execution_mode="mock")
+    transport = scripted({"blackbox_test_synthesizer": {"code": "def test_ok():\n    assert True\n"}})
+    gateway = LLMGateway(CONFIG, execution_mode="live", transport=transport)
+    generate = gateway.generate
 
+    # 閘道之外的當機無法經 transport 表達：只讓 T-2 的合成拋出例外，其他呼叫照常經過閘道
+    # A crash outside the gateway cannot be expressed through the transport: only T-2's synthesis raises, the others
+    # go through the gateway as usual
     def crash_t2(agent_id, system, user, **kwargs):
         if "Threat ID: T-2\n" in user:
             raise ValueError("boom")
-        return answer({"code": "def test_ok():\n    assert True\n"})
+        return generate(agent_id, system, user, **kwargs)
     gateway.generate = crash_t2
     tests = ThreatScenarioBuilder(gateway).build_test_cases_from_threats([_threat("T-1"), _threat("T-2"), _threat("T-3")])
     assert [t.source_ref for t in tests] == ["T-1", "T-3"]

@@ -6,14 +6,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Mapping, Optional, Tuple
-import os
 from vibeharness.core.models import ThreatItem, GeneratedTest, CodeSymbol, text_or
 from vibeharness.core.fanout import Call, CallKind, PlannedCalls, fan_out
 from vibeharness.core.model_output import STRING, OutputSchema
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.codecheck import check_test_code_for, strip_code_fences
 from vibeharness.core.i18n import bi, en_only
-from vibeharness.core.codecontext import render_symbols, import_instructions, language_for_file
+from vibeharness.core.codecontext import render_symbols, import_instructions, language_for_file, target_root
 from vibeharness.core.agent_call import AgentCall, CallContext, Channel, Content, ItemSource, Part, Untrusted, ask
 
 logger = logging.getLogger("VibeHarness.ScenarioBuilder")
@@ -96,7 +95,7 @@ class ThreatScenarioBuilder:
         the language of the first relevant symbol's file: a mixed target follows that file)."""
         if not symbols:
             return [], "python"
-        root = root_dir or os.path.dirname(os.path.abspath(symbols[0].file_path))
+        root = target_root(root_dir, symbols[0].file_path)
         text = f"{threat.attack_vector} {threat.attack_scenario}"
         relevant = ThreatScenarioBuilder._named_symbols(symbols, text)
         if not relevant:
