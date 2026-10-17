@@ -76,15 +76,15 @@ class MultiModelDebater:
         known before the run), and which findings get corroborated, and so need no ruling, is not known either."""
         plans = []
         for agent_id, alias in self.verifiers.items():
-            assigned = self.assigned_findings(findings_by_alias, alias)
-            calls = self._call_count(assigned)
-            plans.append(PlannedCalls(agent_id=agent_id, model_alias=alias, kind=CallKind.VERIFIER, calls=calls,
-                                      json_output=True, code_tokens=self.LISTING_MAX_TOKENS + self.CODE_CONTEXT_TOKENS,
-                                      exact=False))
+            assigned = self._assigned_findings(findings_by_alias, alias)
+            plans.append(PlannedCalls(agent_id=agent_id, model_alias=alias, kind=CallKind.VERIFIER,
+                                      calls=self._call_count(assigned), json_output=True,
+                                      code_tokens=self.LISTING_MAX_TOKENS + self.CODE_CONTEXT_TOKENS, exact=False,
+                                      items=assigned, items_per_call=self.FINDINGS_PER_CALL))
         return plans
 
     @staticmethod
-    def assigned_findings(findings_by_alias: Mapping[str, float], alias: str) -> float:
+    def _assigned_findings(findings_by_alias: Mapping[str, float], alias: str) -> float:
         """計畫裡模型別名 `alias` 的驗證者分到幾筆發現：其他模型回報的總和（絕不裁決自家模型的發現）。這是計畫的
         算式；arbitrate 實際執行時還會略過該驗證者已佐證的發現。
         How many findings the plan assigns to the verifier of model alias `alias`: the sum of what the other models

@@ -17,11 +17,10 @@ which never re-asks); response-cache hits
 would make a re-run cheaper and are not predicted.
 """
 import math
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, Field
 
-from vibeharness.agents.whitebox.debater import MultiModelDebater
 from vibeharness.core.fanout import CallKind, PlannedCalls
 from vibeharness.core.i18n import bi
 from vibeharness.core.settings import UNCONFIGURED_ALIAS
@@ -111,6 +110,21 @@ def _row(agent_id: str, model_alias: str, plans: Sequence[PlannedCalls], reask: 
     )
 
 
+def _one_agent(plans: Sequence[PlannedCalls]) -> Tuple[str, str]:
+    """一組計畫所屬的代理與模型別名；這組計畫必須全都屬於同一個代理，否則大聲地失敗。
+    The agent and model alias a set of plans belongs to; every plan in the set must belong to the same agent, or this
+    fails loudly."""
+    (owner,) = {(p.agent_id, p.model_alias) for p in plans}
+    return owner
+
+
+def _of_kind(plans: Sequence[PlannedCalls], kind: CallKind) -> PlannedCalls:
+    """一組計畫中種類為 `kind` 的那一個；不是恰好一個時大聲地失敗。
+    The one plan of kind `kind` in a set of plans; fails loudly unless there is exactly one."""
+    (plan,) = [p for p in plans if p.kind is kind]
+    return plan
+
+
 def estimate_run(
     commander, target_dir: str, findings_per_batch: float = 3.0, threats_per_batch: float = 4.0
 ) -> RunEstimate:
@@ -163,35 +177,34 @@ def estimate_run(
     by_alias: Dict[str, float] = {}
     for reviewer in reviewers:
         by_alias[reviewer["model_alias"]] = by_alias.get(reviewer["model_alias"], 0) + distinct / len(reviewers)
-    per_call = MultiModelDebater.FINDINGS_PER_CALL
     for plan in commander.debater.plan(by_alias):
-        # 說明裡的發現數：其他模型回報的（驗證者絕不裁決自家模型的發現）
-        # The finding count in the basis: those other models reported (a verifier never rules on its own model's)
-        assigned = commander.debater.assigned_findings(by_alias, plan.model_alias)
+        # 說明裡的發現數：其他模型回報的（驗證者絕不裁決自家模型的發現），由驗證者的計畫提供
+        # The finding count in the basis: those other models reported (a verifier never rules on its own model's), as
+        # the verifier's plan states it
         est.by_agent.append(_row(plan.agent_id, plan.model_alias, [plan], reask, heal_rate, bi(
-            f"來自其他模型的 ~{assigned:.0f} 筆發現 / 每次呼叫 {per_call} 筆",
-            f"~{assigned:.0f} finding(s) from other models / {per_call} per call")))
+            f"來自其他模型的 ~{plan.items:.0f} 筆發現 / 每次呼叫 {plan.items_per_call} 筆",
+            f"~{plan.items:.0f} finding(s) from other models / {plan.items_per_call} per call")))
 
     # 3. 每筆已確認發現的測試產生（+ 修復）
     # 3. Test generation per confirmed finding (+ heals)
     confirmed = distinct * est.assumptions["confirmed_share"]
     tg_plans = commander.whitebox_test_gen.plan(confirmed, tests_per_finding=est.assumptions["tests_per_finding"])
-    heal = next(p for p in tg_plans if p.conditional)
+    heal = _of_kind(tg_plans, CallKind.HEAL)
     heal_typical = _typical_calls(heal, heal_rate)
-    est.by_agent.append(_row(heal.agent_id, heal.model_alias, tg_plans, reask, heal_rate, bi(
+    est.by_agent.append(_row(*_one_agent(tg_plans), tg_plans, reask, heal_rate, bi(
         f"~{confirmed:.0f} 筆已確認的發現 × 1 次呼叫，+ 修復（典型 {heal_typical}，每個測試最多 {heal.max_per_call}）",
         f"~{confirmed:.0f} confirmed finding(s) × 1 call, + heals (typical {heal_typical}, max {heal.max_per_call} per test)")))
 
     # 4. 威脅建模：精確值
     # 4. Threat modeling: exact
-    est.by_agent.append(_row(tm_plans[0].agent_id, tm_plans[0].model_alias, tm_plans, reask, heal_rate, bi(
+    est.by_agent.append(_row(*_one_agent(tm_plans), tm_plans, reask, heal_rate, bi(
         f"{len(tm_plans)} 個威脅模型批次 × 1 次呼叫", f"{len(tm_plans)} threat-model batch(es) × 1 call")))
 
     # 5. 每個威脅的攻擊合成
     # 5. Attack synthesis per threat
     threats = math.ceil(threats_per_batch * len(tm_plans))
-    (synthesis,) = commander.scenario_builder.plan(threats)
-    est.by_agent.append(_row(synthesis.agent_id, synthesis.model_alias, [synthesis], reask, heal_rate,
+    synthesis = commander.scenario_builder.plan(threats)
+    est.by_agent.append(_row(*_one_agent(synthesis), synthesis, reask, heal_rate,
                              bi(f"~{threats} 個威脅 × 1 次呼叫", f"~{threats} threat(s) × 1 call")))
 
     est.calls_exact = sum(c.calls_exact or 0 for c in est.by_agent)

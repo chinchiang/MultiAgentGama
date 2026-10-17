@@ -58,7 +58,11 @@ class PlannedCalls:
     `calls` is then the number of opportunities, each with at most `max_per_call` calls. `json_output` calls are
     re-asked when the answer is unusable; `code_tokens` is the code each call carries, in tokens: the actual code
     listing for `exact` plans, otherwise the size the estimate assumes (a budget cap or a typical size); `exact`
-    means the inputs are known before the run (symbols) rather than a scenario from assumptions (findings, threats)."""
+    means the inputs are known before the run (symbols) rather than a scenario from assumptions (findings, threats).
+    分派項目給呼叫的代理另外填 `items`（分到的項目數，情境數可能不是整數）與 `items_per_call`（每次呼叫最多幾項），
+    `--estimate` 的說明文字讀它們。
+    An agent that hands items out to its calls also fills `items` (how many it is assigned, a scenario count that may
+    not be whole) and `items_per_call` (the most per call), which `--estimate`'s basis text reads."""
     agent_id: str
     model_alias: str
     kind: CallKind
@@ -68,6 +72,8 @@ class PlannedCalls:
     exact: bool
     conditional: bool = False
     max_per_call: int = 1
+    items: Optional[float] = None
+    items_per_call: Optional[int] = None
 
 
 def fan_out(gateway: LLMGateway, calls: Sequence[Call[_T]], *, fallback: _T, logger: logging.Logger) -> List[_T]:
