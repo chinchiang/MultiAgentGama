@@ -19,7 +19,7 @@ from typing import Any, Callable, Generic, List, Optional, Sequence, Tuple, Type
 
 from vibeharness.core.i18n import bi
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
-from vibeharness.core.models import CallKind  # noqa: F401  # 也從這裡匯出 ／ re-exported here too
+from vibeharness.core.models import CallKind  # 也從這裡匯出 ／ re-exported here too
 
 _T = TypeVar("_T")
 

@@ -13,7 +13,7 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Changed
 
-- The five agents' model calls go through one new module, `vibeharness/core/agent_call.py`: prompt assembly (each kind of untrusted content in its own provenance-labeled channel), the per-item filtering of answers and the marking of Simulated output happen there only. The prompts sent to the models, the reports, JSON, SARIF, the call log and the exit codes are unchanged.
+- The five agents' model calls go through one new module, `vibeharness/core/agent_call.py`: prompt assembly (each kind of untrusted content in its own provenance-labeled channel), the per-item filtering of answers and the marking of Simulated output happen there only. The prompts sent to the models, the reports, JSON, SARIF and the exit codes are unchanged.
 - When a model answer is still unusable after the re-ask, or an agent call crashes outside the gateway, the reviewers and the threat modeler no longer log an extra "Ignoring unusable ... list ... (got NoneType)" line; the failure is still logged once as before.
 - `ModelAnswer.data` in `LLMGateway.generate`'s answer is now read-only. Library code calling `generate` directly that changes `data` has to copy it first (`dict(answer.data)`).
 - `CallKind` moves to `vibeharness.core.models`; importing it from `vibeharness.core.fanout` still works.

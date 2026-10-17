@@ -3,10 +3,14 @@
 The call log carries each call's kind: the kind an agent declares goes through the gateway into every record and
 every request sent to the transport, including a call that crashed outside the gateway, and the JSON and partial
 reports' agent_calls show it."""
+import json
 from collections import Counter
+
+import pytest
 
 from config_files import CONFIG
 from vibeharness.core.harness import VibeHarnessCommander
+from vibeharness.core.models import CallKind
 
 _APP = "def greet(name):\n    if name is None:\n        raise ValueError('name required')\n    return 'hi ' + name\n"
 _VALID_TEST = ("import pytest\nfrom app import greet\n\ndef test_none():\n"
@@ -44,7 +48,7 @@ def _run(scripted, tmp_path, crashes):
     def test_generator(request):
         # 第一次產生的程式碼無效，觸發修復；修復呼叫回有效的程式碼
         # The first generated code is invalid, which triggers a heal; the heal call answers with valid code
-        return _VALID_TEST if request.kind == "heal" else {"tests": [{"code": "def test_broken(:\n"}]}
+        return _VALID_TEST if request.kind is CallKind.HEAL else {"tests": [{"code": "def test_broken(:\n"}]}
 
     transport = scripted({
         "whitebox_reviewer_claude": {"findings": [{
@@ -69,7 +73,7 @@ def _run(scripted, tmp_path, crashes):
     return transport, commander.gateway.call_log
 
 
-_SYNTHESIS_CRASH = {("blackbox_test_synthesizer", "synthesizer")}
+_SYNTHESIS_CRASH = {("blackbox_test_synthesizer", CallKind.SYNTHESIZER)}
 
 
 def test_every_record_and_request_carries_its_calls_kind_including_a_heal_and_a_crash(scripted, tmp_path):
@@ -88,7 +92,7 @@ def test_a_heal_that_crashes_outside_the_gateway_is_booked_as_a_test_generator_c
     # 修復在閘道之外當掉時，當掉的是測試產生這次呼叫：fan_out 以它的種類記錄，而不是修復
     # When the heal crashes outside the gateway, what crashed is the test-generation call: fan_out books it under
     # that call's kind, not the heal's
-    _transport, log = _run(scripted, tmp_path, _SYNTHESIS_CRASH | {("whitebox_test_generator", "heal")})
+    _transport, log = _run(scripted, tmp_path, _SYNTHESIS_CRASH | {("whitebox_test_generator", CallKind.HEAL)})
 
     records = [r for r in log if r.agent_id == "whitebox_test_generator"]
     assert [(r.kind, r.mode) for r in records] == [("test_generator", "live"), ("test_generator", "invalid")]
@@ -96,10 +100,6 @@ def test_a_heal_that_crashes_outside_the_gateway_is_booked_as_a_test_generator_c
 
 
 def test_the_json_and_partial_reports_show_each_calls_kind(tmp_path, monkeypatch):
-    import json
-
-    import pytest
-
     target = _target(tmp_path)
     commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
     commander.run_full_pipeline(target_dir=str(target), output_report_path=str(tmp_path / "r.json"),

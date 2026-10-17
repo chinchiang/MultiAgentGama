@@ -13,7 +13,7 @@
 
 ### 變更
 
-- 五個代理的模型呼叫改經同一個新模組 `vibeharness/core/agent_call.py`：提示的組裝（不可信內容依種類走各自標示來源的通道）、回答的逐項過濾與模擬輸出的標記都只在這裡做。送給模型的提示、報告、JSON、SARIF、呼叫紀錄與結束碼都不變。
+- 五個代理的模型呼叫改經同一個新模組 `vibeharness/core/agent_call.py`：提示的組裝（不可信內容依種類走各自標示來源的通道）、回答的逐項過濾與模擬輸出的標記都只在這裡做。送給模型的提示、報告、JSON、SARIF 與結束碼都不變。
 - 模型的回答在重問後仍無法使用，或代理呼叫在閘道之外當掉時，審查者與威脅建模不再多記一行「略過 … 無法使用的 … 清單（收到 NoneType）」；那次失敗仍照常記錄一次。
 - `LLMGateway.generate` 回答的 `ModelAnswer.data` 改為唯讀。直接呼叫 `generate` 並修改 `data` 的函式庫程式要先複製一份（`dict(answer.data)`）。
 - `CallKind` 移到 `vibeharness.core.models`；從 `vibeharness.core.fanout` 匯入仍然可以。
