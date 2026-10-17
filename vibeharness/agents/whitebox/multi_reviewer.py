@@ -130,7 +130,7 @@ class HeterogeneousReviewerEnsemble:
         review_symbols all take them from here."""
         if not symbols or not self.reviewer_agents:
             return []
-        return self._batches(symbols, root)
+        return batch_symbols(symbols, root, self.BATCH_MAX_TOKENS, self.BATCH_MAX_SYMBOLS)
 
     def _jobs(self, per_batch: Sequence[T]) -> List[Tuple[Dict[str, str], T]]:
         """一次審查呼叫一筆：每個審查者、每個批次一次，依審查者再依批次的順序；`per_batch` 是每個批次對應的值
@@ -138,9 +138,6 @@ class HeterogeneousReviewerEnsemble:
         One entry per review call: one per reviewer and batch, reviewer by reviewer and then batch by batch;
         `per_batch` holds one value per batch (the batch itself when running, its code tokens when planning)."""
         return [(reviewer, item) for reviewer in self.reviewer_agents for item in per_batch]
-
-    def _batches(self, symbols: List[CodeSymbol], root: str) -> List[List[CodeSymbol]]:
-        return batch_symbols(symbols, root, self.BATCH_MAX_TOKENS, self.BATCH_MAX_SYMBOLS)
 
     def _listing(self, batch: List[CodeSymbol], root: str) -> str:
         return render_symbols(batch, root, max_tokens=self.BATCH_MAX_TOKENS)
