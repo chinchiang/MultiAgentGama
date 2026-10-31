@@ -335,6 +335,27 @@ def test_views_registered_by_call_inside_a_flask_factory_are_extracted_as_routes
     assert by["Page.index"].symbol_type == "method"
 
 
+def test_views_registered_by_call_get_no_none_probe_like_decorated_routes(tmp_path):
+    """以呼叫註冊的檢視函式與有裝飾器的路由一樣不做 None 輸入探測（框架不會把 None 傳給路徑參數）；
+    同一檔案裡未註冊的函式照常探測。
+    Views registered by a call get no None-input probe, like decorated routes (the framework never passes None
+    for a path parameter); an unregistered function in the same file is still probed."""
+    symbols = _symbols(tmp_path, "views.py", (
+        "from flask import Flask\n"
+        "app = Flask(__name__)\n"
+        "@app.route('/a/<name>')\n"
+        "def decorated(name):\n"
+        "    return name\n"
+        "def registered(user_id):\n"
+        "    return str(user_id)\n"
+        "def parse(raw):\n"
+        "    return raw.strip()\n"
+        "app.add_url_rule('/u/<user_id>', view_func=registered)\n"
+    ))
+    probes = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="mock")).build_offline_probes(symbols)
+    assert [p.target_component for p in probes] == ["parse"]
+
+
 # --- VH-AI-005：接收者比對 ---
 # --- VH-AI-005: receiver matching ---------------------------------------------------------------------
 

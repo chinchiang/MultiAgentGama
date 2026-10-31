@@ -8,7 +8,7 @@
 
 ### 修正
 
-- Python 擷取也認得以函式呼叫（而非裝飾器）註冊的檢視函式：`add_url_rule`（Flask／Quart，`view_func` 用位置或關鍵字引數）、`add_api_route`／`add_api_websocket_route`（FastAPI）、`add_route`／`add_websocket_route`（Starlette），以及從 Starlette 或 FastAPI 匯入的 `Route`／`WebSocketRoute`／`APIRoute`／`APIWebSocketRoute` 類別（別名與 `routing.Route(...)` 也算；從別處來的 `Route` 類別不算）。原本這類處理函式被擷取成一般的 `function`，威脅建模器與情境產生器不會優先處理它，報告歸屬威脅時不會優先選它，執行時的「偵測到 N 個 API 路由處理器」也不會列出它；在 Flask `create_app()` 工廠裡定義、以 `add_url_rule` 註冊的檢視函式更是完全沒被擷取，只能當成工廠的一部分審查。這類巢狀檢視函式現在會擷取成路由，在工廠裡的本體也和有裝飾器的一樣收合。只收裸名稱：`view_func=views.handler` 指向別的模組，`Cls.as_view(...)` 是類別式檢視。
+- Python 擷取也認得以函式呼叫（而非裝飾器）註冊的檢視函式：`add_url_rule`（Flask／Quart，`view_func` 用位置或關鍵字引數）、`add_api_route`／`add_api_websocket_route`（FastAPI）、`add_route`／`add_websocket_route`（Starlette），以及從 Starlette 或 FastAPI 匯入的 `Route`／`WebSocketRoute`／`APIRoute`／`APIWebSocketRoute` 類別（別名與 `routing.Route(...)` 也算；從別處來的 `Route` 類別不算）。原本這類處理函式被擷取成一般的 `function`，威脅建模器與情境產生器不會優先處理它，報告歸屬威脅時不會優先選它，執行時的「偵測到 N 個 API 路由處理器」也不會列出它；在 Flask `create_app()` 工廠裡定義、以 `add_url_rule` 註冊的檢視函式更是完全沒被擷取，只能當成工廠的一部分審查。這類巢狀檢視函式現在會擷取成路由，在工廠裡的本體也和有裝飾器的一樣收合。只收裸名稱：`view_func=views.handler` 指向別的模組，`Cls.as_view(...)` 是類別式檢視。這類檢視函式和有裝飾器的路由一樣，不再做 None 輸入探測（框架不會把 None 傳給路徑參數）；原本模組層級的會被探測。
 
 ### 測試
 
