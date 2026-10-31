@@ -16,7 +16,7 @@
 
 ### 工程
 
-- Actions 升版為 setup-python v7.1.0、gh-action-pypi-publish v1.14.3、codeql-action v4.39.1（取代 Dependabot PR #88，並同步設計文件 §15.2 的版本清單與 README、`action.yml` 的 SARIF 範例，`upload-sarif` 與 CodeQL workflow 仍是同一個 commit）；`setuptools` 升為 84.2.1、ruff 升為 0.17.2（`requirements-dev.txt` 與 pre-commit 的 rev）、沙盒映像的 `hypothesis` 升為 6.170.14，三者都以 `CONTRIBUTING.md` 的 `uv` 指令重新產生（取代 Dependabot PR #87、#85、#82）。
+- Actions 升版為 setup-python v7.1.0、gh-action-pypi-publish v1.14.3、codeql-action v4.39.1（取代 Dependabot PR #88，並同步設計文件 §15.2 的版本清單與 README、`action.yml` 的 SARIF 範例，`upload-sarif` 與 CodeQL workflow 仍是同一個 commit）；`setuptools` 升為 84.2.1、ruff 升為 0.17.2（`requirements-dev.txt` 與 pre-commit 的 rev）、沙盒映像的 `hypothesis` 升為 6.170.14，三者都以 `CONTRIBUTING.md` 的 `uv` 指令重新產生（取代 Dependabot PR #87、#85、#82）；`pytest` 升為 9.2.0（`requirements.lock` 與沙盒鎖定檔一起升，取代 Dependabot PR #95）。
 
 ## [0.14.0] - 2026-10-17
 
