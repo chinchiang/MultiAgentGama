@@ -201,6 +201,140 @@ def test_flask_factory_routes_and_compound_statement_defs_are_extracted(tmp_path
     assert by["Config"].symbol_type == "class" and by["Config.get"].symbol_type == "method"
 
 
+def test_flask_add_url_rule_registers_its_view_function_as_a_route(tmp_path):
+    """以 `add_url_rule` 呼叫（而非裝飾器）註冊的檢視函式是路由，view_func 用位置或關鍵字引數都算。
+    View functions registered with an `add_url_rule` call (not a decorator) are routes, with view_func
+    passed positionally or by keyword."""
+    by = _by_name(_symbols(tmp_path, "views.py", (
+        "from flask import Flask\n"
+        "app = Flask(__name__)\n"
+        "def show_user(user_id):\n"
+        "    return str(user_id)\n"
+        "def raw_view():\n"
+        "    return 'raw'\n"
+        "def helper():\n"
+        "    return 1\n"
+        "app.add_url_rule('/users/<int:user_id>', view_func=show_user)\n"
+        "app.add_url_rule('/raw', 'raw', raw_view)\n"
+    )))
+    assert by["show_user"].symbol_type == "route"
+    assert by["raw_view"].symbol_type == "route"
+    assert by["helper"].symbol_type == "function"
+
+
+def test_fastapi_and_starlette_add_route_methods_register_their_endpoints(tmp_path):
+    """FastAPI 的 `add_api_route`／`add_api_websocket_route` 與 Starlette 的 `add_route`／`add_websocket_route`
+    註冊的端點是路由，endpoint 用位置或關鍵字引數都算。
+    Endpoints registered with FastAPI's `add_api_route` / `add_api_websocket_route` and Starlette's
+    `add_route` / `add_websocket_route` are routes, with the endpoint passed positionally or by keyword."""
+    by = _by_name(_symbols(tmp_path, "api.py", (
+        "from fastapi import APIRouter, FastAPI\n"
+        "from starlette.applications import Starlette\n"
+        "router = APIRouter()\n"
+        "app = Starlette()\n"
+        "async def list_items():\n"
+        "    return []\n"
+        "async def create_item(item: dict):\n"
+        "    return item\n"
+        "async def feed(ws):\n"
+        "    await ws.accept()\n"
+        "async def health(request):\n"
+        "    return 'ok'\n"
+        "async def chat(ws):\n"
+        "    await ws.accept()\n"
+        "def not_registered():\n"
+        "    return 0\n"
+        "router.add_api_route('/items', list_items, methods=['GET'])\n"
+        "router.add_api_route(path='/items', endpoint=create_item, methods=['POST'])\n"
+        "router.add_api_websocket_route('/feed', feed)\n"
+        "app.add_route('/health', health)\n"
+        "app.add_websocket_route('/chat', route=chat)\n"
+    )))
+    assert _routes(by.values()) == ["chat", "create_item", "feed", "health", "list_items"]
+    assert by["not_registered"].symbol_type == "function"
+
+
+def test_starlette_route_objects_register_their_endpoints(tmp_path):
+    """從 Starlette／FastAPI 匯入的 `Route`／`WebSocketRoute`／`APIRoute`（含別名與 `routing.Route` 形式）
+    建構時傳入的端點是路由。
+    Endpoints passed to `Route` / `WebSocketRoute` / `APIRoute` imported from Starlette / FastAPI (aliases
+    and the `routing.Route` form included) are routes."""
+    by = _by_name(_symbols(tmp_path, "app.py", (
+        "from starlette.applications import Starlette\n"
+        "from starlette.routing import Route, WebSocketRoute as WSRoute\n"
+        "from starlette import routing\n"
+        "from fastapi.routing import APIRoute\n"
+        "async def homepage(request):\n"
+        "    return 'home'\n"
+        "async def user(request):\n"
+        "    return 'user'\n"
+        "async def ws(websocket):\n"
+        "    await websocket.accept()\n"
+        "async def legacy(request):\n"
+        "    return 'legacy'\n"
+        "async def items(request):\n"
+        "    return []\n"
+        "routes = [\n"
+        "    Route('/', homepage),\n"
+        "    Route('/user/{id}', endpoint=user, methods=['GET']),\n"
+        "    WSRoute('/ws', ws),\n"
+        "    routing.Route('/legacy', legacy),\n"
+        "    APIRoute('/items', items),\n"
+        "]\n"
+        "app = Starlette(routes=routes)\n"
+    )))
+    assert _routes(by.values()) == ["homepage", "items", "legacy", "user", "ws"]
+
+
+def test_a_route_class_not_imported_from_starlette_registers_nothing(tmp_path):
+    """名為 `Route` 但不是從 Starlette／FastAPI 匯入的類別（自家定義或其他套件）不算路由註冊。
+    A class named `Route` that is not imported from Starlette / FastAPI (defined locally or from another
+    package) is not a route registration."""
+    by = _by_name(_symbols(tmp_path, "planner.py", (
+        "from geo.paths import Route as GeoRoute\n"
+        "class Route:\n"
+        "    def __init__(self, name, step):\n"
+        "        self.step = step\n"
+        "def first_leg():\n"
+        "    return 1\n"
+        "def second_leg():\n"
+        "    return 2\n"
+        "trip = [Route('north', first_leg), GeoRoute('south', second_leg)]\n"
+    )))
+    assert _routes(by.values()) == []
+
+
+def test_views_registered_by_call_inside_a_flask_factory_are_extracted_as_routes(tmp_path):
+    """工廠函式裡以 `add_url_rule` 註冊的巢狀檢視函式和裝飾器路由一樣各自送審，外層函式裡的本體收合成佔位行；
+    未註冊的巢狀函式與同名的類別方法不受影響。
+    Nested views registered with `add_url_rule` inside a factory are reviewed on their own like decorated
+    routes, with their bodies collapsed to a placeholder in the enclosing function; unregistered nested
+    functions and same-named class methods are unaffected."""
+    by = _by_name(_symbols(tmp_path, "factory.py", (
+        "from flask import Flask\n"
+        "def create_app():\n"
+        "    app = Flask(__name__)\n"
+        "    def index():\n"
+        "        name = 'x'\n"
+        "        return name\n"
+        "    def helper():\n"
+        "        return 1\n"
+        "    app.add_url_rule('/', view_func=index)\n"
+        "    return app\n"
+        "class Page:\n"
+        "    def index(self):\n"
+        "        return 'page'\n"
+    )))
+    assert by["index"].symbol_type == "route" and by["index"].line_start == 4
+    assert "name = 'x'" in by["index"].source_code
+    assert "helper" not in by
+    outer = by["create_app"]
+    assert outer.symbol_type == "function"
+    assert "name = 'x'" not in outer.source_code
+    assert "...  # lines 5-6: body of route handler `index`, listed separately" in outer.source_code
+    assert by["Page.index"].symbol_type == "method"
+
+
 # --- VH-AI-005：接收者比對 ---
 # --- VH-AI-005: receiver matching ---------------------------------------------------------------------
 
