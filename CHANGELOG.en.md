@@ -6,6 +6,18 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Fixed
+
+- Python extraction also recognizes views registered by a call instead of a decorator: `add_url_rule` (Flask / Quart, `view_func` positional or by keyword), `add_api_route` / `add_api_websocket_route` (FastAPI), `add_route` / `add_websocket_route` (Starlette), and the `Route` / `WebSocketRoute` / `APIRoute` / `APIWebSocketRoute` classes when imported from Starlette or FastAPI (aliases and `routing.Route(...)` included; a `Route` class from elsewhere does not count). Before, such a handler was extracted as a plain `function`, so the threat modeler and the scenario builder did not put it first, the report did not prefer it when attributing a threat, and the run's "Detected N API route handlers" left it out; a view defined inside a Flask `create_app()` factory and registered with `add_url_rule` was not extracted at all, so it was reviewed only as part of the factory. Such nested views are now extracted as routes, with their bodies collapsed in the factory like decorated ones. Only bare names count: `view_func=views.handler` points into another module and `Cls.as_view(...)` is a class-based view. Like decorated routes, these views no longer get a None-input probe (the framework never passes None for a path parameter); before, a module-level one did.
+
+### Tests
+
+- New regression tests in `tests/test_review_whitebox_fixes.py`.
+
+### Documentation
+
+- The design document describes the call-registered views, and its line references into `vibeharness/agents/whitebox/ast_extractor.py` are updated to the current code.
+
 ## [0.15.0] - 2026-10-31
 
 Dependency and support round: Python 3.11 is the minimum (Python 3.10 has reached end of life, and the `filelock` releases that fix its known vulnerabilities require 3.11); the locks move off the vulnerable `aiohttp`, `certifi` and `filelock`, and bump `setuptools`, ruff, `hypothesis`, `pytest` and the pinned Actions. The code, the prompts sent to the models, the reports, SARIF and the exit codes are unchanged. Environments still on Python 3.10 should stay on 0.14.x (see Changed).

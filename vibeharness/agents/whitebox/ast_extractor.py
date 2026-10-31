@@ -6,7 +6,7 @@ import re
 from bisect import bisect_left, bisect_right
 from types import MappingProxyType
 from dataclasses import dataclass, field as dataclass_field
-from typing import Dict, Iterable, List, Mapping, Optional, Set, Tuple, Union
+from typing import AbstractSet, Dict, Iterable, List, Mapping, Optional, Set, Tuple, Union
 from vibeharness.core.models import CodeSymbol
 from vibeharness.core.i18n import bi
 
@@ -163,6 +163,27 @@ _JS_REGEX_LITERAL_RE = re.compile(r"/(?:\\.|\[(?:\\.|[^\]\\\n])*\]|[^/\\\[\n])+/
 # 即使路徑不是字串字面值也會註冊路由的 Python 裝飾器接收者
 # Python decorator receivers that register routes even when the path is not a string literal
 _PY_ROUTE_RECEIVERS = {"app", "router", "api", "bp", "blueprint", "application", "server"}
+# 以方法呼叫（而非裝飾器）註冊檢視函式的方法：方法名稱 → （檢視函式的位置索引、關鍵字名稱）
+# Methods that register a view function by call (not decorator): method name -> (positional index, keyword)
+# of the view function
+_PY_VIEW_REGISTRATIONS: Mapping[str, Tuple[int, str]] = MappingProxyType({
+    "add_url_rule": (2, "view_func"),  # Flask／Quart，參數依序為 (rule, endpoint, view_func) ／ Flask / Quart: (rule, endpoint, view_func)
+    "add_api_route": (1, "endpoint"),  # FastAPI，參數依序為 (path, endpoint) ／ FastAPI: (path, endpoint)
+    "add_api_websocket_route": (1, "endpoint"),  # FastAPI 的 WebSocket ／ FastAPI WebSocket
+    "add_route": (1, "route"),  # Starlette，參數依序為 (path, route) ／ Starlette: (path, route)
+    "add_websocket_route": (1, "route"),  # Starlette 的 WebSocket ／ Starlette WebSocket
+})
+# 建構時就註冊端點的路由類別：類別名稱 → （端點的位置索引、關鍵字名稱）；名稱很普通，所以只認從
+# _PY_ROUTE_CLASS_PACKAGES 匯入的
+# Route classes that register an endpoint when constructed: class name -> (positional index, keyword) of the
+# endpoint; the names are common, so only those imported from _PY_ROUTE_CLASS_PACKAGES count
+_PY_ROUTE_CLASSES: Mapping[str, Tuple[int, str]] = MappingProxyType({
+    "Route": (1, "endpoint"),
+    "WebSocketRoute": (1, "endpoint"),
+    "APIRoute": (1, "endpoint"),
+    "APIWebSocketRoute": (1, "endpoint"),
+})
+_PY_ROUTE_CLASS_PACKAGES = {"starlette", "fastapi"}
 
 
 class _ExtractionBudgetExceeded(RuntimeError):
@@ -517,17 +538,19 @@ class ASTExtractor:
 
         symbols: List[CodeSymbol] = []
         source_lines = source.splitlines()
+        registered = self._registered_python_views(tree)
 
         for node in self._py_definitions(tree.body):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                symbols.append(self._extract_python_function(node, file_path, source_lines))
-                symbols.extend(self._nested_python_routes(node, file_path, source_lines))
+                symbols.append(self._extract_python_function(node, file_path, source_lines, registered=registered))
+                symbols.extend(self._nested_python_routes(node, file_path, source_lines, registered))
             elif isinstance(node, ast.ClassDef):
                 symbols.append(self._extract_python_class(node, file_path, source_lines))
                 for item in self._py_definitions(node.body):
                     if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        symbols.append(self._extract_python_function(item, file_path, source_lines, class_name=node.name))
-                        symbols.extend(self._nested_python_routes(item, file_path, source_lines))
+                        symbols.append(self._extract_python_function(item, file_path, source_lines, class_name=node.name,
+                                                                     registered=registered))
+                        symbols.extend(self._nested_python_routes(item, file_path, source_lines, registered))
 
         return symbols
 
@@ -556,18 +579,80 @@ class ASTExtractor:
                 stack.extend(reversed(children))
         return found
 
-    def _nested_python_routes(self, func: Union[ast.FunctionDef, ast.AsyncFunctionDef], file_path: str,
-                              source_lines: List[str]) -> List[CodeSymbol]:
-        """函式內部以路由裝飾器註冊的處理函式（Flask `create_app()` 工廠中的 `@app.route`），任意深度。
-        Route handlers registered with a route decorator inside a function (`@app.route` in a Flask
-        `create_app()` factory), at any depth."""
-        routes: List[CodeSymbol] = []
-        for node in ast.walk(func):
-            if node is func or not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+    @staticmethod
+    def _registered_python_views(tree: ast.Module) -> Set[str]:
+        """以呼叫註冊為檢視函式的名稱，整個模組任意深度：路由器方法（`app.add_url_rule("/x", view_func=handler)`、
+        `router.add_api_route("/x", handler)`），以及從 Starlette／FastAPI 匯入的路由類別（`Route("/x", handler)`、
+        `routing.Route(...)`，別名也算）。只收裸名稱：`views.handler` 這類屬性指向別的模組，`Cls.as_view(...)`
+        是類別式檢視。
+        Names registered as view functions by a call, anywhere in the module: router methods
+        (`app.add_url_rule("/x", view_func=handler)`, `router.add_api_route("/x", handler)`) and route classes
+        imported from Starlette / FastAPI (`Route("/x", handler)`, `routing.Route(...)`, aliases included).
+        Only bare names count: an attribute such as `views.handler` points into another module, and
+        `Cls.as_view(...)` is a class-based view."""
+        # 綁定到路由類別的名稱（別名 → 類別名稱），以及綁定到 Starlette／FastAPI 模組的名稱
+        # Names bound to a route class (alias -> class name) and names bound to a Starlette / FastAPI module
+        class_names: Dict[str, str] = {}
+        module_names: Set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.level == 0 \
+                    and (node.module or "").split(".")[0] in _PY_ROUTE_CLASS_PACKAGES:
+                for alias in node.names:
+                    bound = alias.asname or alias.name
+                    if alias.name in _PY_ROUTE_CLASSES:
+                        class_names[bound] = alias.name
+                    else:
+                        module_names.add(bound)  # 模組本身，例如 `from starlette import routing` ／ the module itself, e.g. `from starlette import routing`
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".")[0] in _PY_ROUTE_CLASS_PACKAGES:
+                        # `import starlette.routing` 綁定 `starlette`；`import starlette.routing as r` 綁定 `r`
+                        # `import starlette.routing` binds `starlette`; `import starlette.routing as r` binds `r`
+                        module_names.add(alias.asname or alias.name.split(".")[0])
+
+        names: Set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
                 continue
-            if any(self._is_route_decorator(dec) for dec in node.decorator_list):
-                routes.append(self._extract_python_function(node, file_path, source_lines))
-        return routes
+            func = node.func
+            spec: Optional[Tuple[int, str]] = None
+            if isinstance(func, ast.Name) and func.id in class_names:
+                spec = _PY_ROUTE_CLASSES[class_names[func.id]]
+            elif isinstance(func, ast.Attribute):
+                root = func.value
+                while isinstance(root, ast.Attribute):
+                    root = root.value
+                if func.attr in _PY_ROUTE_CLASSES and isinstance(root, ast.Name) and root.id in module_names:
+                    spec = _PY_ROUTE_CLASSES[func.attr]
+                else:
+                    spec = _PY_VIEW_REGISTRATIONS.get(func.attr)
+            if spec is None:
+                continue
+            index, keyword = spec
+            view = node.args[index] if len(node.args) > index else next(
+                (k.value for k in node.keywords if k.arg == keyword), None)
+            if isinstance(view, ast.Name):
+                names.add(view.id)
+        return names
+
+    def _nested_python_routes(self, func: Union[ast.FunctionDef, ast.AsyncFunctionDef], file_path: str,
+                              source_lines: List[str], registered: AbstractSet[str]) -> List[CodeSymbol]:
+        """函式內部註冊的路由處理函式（Flask `create_app()` 工廠中的 `@app.route` 或 `add_url_rule`），任意深度。
+        Route handlers registered inside a function (`@app.route` or `add_url_rule` in a Flask `create_app()`
+        factory), at any depth."""
+        return [self._extract_python_function(node, file_path, source_lines, registered=registered)
+                for node in self._routes_within(func, registered)]
+
+    def _routes_within(self, func: Union[ast.FunctionDef, ast.AsyncFunctionDef],
+                       registered: AbstractSet[str]) -> List[Union[ast.FunctionDef, ast.AsyncFunctionDef]]:
+        """func 內部（不含 func 本身）的路由處理函式：有路由裝飾器，或以名稱出現在 registered（類別方法除外）。
+        The route handlers inside func (func itself excluded): route-decorated, or named in registered (class
+        methods excepted)."""
+        methods = {id(item) for n in ast.walk(func) if isinstance(n, ast.ClassDef) for item in n.body}
+        return [node for node in ast.walk(func)
+                if node is not func and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and (any(self._is_route_decorator(dec) for dec in node.decorator_list)
+                     or (id(node) not in methods and node.name in registered))]
 
     def _parse_js_ts_file(self, file_path: str) -> List[CodeSymbol]:
         """擷取 JS/TS 的函式、箭頭函式、含方法的類別，以及 HTTP 路由處理函式。
@@ -1860,13 +1945,14 @@ class ASTExtractor:
         node: Union[ast.FunctionDef, ast.AsyncFunctionDef],
         file_path: str,
         source_lines: List[str],
-        class_name: Optional[str] = None
+        class_name: Optional[str] = None,
+        registered: AbstractSet[str] = frozenset(),
     ) -> CodeSymbol:
         # 包含裝飾器：它們帶有審查者需要看到的路由路徑與授權守衛
         # Include decorators: they carry route paths and auth guards the reviewers need to see
         start = min([d.lineno for d in node.decorator_list] + [node.lineno])
         end = node.end_lineno or start
-        source_snippet = self._without_nested_routes(node, source_lines, start, end)
+        source_snippet = self._without_nested_routes(node, source_lines, start, end, registered)
 
         args = [arg.arg for arg in node.args.posonlyargs + node.args.args + node.args.kwonlyargs]
         # *args / **kwargs 是函式契約的一部分；審查者與探測都需要它們
@@ -1879,7 +1965,10 @@ class ASTExtractor:
 
         docstring = ast.get_docstring(node)
 
-        if any(self._is_route_decorator(dec) for dec in node.decorator_list):
+        # 方法不會以裸名稱註冊（`view_func=self.x` 是屬性），所以只看函式
+        # Methods are never registered by bare name (`view_func=self.x` is an attribute), so only functions count
+        if any(self._is_route_decorator(dec) for dec in node.decorator_list) \
+                or (class_name is None and node.name in registered):
             symbol_type = "route"
 
         return CodeSymbol(
@@ -1895,21 +1984,21 @@ class ASTExtractor:
         )
 
     def _without_nested_routes(self, node: Union[ast.FunctionDef, ast.AsyncFunctionDef], source_lines: List[str],
-                               start: int, end: int) -> str:
-        """第 start–end 行的原始碼，其中巢狀路由處理函式（Flask 工廠裡的 `@app.route`）的本體縮成一行佔位註解。
+                               start: int, end: int, registered: AbstractSet[str]) -> str:
+        """第 start–end 行的原始碼，其中巢狀路由處理函式（Flask 工廠裡的 `@app.route` 或 `add_url_rule` 註冊的檢視函式）
+        的本體縮成一行佔位註解。
 
         那些處理函式各自以 route 符號送審（`_nested_python_routes`），所以外層函式不必再帶一次它們的本體；
         裝飾器與 `def` 行保留（註冊的脈絡），佔位行寫出被省略的檔案行號，讓審查者仍能對應回檔案。
         結果仍是合法的 Python（本體是 `...`）。
-        The source of lines start-end, with the body of each nested route handler (`@app.route` in a Flask
-        factory) collapsed into a one-line placeholder comment.
+        The source of lines start-end, with the body of each nested route handler (an `@app.route` or
+        `add_url_rule` view in a Flask factory) collapsed into a one-line placeholder comment.
 
         Those handlers are reviewed as their own route symbols (`_nested_python_routes`), so the enclosing
         function need not carry their bodies again; the decorators and the `def` line stay (registration
         context) and the placeholder names the omitted file lines, so reviewers can still map back to the
         file. The result is still valid Python (the body is `...`)."""
-        nested = [n for n in ast.walk(node) if n is not node and isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-                  and any(self._is_route_decorator(dec) for dec in n.decorator_list)]
+        nested = self._routes_within(node, registered)
         # 只收合最外層的巢狀路由：更深的那些已經在它們的本體裡
         # Collapse only the outermost nested routes: deeper ones are already inside their bodies
         outermost = [n for n in nested if not any(o is not n and o.lineno < n.lineno <= (o.end_lineno or o.lineno)

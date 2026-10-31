@@ -6,6 +6,18 @@
 
 ## [Unreleased]
 
+### 修正
+
+- Python 擷取也認得以函式呼叫（而非裝飾器）註冊的檢視函式：`add_url_rule`（Flask／Quart，`view_func` 用位置或關鍵字引數）、`add_api_route`／`add_api_websocket_route`（FastAPI）、`add_route`／`add_websocket_route`（Starlette），以及從 Starlette 或 FastAPI 匯入的 `Route`／`WebSocketRoute`／`APIRoute`／`APIWebSocketRoute` 類別（別名與 `routing.Route(...)` 也算；從別處來的 `Route` 類別不算）。原本這類處理函式被擷取成一般的 `function`，威脅建模器與情境產生器不會優先處理它，報告歸屬威脅時不會優先選它，執行時的「偵測到 N 個 API 路由處理器」也不會列出它；在 Flask `create_app()` 工廠裡定義、以 `add_url_rule` 註冊的檢視函式更是完全沒被擷取，只能當成工廠的一部分審查。這類巢狀檢視函式現在會擷取成路由，在工廠裡的本體也和有裝飾器的一樣收合。只收裸名稱：`view_func=views.handler` 指向別的模組，`Cls.as_view(...)` 是類別式檢視。這類檢視函式和有裝飾器的路由一樣，不再做 None 輸入探測（框架不會把 None 傳給路徑參數）；原本模組層級的會被探測。
+
+### 測試
+
+- 新增回歸測試於 `tests/test_review_whitebox_fixes.py`。
+
+### 文件
+
+- 設計文件記載以函式呼叫註冊的檢視函式，並依目前的程式碼更新指向 `vibeharness/agents/whitebox/ast_extractor.py` 的行號引用。
+
 ## [0.15.0] - 2026-10-31
 
 相依套件與支援版本整理輪：最低支援版本改為 Python 3.11（Python 3.10 已結束生命週期，`filelock` 修正已知漏洞的版本只支援 3.11 以上）；鎖定檔升級有已知漏洞的 `aiohttp`、`certifi`、`filelock`，另外升級 `setuptools`、`ruff`、`hypothesis`、`pytest` 與釘版的 Actions。程式碼、送給模型的提示、報告、SARIF 與結束碼都不變。還在 Python 3.10 的環境請留在 0.14.x（見「變更」）。
