@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-31
+
+Dependency and support round: Python 3.11 is the minimum (Python 3.10 has reached end of life, and the `filelock` releases that fix its known vulnerabilities require 3.11); the locks move off the vulnerable `aiohttp`, `certifi` and `filelock`, and bump `setuptools`, ruff, `hypothesis`, `pytest` and the pinned Actions. The code, the prompts sent to the models, the reports, SARIF and the exit codes are unchanged. Environments still on Python 3.10 should stay on 0.14.x (see Changed).
+
 ### Changed (breaking: Python 3.10 no longer supported)
 
 - **Python 3.11 is the minimum** (`requires-python = ">=3.11"`): Python 3.10 reached end of life on 2026-10-01 (PEP 619), and the `filelock` releases that fix its known vulnerabilities (4.2.0 and later) require 3.11 or later, so 3.10 could only stay on the vulnerable 4.1.0 (#93). On 3.10, pip resolves to 0.14.x. The CI test matrix drops 3.10 (16 required checks become 14); `requirements.lock` and `requirements-build.txt` are compiled with `--python-version 3.11`, so the 3.10-only `async-timeout`, `exceptiongroup`, `filelock` 4.1.0 and `rpds-py` 0.30.0 are gone; ruff's `target-version` and mypy's `python_version` move to 3.11, and the test skips for 3.10's missing `tomllib` are removed.
@@ -621,7 +625,8 @@ Initial release.
 - CI matrix: ubuntu / windows × Python 3.10 / 3.13, with lint and coverage reporting
 - MIT license
 
-[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/chinchiang/MultiAgentGama/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/chinchiang/MultiAgentGama/compare/v0.11.0...v0.12.0

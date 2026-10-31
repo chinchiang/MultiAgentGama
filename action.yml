@@ -15,7 +15,7 @@ branding:
 #     contents: read
 #     security-events: write
 #   steps:
-#   - uses: chinchiang/MultiAgentGama@v0.14.0
+#   - uses: chinchiang/MultiAgentGama@v0.15.0
 #     with:
 #       target: src
 #       mode: hybrid
