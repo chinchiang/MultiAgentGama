@@ -16,7 +16,7 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Engineering
 
-- Actions bumped to setup-python v7.1.0, gh-action-pypi-publish v1.14.3 and codeql-action v4.39.1 (superseding Dependabot PR #88, with design §15.2's version list and the SARIF example in the READMEs and `action.yml` kept in step, so `upload-sarif` stays on the CodeQL workflow's commit); `setuptools` to 84.2.1, ruff to 0.17.2 (`requirements-dev.txt` and the pre-commit rev) and the sandbox image's `hypothesis` to 6.170.14, all regenerated with the `uv` commands in `CONTRIBUTING.md` (superseding Dependabot PRs #87, #85 and #82).
+- Actions bumped to setup-python v7.1.0, gh-action-pypi-publish v1.14.3 and codeql-action v4.39.1 (superseding Dependabot PR #88, with design §15.2's version list and the SARIF example in the READMEs and `action.yml` kept in step, so `upload-sarif` stays on the CodeQL workflow's commit); `setuptools` to 84.2.1, ruff to 0.17.2 (`requirements-dev.txt` and the pre-commit rev) and the sandbox image's `hypothesis` to 6.170.14, all regenerated with the `uv` commands in `CONTRIBUTING.md` (superseding Dependabot PRs #87, #85 and #82); `pytest` to 9.2.0 in both `requirements.lock` and the sandbox lock (superseding Dependabot PR #95).
 
 ## [0.14.0] - 2026-10-17
 
