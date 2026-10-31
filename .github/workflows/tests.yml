@@ -113,7 +113,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
         # macOS 只跑一格，用發布用的預設直譯器（那裡沒有 Docker：真容器測試會略過）
         # macOS once, on the default release interpreter (no Docker there: the real-container tests skip)
         include:

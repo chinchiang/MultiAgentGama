@@ -6,9 +6,13 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Changed (breaking: Python 3.10 no longer supported)
+
+- **Python 3.11 is the minimum** (`requires-python = ">=3.11"`): Python 3.10 reached end of life on 2026-10-01 (PEP 619), and the `filelock` releases that fix its known vulnerabilities (4.2.0 and later) require 3.11 or later, so 3.10 could only stay on the vulnerable 4.1.0 (#93). On 3.10, pip resolves to 0.14.x. The CI test matrix drops 3.10 (16 required checks become 14); `requirements.lock` and `requirements-build.txt` are compiled with `--python-version 3.11`, so the 3.10-only `async-timeout`, `exceptiongroup`, `filelock` 4.1.0 and `rpds-py` 0.30.0 are gone; ruff's `target-version` and mypy's `python_version` move to 3.11, and the test skips for 3.10's missing `tomllib` are removed.
+
 ### Security
 
-- The locks bump three packages with known vulnerabilities: `aiohttp` 3.14.3 → 3.14.5, `certifi` 2026.7.22 → 2026.10.23 (in `requirements.lock` and `docker/sandbox-requirements.txt`) and `filelock` 4.0.9 → 4.2.5. The `filelock` releases that fix them (4.2.0 and later) require Python 3.11 or later, so Python 3.10 stays on 4.1.0 and `pip-audit` still lists its vulnerabilities there; CI's `audit` job runs on Python 3.12 and is not affected. No other package version changes.
+- The locks bump three packages with known vulnerabilities: `aiohttp` 3.14.3 → 3.14.5, `certifi` 2026.7.22 → 2026.10.23 (in `requirements.lock` and `docker/sandbox-requirements.txt`) and `filelock` 4.0.9 → 4.2.5. The `filelock` releases that fix them (4.2.0 and later) require Python 3.11 or later, which is why this release drops Python 3.10 (see Changed above). No other package version changes.
 
 ### Engineering
 

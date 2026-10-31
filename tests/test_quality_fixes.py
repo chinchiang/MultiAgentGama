@@ -18,7 +18,6 @@ CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
 # --- 打包：安裝的 wheel 必須帶有它在執行期解析的預設設定檔 ------------------------------------
 # --- Packaging: the installed wheel must carry the default config it resolves at runtime -----------
 
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="tomllib is Python 3.11+")
 def test_wheel_ships_the_default_config_files():
     import tomllib
     with open(os.path.join(REPO_ROOT, "pyproject.toml"), "rb") as f:
@@ -35,7 +34,6 @@ def test_wheel_ships_the_default_config_files():
         assert any(filename.endswith(p.lstrip("*")) for p in patterns), (filename, patterns)
 
 
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="tomllib is Python 3.11+")
 def test_no_generic_top_level_packages_are_installed():
     """`core`、`agents`、`config`、`main`…… 過去被安裝成頂層套件／模組，
     與 site-packages 中任何同名的東西衝突；現在全部放進命名空間。

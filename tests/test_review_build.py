@@ -5,7 +5,6 @@ into scripts, sandbox image digests and hashes, the hashed locks, the sdist cont
 ranges everywhere."""
 import os
 import re
-import sys
 import tarfile
 
 import pytest
@@ -169,7 +168,6 @@ def test_publish_grants_write_only_to_the_release_job_and_gates_on_tests():
 
 
 @needs_github
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="tomllib is Python 3.11+")
 def test_python_versions_agree_across_ci_classifiers_and_requires_python():
     """CI 矩陣的每個 Python 版本都有 classifier，且矩陣最低版本等於 requires-python 的下限。
     Every Python version in the CI matrix has a classifier, and the lowest matrix version equals requires-python's floor."""
