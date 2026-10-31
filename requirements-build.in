@@ -3,5 +3,5 @@
 # The build backend (same range as [build-system] requires in pyproject.toml). action.yml installs the package with
 # --no-build-isolation and the backend from the hashed requirements-build.txt instead, so the whole install is
 # hash-verified. Regenerate with:
-#   uv pip compile --universal --generate-hashes --python-version 3.10 requirements-build.in -o requirements-build.txt
+#   uv pip compile --universal --generate-hashes --python-version 3.11 requirements-build.in -o requirements-build.txt
 setuptools>=77,<85

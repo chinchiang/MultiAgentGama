@@ -22,7 +22,6 @@ WORKFLOWS = os.path.join(REPO_ROOT, ".github", "workflows")
 GITHUB = "https://github.com/chinchiang/MultiAgentGama"
 # sdist 不含 .github：那些檢查在 sdist 裡略過 ／ The sdist does not ship .github: those checks skip there
 needs_github = pytest.mark.skipif(not os.path.isdir(WORKFLOWS), reason=".github/ is not shipped in the sdist")
-needs_tomllib = pytest.mark.skipif(sys.version_info < (3, 11), reason="tomllib is Python 3.11+")
 
 
 def _read(*parts):
@@ -80,7 +79,6 @@ def test_every_pinned_release_reference_matches_the_package_version():
 # --- PyPI 中繼資料 -------------------------------------------------------------------------------
 # --- PyPI metadata -------------------------------------------------------------------------------
 
-@needs_tomllib
 def test_pyproject_carries_the_pypi_metadata():
     """pyproject 帶 project URLs、作者、keywords、Beta／Typed 等 classifier；PEP 639 的 license 表達式不與
     License classifier 並存；長描述用 README.en.md。
@@ -100,7 +98,6 @@ def test_pyproject_carries_the_pypi_metadata():
     assert not [c for c in project["classifiers"] if c.startswith("License ::")]
 
 
-@needs_tomllib
 def test_the_package_ships_the_pep_561_marker():
     """`Typing :: Typed` 需要 vibeharness/py.typed，而且要列在 package-data 裡才會進 wheel。
     `Typing :: Typed` needs vibeharness/py.typed, listed in package-data so it lands in the wheel."""
@@ -127,7 +124,6 @@ def test_readmes_stay_line_for_line_in_sync():
 # --- 帶雜湊的建置後端 ----------------------------------------------------------------------------
 # --- Hash-verified build backend -----------------------------------------------------------------
 
-@needs_tomllib
 def test_build_backend_lock_is_hashed_and_matches_the_build_system_range():
     """requirements-build.in 的範圍等於 [build-system] requires，requirements-build.txt 釘的 setuptools
     帶雜湊且落在該範圍內。

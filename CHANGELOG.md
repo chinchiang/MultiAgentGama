@@ -6,9 +6,13 @@
 
 ## [Unreleased]
 
+### 變更（破壞性：不再支援 Python 3.10）
+
+- **最低支援版本改為 Python 3.11**（`requires-python = ">=3.11"`）：Python 3.10 已於 2026-10-01 結束生命週期（PEP 619），而 `filelock` 修正已知漏洞的版本（4.2.0 起）只支援 3.11 以上，3.10 只能停在仍有漏洞的 4.1.0（#93）。還在 3.10 的環境，pip 會解析到 0.14.x。CI 測試矩陣拿掉 3.10（必要檢查由 16 項變為 14 項）；`requirements.lock` 與 `requirements-build.txt` 改以 `--python-version 3.11` 產生，不再有 3.10 專用的 `async-timeout`、`exceptiongroup`、`filelock` 4.1.0 與 `rpds-py` 0.30.0；ruff 的 `target-version` 與 mypy 的 `python_version` 改為 3.11，測試裡為 3.10 沒有 `tomllib` 而加的略過條件一併移除。
+
 ### 資安
 
-- 鎖定檔升級三個有已知漏洞的套件：`aiohttp` 3.14.3 → 3.14.5、`certifi` 2026.7.22 → 2026.10.23（`requirements.lock` 與 `docker/sandbox-requirements.txt`）、`filelock` 4.0.9 → 4.2.5。`filelock` 修正漏洞的版本（4.2.0 起）只支援 Python 3.11 以上，所以 Python 3.10 仍鎖在 4.1.0，`pip-audit` 在 3.10 上仍會列出它的漏洞；CI 的 `audit` job 以 Python 3.12 執行，不受影響。其他套件版本不變。
+- 鎖定檔升級三個有已知漏洞的套件：`aiohttp` 3.14.3 → 3.14.5、`certifi` 2026.7.22 → 2026.10.23（`requirements.lock` 與 `docker/sandbox-requirements.txt`）、`filelock` 4.0.9 → 4.2.5。`filelock` 修正漏洞的版本（4.2.0 起）只支援 Python 3.11 以上，這也是本版不再支援 Python 3.10 的原因（見上方「變更」）。其他套件版本不變。
 
 ### 工程
 

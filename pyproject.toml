@@ -13,7 +13,7 @@ description = "Multi-agent white-box and threat-modeled black-box testing harnes
 # PyPI's audience is mostly English: the long description is README.en.md (which links the Traditional Chinese one at
 # the top); both READMEs use absolute links so they also work on pypi.org
 readme = "README.en.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 # PEP 639 的 license 表達式（setuptools>=77）：不要再加 "License ::" classifier，兩者並存會被拒絕
 # PEP 639 license expression (setuptools>=77): do not add a "License ::" classifier, the two together are rejected
 license = "MIT"
@@ -32,7 +32,6 @@ classifiers = [
     "Topic :: Security",
     "Typing :: Typed",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -90,14 +89,14 @@ norecursedirs = ["examples", "docs"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 # 保守：只抓真正的錯誤與可能的 bug，不管風格 ／ Conservative: real errors and likely bugs only, no style enforcement
 select = ["E4", "E7", "E9", "F", "B"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 # litellm／rich 沒有型別 stub ／ litellm / rich ship no type stubs
 ignore_missing_imports = true
 # 沒有註解的函式本體也做型別檢查（白賺的正確性：沒有冒出新錯誤）／ Also type-check function bodies without annotations (free correctness win: no new errors surfaced)

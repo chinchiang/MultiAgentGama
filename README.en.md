@@ -179,7 +179,7 @@ MultiAgentGama/
 │   ├── PULL_REQUEST_TEMPLATE.md
 │   └── workflows/
 │       ├── codeql.yml           # CodeQL code scanning (Python and the workflows, security-extended queries); Analyze (python) / Analyze (actions) are required checks on master
-│       ├── tests.yml            # CI: lint (ruff / mypy), audit (pip-audit), package (sdist + wheel: wheel smoke test, suite run from the sdist), test (Ubuntu / Windows × Python 3.10–3.14 plus macOS × 3.12, 93% coverage floor)
+│       ├── tests.yml            # CI: lint (ruff / mypy), audit (pip-audit), package (sdist + wheel: wheel smoke test, suite run from the sdist), test (Ubuntu / Windows × Python 3.11–3.14 plus macOS × 3.12, 93% coverage floor)
 │       ├── publish.yml          # Release: on tag push, run tests.yml first, verify the version matches, build sdist / wheel, smoke-test the wheel in a clean venv, upload to the GitHub Release (its body taken from the matching CHANGELOG.en.md section) and publish to PyPI via Trusted Publishing
 │       └── live-smoke.yml       # Manual: one live / hybrid run of a target (default examples) with the repo's provider secrets, reports uploaded
 ├── docker/
@@ -329,7 +329,7 @@ MultiAgentGama/
 
 ### 1. Install
 
-From [PyPI](https://pypi.org/project/vibeharness-mas/) (registers the `vibeharness` command; Python 3.10+):
+From [PyPI](https://pypi.org/project/vibeharness-mas/) (registers the `vibeharness` command; Python 3.11+):
 
 ```bash
 pip install vibeharness-mas
@@ -518,7 +518,7 @@ python -m ruff check .
 python -m mypy vibeharness/ main.py
 ```
 
-A manual `live-smoke.yml` (Actions tab → live-smoke → Run workflow) runs the target once against real models with the provider keys stored as repository secrets (live or hybrid, with a call cap), then re-runs for the JSON report with `--cache-only --mode hybrid` from the same response cache (no provider call, so the whole workflow makes at most the cap in real calls; calls the first run could not cache are simulated and listed as an evidence gap), and uploads the reports and SARIF as an artifact; it is the only check that reaches the providers and does not run on PRs. CI (`.github/workflows/tests.yml`) has four jobs: `lint` (ruff and mypy), `audit` (pip-audit), `package` (builds the wheel and runs it once in mock mode outside the checkout) and `test` (Ubuntu / Windows × Python 3.10–3.14 plus one macOS cell on Python 3.12, installed with `--require-hashes` from `requirements.lock`; the Linux job also builds the Docker sandbox images and runs the real-container tests). `package` builds the sdist and the wheel, runs the wheel once in mock mode outside the checkout and runs the full suite from the extracted sdist; `publish.yml` runs this whole workflow on the tagged commit before it builds a release. The `test` job enforces a coverage floor; to run the same check locally:
+A manual `live-smoke.yml` (Actions tab → live-smoke → Run workflow) runs the target once against real models with the provider keys stored as repository secrets (live or hybrid, with a call cap), then re-runs for the JSON report with `--cache-only --mode hybrid` from the same response cache (no provider call, so the whole workflow makes at most the cap in real calls; calls the first run could not cache are simulated and listed as an evidence gap), and uploads the reports and SARIF as an artifact; it is the only check that reaches the providers and does not run on PRs. CI (`.github/workflows/tests.yml`) has four jobs: `lint` (ruff and mypy), `audit` (pip-audit), `package` (builds the wheel and runs it once in mock mode outside the checkout) and `test` (Ubuntu / Windows × Python 3.11–3.14 plus one macOS cell on Python 3.12, installed with `--require-hashes` from `requirements.lock`; the Linux job also builds the Docker sandbox images and runs the real-container tests). `package` builds the sdist and the wheel, runs the wheel once in mock mode outside the checkout and runs the full suite from the extracted sdist; `publish.yml` runs this whole workflow on the tagged commit before it builds a release. The `test` job enforces a coverage floor; to run the same check locally:
 
 ```bash
 python -m pytest --cov=vibeharness --cov-fail-under=93

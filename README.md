@@ -179,7 +179,7 @@ MultiAgentGama/
 │   ├── PULL_REQUEST_TEMPLATE.md
 │   └── workflows/
 │       ├── codeql.yml           # CodeQL 程式碼掃描（Python 與 workflow，security-extended 查詢）；Analyze (python)／Analyze (actions) 是 master 的必要檢查
-│       ├── tests.yml            # CI：lint（ruff／mypy）、audit（pip-audit）、package（sdist＋wheel：wheel 冒煙測試、從 sdist 跑測試套件）、test（Ubuntu／Windows × Python 3.10–3.14，另加 macOS × 3.12，覆蓋率門檻 93%）
+│       ├── tests.yml            # CI：lint（ruff／mypy）、audit（pip-audit）、package（sdist＋wheel：wheel 冒煙測試、從 sdist 跑測試套件）、test（Ubuntu／Windows × Python 3.11–3.14，另加 macOS × 3.12，覆蓋率門檻 93%）
 │       ├── publish.yml          # 發佈：tag 推送時先跑 tests.yml、驗證版本一致、建置 sdist／wheel、在乾淨的 venv 對 wheel 冒煙測試、上傳 GitHub Release（內文取自 CHANGELOG.en.md 的對應區段），並以 Trusted Publishing 發布到 PyPI
 │       └── live-smoke.yml       # 手動觸發：以 repo secrets 的真實金鑰對指定目標（預設 examples）跑一次 live／hybrid，上傳報告
 ├── docker/
@@ -329,7 +329,7 @@ MultiAgentGama/
 
 ### 1. 安裝
 
-從 [PyPI](https://pypi.org/project/vibeharness-mas/) 安裝（會註冊 `vibeharness` 指令；需 Python 3.10 以上）：
+從 [PyPI](https://pypi.org/project/vibeharness-mas/) 安裝（會註冊 `vibeharness` 指令；需 Python 3.11 以上）：
 
 ```bash
 pip install vibeharness-mas
@@ -518,7 +518,7 @@ python -m ruff check .
 python -m mypy vibeharness/ main.py
 ```
 
-另有手動觸發的 `live-smoke.yml`（Actions 頁籤 → live-smoke → Run workflow）：以 repo secrets 中的供應商金鑰對目標跑一次真實模型（可選 live／hybrid、呼叫數上限），再以 `--cache-only --mode hybrid` 從同一個回應快取重跑一次產出 JSON（不呼叫供應商，所以整個 workflow 最多只有上限次真實呼叫；第一次沒能快取的呼叫改用模擬並列為證據缺口），報告與 SARIF 以 artifact 上傳；這是唯一真正打到供應商的檢查，不在每個 PR 上跑。CI（`.github/workflows/tests.yml`）有四個 job：`lint`（ruff 與 mypy）、`audit`（pip-audit）、`package`（建置 wheel 並在檢出目錄之外以 mock 模式跑一次）與 `test`（Ubuntu／Windows × Python 3.10–3.14，另加一格 macOS × Python 3.12，以 `--require-hashes` 從 `requirements.lock` 安裝；Linux 另建 Docker 沙盒映像跑真實容器測試）。`package` 會建置 sdist 與 wheel，在檢出目錄之外以 mock 模式跑一次 wheel，並在解開的 sdist 裡跑完整測試套件；`publish.yml` 發布前會先對 tag 指向的 commit 跑這整個 workflow。`test` job 帶覆蓋率門檻，本機要跑同一條件可用：
+另有手動觸發的 `live-smoke.yml`（Actions 頁籤 → live-smoke → Run workflow）：以 repo secrets 中的供應商金鑰對目標跑一次真實模型（可選 live／hybrid、呼叫數上限），再以 `--cache-only --mode hybrid` 從同一個回應快取重跑一次產出 JSON（不呼叫供應商，所以整個 workflow 最多只有上限次真實呼叫；第一次沒能快取的呼叫改用模擬並列為證據缺口），報告與 SARIF 以 artifact 上傳；這是唯一真正打到供應商的檢查，不在每個 PR 上跑。CI（`.github/workflows/tests.yml`）有四個 job：`lint`（ruff 與 mypy）、`audit`（pip-audit）、`package`（建置 wheel 並在檢出目錄之外以 mock 模式跑一次）與 `test`（Ubuntu／Windows × Python 3.11–3.14，另加一格 macOS × Python 3.12，以 `--require-hashes` 從 `requirements.lock` 安裝；Linux 另建 Docker 沙盒映像跑真實容器測試）。`package` 會建置 sdist 與 wheel，在檢出目錄之外以 mock 模式跑一次 wheel，並在解開的 sdist 裡跑完整測試套件；`publish.yml` 發布前會先對 tag 指向的 commit 跑這整個 workflow。`test` job 帶覆蓋率門檻，本機要跑同一條件可用：
 
 ```bash
 python -m pytest --cov=vibeharness --cov-fail-under=93
