@@ -27,8 +27,8 @@ VibeHarness-MAS 本身是一個 LLM 應用，而且會執行模型生成的程�
 
 | 版本 | 支援安全修正 |
 | :--- | :---: |
-| 0.14.x | ✅ |
-| < 0.14 | ❌ |
+| 0.15.x | ✅ |
+| < 0.15 | ❌ |
 
 只有最新的 minor 版本會收到安全修正；新的 minor 版本發布後，上一個 minor 版本即停止支援。
 
@@ -59,8 +59,8 @@ We acknowledge reports within 7 days, fix confirmed issues in a patch release pu
 
 | Version | Supported |
 | :--- | :---: |
-| 0.14.x | ✅ |
-| < 0.14 | ❌ |
+| 0.15.x | ✅ |
+| < 0.15 | ❌ |
 
 Only the latest minor release line receives security fixes; a new minor release ends support for the previous one.
 
