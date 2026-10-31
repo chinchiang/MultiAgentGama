@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Security
+
+- The locks bump three packages with known vulnerabilities: `aiohttp` 3.14.3 → 3.14.5, `certifi` 2026.7.22 → 2026.10.23 (in `requirements.lock` and `docker/sandbox-requirements.txt`) and `filelock` 4.0.9 → 4.2.5. The `filelock` releases that fix them (4.2.0 and later) require Python 3.11 or later, so Python 3.10 stays on 4.1.0 and `pip-audit` still lists its vulnerabilities there; CI's `audit` job runs on Python 3.12 and is not affected. No other package version changes.
+
 ## [0.14.0] - 2026-10-17
 
 Agent-call round: the five agents' model calls go through one agent-call module, and each agent's call plan and its actual run share one set of rules; every `agent_calls` entry in the JSON report and in the partial report written on a crash gains the call's `kind` (`schema_version` stays "2"). The prompts sent to the models, the rest of the reports, SARIF and the exit codes are unchanged. Library code calling `LLMGateway.generate` directly that changes the answer's `data` has to copy it first (see Changed).

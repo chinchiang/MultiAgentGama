@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+### 資安
+
+- 鎖定檔升級三個有已知漏洞的套件：`aiohttp` 3.14.3 → 3.14.5、`certifi` 2026.7.22 → 2026.10.23（`requirements.lock` 與 `docker/sandbox-requirements.txt`）、`filelock` 4.0.9 → 4.2.5。`filelock` 修正漏洞的版本（4.2.0 起）只支援 Python 3.11 以上，所以 Python 3.10 仍鎖在 4.1.0，`pip-audit` 在 3.10 上仍會列出它的漏洞；CI 的 `audit` job 以 Python 3.12 執行，不受影響。其他套件版本不變。
+
 ## [0.14.0] - 2026-10-17
 
 代理呼叫整理輪：五個代理的模型呼叫改經同一個代理呼叫模組，每個代理的呼叫計畫與實際執行共用同一套規則；JSON 報告與崩潰時的部分報告裡，每筆 `agent_calls` 多了這次呼叫的種類 `kind`（`schema_version` 維持 "2"）。送給模型的提示、報告的其他內容、SARIF 與結束碼都不變。直接呼叫 `LLMGateway.generate` 並修改回答 `data` 的函式庫程式要先複製一份（見「變更」）。
