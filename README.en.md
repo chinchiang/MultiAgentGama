@@ -454,7 +454,7 @@ steps:
     ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
     DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
     GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-- uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3   # the same commit as this repo's CodeQL workflow
+- uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1   # the same commit as this repo's CodeQL workflow
   if: always()
   with:
     sarif_file: vibeharness.sarif

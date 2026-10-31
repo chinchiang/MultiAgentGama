@@ -10,6 +10,10 @@ All notable changes to this project are documented in this file. The format foll
 
 - The locks bump three packages with known vulnerabilities: `aiohttp` 3.14.3 → 3.14.5, `certifi` 2026.7.22 → 2026.10.23 (in `requirements.lock` and `docker/sandbox-requirements.txt`) and `filelock` 4.0.9 → 4.2.5. The `filelock` releases that fix them (4.2.0 and later) require Python 3.11 or later, so Python 3.10 stays on 4.1.0 and `pip-audit` still lists its vulnerabilities there; CI's `audit` job runs on Python 3.12 and is not affected. No other package version changes.
 
+### Engineering
+
+- Actions bumped to setup-python v7.1.0, gh-action-pypi-publish v1.14.3 and codeql-action v4.39.1 (superseding Dependabot PR #88, with design §15.2's version list and the SARIF example in the READMEs and `action.yml` kept in step, so `upload-sarif` stays on the CodeQL workflow's commit); `setuptools` to 84.2.1, ruff to 0.17.2 (`requirements-dev.txt` and the pre-commit rev) and the sandbox image's `hypothesis` to 6.170.14, all regenerated with the `uv` commands in `CONTRIBUTING.md` (superseding Dependabot PRs #87, #85 and #82).
+
 ## [0.14.0] - 2026-10-17
 
 Agent-call round: the five agents' model calls go through one agent-call module, and each agent's call plan and its actual run share one set of rules; every `agent_calls` entry in the JSON report and in the partial report written on a crash gains the call's `kind` (`schema_version` stays "2"). The prompts sent to the models, the rest of the reports, SARIF and the exit codes are unchanged. Library code calling `LLMGateway.generate` directly that changes the answer's `data` has to copy it first (see Changed).

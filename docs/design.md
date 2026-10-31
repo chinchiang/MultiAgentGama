@@ -854,7 +854,7 @@ console 輸出另外用 `rich.markup.escape`（`vibeharness/core/harness.py:9`�
 
 ### 15.2 CI（`.github/workflows/`、`action.yml`）
 
-- 觸發：push 到 `master`、所有 PR，以及 `workflow_call`（publish.yml 對 tag 指向的 commit 跑同一個 workflow）；`permissions: contents: read`；同一個 PR 或 ref 有新的執行時會取消舊的（`concurrency` 加 `cancel-in-progress: true`）；所有 action 以 commit SHA 釘版並在註解標出版本（checkout v7.0.1、setup-python v7.0.0、upload-artifact v7.0.2、download-artifact v8.0.2、setup-node v7.1.0、gh-action-pypi-publish v1.14.2，CodeQL 的 codeql-action v4.38.3；`pypa/gh-action-pypi-publish` 釘在該版本的 commit，而不是 annotated tag 物件；`tests/test_r2_packaging.py` 檢查這裡列的版本與 workflow 的釘版一致）。
+- 觸發：push 到 `master`、所有 PR，以及 `workflow_call`（publish.yml 對 tag 指向的 commit 跑同一個 workflow）；`permissions: contents: read`；同一個 PR 或 ref 有新的執行時會取消舊的（`concurrency` 加 `cancel-in-progress: true`）；所有 action 以 commit SHA 釘版並在註解標出版本（checkout v7.0.1、setup-python v7.1.0、upload-artifact v7.0.2、download-artifact v8.0.2、setup-node v7.1.0、gh-action-pypi-publish v1.14.3，CodeQL 的 codeql-action v4.39.1；`pypa/gh-action-pypi-publish` 釘在該版本的 commit，而不是 annotated tag 物件；`tests/test_r2_packaging.py` 檢查這裡列的版本與 workflow 的釘版一致）。
 - `lint`：從 `requirements-dev.txt` 安裝釘版的 ruff 0.17.0 與 mypy 2.4.0（`check_untyped_defs`）；pre-commit 的 ruff hook 釘在同一版本 tag 指向的 commit SHA（`rev: 44b5042…  # frozen: v0.17.0`；tag 可被改指，SHA 不會），由 Dependabot 的 pre-commit 生態系一併升級（`tests/test_review_build.py` 會檢查版本一致）。
 - `codeql.yml`（workflow 名稱 `CodeQL Advanced`）：push 到 `master`、PR 與每週排程時以 `security-extended` 查詢掃描 Python 與 GitHub Actions workflow；最上層 `permissions: {}`，分析 job 只拿 `security-events: write` 與 `contents: read`，`timeout-minutes: 30`，同一個 PR 的新推送取消舊的分析（`master` 與排程不取消）。job 名稱 `Analyze (python)`／`Analyze (actions)` 是 `master` 的必要檢查，所以 workflow 與 job 名稱不可改（`tests/test_r3_repo_meta.py` 檢查每個 workflow 的權限都有上限、檔名與 `name` 相符）。
 - `audit`：安裝 `requirements-dev.txt` 釘版的 `pip-audit`，執行 `pip-audit -r requirements.lock --disable-pip --require-hashes`，含已知 CVE 的依賴升級會擋在合併前。
@@ -911,7 +911,7 @@ DAST／fuzzing、以 hypothesis 為測試策略（Docker 沙盒映像已附 `hyp
 ### 16.4 交付與工程
 
 - （已於 0.3.0 處理）`pypi-publish` 改下載建置 job 的產物（當時名為 `build-and-upload`，0.6.0 起改名為 `build`）；兩個 job 都有 `timeout-minutes`；pre-commit 加了 mypy hook；Dependabot 追蹤 Actions 與鎖定檔。
-- （已處理）README 與 `action.yml` 給目標專案的 SARIF 範例改用 SHA 釘版，現為 `upload-sarif@24c5418…` v4.38.3（與本 repo 的 CodeQL workflow 同一個 commit），並列出 job 需要的 `contents: read`／`security-events: write` 權限。
+- （已處理）README 與 `action.yml` 給目標專案的 SARIF 範例改用 SHA 釘版，現為 `upload-sarif@9b32540…` v4.39.1（與本 repo 的 CodeQL workflow 同一個 commit），並列出 job 需要的 `contents: read`／`security-events: write` 權限。
 - （已於 `[0.6.0]` 處理）釘版的 actions 改為手動升版（取代 Dependabot PR #38），`pypa/gh-action-pypi-publish` 改釘 commit 而不是 annotated tag 物件，`publish.yml` 先跑測試、只有 release job 拿到 `contents: write`，Dependabot 另外追蹤沙盒基底映像與 `docker/sandbox-requirements.*`。
 - v0.1.0 的 CHANGELOG 日期 2026-10-03 正確：tag commit 是 2026-10-02 21:41（UTC−7），換算 UTC 與臺灣時間都是 10-03。
 
