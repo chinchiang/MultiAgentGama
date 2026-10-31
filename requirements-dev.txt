@@ -3,7 +3,7 @@
 # 升版要刻意為之（Dependabot 會提議）。
 # Everything here is pinned so CI (tests.yml lint / audit / package jobs), local runs and
 # .pre-commit-config.yaml enforce the same tool versions; bump deliberately (Dependabot proposes bumps).
-ruff==0.17.0
+ruff==0.17.2
 # .pre-commit-config.yaml 的 ruff-pre-commit rev 要與這個釘版相同（tests/test_review_build.py 會檢查）／ The ruff-pre-commit rev in .pre-commit-config.yaml must equal this pin (tests/test_review_build.py checks it)
 mypy==2.4.0
 # CI 以 --cov=vibeharness 跑 pytest（版本與 requirements.lock 相同）／ CI runs pytest with --cov=vibeharness (same version as requirements.lock)
