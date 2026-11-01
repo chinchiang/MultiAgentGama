@@ -8,14 +8,13 @@ Apply every rule below to a diff under review. Only rules that need judgement li
 
 - The new test reaches the changed branch: take the fix out and it fails. A test that only checks "does not crash" or that a structure exists does not count.
 - The suite runs offline: mock Execution mode plus the fake litellm in `tests/conftest.py`, with no API key and no network.
-- Agents run their model calls concurrently on threads through `vibeharness/core/fanout.py`, so a fake responder in a test that keeps shared state needs a lock.
+- Agent calls run concurrently on threads through `vibeharness/core/fanout.py`, so a fake responder in a test that keeps shared state needs a lock.
 - A violation looks like: a fix with no test; a new test that also passes on `master`; a test that needs a real model or the network.
 
 ## 2. Only Executed evidence decides the Verdict
 
-- A Hypothesis (a model finding, a modeled threat) does not affect the Verdict until a test confirms it.
+- Check how Hypotheses, Simulated output and Shape errors may affect the Verdict against their definitions in `GLOSSARY.md`.
 - Anything that makes the Verdict untrustworthy is recorded as an Evidence gap (with a stable code) for the Quality Gate, never skipped silently.
-- Simulated output is always disclosed in the reports and never counts as Executed evidence; a Shape error is never read as "nothing found".
 - A violation looks like: a model answer changing the Verdict directly; an `except` that swallows an error and carries on without an Evidence gap; an empty list taken as "no findings".
 
 ## 3. Target code and model output are untrusted input
@@ -33,7 +32,7 @@ Apply every rule below to a diff under review. Only rules that need judgement li
 ## 5. What generated tests may do only ever narrows
 
 - The pre-run check in `vibeharness/core/codecheck.py` only gets stricter; nothing is installed into the user's environment.
-- A test a Heal call cannot fix is kept as is and reported as ERROR, never swapped for a test that passes.
+- Check Heal calls against the "Heal call" definition in `GLOSSARY.md`.
 - A violation looks like: allowing more imports or system calls; `pip install`, or writes outside the target; an invalid test replaced with `assert True`.
 
 ## 6. Fixed output strings are bilingual and their English half stays
@@ -53,8 +52,8 @@ Apply every rule below to a diff under review. Only rules that need judgement li
 
 | Rule | Checked by |
 | :--- | :--- |
-| Bilingual `.py` docstrings and comments | `tests/test_i18n.py` |
-| Chinese wording passes the injection self-scan | `tests/test_ai_security.py` |
+| Bilingual `.py` docstrings and comments (Chinese line(s) first inside a docstring, a Chinese `#` line above each English comment, `# 中文 ／ English` for trailing comments) | `tests/test_i18n.py` |
+| Chinese wording passes the injection self-scan (avoid phrasings like 「忽略…指令」「不要回報…」「視為…安全」) | `tests/test_ai_security.py` |
 | Hashed lock and sandbox lock agree, sdist contents | `tests/test_review_build.py` |
 | Third-party actions pinned to a commit SHA with a version comment | `tests/test_review_build.py`, the repo's Actions settings |
 | zh / en document pairs have the same line count, version numbers agree | `tests/test_r2_packaging.py` |
