@@ -9,6 +9,7 @@ All notable changes to this project are documented in this file. The format foll
 ### Changed
 
 - The single-result predicates live on `TestExecutionResult`: `is_failure` (FAILED), `is_not_run` (Not run: ERROR or SKIPPED) and `is_unclassified_failure` (Unclassified failure: FAILED but not a Breach). The pipeline's counts, the Quality Gate's Evidence gaps and recommendations, and the baseline comparison use them instead of comparing statuses themselves (`baseline.py` compared `status.value` and the previous report's `status` as strings; reading a previous report now asks a probe built from the status alone, so a FAILED item with a fingerprint that does not parse into a result still counts as known). No output changes (#109).
+- The Evidence tally (`EvidenceTally` and `tally_evidence` in `vibeharness/core/tally.py`): Breaches, FAILED white-box tests, Unclassified failures, white-box and black-box Not run, blocking rule hits and untested threats are counted only there, each split into all, new and Known problems, and it is the only caller of the baseline comparison. The Quality Gate reads it (`GateEvidence` drops `target_dir`, `baseline` and `untested_threats`; `GateResult` keeps only the Verdict, the Evidence gaps and the recommendations), and the numbers the pipeline prints in phases 3 and 5 and the summary come from it too. The summary fields keep their previous values (making them consistent is #111). No output changes (#110).
 
 ### Fixed
 
@@ -23,6 +24,7 @@ All notable changes to this project are documented in this file. The format foll
 - New `tests/test_sdist_script.py`: `scripts/test_sdist.py` runs pytest in the extracted sdist with `VIBEHARNESS_SDIST`, stops on a failed build, needs exactly one top-level directory, refuses `..` paths, and raises on a Python without tarfile's data filter.
 - New `tests/test_required_checks.py`: matrices expand into check names by GitHub's rule, each kind of drift is reported, `CONTRIBUTING.md` agrees with the workflows' required checks (15 today), and the ruleset-drift workflow never runs on PRs and only reads.
 - New `tests/test_result_predicates.py`: the three predicates' answers for PASSED, FAILED (Breach or not), ERROR and SKIPPED; `tests/test_baseline.py` pins that a FAILED white-box item with a fingerprint that does not parse still counts as known.
+- New `tests/test_evidence_tally.py`: each kind's all / new / known with and without a Baseline, the Known problems' order and partial tallies; `tests/test_quality_gate.py` feeds the Quality Gate a real Evidence tally, and its count assertions moved to the tally tests instead of being kept twice.
 
 ### Documentation
 

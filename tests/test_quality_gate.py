@@ -9,13 +9,15 @@ import pytest
 from config_files import load_config, write_config
 from vibeharness.core.baseline import Baseline, breach_key, finding_key, static_key
 from vibeharness.core.gate import (
-    ExecutionEvidence, GapCode, GateEvidence, GateLimits, ReviewEvidence, ScopeDisclosure, evaluate,
+    ExecutionEvidence, GapCode, GateEvidence, GateLimits, ReviewEvidence, ScopeDisclosure,
 )
+from vibeharness.core.gate import evaluate as gate_evaluate
 from vibeharness.core.llm_gateway import BUDGET_EXHAUSTED_REASON, CACHE_MISS_REASON
 from vibeharness.core.models import (
     AgentCallRecord, FindingSeverity, GeneratedTest, MutantResult, MutationReport, ReviewFinding, STRIDECategory,
     StaticFinding, TestExecutionResult, TestStatus, ThreatItem, ThreatModelReport,
 )
+from vibeharness.core.tally import tally_evidence
 from vibeharness.core.verdict import Verdict
 
 
@@ -35,9 +37,9 @@ def _result(tid, status=TestStatus.PASSED, exploit=False, source_ref=None, test_
                                source_ref=source_ref, failure_reason=f"{tid} failed" if status == TestStatus.FAILED else None)
 
 
-def _test(tid, language="python"):
+def _test(tid, language="python", source_ref=None):
     return GeneratedTest(test_id=tid, test_type="whitebox_unit", target_component="c", title="t", code="",
-                         rationale="r", expected_outcome="e", language=language)
+                         rationale="r", expected_outcome="e", language=language, source_ref=source_ref)
 
 
 def _rule_hit(severity=FindingSeverity.HIGH, integrity=False, evidence="pickle.load(f)"):
@@ -60,16 +62,34 @@ def clean(**changes):
     """一次沒有任何缺口、也沒有任何已執行缺陷的執行：判定結果是 READY_TO_SHIP。
     A run with no gap and no executed defect: the verdict is READY_TO_SHIP."""
     evidence = GateEvidence(
-        target_dir=TARGET,
         threat_report=ThreatModelReport(system_description="app", threats=[_threat()]),
+        tally=tally_evidence(),  # 由 evaluate() 依最後的證據重建 ／ rebuilt by evaluate() from the final evidence
         limits=GateLimits(max_model_calls=10, max_files=200, max_file_bytes=1000, mutation_min_score=80.0),
         call_log=[_call()],
         review=ReviewEvidence(reviewers_configured=True, reviewer_models=["gpt", "claude"]),
         scope=ScopeDisclosure(symbols_found=True, detected_langs=["Python"]),
         execution=ExecutionEvidence(wb_tests=[_test("WB-T-01")], wb_results=[_result("WB-T-01")],
-                                    bb_tests=[_test("BB-T-01")], bb_results=[_result("BB-T-01", test_type="blackbox_security")]),
+                                    bb_tests=[_test("BB-T-01", source_ref="THREAT-01")], bb_results=[_result("BB-T-01", test_type="blackbox_security")]),
     )
     return replace(evidence, **changes)
+
+
+def evaluate(evidence, baseline=None):
+    """像 harness 一樣，從證據本身建出證據計數（含未測試的威脅與基準比對），再交給品質閘門。
+    Like the harness, build the Evidence tally from the evidence itself (untested threats and the baseline comparison
+    included), then hand it to the Quality Gate."""
+    ex = evidence.execution
+    tally = tally_evidence(wb_results=ex.wb_results, bb_tests=ex.bb_tests, bb_results=ex.bb_results,
+                           static_findings=evidence.static_findings, threats=evidence.threat_report.threats,
+                           confirmed_findings=evidence.review.confirmed_findings, target_dir=TARGET, baseline=baseline)
+    return gate_evaluate(replace(evidence, tally=tally))
+
+
+def _with_threat(evidence, tid):
+    """加一個沒有任何黑箱測試指向的威脅（未測試的威脅）。
+    Add a threat no black-box test points at (an untested threat)."""
+    report = evidence.threat_report
+    return replace(evidence, threat_report=report.model_copy(update={"threats": [*report.threats, _threat(tid, f"{tid} title")]}))
 
 
 def _with(evidence, part, **changes):
@@ -86,22 +106,20 @@ def test_clean_run_is_ready_to_ship():
     result = evaluate(clean())
     assert result.verdict is Verdict.READY_TO_SHIP
     assert result.gaps == [] and result.reasons == []
-    assert result.whitebox_failed == 0 and result.breaches == 0 and result.blocking_rule_hits == []
     assert len(result.recommendations) == 1 and "regression guards" in result.recommendations[0]
 
 
 def test_a_breach_blocks_even_with_failures_and_gaps():
-    evidence = _with(clean(untested_threats=["THREAT-09"]), "execution",
+    evidence = _with(_with_threat(clean(), "THREAT-09"), "execution",
                      wb_results=[_result("WB-T-01", TestStatus.FAILED)],
                      bb_results=[_result("BB-T-01", TestStatus.FAILED, exploit=True, source_ref="THREAT-01")])
     result = evaluate(evidence)
     assert result.verdict is Verdict.BLOCKED_CRITICAL_RISK
-    assert result.breaches == 1 and result.whitebox_failed == 1
 
 
 def test_a_failed_whitebox_test_needs_fixes():
     result = evaluate(_with(clean(), "execution", wb_results=[_result("WB-T-01", TestStatus.FAILED)]))
-    assert result.verdict is Verdict.NEEDS_FIXES and result.whitebox_failed == 1
+    assert result.verdict is Verdict.NEEDS_FIXES
 
 
 @pytest.mark.parametrize("severity, verdict", [
@@ -113,7 +131,6 @@ def test_a_failed_whitebox_test_needs_fixes():
 def test_only_high_or_critical_rule_hits_block(severity, verdict):
     result = evaluate(clean(static_findings=[_rule_hit(severity)]))
     assert result.verdict is verdict
-    assert len(result.blocking_rule_hits) == (1 if verdict is Verdict.NEEDS_FIXES else 0)
 
 
 def test_model_findings_alone_never_fail_the_gate():
@@ -154,7 +171,7 @@ GAP_CASES = {
         _result("BB-T-01", TestStatus.FAILED, test_type="blackbox_security")]),
     GapCode.NO_WHITEBOX_TESTS: lambda e: _with(e, "execution", wb_results=[]),
     GapCode.NO_THREATS: lambda e: replace(e, threat_report=ThreatModelReport(system_description="app")),
-    GapCode.UNTESTED_THREATS: lambda e: replace(e, untested_threats=["THREAT-01"]),
+    GapCode.UNTESTED_THREATS: lambda e: _with_threat(e, "THREAT-02"),
 }
 
 
@@ -239,9 +256,13 @@ def test_modeled_critical_threats_alone_never_block():
     threats = [_threat(f"THREAT-0{i}") for i in range(4)]
     for t in threats:
         t.severity = FindingSeverity.CRITICAL
-    result = evaluate(clean(threat_report=ThreatModelReport(system_description="app", threats=threats),
-                            call_log=[_call("invalid", "not json", agent="blackbox_threat_modeler")]))
-    assert result.verdict is Verdict.INCONCLUSIVE and result.breaches == 0
+    # 每個威脅都有攻擊測試，所以唯一的缺口是無效的模型回答 ／ Every threat has an attack test, so the only gap is the invalid answer
+    attacks = [_test(f"BB-T-0{i}", source_ref=t.threat_id) for i, t in enumerate(threats)]
+    evidence = _with(clean(threat_report=ThreatModelReport(system_description="app", threats=threats),
+                           call_log=[_call("invalid", "not json", agent="blackbox_threat_modeler")]),
+                     "execution", bb_tests=attacks)
+    result = evaluate(evidence)
+    assert result.verdict is Verdict.INCONCLUSIVE
     assert _codes(result) == [GapCode.INVALID_OUTPUT]
 
 
@@ -256,11 +277,9 @@ def test_known_breach_and_new_blocking_rule_hit_needs_fixes():
     threat = _threat()
     breach = _result("BB-T-01", TestStatus.FAILED, exploit=True, source_ref=threat.threat_id, test_type="blackbox_security")
     baseline = Baseline(path="old.json", breaches={breach_key(breach, threat)})
-    evidence = _with(clean(baseline=baseline, static_findings=[_rule_hit()]), "execution", bb_results=[breach])
-    result = evaluate(evidence)
+    evidence = _with(clean(static_findings=[_rule_hit()]), "execution", bb_results=[breach])
+    result = evaluate(evidence, baseline=baseline)
     assert result.verdict is Verdict.NEEDS_FIXES
-    assert result.breaches == 0 and len(result.blocking_rule_hits) == 1
-    assert [(s.kind, s.id) for s in result.suppressed] == [("breach", "BB-T-01")]
     assert not any("Fix confirmed security breach" in r for r in result.recommendations)
     assert "already in the baseline" in result.recommendations[-1] and "`BB-T-01`" in result.recommendations[-1]
 
@@ -269,24 +288,24 @@ def test_a_known_whitebox_failure_and_rule_hit_do_not_count():
     finding, hit = _finding(), _rule_hit()
     failed = _result("WB-T-01", TestStatus.FAILED, source_ref=finding.finding_id)
     baseline = Baseline(path="old.json", findings={finding_key(finding, TARGET)}, static={static_key(hit, TARGET)})
-    evidence = _with(_with(clean(baseline=baseline, static_findings=[hit]), "review", confirmed_findings=[finding]),
+    evidence = _with(_with(clean(static_findings=[hit]), "review", confirmed_findings=[finding]),
                      "execution", wb_results=[failed])
-    result = evaluate(evidence)
+    result = evaluate(evidence, baseline=baseline)
     assert result.verdict is Verdict.READY_TO_SHIP
-    assert result.whitebox_failed == 0 and result.blocking_rule_hits == []
-    assert sorted(s.kind for s in result.suppressed) == ["static", "whitebox_failure"]
+    assert "already in the baseline" in result.recommendations[-1]
 
 
 def test_a_new_problem_still_counts_under_a_baseline():
     baseline = Baseline(path="old.json", static={"something-else"})
-    result = evaluate(clean(baseline=baseline, static_findings=[_rule_hit()]))
-    assert result.verdict is Verdict.NEEDS_FIXES and result.suppressed == []
+    result = evaluate(clean(static_findings=[_rule_hit()]), baseline=baseline)
+    assert result.verdict is Verdict.NEEDS_FIXES
+    assert not any("already in the baseline" in r for r in result.recommendations)
 
 
 # --- 建議 ／ recommendations ---------------------------------------------------------------------
 
 def test_recommendations_are_most_urgent_first():
-    evidence = _with(clean(static_findings=[_rule_hit()], untested_threats=["THREAT-02"]), "execution",
+    evidence = _with(_with_threat(clean(static_findings=[_rule_hit()]), "THREAT-02"), "execution",
                      wb_results=[_result("WB-T-01", TestStatus.FAILED)],
                      bb_results=[_result("BB-T-02", TestStatus.FAILED, test_type="blackbox_security"),
                                  _result("BB-T-01", TestStatus.FAILED, exploit=True, source_ref="THREAT-01")])
