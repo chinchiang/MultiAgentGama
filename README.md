@@ -254,7 +254,8 @@ MultiAgentGama/
 │       └── triage-labels.md     # triage 角色對應的標籤名稱
 ├── scripts/
 │   ├── check_pr_issue_link.py   # pr-issue-link 的判斷：哪些 PR 需要 issue、描述與 commit 是否連到存在的 issue
-│   └── recite_design_refs.py    # 檢查設計文件的 path:line 引用，並依 git diff 重新對應到目前的程式碼
+│   ├── recite_design_refs.py    # 檢查設計文件的 path:line 引用，並依 git diff 重新對應到目前的程式碼
+│   └── test_sdist.py            # 在本機重現 CI 的 package job：建 sdist、解開、在裡面跑測試套件
 ├── tests/                       # 工具包本身之測試（離線、不需 API 金鑰）
 │   ├── config_files.py          # 讀出內建設定、寫出修改後的測試用設定檔（load_config／write_config）
 │   ├── conftest.py              # 共用 fixture：以假 litellm 讓 live 路徑離線執行
@@ -316,6 +317,7 @@ MultiAgentGama/
 │   ├── test_review_sanitize.py         # 憑證格式、隱形字元、注入標記、通道標籤
 │   ├── test_review_sanitize_blackbox_fixes.py # 佔位憑證、VH-AI-008/009 精確度、連接埠檢查、中止呼叫
 │   ├── test_review_whitebox_fixes.py   # 路由、Python 巢狀定義、掃描規則、嚴重度、不可信的發現文字
+│   ├── test_sdist_script.py            # test_sdist.py：在解開的 sdist 裡跑 pytest、帶 VIBEHARNESS_SDIST、建置失敗即停、拒絕 .. 路徑
 │   ├── test_settings.py                # 透過 load_settings 測試設定：每個鍵的 null／0 規則、驗證順序、探索到的設定檔政策、覆寫值
 │   ├── test_transport.py               # 模型呼叫接縫：每次嘗試一個 ModelRequest、fallback、轉接器不可用、scripted fixture
 │   └── test_windows_env_limit.py       # Windows 環境變數上限 32767 字元：長字串參數改用短 ID，測試不會在 setup 就失敗

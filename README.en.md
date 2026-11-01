@@ -254,7 +254,8 @@ MultiAgentGama/
 │       └── triage-labels.md     # Label names for the triage roles
 ├── scripts/
 │   ├── check_pr_issue_link.py   # pr-issue-link's logic: which PRs need an issue, whether the description and commits link an existing one
-│   └── recite_design_refs.py    # Checks the design documents' path:line references and remaps them to the current code via git diff
+│   ├── recite_design_refs.py    # Checks the design documents' path:line references and remaps them to the current code via git diff
+│   └── test_sdist.py            # Reproduces CI's package job locally: build the sdist, extract it, run the suite inside
 ├── tests/                       # The toolkit's own tests (offline, no API keys needed)
 │   ├── config_files.py          # Read the bundled config, write an edited copy for a test (load_config / write_config)
 │   ├── conftest.py              # Shared fixtures: a fake litellm so the live paths run offline
@@ -316,6 +317,7 @@ MultiAgentGama/
 │   ├── test_review_sanitize.py         # Credential formats, invisible characters, injection markers, channel tags
 │   ├── test_review_sanitize_blackbox_fixes.py # Placeholder credentials, VH-AI-008/009 precision, port check, aborting calls
 │   ├── test_review_whitebox_fixes.py   # Routes, nested Python definitions, scanner rules, severity, untrusted finding text
+│   ├── test_sdist_script.py            # test_sdist.py: pytest runs in the extracted sdist with VIBEHARNESS_SDIST, a failed build stops, `..` paths are refused
 │   ├── test_settings.py                # Settings through load_settings: every key's null / 0 rule, validation order, Discovered config policy, overrides
 │   ├── test_transport.py               # The model-call seam: one ModelRequest per attempt, fallback, an unavailable transport, the scripted fixture
 │   └── test_windows_env_limit.py       # Windows caps an environment variable at 32767 characters: long string parameters get a short id so tests do not fail at setup

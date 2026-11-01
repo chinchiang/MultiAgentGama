@@ -89,7 +89,14 @@ def _looks_like_code(name):
             or bool(_CAMEL_RE.match(name)))
 
 
+# sdist 刻意不打包的檔案：在 sdist 裡（沒有 .github/）無法核對
+# Files the sdist deliberately leaves out: they cannot be checked from the sdist (no .github/)
+_NOT_SHIPPED = ("AGENTS.md",)
+
+
 def _file_exists(span):
+    if span in _NOT_SHIPPED and not os.path.isdir(os.path.join(REPO_ROOT, ".github")):
+        return True
     if "/" in span:
         if span.startswith(".github") and not os.path.isdir(os.path.join(REPO_ROOT, ".github")):
             return True
