@@ -16,6 +16,9 @@ link = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = link
 _spec.loader.exec_module(link)
 
+WORKFLOW = os.path.join(REPO_ROOT, ".github", "workflows", "pr-issue-link.yml")
+needs_github = pytest.mark.skipif(not os.path.isfile(WORKFLOW), reason=".github/ is not shipped in the sdist")
+
 CODE = ["vibeharness/core/gate.py", "tests/test_gate.py"]
 DOCS_ONLY = ["docs/design.md", "tests/test_gate.py"]
 
@@ -112,11 +115,12 @@ def test_exempt_prs_and_dependabot_pass_without_any_link():
     assert _problems(author="dependabot[bot]", body="", messages=[], is_issue={}) == []
 
 
+@needs_github
 def test_the_workflow_runs_the_script_with_read_only_permissions():
     """workflow 名稱與 job 名稱是必要檢查用的，不能改；權限只有讀取；標題與描述不經 `${{ }}` 進 shell。
     The workflow and job names back the required check and must stay; permissions are read-only; the title and
     body never reach the shell through `${{ }}`."""
-    with open(os.path.join(REPO_ROOT, ".github", "workflows", "pr-issue-link.yml"), encoding="utf-8") as f:
+    with open(WORKFLOW, encoding="utf-8") as f:
         text = f.read()
     assert text.startswith("name: PR issue link\n")
     assert "\n  issue-link:\n" in text
