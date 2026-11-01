@@ -291,7 +291,8 @@ def test_design_section_15_2_lists_the_pinned_action_versions(design):
     assert mismatched == {}
 
 
-@pytest.mark.parametrize("pair", [("docs/design.md", "docs/design.en.md"), ("CHANGELOG.md", "CHANGELOG.en.md")])
+@pytest.mark.parametrize("pair", [("docs/design.md", "docs/design.en.md"), ("CHANGELOG.md", "CHANGELOG.en.md"),
+                                  ("CODING_STANDARDS.md", "CODING_STANDARDS.en.md")])
 def test_bilingual_doc_pairs_have_the_same_line_count(pair):
     """中英文件成對逐行對應（行數相同）。
     The zh / en document pairs correspond line for line (same line count)."""

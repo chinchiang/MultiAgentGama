@@ -19,6 +19,7 @@ All notable changes to this project are documented in this file. The format foll
 
 - The design document describes the call-registered views, and its line references into `vibeharness/agents/whitebox/ast_extractor.py` are updated to the current code, including the ones previously missed in the `parse_directory`, JS/TS extraction and JS/TS route paragraphs of section 6.1.
 - New `scripts/recite_design_refs.py`: remaps the line references of the design documents to the current code via git diff and updates the cited commit (`--tag` cites a release tag instead, `--check` only checks); `CONTRIBUTING.md` now says to use it.
+- New `CODING_STANDARDS.md` / `CODING_STANDARDS.en.md`: the coding rules applied in review (regression tests, the quality gate, untrusted input, config validation, generated tests, output strings, keeping docs in sync), each with what a violation looks like, plus the rules tests already check; the principles in `CONTRIBUTING.md` now point to it, keeping only the design-reference and dependency steps. The config validation location it gave (`LLMGateway.__init__` / `VibeHarnessCommander.__init__`) and the prompt wrapping it described (calling `untrusted_block` directly) were stale and now read `load_settings` in `vibeharness/core/settings.py` and `Untrusted` content for `vibeharness/core/agent_call.py`. Both rule files join the zh / en line-count check and ship in the sdist.
 
 ## [0.15.0] - 2026-10-31
 
