@@ -307,11 +307,11 @@ def _evidence_gaps(evidence: GateEvidence) -> List[EvidenceGap]:
             f"{n_skip} 個原始碼檔案因 max_files 上限（{limits.max_files}）而被略過",
             f"{n_skip} source file(s) were skipped by the max_files limit ({limits.max_files})"
         ))
-    errored = sum(1 for r in list(ex.wb_results) + list(ex.bb_results) if r.is_not_run)
-    if errored:
+    not_run = sum(1 for r in list(ex.wb_results) + list(ex.bb_results) if r.is_not_run)
+    if not_run:
         gap(GapCode.TESTS_NOT_RUN, bi(
-            f"{errored} 個產生的測試發生錯誤、被略過或從未執行；它們涵蓋的邊界在這次執行中仍未驗證",
-            f"{errored} generated test(s) errored, were skipped, or never ran; "
+            f"{not_run} 個產生的測試發生錯誤、被略過或從未執行；它們涵蓋的邊界在這次執行中仍未驗證",
+            f"{not_run} generated test(s) errored, were skipped, or never ran; "
             "the boundaries they cover remain unverified by this run"
         ))
     mutation_report = ex.mutation_report

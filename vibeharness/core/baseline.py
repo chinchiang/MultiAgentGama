@@ -96,7 +96,10 @@ def _keys_from_report(payload: Dict[str, Any]) -> Baseline:
         findings_by_id[finding.finding_id] = finding
     whitebox = payload.get("whitebox") if isinstance(payload.get("whitebox"), dict) else {}
     for item in _dicts((whitebox or {}).get("test_results")):
-        if item.get("status") != "FAILED":
+        # 先問狀態：舊報告的項目可能解析不成 model，但帶著指紋時仍算已知，所以只用狀態建一個不驗證的探測物件
+        # Ask the status first: an item of an older report may not parse into the model yet still counts as known
+        # through its fingerprint, so an unvalidated probe built from the status alone answers the predicate
+        if not TestExecutionResult.model_construct(status=item.get("status")).is_failure:
             continue
         key = item.get("fingerprint")
         if not isinstance(key, str):

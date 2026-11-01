@@ -8,7 +8,7 @@
 
 ### 變更
 
-- 單一測試結果的判斷集中到 `TestExecutionResult` 上：`is_failure`（FAILED）、`is_not_run`（未執行：ERROR 或 SKIPPED）、`is_unclassified_failure`（未分類失敗：FAILED 但不是資安突破）；pipeline 的計數、品質閘門的證據缺口與建議、基準比對都改用它們，不再各自比對狀態（`baseline.py` 原本以字串比對 `status.value`）。輸出不變（#109）。
+- 單一測試結果的判斷集中到 `TestExecutionResult` 上：`is_failure`（FAILED）、`is_not_run`（未執行：ERROR 或 SKIPPED）、`is_unclassified_failure`（未分類失敗：FAILED 但不是資安突破）；pipeline 的計數、品質閘門的證據缺口與建議、基準比對都改用它們，不再各自比對狀態（`baseline.py` 原本以字串比對 `status.value` 與先前報告的 `status`；讀先前報告時改以只帶狀態的探測物件詢問，帶指紋但解析不成結果的 FAILED 項目照舊算已知）。輸出不變（#109）。
 
 ### 修正
 
@@ -22,7 +22,7 @@
 - 新增 `tests/test_pr_issue_link.py`：哪些 PR 需要 issue（`fix`／`feat`／`perf` 只看前綴，`refactor` 看有沒有改到 `vibeharness/`）、關閉關鍵字、commit 訊息裡的 `#N`，以及 `pr-issue-link.yml` 只有讀取權限、標題與描述不經 `${{ }}` 進 shell。
 - 新增 `tests/test_sdist_script.py`：`scripts/test_sdist.py` 在解開的 sdist 裡跑 pytest 並帶 `VIBEHARNESS_SDIST`、建置失敗就停、封存檔只能有一個頂層目錄、拒絕 `..` 路徑，沒有 tarfile data filter 的 Python 直接報錯。
 - 新增 `tests/test_required_checks.py`：matrix 依 GitHub 的規則展開成檢查名稱、每一種不一致都會報告、`CONTRIBUTING.md` 與 workflow 的必要檢查一致（目前 15 項）、比對 ruleset 的 workflow 不在 PR 上跑且只有讀取權限。
-- 新增 `tests/test_result_predicates.py`：三個判斷在 PASSED、FAILED（是／不是資安突破）、ERROR、SKIPPED 下的答案。
+- 新增 `tests/test_result_predicates.py`：三個判斷在 PASSED、FAILED（是／不是資安突破）、ERROR、SKIPPED 下的答案；`tests/test_baseline.py` 鎖住帶指紋、解析不成結果的 FAILED 白箱項目仍算已知。
 
 ### 文件
 

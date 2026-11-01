@@ -46,11 +46,6 @@ _Avoid_: black-box crash, unclassified result
 A test whose status is ERROR or SKIPPED; it is not Executed evidence.
 _Avoid_: errored (it covers SKIPPED too)
 
-**證據計數 ／ Evidence tally**:
-一次執行裡決定判定結果的項目，依種類計數（資安突破、白箱失敗、未分類失敗、未執行、阻擋性規則命中、未測試的威脅），每一種都分成全部、新的與已知問題。
-What decides one run's Verdict, counted by kind (Breaches, white-box failures, Unclassified failures, Not run, blocking rule hits, untested threats), each split into all, new and Known problems.
-_Avoid_: counts, stats, summary numbers
-
 ### 設定檔來源 ／ Config origin
 
 **內建設定檔 ／ Bundled config**:

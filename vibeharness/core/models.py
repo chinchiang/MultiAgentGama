@@ -185,8 +185,11 @@ class TestExecutionResult(BaseModel):
 
     @property
     def is_unclassified_failure(self) -> bool:
-        """未分類失敗（GLOSSARY）：FAILED 但不是資安突破；它是證據缺口，絕不能被略過。
-        Unclassified failure (GLOSSARY): FAILED but not a Breach; it is an Evidence gap and is never dropped."""
+        """未分類失敗（GLOSSARY）：FAILED 但不是資安突破；它是證據缺口，絕不能被略過。只對黑箱結果有意義：
+        白箱結果的 FAILED 是白箱失敗，這個屬性不檢查測試類型，呼叫端只傳入黑箱結果。
+        Unclassified failure (GLOSSARY): FAILED but not a Breach; it is an Evidence gap and is never dropped. Meaningful
+        for black-box results only: a FAILED white-box result is a white-box failure, and since this property does not
+        check the test type, callers pass black-box results alone."""
         return self.is_failure and not self.is_security_exploit_confirmed
 
 
