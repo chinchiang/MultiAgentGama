@@ -93,6 +93,16 @@ def test_extract_needs_exactly_one_top_level_directory(tmp_path):
         tool.extract(archive, str(tmp_path / "out"))
 
 
+def test_extract_refuses_to_run_without_the_data_filter(tmp_path, monkeypatch):
+    """沒有 data filter 的 Python 直接報錯，不會在沒有防護的情況下解壓縮（CodeQL py/tarslip）。
+    A Python without the data filter raises instead of extracting unprotected (CodeQL py/tarslip)."""
+    archive = _write_sdist(str(tmp_path / "d"))
+    monkeypatch.delattr(tarfile, "data_filter", raising=False)
+    with pytest.raises(RuntimeError, match="data filter"):
+        tool.extract(archive, str(tmp_path / "out"))
+    assert not (tmp_path / "out").exists()
+
+
 @pytest.mark.skipif(not hasattr(tarfile, "data_filter"), reason="needs tarfile's data filter (Python 3.11.4+)")
 def test_extract_refuses_a_path_outside_the_destination(tmp_path):
     """封存檔裡的 `..` 路徑會被 data filter 拒絕，不會寫到目的地之外。

@@ -45,14 +45,13 @@ def _run(cmd: Sequence[str], cwd: str, env: dict[str, str] | None = None) -> int
 def extract(archive: str, dest: str) -> str:
     """把 sdist 解到 dest，回傳解開後的專案目錄（封存檔裡唯一的頂層目錄）。
     Extract the sdist into dest and return the project directory (the archive's single top-level directory)."""
+    # 一律用 data filter（拒絕絕對路徑、`..`、連結到目的地之外與裝置檔）；沒有它的 Python 不解壓縮
+    # Always use the data filter (it refuses absolute paths, `..`, links out of the destination and device files);
+    # a Python without it does not extract at all
+    if not hasattr(tarfile, "data_filter"):
+        raise RuntimeError("extracting the sdist safely needs tarfile's data filter (Python 3.11.4 or later)")
     with tarfile.open(archive) as tar:
-        # 有 data filter 的版本就用它（拒絕絕對路徑、`..` 與裝置檔）
-        # Use the data filter where it exists (it refuses absolute paths, `..` and device files)
-        if hasattr(tarfile, "data_filter"):
-            tar.extractall(dest, filter="data")
-        # 3.11.4 之前的 Python 沒有 data filter ／ Python before 3.11.4 has no data filter
-        else:
-            tar.extractall(dest)
+        tar.extractall(dest, filter="data")
     tops = [p for p in glob.glob(os.path.join(dest, "*")) if os.path.isdir(p)]
     if len(tops) != 1:
         raise RuntimeError(f"expected one top-level directory in {archive}, found {len(tops)}")
