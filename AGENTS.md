@@ -1,5 +1,9 @@
 # AGENTS.md
 
+Before changing code, read `CODING_STANDARDS.en.md` (the rules review applies; `CODING_STANDARDS.md` is the zh twin) and `CONTRIBUTING.md` (checks to run, steps for design references and dependencies, releases).
+
+Pushing a `v*` tag publishes to PyPI, and PyPI versions are immutable: tag only when the user explicitly asks for that release.
+
 ## Agent skills
 
 ### Issue tracker
