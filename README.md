@@ -219,6 +219,7 @@ MultiAgentGama/
 │   │   ├── sandbox.py               # 沙盒：本機子程序（非安全邊界）與 Docker 容器；Node 版本各一（node --test）；Node 執行環境的選擇與版本偵測
 │   │   ├── settings.py              # 設定：設定檔只載入、套用預設值並驗證一次（探索到的設定檔政策、CLI 覆寫值）
 │   │   ├── stdio.py                 # 主控台串流防護：讓 stdout／stderr 寫得出雙語輸出（CLI、Action、harness 共用）
+│   │   ├── tally.py                 # 證據計數：一次執行裡決定判定結果的項目依種類只算一次，各分成全部、新的與已知問題；唯一呼叫基準比對的地方
 │   │   ├── transport.py             # 模型呼叫接縫 ModelTransport；預設的 LiteLLMTransport 是唯一 import litellm 的地方
 │   │   └── verdict.py               # 四種判定結果與其結束碼（不匯入第三方套件）
 │   ├── agents/
@@ -271,6 +272,7 @@ MultiAgentGama/
 │   ├── test_design_refs.py             # 設計文件的 path:line 引用落在它指向的名稱上、中英逐行一致；重新對應的邏輯
 │   ├── test_docker_sandbox.py          # Docker 沙盒：路徑映射、容器強化參數、實際執行（有 Docker 時）
 │   ├── test_estimate.py                # --estimate：精確值與情境值、價格、不呼叫模型
+│   ├── test_evidence_tally.py          # 證據計數：每一種在有、沒有基準時的全部／新的／已知、已知問題的順序、部分計數
 │   ├── test_fanout.py                  # 透過 fan_out 測試扇出：順序、當掉換成 fallback 並記錄、live 失敗與 Ctrl-C 不再開始佇列中的呼叫
 │   ├── test_harness_components.py      # 各元件於 mock 模式下的整合測試
 │   ├── test_i18n.py                    # 雙語工具、報告／console／CLI 字串、雙語的 docstring 與註解

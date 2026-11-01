@@ -13,13 +13,13 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Sequence
 
-from vibeharness.core.baseline import Baseline, compare_with_baseline
 from vibeharness.core.i18n import bi
 from vibeharness.core.llm_gateway import budget_exhausted_calls, cache_miss_calls, invalid_calls, simulated_calls
 from vibeharness.core.models import (
-    AgentCallRecord, BaselineSuppressedItem, FindingSeverity, MutationReport, ReviewFinding, StaticFinding,
+    AgentCallRecord, MutationReport, ReviewFinding, StaticFinding,
     GeneratedTest, TestExecutionResult, ThreatModelReport,
 )
+from vibeharness.core.tally import EvidenceTally
 from vibeharness.core.verdict import Verdict
 
 
@@ -117,16 +117,15 @@ class ExecutionEvidence:
 
 @dataclass(frozen=True)
 class GateEvidence:
-    target_dir: str
     threat_report: ThreatModelReport
-    baseline: Optional[Baseline] = None
+    # 決定判定結果的計數（新的與已知問題已分好）／ The counts that decide the Verdict (new and Known problems already split)
+    tally: EvidenceTally
     limits: GateLimits = GateLimits()
     call_log: Sequence[AgentCallRecord] = ()
     review: ReviewEvidence = ReviewEvidence()
     scope: ScopeDisclosure = ScopeDisclosure()
     static_findings: Sequence[StaticFinding] = ()
     execution: ExecutionEvidence = ExecutionEvidence()
-    untested_threats: Sequence[str] = ()
 
 
 @dataclass(frozen=True)
@@ -134,11 +133,6 @@ class GateResult:
     verdict: Verdict
     gaps: List[EvidenceGap]
     recommendations: List[str]
-    # 計入判定結果的數字：有 --baseline 時只算新的 ／ What counts toward the verdict: only new ones with --baseline
-    whitebox_failed: int
-    breaches: int
-    blocking_rule_hits: List[StaticFinding]
-    suppressed: List[BaselineSuppressedItem]
 
     @property
     def reasons(self) -> List[str]:
@@ -147,46 +141,20 @@ class GateResult:
 
 def evaluate(evidence: GateEvidence) -> GateResult:
     gaps = sorted(_evidence_gaps(evidence), key=lambda gap: _GAP_ORDER[gap.code])
-    ex = evidence.execution
-    wb_results, bb_results = list(ex.wb_results), list(ex.bb_results)
-
-    blocking_rule_hits = [
-        f for f in evidence.static_findings if f.severity in (FindingSeverity.CRITICAL, FindingSeverity.HIGH)
-    ]
-    whitebox_failed = sum(1 for r in wb_results if r.is_failure)
-    breaches = sum(1 for r in bb_results if r.is_security_exploit_confirmed)
-    # --baseline：只有先前報告未包含的問題才決定判定結果；已知的
-    # 問題仍留在表格中，並列於「Known from baseline」之下
-    # --baseline: only problems the previous report did not contain decide the verdict; the known
-    # ones stay in the tables and are listed under "Known from baseline"
-    gate_wb_results, gate_bb_results = wb_results, bb_results
-    suppressed: List[BaselineSuppressedItem] = []
-    if evidence.baseline is not None:
-        comparison = compare_with_baseline(
-            evidence.baseline, evidence.target_dir, blocking_rule_hits, wb_results,
-            list(evidence.review.confirmed_findings), bb_results, evidence.threat_report.threats
-        )
-        suppressed = comparison.suppressed
-        blocking_rule_hits = comparison.new_static_blocking
-        known_ids = {s.id for s in suppressed if s.kind != "static"}
-        gate_wb_results = [r for r in wb_results if not (r.is_failure and r.test_id in known_ids)]
-        gate_bb_results = [r for r in bb_results if not (r.is_security_exploit_confirmed and r.test_id in known_ids)]
-        whitebox_failed = len(comparison.new_whitebox_failures)
-        breaches = len(comparison.new_breaches)
-
-    if breaches > 0:
+    ex, tally = evidence.execution, evidence.tally
+    # 判定結果只看新的：已知問題（--baseline）仍列在報告中，並列於「Known from baseline」之下
+    # Only new evidence decides the verdict: Known problems (--baseline) stay in the reports, listed under
+    # "Known from baseline"
+    if tally.breaches.new:
         verdict = Verdict.BLOCKED_CRITICAL_RISK
-    elif whitebox_failed > 0 or blocking_rule_hits:
+    elif tally.whitebox_failures.new or tally.blocking_rule_hits.new:
         verdict = Verdict.NEEDS_FIXES
     elif gaps:
         verdict = Verdict.INCONCLUSIVE
     else:
         verdict = Verdict.READY_TO_SHIP
 
-    recommendations = _recommendations(
-        gate_wb_results, gate_bb_results, evidence.threat_report, list(evidence.untested_threats), bool(gaps),
-        blocking_rule_hits
-    )
+    recommendations = _recommendations(tally, evidence.threat_report, bool(gaps))
     survivors = [m for m in (ex.mutation_report.mutants if ex.mutation_report else []) if m.status == "survived"]
     if survivors:
         where = ", ".join(f"{m.file}:{m.line}" for m in survivors[:3])
@@ -195,16 +163,13 @@ def evaluate(evidence: GateEvidence) -> GateResult:
             f"Strengthen the assertions around {where} so the tests catch these {len(survivors)} surviving mutant(s) "
             "(the tests still pass when an operator or constant is changed)"
         ))
-    if suppressed:
+    if tally.suppressed:
         recommendations.append(
-            bi(f"基準中已有的 {len(suppressed)} 個問題不計入；它們仍然存在",
-               f"{len(suppressed)} problem(s) already in the baseline were not counted; they are still present")
-            + ": " + ", ".join(f"`{s.id}`" for s in suppressed)
+            bi(f"基準中已有的 {len(tally.suppressed)} 個問題不計入；它們仍然存在",
+               f"{len(tally.suppressed)} problem(s) already in the baseline were not counted; they are still present")
+            + ": " + ", ".join(f"`{s.id}`" for s in tally.suppressed)
         )
-    return GateResult(
-        verdict=verdict, gaps=gaps, recommendations=recommendations, whitebox_failed=whitebox_failed,
-        breaches=breaches, blocking_rule_hits=blocking_rule_hits, suppressed=suppressed,
-    )
+    return GateResult(verdict=verdict, gaps=gaps, recommendations=recommendations)
 
 
 def _evidence_gaps(evidence: GateEvidence) -> List[EvidenceGap]:
@@ -307,7 +272,7 @@ def _evidence_gaps(evidence: GateEvidence) -> List[EvidenceGap]:
             f"{n_skip} 個原始碼檔案因 max_files 上限（{limits.max_files}）而被略過",
             f"{n_skip} source file(s) were skipped by the max_files limit ({limits.max_files})"
         ))
-    not_run = sum(1 for r in list(ex.wb_results) + list(ex.bb_results) if r.is_not_run)
+    not_run = len(evidence.tally.whitebox_not_run.all) + len(evidence.tally.blackbox_not_run.all)
     if not_run:
         gap(GapCode.TESTS_NOT_RUN, bi(
             f"{not_run} 個產生的測試發生錯誤、被略過或從未執行；它們涵蓋的邊界在這次執行中仍未驗證",
@@ -371,7 +336,7 @@ def _evidence_gaps(evidence: GateEvidence) -> List[EvidenceGap]:
     # 不符合嚴格利用判定條件的 FAILED 攻擊測試屬於模糊證據，不可悄悄地從閘門中消失
     # A FAILED attack test that does not match the strict exploit predicate is ambiguous evidence and must not
     # silently disappear from the gate
-    unclassified = [r for r in ex.bb_results if r.is_unclassified_failure]
+    unclassified = evidence.tally.unclassified_failures.all
     if unclassified:
         gap(GapCode.UNCLASSIFIED_BLACKBOX_FAILURES, bi(
             f"{len(unclassified)} 個黑箱攻擊測試失敗，但沒有確認的利用分類；證據不明確，需要人工調查",
@@ -383,45 +348,38 @@ def _evidence_gaps(evidence: GateEvidence) -> List[EvidenceGap]:
     if not evidence.threat_report.threats:
         gap(GapCode.NO_THREATS, bi("威脅建模沒有產生任何威脅，因此黑箱涵蓋範圍未知",
                                    "Threat modeling produced no threats, so black-box coverage is unknown"))
-    if evidence.untested_threats:
+    untested = evidence.tally.untested_threats.all
+    if untested:
         gap(GapCode.UNTESTED_THREATS, bi(
-            f"{len(evidence.untested_threats)} 個已建模的威脅沒有可執行的測試",
-            f"{len(evidence.untested_threats)} modeled threat(s) have no executable test"
-        ) + f": {', '.join(evidence.untested_threats)}")
+            f"{len(untested)} 個已建模的威脅沒有可執行的測試",
+            f"{len(untested)} modeled threat(s) have no executable test"
+        ) + f": {', '.join(untested)}")
     return gaps
 
 
-def _recommendations(
-    wb_results: List[TestExecutionResult],
-    bb_results: List[TestExecutionResult],
-    threat_report: ThreatModelReport,
-    untested_threats: List[str],
-    has_gaps: bool,
-    blocking_rule_hits: List[StaticFinding],
-) -> List[str]:
-    """由本次執行的證據推導出的建議，最緊急者優先。
-    Recommendations derived from this run's evidence, most urgent first."""
+def _recommendations(tally: EvidenceTally, threat_report: ThreatModelReport, has_gaps: bool) -> List[str]:
+    """由本次執行的證據計數推導出的建議，最緊急者優先；只列新的問題（已知問題另外列一條）。
+    Recommendations derived from this run's Evidence tally, most urgent first; only new problems (the Known ones get
+    one line of their own)."""
     recs: List[str] = []
     threats_by_id = {t.threat_id: t for t in threat_report.threats}
-    for r in bb_results:
-        if r.is_security_exploit_confirmed:
-            threat = threats_by_id.get(r.source_ref or "")
-            label = f"{threat.threat_id} {threat.title}" if threat else r.test_id
-            recs.append(bi(f"修正已確認的資安突破 `{r.test_id}`（{label}）",
-                           f"Fix confirmed security breach `{r.test_id}` ({label})") + f": {r.failure_reason}")
-    for f in blocking_rule_hits:
+    for r in tally.breaches.new:
+        threat = threats_by_id.get(r.source_ref or "")
+        label = f"{threat.threat_id} {threat.title}" if threat else r.test_id
+        recs.append(bi(f"修正已確認的資安突破 `{r.test_id}`（{label}）",
+                       f"Fix confirmed security breach `{r.test_id}` ({label})") + f": {r.failure_reason}")
+    for f in tally.blocking_rule_hits.new:
         location = f"`{os.path.basename(f.file_path)}:{f.line_number}`"
         recs.append(bi(f"修正 `{f.rule_id}` {f.title}，位於 {location}（{f.owasp_mapping}）",
                        f"Fix `{f.rule_id}` {f.title} at {location} ({f.owasp_mapping})") + f": {f.remediation}")
-    for r in wb_results:
-        if r.is_failure:
-            recs.append(bi(f"修正 `{r.test_id}` 暴露的缺陷（來自 `{r.source_ref or '-'}`）",
-                           f"Fix defect exposed by `{r.test_id}` (from `{r.source_ref or '-'}`)") + f": {r.failure_reason}")
-    for r in bb_results:
-        if r.is_unclassified_failure:
-            recs.append(bi(f"調查 `{r.test_id}` 中的黑箱崩潰", f"Investigate black-box crash in `{r.test_id}`") + f": {r.failure_reason}")
-    if untested_threats:
-        recs.append(bi("為未測試的威脅撰寫或合成測試", "Write or synthesize tests for untested threats") + f": {', '.join(untested_threats)}")
+    for r in tally.whitebox_failures.new:
+        recs.append(bi(f"修正 `{r.test_id}` 暴露的缺陷（來自 `{r.source_ref or '-'}`）",
+                       f"Fix defect exposed by `{r.test_id}` (from `{r.source_ref or '-'}`)") + f": {r.failure_reason}")
+    for r in tally.unclassified_failures.all:
+        recs.append(bi(f"調查 `{r.test_id}` 中的黑箱崩潰", f"Investigate black-box crash in `{r.test_id}`") + f": {r.failure_reason}")
+    if tally.untested_threats.all:
+        recs.append(bi("為未測試的威脅撰寫或合成測試", "Write or synthesize tests for untested threats")
+                    + f": {', '.join(tally.untested_threats.all)}")
     if has_gaps:
         recs.append(bi("在信任通過判定之前，先補上上方列出的證據缺口（例如以 `--mode live` 與有效的 API 金鑰執行）。",
                        "Close the evidence gaps listed above (e.g. run with `--mode live` and valid API keys) before trusting a pass verdict."))

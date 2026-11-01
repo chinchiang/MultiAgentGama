@@ -31,6 +31,7 @@ from vibeharness.core.gate import (
 )
 from vibeharness.core.settings import Overrides, SandboxSettings, Settings, load_settings
 from vibeharness.core.transport import ModelTransport
+from vibeharness.core.tally import tally_evidence
 from vibeharness.core.verdict import Verdict
 from vibeharness.core.mutation import run_mutation_testing
 from vibeharness.core.i18n import bi
@@ -401,8 +402,9 @@ class VibeHarnessCommander:
             js_cov_pct = wb_suite.js_coverage_pct
             wb_passed = sum(1 for r in wb_results if r.status == TestStatus.PASSED)
             progress.update(phase=3, whitebox_tests=wb_tests, whitebox_results=wb_results)
-            wb_failed = sum(1 for r in wb_results if r.is_failure)
-            wb_not_run = sum(1 for r in wb_results if r.is_not_run)
+            # 到這一步為止的證據計數：console 只讀「全部」 ／ The Evidence tally so far: the console reads only "all"
+            wb_tally = tally_evidence(wb_results=wb_results)
+            wb_failed, wb_not_run = len(wb_tally.whitebox_failures.all), len(wb_tally.whitebox_not_run.all)
             cov_display = f"{cov_pct:.1f}%" if cov_pct is not None else "N/A"
             js_cov_display = ""
             if any(t.language != "python" for t in wb_tests):
@@ -480,17 +482,15 @@ class VibeHarnessCommander:
             bb_results = bb_suite.results
             bb_passed = sum(1 for r in bb_results if r.status == TestStatus.PASSED)
             progress.update(phase=5, blackbox_tests=bb_tests, blackbox_results=bb_results)
-            bb_breaches = sum(1 for r in bb_results if r.is_security_exploit_confirmed)
-            # 不符合嚴格利用判定條件的 FAILED 攻擊測試屬於模糊證據：
-            # 它不可悄悄地從閘門中消失（過去曾如此，導致攻擊腳本實際上
+            bb_tally = tally_evidence(bb_tests=bb_tests, bb_results=bb_results, threats=threat_report.threats)
+            bb_breaches = len(bb_tally.breaches.all)
+            # 未分類失敗不可悄悄地從閘門中消失（過去曾如此，導致攻擊腳本實際上
             # 正對目標失敗時，整次執行的判定結果仍為 READY_TO_SHIP）
-            # A FAILED attack test that does not match the strict exploit predicate is ambiguous
-            # evidence: it must not silently disappear from the gate (it used to, letting the run
+            # An Unclassified failure must not silently disappear from the gate (it used to, letting the run
             # pass as READY_TO_SHIP while an attack script was actually failing against the target)
-            bb_failed_unclassified = [r for r in bb_results if r.is_unclassified_failure]
-            bb_not_run = sum(1 for r in bb_results if r.is_not_run)
-            tested_threat_ids = {t.source_ref for t in bb_tests}
-            untested_threats = [t.threat_id for t in threat_report.threats if t.threat_id not in tested_threat_ids]
+            bb_failed_unclassified = bb_tally.unclassified_failures.all
+            bb_not_run = len(bb_tally.blackbox_not_run.all)
+            untested_threats = list(bb_tally.untested_threats.all)
             self.console.print(
                 f"[+] {bi('動態黑箱結果', 'Dynamic Black-Box Outcome')}: [green]{bb_passed} {bi('已防禦', 'Defended')}[/green] | "
                 f"[red]{bb_breaches} {bi('已確認突破', 'Confirmed Breaches')}[/red] | "
@@ -507,10 +507,15 @@ class VibeHarnessCommander:
 
             js_reason = wb_suite.js_runner_problem or bb_suite.js_runner_problem
             node_runtime = wb_suite.node_runtime or bb_suite.node_runtime
+            # 這次執行的完整證據計數：基準比對只在這裡做 ／ This run's full Evidence tally: the only baseline comparison
+            tally = tally_evidence(
+                wb_results=wb_results, bb_tests=bb_tests, bb_results=bb_results, static_findings=static_findings,
+                threats=threat_report.threats, confirmed_findings=debate_result.confirmed_findings,
+                target_dir=target_dir, baseline=self.baseline,
+            )
             gate = evaluate(GateEvidence(
-                target_dir=target_dir,
                 threat_report=threat_report,
-                baseline=self.baseline,
+                tally=tally,
                 limits=GateLimits(
                     max_model_calls=self.gateway.max_model_calls, max_files=self.max_files,
                     max_file_bytes=self.max_file_bytes, mutation_min_score=self.settings.mutation.min_score,
@@ -544,10 +549,12 @@ class VibeHarnessCommander:
                     ts_problem=node_runtime.ts_problem if node_runtime else None,
                     mutation_report=mutation_report,
                 ),
-                untested_threats=untested_threats,
             ))
             overall_status, inconclusive_reasons, recommendations = gate.verdict, gate.reasons, gate.recommendations
-            wb_failed, bb_breaches, suppressed = gate.whitebox_failed, gate.breaches, gate.suppressed
+            # summary 的白箱失敗與資安突破只算新的（#111 會讓各欄位的定義一致）
+            # The summary's white-box failures and Breaches count only new ones (#111 makes the fields consistent)
+            wb_failed, bb_breaches = len(tally.whitebox_failures.new), len(tally.breaches.new)
+            suppressed = list(tally.suppressed)
             if suppressed and self.baseline is not None:
                 self.console.print(
                     f"[yellow][!] {bi('基準', 'Baseline')}: "
@@ -599,7 +606,7 @@ class VibeHarnessCommander:
                 static_findings=static_findings,
                 ai_components=ai_components,
                 reviewer_models=reviewer_models,
-                new_blocking_rule_hits=len(gate.blocking_rule_hits),
+                new_blocking_rule_hits=len(tally.blocking_rule_hits.new),
                 baseline_path=self.baseline.path if self.baseline else None,
                 baseline_suppressed=suppressed,
             )

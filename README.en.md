@@ -219,6 +219,7 @@ MultiAgentGama/
 │   │   ├── sandbox.py               # Sandboxes: local subprocess (not a security boundary) and Docker containers; a Node flavour of each (node --test); choosing and probing the Node runtime
 │   │   ├── settings.py              # Settings: the config file loaded, defaulted and validated once (Discovered config policy, CLI overrides)
 │   │   ├── stdio.py                 # Console-stream guard: stdout / stderr can write the bilingual output (shared by the CLI, the Action and the harness)
+│   │   ├── tally.py                 # Evidence tally: what decides a run's Verdict, counted once by kind, each split into all, new and Known problems; the only caller of the baseline comparison
 │   │   ├── transport.py             # The ModelTransport model-call seam; the default LiteLLMTransport is the only place that imports litellm
 │   │   └── verdict.py               # The four verdicts and their exit codes (no third-party imports)
 │   ├── agents/
@@ -271,6 +272,7 @@ MultiAgentGama/
 │   ├── test_design_refs.py             # The design documents' path:line references land on the names they point at, match zh/en line for line; the remapping logic
 │   ├── test_docker_sandbox.py          # Docker sandbox: path mapping, hardening flags, real execution (when Docker is present)
 │   ├── test_estimate.py                # --estimate: exact and scenario figures, prices, no model call
+│   ├── test_evidence_tally.py          # Evidence tally: each kind's all / new / known with and without a Baseline, the Known problems' order, partial tallies
 │   ├── test_fanout.py                  # The fan-out through fan_out: order, a crash replaced by the fallback and booked, no queued call after a live failure or Ctrl-C
 │   ├── test_harness_components.py      # Component integration tests in mock mode
 │   ├── test_i18n.py                    # Bilingual helpers, report / console / CLI strings, bilingual docstrings and comments
