@@ -1,5 +1,9 @@
 # AGENTS.md
 
+Before changing code, read `CONTRIBUTING.md` (its English section mirrors the zh one): both CHANGELOGs, a failing regression test first, bilingual comments and docs, lock regeneration.
+
+Pushing a `v*` tag publishes to PyPI, and PyPI versions are immutable: tag only when the user explicitly asks for that release.
+
 ## Agent skills
 
 ### Issue tracker
