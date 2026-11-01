@@ -13,10 +13,12 @@
 ### 測試
 
 - 新增回歸測試於 `tests/test_review_whitebox_fixes.py`。
+- 新增 `tests/test_design_refs.py`：設計文件的每個 `path:line` 引用必須落在它指向的名稱的定義或使用處，附錄索引的項目必須正好是定義那一行，中英文件逐行引用相同的檔案與行號，兩份文件引用同一個 commit 或 tag。
 
 ### 文件
 
-- 設計文件記載以函式呼叫註冊的檢視函式，並依目前的程式碼更新指向 `vibeharness/agents/whitebox/ast_extractor.py` 的行號引用。
+- 設計文件記載以函式呼叫註冊的檢視函式，並依目前的程式碼更新指向 `vibeharness/agents/whitebox/ast_extractor.py` 的行號引用；第 6.1 節 `parse_directory`、JS/TS 擷取與 JS/TS 路由三段先前漏掉的引用也一併更新。
+- 新增 `scripts/recite_design_refs.py`：依 git diff 把設計文件的行號引用重新對應到目前的程式碼並更新引用的 commit（`--tag` 改引用 release tag，`--check` 只檢查）；`CONTRIBUTING.md` 改為說明用它更新引用。
 
 ## [0.15.0] - 2026-10-31
 

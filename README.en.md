@@ -247,6 +247,8 @@ MultiAgentGama/
 │   ├── configuration.en.md      # Configuration reference (English)
 │   ├── design.md                # Design document: architecture, data flow, gate verdicts, sandbox security model (Traditional Chinese)
 │   └── design.en.md             # Design document (English)
+├── scripts/
+│   └── recite_design_refs.py    # Checks the design documents' path:line references and remaps them to the current code via git diff
 ├── tests/                       # The toolkit's own tests (offline, no API keys needed)
 │   ├── config_files.py          # Read the bundled config, write an edited copy for a test (load_config / write_config)
 │   ├── conftest.py              # Shared fixtures: a fake litellm so the live paths run offline
@@ -257,6 +259,7 @@ MultiAgentGama/
 │   ├── test_call_plans.py              # Each agent's call plan (plan) equals the calls it actually makes
 │   ├── test_cross_verification.py      # Cross-verification: models never judge their own findings, vote tallies
 │   ├── test_dedup_and_budget.py        # Duplicate-finding merge and prompt context within the token budget
+│   ├── test_design_refs.py             # The design documents' path:line references land on the names they point at, match zh/en line for line; the remapping logic
 │   ├── test_docker_sandbox.py          # Docker sandbox: path mapping, hardening flags, real execution (when Docker is present)
 │   ├── test_estimate.py                # --estimate: exact and scenario figures, prices, no model call
 │   ├── test_fanout.py                  # The fan-out through fan_out: order, a crash replaced by the fallback and booked, no queued call after a live failure or Ctrl-C
@@ -311,7 +314,7 @@ MultiAgentGama/
 ├── CONTRIBUTING.md              # Contributing guide: setup, pre-push checks, principles, release steps
 ├── LICENSE                      # MIT license
 ├── SECURITY.md                  # Security policy: private vulnerability reporting, supported versions, the repository's security settings
-├── MANIFEST.in                  # sdist contents: docs, config, tests, examples, main.py, action.yml, requirements and locks, docker/, policy files
+├── MANIFEST.in                  # sdist contents: docs, config, tests, examples, scripts, main.py, action.yml, requirements and locks, docker/, policy files
 ├── action.yml                   # composite GitHub Action: one `uses: chinchiang/MultiAgentGama@vX.Y.Z` line runs the audit in a target repo
 ├── pyproject.toml               # Package metadata, the vibeharness entry point, pytest / ruff / mypy settings
 ├── requirements.txt             # Runtime dependencies

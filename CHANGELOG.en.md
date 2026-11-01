@@ -13,10 +13,12 @@ All notable changes to this project are documented in this file. The format foll
 ### Tests
 
 - New regression tests in `tests/test_review_whitebox_fixes.py`.
+- New `tests/test_design_refs.py`: every `path:line` reference in the design documents must land on the definition or a use of the name it points at, every entry of the appendix index must be exactly the definition line, the zh and en documents must cite the same files and lines line for line, and both must cite one commit or tag.
 
 ### Documentation
 
-- The design document describes the call-registered views, and its line references into `vibeharness/agents/whitebox/ast_extractor.py` are updated to the current code.
+- The design document describes the call-registered views, and its line references into `vibeharness/agents/whitebox/ast_extractor.py` are updated to the current code, including the ones previously missed in the `parse_directory`, JS/TS extraction and JS/TS route paragraphs of section 6.1.
+- New `scripts/recite_design_refs.py`: remaps the line references of the design documents to the current code via git diff and updates the cited commit (`--tag` cites a release tag instead, `--check` only checks); `CONTRIBUTING.md` now says to use it.
 
 ## [0.15.0] - 2026-10-31
 
