@@ -247,6 +247,8 @@ MultiAgentGama/
 │   ├── configuration.en.md      # Configuration reference (English)
 │   ├── design.md                # 設計文件：架構、資料流、閘門判定、沙盒安全模型（正體中文）
 │   └── design.en.md             # Design document (English)
+├── scripts/
+│   └── recite_design_refs.py    # 檢查設計文件的 path:line 引用，並依 git diff 重新對應到目前的程式碼
 ├── tests/                       # 工具包本身之測試（離線、不需 API 金鑰）
 │   ├── config_files.py          # 讀出內建設定、寫出修改後的測試用設定檔（load_config／write_config）
 │   ├── conftest.py              # 共用 fixture：以假 litellm 讓 live 路徑離線執行
@@ -257,6 +259,7 @@ MultiAgentGama/
 │   ├── test_call_plans.py              # 每個代理的呼叫計畫（plan）等於它實際發出的呼叫
 │   ├── test_cross_verification.py      # 交叉驗證：模型不評審自己的發現、依票數判定
 │   ├── test_dedup_and_budget.py        # 重複發現合併與 token 預算內的提示上下文
+│   ├── test_design_refs.py             # 設計文件的 path:line 引用落在它指向的名稱上、中英逐行一致；重新對應的邏輯
 │   ├── test_docker_sandbox.py          # Docker 沙盒：路徑映射、容器強化參數、實際執行（有 Docker 時）
 │   ├── test_estimate.py                # --estimate：精確值與情境值、價格、不呼叫模型
 │   ├── test_fanout.py                  # 透過 fan_out 測試扇出：順序、當掉換成 fallback 並記錄、live 失敗與 Ctrl-C 不再開始佇列中的呼叫
@@ -311,7 +314,7 @@ MultiAgentGama/
 ├── CONTRIBUTING.md              # 貢獻指南：開發環境、提交前檢查、修改原則、發布步驟
 ├── LICENSE                      # MIT 授權
 ├── SECURITY.md                  # 資安政策：弱點私密通報流程、支援版本、repo 的資安設定
-├── MANIFEST.in                  # sdist 內容：docs、config、tests、examples、main.py、action.yml、requirements 與鎖定檔、docker/、政策檔
+├── MANIFEST.in                  # sdist 內容：docs、config、tests、examples、scripts、main.py、action.yml、requirements 與鎖定檔、docker/、政策檔
 ├── action.yml                   # composite GitHub Action：目標專案一行引用即可執行稽核（uses: chinchiang/MultiAgentGama@vX.Y.Z）
 ├── pyproject.toml               # 套件中繼資料、vibeharness 指令進入點、pytest／ruff／mypy 設定
 ├── requirements.txt             # 執行期依賴
