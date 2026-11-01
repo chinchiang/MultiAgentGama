@@ -179,6 +179,7 @@ MultiAgentGama/
 │   ├── PULL_REQUEST_TEMPLATE.md
 │   └── workflows/
 │       ├── codeql.yml           # CodeQL 程式碼掃描（Python 與 workflow，security-extended 查詢）；Analyze (python)／Analyze (actions) 是 master 的必要檢查
+│       ├── required-checks.yml  # push 到 master 與每週：比對 workflow 產生的必要檢查、CONTRIBUTING 的數量與 ruleset 的實際設定（不在 PR 上跑）
 │       ├── tests.yml            # CI：lint（ruff／mypy）、audit（pip-audit）、package（sdist＋wheel：wheel 冒煙測試、從 sdist 跑測試套件）、test（Ubuntu／Windows × Python 3.11–3.14，另加 macOS × 3.12，覆蓋率門檻 93%）
 │       ├── publish.yml          # 發佈：tag 推送時先跑 tests.yml、驗證版本一致、建置 sdist／wheel、在乾淨的 venv 對 wheel 冒煙測試、上傳 GitHub Release（內文取自 CHANGELOG.en.md 的對應區段），並以 Trusted Publishing 發布到 PyPI
 │       ├── pr-issue-link.yml    # 行為改動（fix／feat／perf、動到 vibeharness/ 的 refactor）的 PR 必須連到 issue；issue-link 是 master 的必要檢查
@@ -254,6 +255,7 @@ MultiAgentGama/
 │       └── triage-labels.md     # triage 角色對應的標籤名稱
 ├── scripts/
 │   ├── check_pr_issue_link.py   # pr-issue-link 的判斷：哪些 PR 需要 issue、描述與 commit 是否連到存在的 issue
+│   ├── check_required_checks.py # 必要檢查的三方比對：workflow 的 job 與 matrix、CONTRIBUTING、ruleset
 │   ├── recite_design_refs.py    # 檢查設計文件的 path:line 引用，並依 git diff 重新對應到目前的程式碼
 │   └── test_sdist.py            # 在本機重現 CI 的 package job：建 sdist、解開、在裡面跑測試套件
 ├── tests/                       # 工具包本身之測試（離線、不需 API 金鑰）
@@ -305,6 +307,7 @@ MultiAgentGama/
 │   ├── test_r5_sandbox_coverage.py     # 安全讀回報告、執行目錄交給 nobody（0700）、POSIX 的反斜線、每種寫法一個 include、docker 輸出上限
 │   ├── test_r6_review.py               # 第六輪審查：非 ASCII 文字與路徑、symlink 目標、基準線鍵、估算與逐測重跑的錯誤歸因
 │   ├── test_repo_docs.py               # README 檔案樹列出每個檔案、規則文件點名的名稱與路徑存在、讀 .github/ 的測試在 sdist 裡略過
+│   ├── test_required_checks.py         # matrix 展開成檢查名稱、各種不一致、CONTRIBUTING 與 workflow 一致、比對 workflow 不在 PR 上跑
 │   ├── test_review_blackbox.py         # 威脅 id、STRIDE 拼法、崩潰的黑箱批次記入 call_log
 │   ├── test_review_build.py            # 釘版的 actions、workflow 輸入經 env、映像 digest、帶雜湊的鎖定檔、sdist 內容
 │   ├── test_review_cache_only.py       # --cache-only：命中不呼叫 litellm、未命中為證據缺口（hybrid）或 exit 4（live）、不重問、沒有快取時 exit 5

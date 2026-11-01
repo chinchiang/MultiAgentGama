@@ -179,6 +179,7 @@ MultiAgentGama/
 │   ├── PULL_REQUEST_TEMPLATE.md
 │   └── workflows/
 │       ├── codeql.yml           # CodeQL code scanning (Python and the workflows, security-extended queries); Analyze (python) / Analyze (actions) are required checks on master
+│       ├── required-checks.yml  # On pushes to master and weekly: compare the required checks the workflows produce, CONTRIBUTING's count and the ruleset (never on PRs)
 │       ├── tests.yml            # CI: lint (ruff / mypy), audit (pip-audit), package (sdist + wheel: wheel smoke test, suite run from the sdist), test (Ubuntu / Windows × Python 3.11–3.14 plus macOS × 3.12, 93% coverage floor)
 │       ├── publish.yml          # Release: on tag push, run tests.yml first, verify the version matches, build sdist / wheel, smoke-test the wheel in a clean venv, upload to the GitHub Release (its body taken from the matching CHANGELOG.en.md section) and publish to PyPI via Trusted Publishing
 │       ├── pr-issue-link.yml    # A behaviour-changing PR (fix / feat / perf, refactor touching vibeharness/) must link an issue; issue-link is a required check on master
@@ -254,6 +255,7 @@ MultiAgentGama/
 │       └── triage-labels.md     # Label names for the triage roles
 ├── scripts/
 │   ├── check_pr_issue_link.py   # pr-issue-link's logic: which PRs need an issue, whether the description and commits link an existing one
+│   ├── check_required_checks.py # Three-way comparison of the required checks: workflow jobs and matrices, CONTRIBUTING, the ruleset
 │   ├── recite_design_refs.py    # Checks the design documents' path:line references and remaps them to the current code via git diff
 │   └── test_sdist.py            # Reproduces CI's package job locally: build the sdist, extract it, run the suite inside
 ├── tests/                       # The toolkit's own tests (offline, no API keys needed)
@@ -305,6 +307,7 @@ MultiAgentGama/
 │   ├── test_r5_sandbox_coverage.py     # Safe report read-back, run dir handed to nobody (0700), POSIX backslashes, one include per spelling, docker output caps
 │   ├── test_r6_review.py               # Sixth review round: non-ASCII text and paths, a symlinked target, baseline keys, the estimate and the blame of a per-test rerun
 │   ├── test_repo_docs.py               # README file trees list every file, rule documents cite names and paths that exist, tests reading .github/ skip in the sdist
+│   ├── test_required_checks.py         # Matrix expansion into check names, each kind of drift, CONTRIBUTING agreeing with the workflows, the drift workflow never on PRs
 │   ├── test_review_blackbox.py         # Threat ids, STRIDE spellings, crashed black-box batches booked
 │   ├── test_review_build.py            # Pinned actions, workflow inputs via env, image digests, hashed locks, sdist contents
 │   ├── test_review_cache_only.py       # --cache-only: hits never call litellm, a miss is an evidence gap (hybrid) or exit 4 (live), no re-ask, exit 5 without a cache
