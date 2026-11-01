@@ -163,11 +163,11 @@ def evaluate(evidence: GateEvidence) -> GateResult:
             f"Strengthen the assertions around {where} so the tests catch these {len(survivors)} surviving mutant(s) "
             "(the tests still pass when an operator or constant is changed)"
         ))
-    if tally.suppressed:
+    if tally.known_problems:
         recommendations.append(
-            bi(f"基準中已有的 {len(tally.suppressed)} 個問題不計入；它們仍然存在",
-               f"{len(tally.suppressed)} problem(s) already in the baseline were not counted; they are still present")
-            + ": " + ", ".join(f"`{s.id}`" for s in tally.suppressed)
+            bi(f"基準中已有的 {len(tally.known_problems)} 個問題不計入；它們仍然存在",
+               f"{len(tally.known_problems)} problem(s) already in the baseline were not counted; they are still present")
+            + ": " + ", ".join(f"`{s.id}`" for s in tally.known_problems)
         )
     return GateResult(verdict=verdict, gaps=gaps, recommendations=recommendations)
 

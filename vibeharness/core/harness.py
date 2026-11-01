@@ -554,13 +554,13 @@ class VibeHarnessCommander:
             # summary 的白箱失敗與資安突破只算新的（#111 會讓各欄位的定義一致）
             # The summary's white-box failures and Breaches count only new ones (#111 makes the fields consistent)
             wb_failed, bb_breaches = len(tally.whitebox_failures.new), len(tally.breaches.new)
-            suppressed = list(tally.suppressed)
-            if suppressed and self.baseline is not None:
+            known_problems = list(tally.known_problems)
+            if known_problems and self.baseline is not None:
                 self.console.print(
                     f"[yellow][!] {bi('基準', 'Baseline')}: "
-                    + bi(f"來自 {escape(self.baseline.path)} 的 {len(suppressed)} 個已知問題已列出但不計入",
-                         f"{len(suppressed)} known problem(s) from {escape(self.baseline.path)} are reported but not counted")
-                    + f" ({escape(', '.join(s.id for s in suppressed))})[/yellow]"
+                    + bi(f"來自 {escape(self.baseline.path)} 的 {len(known_problems)} 個已知問題已列出但不計入",
+                         f"{len(known_problems)} known problem(s) from {escape(self.baseline.path)} are reported but not counted")
+                    + f" ({escape(', '.join(s.id for s in known_problems))})[/yellow]"
                 )
             for reason in inconclusive_reasons:
                 self.console.print(f"[yellow][!] {bi('證據缺口', 'Evidence gap')}: {reason}[/yellow]")
@@ -588,14 +588,14 @@ class VibeHarnessCommander:
                 confirmed_whitebox_bugs=confirmed_majority,
                 whitebox_tests_passed=wb_passed,
                 whitebox_tests_failed=wb_failed,
-                whitebox_tests_errored=wb_not_run,
+                whitebox_tests_errored=len(tally.whitebox_not_run.all),
                 total_threats_modeled=len(threat_report.threats),
                 critical_threats_count=critical_threats,
                 blackbox_tests_passed=bb_passed,
                 blackbox_security_breaches=bb_breaches,
-                blackbox_tests_failed=len(bb_failed_unclassified),
-                blackbox_tests_errored=bb_not_run,
-                untested_threat_ids=untested_threats,
+                blackbox_tests_failed=len(tally.unclassified_failures.all),
+                blackbox_tests_errored=len(tally.blackbox_not_run.all),
+                untested_threat_ids=list(tally.untested_threats.all),
                 agent_calls=sorted_call_log(self.gateway.call_log),
                 inconclusive_reasons=inconclusive_reasons,
                 line_coverage_pct=cov_pct,
@@ -608,7 +608,7 @@ class VibeHarnessCommander:
                 reviewer_models=reviewer_models,
                 new_blocking_rule_hits=len(tally.blocking_rule_hits.new),
                 baseline_path=self.baseline.path if self.baseline else None,
-                baseline_suppressed=suppressed,
+                baseline_suppressed=known_problems,
             )
 
             # 輸出報告

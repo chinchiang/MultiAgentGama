@@ -93,35 +93,40 @@ def _finding(fid, symbol):
 
 
 def test_with_a_baseline_breaches_white_box_failures_and_rule_hits_split_into_new_and_known():
-    """有基準時：資安突破、白箱失敗與阻擋性規則命中分成新的與已知問題；suppressed 依 compare_with_baseline 的順序
-    （規則命中、白箱失敗、資安突破）列出已知問題；基準不記錄的種類照舊全部是新的。
-    With a Baseline, Breaches, white-box failures and blocking rule hits split into new and Known problems; suppressed
+    """有基準時：資安突破、白箱失敗與阻擋性規則命中分成新的與已知問題；known_problems 依 compare_with_baseline 的順序
+    （規則命中、白箱失敗、資安突破）列出已知問題；基準不記錄的種類（未分類失敗、白、黑箱的未執行、未測試的威脅）照舊全部是新的。
+    With a Baseline, Breaches, white-box failures and blocking rule hits split into new and Known problems; known_problems
     lists the Known problems in compare_with_baseline's order (rule hits, white-box failures, Breaches); the kinds the
-    Baseline does not record stay all new."""
+    Baseline does not record (Unclassified failures, Not run on each side, untested threats) stay all new."""
     t_known, t_new = _threat("T1"), _threat("T2")
     breach_known = _bb("BB-1", TestStatus.FAILED, breach=True, source_ref="T1")
     breach_new = _bb("BB-2", TestStatus.FAILED, breach=True, source_ref="T2")
-    crash = _bb("BB-3", TestStatus.FAILED)
+    crash, bb_error = _bb("BB-3", TestStatus.FAILED), _bb("BB-4", TestStatus.ERROR)
     f_known, f_new = _finding("WB-F-1", "load"), _finding("WB-F-2", "save")
     wb_known = _wb("WB-1", TestStatus.FAILED, source_ref="WB-F-1")
     wb_new = _wb("WB-2", TestStatus.FAILED, source_ref="WB-F-2")
+    wb_skip = _wb("WB-3", TestStatus.SKIPPED)
     # 指紋不含行號，所以新的命中要有不同的證據文字 ／ The fingerprint ignores the line, so the new hit needs different evidence
     hit_known, hit_new = _rule_hit(FindingSeverity.HIGH, 1), _rule_hit(FindingSeverity.CRITICAL, 9, "torch.load(f)")
     baseline = Baseline(path="old.json", breaches={breach_key(breach_known, t_known)},
                         findings={finding_key(f_known, TARGET)}, static={static_key(hit_known, TARGET)})
-    tally = tally_evidence(wb_results=[wb_known, wb_new], bb_results=[breach_known, breach_new, crash],
+    tally = tally_evidence(wb_results=[wb_known, wb_new, wb_skip], bb_results=[breach_known, breach_new, crash, bb_error],
+                           bb_tests=[_attack("BB-1", "T1")],
                            static_findings=[hit_known, hit_new], threats=[t_known, t_new],
                            confirmed_findings=[f_known, f_new], target_dir=TARGET, baseline=baseline)
     assert (tally.breaches.all, tally.breaches.new, tally.breaches.known) == (
         (breach_known, breach_new), (breach_new,), (breach_known,))
     assert (tally.whitebox_failures.new, tally.whitebox_failures.known) == ((wb_new,), (wb_known,))
     assert (tally.blocking_rule_hits.new, tally.blocking_rule_hits.known) == ((hit_new,), (hit_known,))
-    assert [(s.kind, s.id) for s in tally.suppressed] == [
+    assert [(s.kind, s.id) for s in tally.known_problems] == [
         ("static", "VH-AI-001@app.py:1"), ("whitebox_failure", "WB-1"), ("breach", "BB-1")]
-    assert (tally.unclassified_failures.new, tally.unclassified_failures.known) == ((crash,), ())
+    for kind, items in {"unclassified_failures": (crash,), "whitebox_not_run": (wb_skip,),
+                        "blackbox_not_run": (bb_error,), "untested_threats": ("T2",)}.items():
+        split = getattr(tally, kind)
+        assert (split.all, split.new, split.known) == (items, items, ()), kind
 
 
-def test_without_a_baseline_nothing_is_suppressed():
+def test_without_a_baseline_there_are_no_known_problems():
     """沒有基準時沒有任何已知問題。
     Without a Baseline there are no Known problems."""
-    assert tally_evidence(bb_results=[_bb("BB-1", TestStatus.FAILED, breach=True)]).suppressed == ()
+    assert tally_evidence(bb_results=[_bb("BB-1", TestStatus.FAILED, breach=True)]).known_problems == ()
