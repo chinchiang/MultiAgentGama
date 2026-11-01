@@ -175,7 +175,7 @@ def annotate_report_payload(
         item["fingerprint"] = finding_key(f, target_path)
     findings_by_id = {f.finding_id: f for f in confirmed}
     for item, r in zip(_dicts(payload["whitebox"].get("test_results")), list(whitebox_results), strict=True):
-        if r.status.value == "FAILED":
+        if r.is_failure:
             key = whitebox_failure_key(r, findings_by_id.get(r.source_ref or ""), target_path)
             if key:
                 item["fingerprint"] = key
@@ -221,7 +221,7 @@ def compare_with_baseline(
             out.new_static_blocking.append(sf)
     findings_by_id = {f.finding_id: f for f in confirmed_findings}
     for r in whitebox_results:
-        if r.status.value != "FAILED":
+        if not r.is_failure:
             continue
         finding = findings_by_id.get(r.source_ref or "")
         key = whitebox_failure_key(r, finding, target_path)

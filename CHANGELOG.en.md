@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Changed
+
+- The single-result predicates live on `TestExecutionResult`: `is_failure` (FAILED), `is_not_run` (Not run: ERROR or SKIPPED) and `is_unclassified_failure` (Unclassified failure: FAILED but not a Breach). The pipeline's counts, the Quality Gate's Evidence gaps and recommendations, and the baseline comparison use them instead of comparing statuses themselves (`baseline.py` compared `status.value` as a string). No output changes (#109).
+
 ### Fixed
 
 - Python extraction also recognizes views registered by a call instead of a decorator: `add_url_rule` (Flask / Quart, `view_func` positional or by keyword), `add_api_route` / `add_api_websocket_route` (FastAPI), `add_route` / `add_websocket_route` (Starlette), and the `Route` / `WebSocketRoute` / `APIRoute` / `APIWebSocketRoute` classes when imported from Starlette or FastAPI (aliases and `routing.Route(...)` included; a `Route` class from elsewhere does not count). Before, such a handler was extracted as a plain `function`, so the threat modeler and the scenario builder did not put it first, the report did not prefer it when attributing a threat, and the run's "Detected N API route handlers" left it out; a view defined inside a Flask `create_app()` factory and registered with `add_url_rule` was not extracted at all, so it was reviewed only as part of the factory. Such nested views are now extracted as routes, with their bodies collapsed in the factory like decorated ones. Only bare names count: `view_func=views.handler` points into another module and `Cls.as_view(...)` is a class-based view. Like decorated routes, these views no longer get a None-input probe (the framework never passes None for a path parameter); before, a module-level one did.
@@ -18,6 +22,7 @@ All notable changes to this project are documented in this file. The format foll
 - New `tests/test_pr_issue_link.py`: which PRs need an issue (`fix` / `feat` / `perf` by prefix alone, `refactor` by whether it changes `vibeharness/`), closing keywords, `#N` in the commit messages, and that `pr-issue-link.yml` has read-only permissions and never passes the title or body to the shell through `${{ }}`.
 - New `tests/test_sdist_script.py`: `scripts/test_sdist.py` runs pytest in the extracted sdist with `VIBEHARNESS_SDIST`, stops on a failed build, needs exactly one top-level directory, refuses `..` paths, and raises on a Python without tarfile's data filter.
 - New `tests/test_required_checks.py`: matrices expand into check names by GitHub's rule, each kind of drift is reported, `CONTRIBUTING.md` agrees with the workflows' required checks (15 today), and the ruleset-drift workflow never runs on PRs and only reads.
+- New `tests/test_result_predicates.py`: the three predicates' answers for PASSED, FAILED (Breach or not), ERROR and SKIPPED.
 
 ### Documentation
 

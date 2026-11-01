@@ -18,7 +18,7 @@ from vibeharness.core.i18n import bi
 from vibeharness.core.llm_gateway import budget_exhausted_calls, cache_miss_calls, invalid_calls, simulated_calls
 from vibeharness.core.models import (
     AgentCallRecord, BaselineSuppressedItem, FindingSeverity, MutationReport, ReviewFinding, StaticFinding,
-    GeneratedTest, TestExecutionResult, TestStatus, ThreatModelReport,
+    GeneratedTest, TestExecutionResult, ThreatModelReport,
 )
 from vibeharness.core.verdict import Verdict
 
@@ -153,7 +153,7 @@ def evaluate(evidence: GateEvidence) -> GateResult:
     blocking_rule_hits = [
         f for f in evidence.static_findings if f.severity in (FindingSeverity.CRITICAL, FindingSeverity.HIGH)
     ]
-    whitebox_failed = sum(1 for r in wb_results if r.status == TestStatus.FAILED)
+    whitebox_failed = sum(1 for r in wb_results if r.is_failure)
     breaches = sum(1 for r in bb_results if r.is_security_exploit_confirmed)
     # --baseline：只有先前報告未包含的問題才決定判定結果；已知的
     # 問題仍留在表格中，並列於「Known from baseline」之下
@@ -169,7 +169,7 @@ def evaluate(evidence: GateEvidence) -> GateResult:
         suppressed = comparison.suppressed
         blocking_rule_hits = comparison.new_static_blocking
         known_ids = {s.id for s in suppressed if s.kind != "static"}
-        gate_wb_results = [r for r in wb_results if not (r.status == TestStatus.FAILED and r.test_id in known_ids)]
+        gate_wb_results = [r for r in wb_results if not (r.is_failure and r.test_id in known_ids)]
         gate_bb_results = [r for r in bb_results if not (r.is_security_exploit_confirmed and r.test_id in known_ids)]
         whitebox_failed = len(comparison.new_whitebox_failures)
         breaches = len(comparison.new_breaches)
@@ -307,7 +307,7 @@ def _evidence_gaps(evidence: GateEvidence) -> List[EvidenceGap]:
             f"{n_skip} 個原始碼檔案因 max_files 上限（{limits.max_files}）而被略過",
             f"{n_skip} source file(s) were skipped by the max_files limit ({limits.max_files})"
         ))
-    errored = sum(1 for r in list(ex.wb_results) + list(ex.bb_results) if r.status in (TestStatus.ERROR, TestStatus.SKIPPED))
+    errored = sum(1 for r in list(ex.wb_results) + list(ex.bb_results) if r.is_not_run)
     if errored:
         gap(GapCode.TESTS_NOT_RUN, bi(
             f"{errored} 個產生的測試發生錯誤、被略過或從未執行；它們涵蓋的邊界在這次執行中仍未驗證",
@@ -371,7 +371,7 @@ def _evidence_gaps(evidence: GateEvidence) -> List[EvidenceGap]:
     # 不符合嚴格利用判定條件的 FAILED 攻擊測試屬於模糊證據，不可悄悄地從閘門中消失
     # A FAILED attack test that does not match the strict exploit predicate is ambiguous evidence and must not
     # silently disappear from the gate
-    unclassified = [r for r in ex.bb_results if r.status == TestStatus.FAILED and not r.is_security_exploit_confirmed]
+    unclassified = [r for r in ex.bb_results if r.is_unclassified_failure]
     if unclassified:
         gap(GapCode.UNCLASSIFIED_BLACKBOX_FAILURES, bi(
             f"{len(unclassified)} 個黑箱攻擊測試失敗，但沒有確認的利用分類；證據不明確，需要人工調查",
@@ -414,11 +414,11 @@ def _recommendations(
         recs.append(bi(f"修正 `{f.rule_id}` {f.title}，位於 {location}（{f.owasp_mapping}）",
                        f"Fix `{f.rule_id}` {f.title} at {location} ({f.owasp_mapping})") + f": {f.remediation}")
     for r in wb_results:
-        if r.status == TestStatus.FAILED:
+        if r.is_failure:
             recs.append(bi(f"修正 `{r.test_id}` 暴露的缺陷（來自 `{r.source_ref or '-'}`）",
                            f"Fix defect exposed by `{r.test_id}` (from `{r.source_ref or '-'}`)") + f": {r.failure_reason}")
     for r in bb_results:
-        if r.status == TestStatus.FAILED and not r.is_security_exploit_confirmed:
+        if r.is_unclassified_failure:
             recs.append(bi(f"調查 `{r.test_id}` 中的黑箱崩潰", f"Investigate black-box crash in `{r.test_id}`") + f": {r.failure_reason}")
     if untested_threats:
         recs.append(bi("為未測試的威脅撰寫或合成測試", "Write or synthesize tests for untested threats") + f": {', '.join(untested_threats)}")

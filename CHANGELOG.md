@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+### 變更
+
+- 單一測試結果的判斷集中到 `TestExecutionResult` 上：`is_failure`（FAILED）、`is_not_run`（未執行：ERROR 或 SKIPPED）、`is_unclassified_failure`（未分類失敗：FAILED 但不是資安突破）；pipeline 的計數、品質閘門的證據缺口與建議、基準比對都改用它們，不再各自比對狀態（`baseline.py` 原本以字串比對 `status.value`）。輸出不變（#109）。
+
 ### 修正
 
 - Python 擷取也認得以函式呼叫（而非裝飾器）註冊的檢視函式：`add_url_rule`（Flask／Quart，`view_func` 用位置或關鍵字引數）、`add_api_route`／`add_api_websocket_route`（FastAPI）、`add_route`／`add_websocket_route`（Starlette），以及從 Starlette 或 FastAPI 匯入的 `Route`／`WebSocketRoute`／`APIRoute`／`APIWebSocketRoute` 類別（別名與 `routing.Route(...)` 也算；從別處來的 `Route` 類別不算）。原本這類處理函式被擷取成一般的 `function`，威脅建模器與情境產生器不會優先處理它，報告歸屬威脅時不會優先選它，執行時的「偵測到 N 個 API 路由處理器」也不會列出它；在 Flask `create_app()` 工廠裡定義、以 `add_url_rule` 註冊的檢視函式更是完全沒被擷取，只能當成工廠的一部分審查。這類巢狀檢視函式現在會擷取成路由，在工廠裡的本體也和有裝飾器的一樣收合。只收裸名稱：`view_func=views.handler` 指向別的模組，`Cls.as_view(...)` 是類別式檢視。這類檢視函式和有裝飾器的路由一樣，不再做 None 輸入探測（框架不會把 None 傳給路徑參數）；原本模組層級的會被探測。
@@ -18,6 +22,7 @@
 - 新增 `tests/test_pr_issue_link.py`：哪些 PR 需要 issue（`fix`／`feat`／`perf` 只看前綴，`refactor` 看有沒有改到 `vibeharness/`）、關閉關鍵字、commit 訊息裡的 `#N`，以及 `pr-issue-link.yml` 只有讀取權限、標題與描述不經 `${{ }}` 進 shell。
 - 新增 `tests/test_sdist_script.py`：`scripts/test_sdist.py` 在解開的 sdist 裡跑 pytest 並帶 `VIBEHARNESS_SDIST`、建置失敗就停、封存檔只能有一個頂層目錄、拒絕 `..` 路徑，沒有 tarfile data filter 的 Python 直接報錯。
 - 新增 `tests/test_required_checks.py`：matrix 依 GitHub 的規則展開成檢查名稱、每一種不一致都會報告、`CONTRIBUTING.md` 與 workflow 的必要檢查一致（目前 15 項）、比對 ruleset 的 workflow 不在 PR 上跑且只有讀取權限。
+- 新增 `tests/test_result_predicates.py`：三個判斷在 PASSED、FAILED（是／不是資安突破）、ERROR、SKIPPED 下的答案。
 
 ### 文件
 

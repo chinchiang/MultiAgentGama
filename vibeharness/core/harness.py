@@ -401,8 +401,8 @@ class VibeHarnessCommander:
             js_cov_pct = wb_suite.js_coverage_pct
             wb_passed = sum(1 for r in wb_results if r.status == TestStatus.PASSED)
             progress.update(phase=3, whitebox_tests=wb_tests, whitebox_results=wb_results)
-            wb_failed = sum(1 for r in wb_results if r.status == TestStatus.FAILED)
-            wb_errored = sum(1 for r in wb_results if r.status in (TestStatus.ERROR, TestStatus.SKIPPED))
+            wb_failed = sum(1 for r in wb_results if r.is_failure)
+            wb_errored = sum(1 for r in wb_results if r.is_not_run)
             cov_display = f"{cov_pct:.1f}%" if cov_pct is not None else "N/A"
             js_cov_display = ""
             if any(t.language != "python" for t in wb_tests):
@@ -487,10 +487,8 @@ class VibeHarnessCommander:
             # A FAILED attack test that does not match the strict exploit predicate is ambiguous
             # evidence: it must not silently disappear from the gate (it used to, letting the run
             # pass as READY_TO_SHIP while an attack script was actually failing against the target)
-            bb_failed_unclassified = [
-                r for r in bb_results if r.status == TestStatus.FAILED and not r.is_security_exploit_confirmed
-            ]
-            bb_errored = sum(1 for r in bb_results if r.status in (TestStatus.ERROR, TestStatus.SKIPPED))
+            bb_failed_unclassified = [r for r in bb_results if r.is_unclassified_failure]
+            bb_errored = sum(1 for r in bb_results if r.is_not_run)
             tested_threat_ids = {t.source_ref for t in bb_tests}
             untested_threats = [t.threat_id for t in threat_report.threats if t.threat_id not in tested_threat_ids]
             self.console.print(
