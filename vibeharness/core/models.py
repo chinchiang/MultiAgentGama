@@ -170,6 +170,28 @@ class TestExecutionResult(BaseModel):
     source_ref: Optional[str] = None
     language: str = "python"
 
+    @property
+    def is_failure(self) -> bool:
+        """測試狀態是 FAILED（白箱失敗就是 FAILED 的白箱測試；黑箱的 FAILED 再分成資安突破與未分類失敗）。
+        The test FAILED (a white-box failure is a FAILED white-box test; a black-box FAILED is either a Breach or an
+        Unclassified failure)."""
+        return self.status == TestStatus.FAILED
+
+    @property
+    def is_not_run(self) -> bool:
+        """未執行（GLOSSARY）：狀態是 ERROR 或 SKIPPED；不算已執行的證據。
+        Not run (GLOSSARY): the status is ERROR or SKIPPED; it is not Executed evidence."""
+        return self.status in (TestStatus.ERROR, TestStatus.SKIPPED)
+
+    @property
+    def is_unclassified_failure(self) -> bool:
+        """未分類失敗（GLOSSARY）：FAILED 但不是資安突破；它是證據缺口，絕不能被略過。只對黑箱結果有意義：
+        白箱結果的 FAILED 是白箱失敗，這個屬性不檢查測試類型，呼叫端只傳入黑箱結果。
+        Unclassified failure (GLOSSARY): FAILED but not a Breach; it is an Evidence gap and is never dropped. Meaningful
+        for black-box results only: a FAILED white-box result is a white-box failure, and since this property does not
+        check the test type, callers pass black-box results alone."""
+        return self.is_failure and not self.is_security_exploit_confirmed
+
 
 class CallKind(str, Enum):
     """是哪一種模型呼叫：代理在宣告與計畫上標明，閘道把它寫進每一筆呼叫紀錄（JSON 報告的 agent_calls[].kind）；

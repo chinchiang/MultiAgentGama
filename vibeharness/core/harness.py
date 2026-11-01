@@ -401,8 +401,8 @@ class VibeHarnessCommander:
             js_cov_pct = wb_suite.js_coverage_pct
             wb_passed = sum(1 for r in wb_results if r.status == TestStatus.PASSED)
             progress.update(phase=3, whitebox_tests=wb_tests, whitebox_results=wb_results)
-            wb_failed = sum(1 for r in wb_results if r.status == TestStatus.FAILED)
-            wb_errored = sum(1 for r in wb_results if r.status in (TestStatus.ERROR, TestStatus.SKIPPED))
+            wb_failed = sum(1 for r in wb_results if r.is_failure)
+            wb_not_run = sum(1 for r in wb_results if r.is_not_run)
             cov_display = f"{cov_pct:.1f}%" if cov_pct is not None else "N/A"
             js_cov_display = ""
             if any(t.language != "python" for t in wb_tests):
@@ -410,7 +410,7 @@ class VibeHarnessCommander:
                                   f"{f'{js_cov_pct:.1f}%' if js_cov_pct is not None else 'N/A'}[/bold cyan]")
             self.console.print(
                 f"[+] {bi('白箱執行結果', 'White-Box Execution Outcome')}: [green]{wb_passed} {bi('通過', 'Passed')}[/green] | "
-                f"[red]{wb_failed} {bi('失敗／已暴露', 'Failed/Exposed')}[/red] | [yellow]{wb_errored} {bi('錯誤／未執行', 'Error/Not Run')}[/yellow] | "
+                f"[red]{wb_failed} {bi('失敗／已暴露', 'Failed/Exposed')}[/red] | [yellow]{wb_not_run} {bi('錯誤／未執行', 'Error/Not Run')}[/yellow] | "
                 f"{bi('行涵蓋率（Python）', 'Line Coverage (Python)')}: [bold cyan]{cov_display}[/bold cyan]{js_cov_display}"
             )
 
@@ -487,17 +487,15 @@ class VibeHarnessCommander:
             # A FAILED attack test that does not match the strict exploit predicate is ambiguous
             # evidence: it must not silently disappear from the gate (it used to, letting the run
             # pass as READY_TO_SHIP while an attack script was actually failing against the target)
-            bb_failed_unclassified = [
-                r for r in bb_results if r.status == TestStatus.FAILED and not r.is_security_exploit_confirmed
-            ]
-            bb_errored = sum(1 for r in bb_results if r.status in (TestStatus.ERROR, TestStatus.SKIPPED))
+            bb_failed_unclassified = [r for r in bb_results if r.is_unclassified_failure]
+            bb_not_run = sum(1 for r in bb_results if r.is_not_run)
             tested_threat_ids = {t.source_ref for t in bb_tests}
             untested_threats = [t.threat_id for t in threat_report.threats if t.threat_id not in tested_threat_ids]
             self.console.print(
                 f"[+] {bi('動態黑箱結果', 'Dynamic Black-Box Outcome')}: [green]{bb_passed} {bi('已防禦', 'Defended')}[/green] | "
                 f"[red]{bb_breaches} {bi('已確認突破', 'Confirmed Breaches')}[/red] | "
                 f"[yellow]{len(bb_failed_unclassified)} {bi('失敗（未分類）', 'Failed (unclassified)')}[/yellow] | "
-                f"[yellow]{bb_errored} {bi('錯誤／未執行', 'Error/Not Run')}[/yellow] | {len(untested_threats)} {bi('個威脅未測試', 'Threats Not Tested')}"
+                f"[yellow]{bb_not_run} {bi('錯誤／未執行', 'Error/Not Run')}[/yellow] | {len(untested_threats)} {bi('個威脅未測試', 'Threats Not Tested')}"
             )
 
             # -------------------------------------------------------------
@@ -583,13 +581,13 @@ class VibeHarnessCommander:
                 confirmed_whitebox_bugs=confirmed_majority,
                 whitebox_tests_passed=wb_passed,
                 whitebox_tests_failed=wb_failed,
-                whitebox_tests_errored=wb_errored,
+                whitebox_tests_errored=wb_not_run,
                 total_threats_modeled=len(threat_report.threats),
                 critical_threats_count=critical_threats,
                 blackbox_tests_passed=bb_passed,
                 blackbox_security_breaches=bb_breaches,
                 blackbox_tests_failed=len(bb_failed_unclassified),
-                blackbox_tests_errored=bb_errored,
+                blackbox_tests_errored=bb_not_run,
                 untested_threat_ids=untested_threats,
                 agent_calls=sorted_call_log(self.gateway.call_log),
                 inconclusive_reasons=inconclusive_reasons,

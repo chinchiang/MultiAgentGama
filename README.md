@@ -308,6 +308,7 @@ MultiAgentGama/
 │   ├── test_r6_review.py               # 第六輪審查：非 ASCII 文字與路徑、symlink 目標、基準線鍵、估算與逐測重跑的錯誤歸因
 │   ├── test_repo_docs.py               # README 檔案樹列出每個檔案、規則文件點名的名稱與路徑存在、讀 .github/ 的測試在 sdist 裡略過
 │   ├── test_required_checks.py         # matrix 展開成檢查名稱、各種不一致、CONTRIBUTING 與 workflow 一致、比對 workflow 不在 PR 上跑
+│   ├── test_result_predicates.py       # 單一測試結果的判斷（未分類失敗、未執行、FAILED）在每種狀態下的答案
 │   ├── test_review_blackbox.py         # 威脅 id、STRIDE 拼法、崩潰的黑箱批次記入 call_log
 │   ├── test_review_build.py            # 釘版的 actions、workflow 輸入經 env、映像 digest、帶雜湊的鎖定檔、sdist 內容
 │   ├── test_review_cache_only.py       # --cache-only：命中不呼叫 litellm、未命中為證據缺口（hybrid）或 exit 4（live）、不重問、沒有快取時 exit 5

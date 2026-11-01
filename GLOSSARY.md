@@ -36,6 +36,16 @@ _Avoid_: confirmed finding (unless cross-model verified)
 A black-box test failure classified as a confirmed exploit; any new Breach makes the Verdict `BLOCKED_CRITICAL_RISK`.
 _Avoid_: exploit, black-box failure
 
+**未分類失敗 ／ Unclassified failure**:
+FAILED、但不符合資安突破判定的黑箱測試；它是證據缺口，不證明有缺陷，也絕不能被略過。
+A black-box test that FAILED without being classified as a Breach; it is an Evidence gap, proves no defect, and is never dropped.
+_Avoid_: black-box crash, unclassified result
+
+**未執行 ／ Not run**:
+狀態為 ERROR 或 SKIPPED 的測試；它不算已執行的證據。
+A test whose status is ERROR or SKIPPED; it is not Executed evidence.
+_Avoid_: errored (it covers SKIPPED too)
+
 ### 設定檔來源 ／ Config origin
 
 **內建設定檔 ／ Bundled config**:

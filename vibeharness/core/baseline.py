@@ -96,7 +96,10 @@ def _keys_from_report(payload: Dict[str, Any]) -> Baseline:
         findings_by_id[finding.finding_id] = finding
     whitebox = payload.get("whitebox") if isinstance(payload.get("whitebox"), dict) else {}
     for item in _dicts((whitebox or {}).get("test_results")):
-        if item.get("status") != "FAILED":
+        # 先問狀態：舊報告的項目可能解析不成 model，但帶著指紋時仍算已知，所以只用狀態建一個不驗證的探測物件
+        # Ask the status first: an item of an older report may not parse into the model yet still counts as known
+        # through its fingerprint, so an unvalidated probe built from the status alone answers the predicate
+        if not TestExecutionResult.model_construct(status=item.get("status")).is_failure:
             continue
         key = item.get("fingerprint")
         if not isinstance(key, str):
@@ -175,7 +178,7 @@ def annotate_report_payload(
         item["fingerprint"] = finding_key(f, target_path)
     findings_by_id = {f.finding_id: f for f in confirmed}
     for item, r in zip(_dicts(payload["whitebox"].get("test_results")), list(whitebox_results), strict=True):
-        if r.status.value == "FAILED":
+        if r.is_failure:
             key = whitebox_failure_key(r, findings_by_id.get(r.source_ref or ""), target_path)
             if key:
                 item["fingerprint"] = key
@@ -221,7 +224,7 @@ def compare_with_baseline(
             out.new_static_blocking.append(sf)
     findings_by_id = {f.finding_id: f for f in confirmed_findings}
     for r in whitebox_results:
-        if r.status.value != "FAILED":
+        if not r.is_failure:
             continue
         finding = findings_by_id.get(r.source_ref or "")
         key = whitebox_failure_key(r, finding, target_path)

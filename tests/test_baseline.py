@@ -90,6 +90,25 @@ def test_a_report_without_fingerprint_fields_is_recomputed(tmp_path):
     assert bl.breach_key(breach, threat) in loaded.breaches
 
 
+def test_a_failed_whitebox_item_with_a_fingerprint_is_known_even_if_it_does_not_parse(tmp_path):
+    """帶指紋的 FAILED 白箱項目即使其他欄位解析不成結果（舊版或手改的報告）也算已知；其他狀態不算。
+    A FAILED white-box item with a fingerprint counts as known even when its other fields do not parse into a result
+    (an older or hand-edited report); other statuses do not."""
+    payload = {
+        "tool": "vibeharness-mas", "schema_version": "1", "target_path": EXAMPLES,
+        "summary": {"run": {"generated_at": "2026-10-09T00:00:00+00:00"}},
+        "whitebox": {"test_results": [
+            {"status": "FAILED", "fingerprint": "FP-FAILED-UNPARSEABLE"},
+            {"status": "PASSED", "fingerprint": "FP-PASSED"},
+            {"status": "ERROR", "fingerprint": "FP-ERROR"},
+            {"fingerprint": "FP-NO-STATUS"},
+        ]},
+    }
+    path = tmp_path / "old.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert bl.load_baseline(str(path)).findings == {"FP-FAILED-UNPARSEABLE"}
+
+
 # --- 經過關卡的端對端 -------------------------------------------------------------------------
 # --- End to end through the gate ---------------------------------------------------------------
 
