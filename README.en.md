@@ -311,7 +311,8 @@ MultiAgentGama/
 │   └── test_transport.py               # The model-call seam: one ModelRequest per attempt, fallback, an unavailable transport, the scripted fixture
 ├── .pre-commit-config.yaml      # pre-commit: ruff (pinned to a commit SHA) and mypy before every commit
 ├── CHANGELOG.md                 # Changelog (Traditional Chinese); CHANGELOG.en.md is the English version
-├── CONTRIBUTING.md              # Contributing guide: setup, pre-push checks, principles, release steps
+├── CODING_STANDARDS.md          # Coding standards for review (the ones that need judgement); CODING_STANDARDS.en.md is the English version
+├── CONTRIBUTING.md              # Contributing guide: setup, pre-push checks, steps when changing code, release steps
 ├── LICENSE                      # MIT license
 ├── SECURITY.md                  # Security policy: private vulnerability reporting, supported versions, the repository's security settings
 ├── MANIFEST.in                  # sdist contents: docs, config, tests, examples, scripts, main.py, action.yml, requirements and locks, docker/, policy files

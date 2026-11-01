@@ -5,7 +5,8 @@
 # suite (including the fake litellm in tests/conftest.py), dependency and lock files, the sandbox Dockerfiles
 # with their hashed lock, the composite action and the project policy files all ship.
 # tests/test_review_build.py and the package job in tests.yml check the sdist contents.
-include README.md README.en.md CHANGELOG.md CHANGELOG.en.md CONTRIBUTING.md SECURITY.md LICENSE
+include README.md README.en.md CHANGELOG.md CHANGELOG.en.md CONTRIBUTING.md CODING_STANDARDS.md CODING_STANDARDS.en.md
+include SECURITY.md LICENSE
 include main.py action.yml
 include requirements.txt requirements-dev.txt requirements.lock requirements-build.in requirements-build.txt
 include docker/*.Dockerfile docker/sandbox-requirements.in docker/sandbox-requirements.txt

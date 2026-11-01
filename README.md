@@ -311,7 +311,8 @@ MultiAgentGama/
 │   └── test_transport.py               # 模型呼叫接縫：每次嘗試一個 ModelRequest、fallback、轉接器不可用、scripted fixture
 ├── .pre-commit-config.yaml      # pre-commit：提交前執行 ruff（釘在 commit SHA）與 mypy
 ├── CHANGELOG.md                 # 變更紀錄（正體中文）；CHANGELOG.en.md 為英文版
-├── CONTRIBUTING.md              # 貢獻指南：開發環境、提交前檢查、修改原則、發布步驟
+├── CODING_STANDARDS.md          # 審查用的程式碼規則（需要判斷的那些）；CODING_STANDARDS.en.md 為英文版
+├── CONTRIBUTING.md              # 貢獻指南：開發環境、提交前檢查、修改時的步驟、發布步驟
 ├── LICENSE                      # MIT 授權
 ├── SECURITY.md                  # 資安政策：弱點私密通報流程、支援版本、repo 的資安設定
 ├── MANIFEST.in                  # sdist 內容：docs、config、tests、examples、scripts、main.py、action.yml、requirements 與鎖定檔、docker/、政策檔

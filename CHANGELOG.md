@@ -19,6 +19,7 @@
 
 - 設計文件記載以函式呼叫註冊的檢視函式，並依目前的程式碼更新指向 `vibeharness/agents/whitebox/ast_extractor.py` 的行號引用；第 6.1 節 `parse_directory`、JS/TS 擷取與 JS/TS 路由三段先前漏掉的引用也一併更新。
 - 新增 `scripts/recite_design_refs.py`：依 git diff 把設計文件的行號引用重新對應到目前的程式碼並更新引用的 commit（`--tag` 改引用 release tag，`--check` 只檢查）；`CONTRIBUTING.md` 改為說明用它更新引用。
+- 新增 `CODING_STANDARDS.md`／`CODING_STANDARDS.en.md`：審查時套用的程式碼規則（回歸測試、品質閘門、不可信的輸入、設定驗證、生成的測試、輸出字串、文件同步），每條附上違規的樣子，並列出已由測試檢查的規則；`CONTRIBUTING.md` 的修改原則改為指向它，只留下設計文件引用與依賴的步驟。原本寫的設定驗證位置（`LLMGateway.__init__`／`VibeHarnessCommander.__init__`）與提示詞包裝方式（直接呼叫 `untrusted_block`）已過時，改為 `vibeharness/core/settings.py` 的 `load_settings` 與 `vibeharness/core/agent_call.py` 的 `Untrusted` 內容。兩份規則檔加入中英成對的行數檢查並隨 sdist 發布。
 
 ## [0.15.0] - 2026-10-31
 

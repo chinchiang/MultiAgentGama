@@ -255,7 +255,7 @@ SDIST_REQUIRED = [
     "docker/sandbox.Dockerfile", "docker/sandbox-node.Dockerfile", "vibeharness/py.typed",
     "docker/sandbox-requirements.in", "docker/sandbox-requirements.txt", "examples/vibe_sample_app.py",
     "tests/conftest.py", "tests/test_review_build.py", "vibeharness/config/agents_config.yaml", "docs/design.md",
-    "scripts/recite_design_refs.py",
+    "scripts/recite_design_refs.py", "CODING_STANDARDS.md", "CODING_STANDARDS.en.md",
 ]
 
 
@@ -281,7 +281,7 @@ def test_manifest_lists_the_sdist_extras():
     """MANIFEST.in 明列 sdist 額外需要的檔案（setuptools 預設不會帶的那些）。
     MANIFEST.in lists the extra files the sdist needs (the ones setuptools would not include by default)."""
     manifest = _read("MANIFEST.in")
-    for needle in ("CONTRIBUTING.md", "SECURITY.md", "main.py", "action.yml", "requirements.lock", "requirements-build.txt",
+    for needle in ("CONTRIBUTING.md", "CODING_STANDARDS.md", "CODING_STANDARDS.en.md", "SECURITY.md", "main.py", "action.yml", "requirements.lock", "requirements-build.txt",
                    "requirements-dev.txt", "docker/sandbox-requirements.txt", "recursive-include tests *.py",
                    "recursive-include examples *.py", "recursive-include scripts *.py", "CHANGELOG.en.md"):
         assert needle in manifest, needle
