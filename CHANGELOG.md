@@ -14,6 +14,7 @@
 
 - 新增回歸測試於 `tests/test_review_whitebox_fixes.py`。
 - 新增 `tests/test_design_refs.py`：設計文件的每個 `path:line` 引用必須落在它指向的名稱的定義或使用處，附錄索引的項目必須正好是定義那一行，中英文件逐行引用相同的檔案與行號，兩份文件引用同一個 commit 或 tag。
+- 新增 `tests/test_repo_docs.py`：兩份 README 的檔案樹必須列出每個測試檔、script、workflow、`vibeharness/` 模組與 `docs/` 文件；`CODING_STANDARDS*.md`、`CONTRIBUTING.md`、`AGENTS.md` 點名的檔案與函式、類別、常數必須存在（只在 docstring 裡被提到不算）；讀 repo `.github/` 的測試必須有 `needs_github` 或自行略過，因為 CI 的 package job 在不含 `.github/` 的 sdist 裡重跑測試。兩份 README 補上原本漏列的 `tests/test_r6_review.py`、`tests/test_windows_env_limit.py` 與 `docs/agents/`；sdist 補上 `CODING_STANDARDS.md` 引用的 `GLOSSARY.md`。
 - 新增 `tests/test_pr_issue_link.py`：哪些 PR 需要 issue（`fix`／`feat`／`perf` 只看前綴，`refactor` 看有沒有改到 `vibeharness/`）、關閉關鍵字、commit 訊息裡的 `#N`，以及 `pr-issue-link.yml` 只有讀取權限、標題與描述不經 `${{ }}` 進 shell。
 
 ### 文件

@@ -247,7 +247,11 @@ MultiAgentGama/
 │   ├── configuration.md         # 設定檔欄位完整參考（正體中文）
 │   ├── configuration.en.md      # Configuration reference (English)
 │   ├── design.md                # 設計文件：架構、資料流、閘門判定、沙盒安全模型（正體中文）
-│   └── design.en.md             # Design document (English)
+│   ├── design.en.md             # Design document (English)
+│   └── agents/                  # agent skill 的設定（/setup-matt-pocock-skills 產生，檔尾另有本 repo 的規則）
+│       ├── domain.md            # 領域文件怎麼讀：GLOSSARY.md 與 docs/adr/
+│       ├── issue-tracker.md     # GitHub Issues 的操作；本 repo 什麼時候開 issue、/code-review 的 spec 來源
+│       └── triage-labels.md     # triage 角色對應的標籤名稱
 ├── scripts/
 │   ├── check_pr_issue_link.py   # pr-issue-link 的判斷：哪些 PR 需要 issue、描述與 commit 是否連到存在的 issue
 │   └── recite_design_refs.py    # 檢查設計文件的 path:line 引用，並依 git diff 重新對應到目前的程式碼
@@ -298,6 +302,8 @@ MultiAgentGama/
 │   ├── test_r5_gateway_harness.py      # 保留 litellm 的 callback 參數、先前版本的內建模型、不抓價格表、檢查 model_alias、docker_* 的 null、自動發現的設定檔只能調低花費
 │   ├── test_r5_languages_secrets.py    # 不支援語言的檔案列為證據缺口、設定類檔案的本機密鑰掃描
 │   ├── test_r5_sandbox_coverage.py     # 安全讀回報告、執行目錄交給 nobody（0700）、POSIX 的反斜線、每種寫法一個 include、docker 輸出上限
+│   ├── test_r6_review.py               # 第六輪審查：非 ASCII 文字與路徑、symlink 目標、基準線鍵、估算與逐測重跑的錯誤歸因
+│   ├── test_repo_docs.py               # README 檔案樹列出每個檔案、規則文件點名的名稱與路徑存在、讀 .github/ 的測試在 sdist 裡略過
 │   ├── test_review_blackbox.py         # 威脅 id、STRIDE 拼法、崩潰的黑箱批次記入 call_log
 │   ├── test_review_build.py            # 釘版的 actions、workflow 輸入經 env、映像 digest、帶雜湊的鎖定檔、sdist 內容
 │   ├── test_review_cache_only.py       # --cache-only：命中不呼叫 litellm、未命中為證據缺口（hybrid）或 exit 4（live）、不重問、沒有快取時 exit 5
@@ -311,7 +317,8 @@ MultiAgentGama/
 │   ├── test_review_sanitize_blackbox_fixes.py # 佔位憑證、VH-AI-008/009 精確度、連接埠檢查、中止呼叫
 │   ├── test_review_whitebox_fixes.py   # 路由、Python 巢狀定義、掃描規則、嚴重度、不可信的發現文字
 │   ├── test_settings.py                # 透過 load_settings 測試設定：每個鍵的 null／0 規則、驗證順序、探索到的設定檔政策、覆寫值
-│   └── test_transport.py               # 模型呼叫接縫：每次嘗試一個 ModelRequest、fallback、轉接器不可用、scripted fixture
+│   ├── test_transport.py               # 模型呼叫接縫：每次嘗試一個 ModelRequest、fallback、轉接器不可用、scripted fixture
+│   └── test_windows_env_limit.py       # Windows 環境變數上限 32767 字元：長字串參數改用短 ID，測試不會在 setup 就失敗
 ├── .pre-commit-config.yaml      # pre-commit：提交前執行 ruff（釘在 commit SHA）與 mypy
 ├── CHANGELOG.md                 # 變更紀錄（正體中文）；CHANGELOG.en.md 為英文版
 ├── CODING_STANDARDS.md          # 審查用的程式碼規則（需要判斷的那些）；CODING_STANDARDS.en.md 為英文版

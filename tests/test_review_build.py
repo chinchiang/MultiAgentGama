@@ -255,7 +255,7 @@ SDIST_REQUIRED = [
     "docker/sandbox.Dockerfile", "docker/sandbox-node.Dockerfile", "vibeharness/py.typed",
     "docker/sandbox-requirements.in", "docker/sandbox-requirements.txt", "examples/vibe_sample_app.py",
     "tests/conftest.py", "tests/test_review_build.py", "vibeharness/config/agents_config.yaml", "docs/design.md",
-    "scripts/recite_design_refs.py", "CODING_STANDARDS.md", "CODING_STANDARDS.en.md",
+    "scripts/recite_design_refs.py", "CODING_STANDARDS.md", "CODING_STANDARDS.en.md", "GLOSSARY.md",
 ]
 
 
