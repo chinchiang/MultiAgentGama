@@ -125,6 +125,19 @@ def test_codeql_keeps_the_required_check_names():
     assert job["timeout-minutes"] > 0
 
 
+@needs_github
+def test_codeql_runs_on_every_pull_request_not_only_those_targeting_master():
+    """CodeQL 對所有 PR 執行：疊在其他 PR 上的 PR 改目標成 master 時不會觸發 workflow，必要檢查會等不到。
+    CodeQL runs on every PR: a stacked PR retargeted to master triggers no workflow, so its required checks would
+    wait forever."""
+    doc = _workflows()["codeql.yml"]
+    # PyYAML 把 `on` 讀成 True ／ PyYAML reads the `on` key as True
+    triggers = doc.get("on", doc.get(True))
+    assert "pull_request" in triggers
+    assert not (triggers["pull_request"] or {}).get("branches")
+    assert triggers["push"]["branches"] == ["master"]
+
+
 # --- publish.yml 的 Release 內文 -----------------------------------------------------------------
 # --- The Release body in publish.yml -------------------------------------------------------------
 

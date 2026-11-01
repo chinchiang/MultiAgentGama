@@ -8,8 +8,12 @@ name: "CodeQL Advanced"
 on:
   push:
     branches: [ "master" ]
+  # 所有 PR，不只以 master 為目標的：疊在其他 PR 上的 PR 也要有必要檢查的結果。
+  # 被疊的 PR 合併後，GitHub 把它的目標改成 master，但改目標不會觸發 workflow，必要檢查就一直等不到
+  # Every PR, not only those targeting master: a PR stacked on another one needs results for the required
+  # checks too. After the PR below it merges, GitHub retargets it to master, and a retarget triggers no workflow,
+  # so the required checks would wait forever
   pull_request:
-    branches: [ "master" ]
   # 每週一次，讓新的查詢規則也掃到沒變動的程式碼 ／ Weekly, so new queries also cover unchanged code
   schedule:
     - cron: '17 9 * * 5'
