@@ -44,3 +44,23 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
 - **Frontier query**: list the map's open children (`gh issue list --state open`, scoped to the map's sub-issues / task list), drop any with an open blocker (`issue_dependencies_summary.blocked_by > 0`, or an open issue in the `Blocked by` line) or an assignee; first in map order wins.
 - **Claim**: `gh issue edit <n> --add-assignee @me`, the session's first write.
 - **Resolve**: `gh issue comment <n> --body "<answer>"`, then `gh issue close <n>`, then append a context pointer (gist + link) to the map's Decisions-so-far.
+
+## When this repo opens an issue
+
+Repo-specific rules, not part of the setup template.
+
+- **Behaviour changes get an issue before the work**: a PR titled `fix:`, `feat:` or `perf:` (scope and `!` included, by prefix alone), or a `refactor:` that changes files under `vibeharness/`. `docs:`, `chore:`, `ci:`, `build:`, `test:`, releases and Dependabot PRs are exempt.
+- **The agent opens it** with `gh issue create` straight from the user's request, without waiting for approval, labels it `ready-for-agent` (so `/triage` skips it) and tells the user the number. The repo is public: a security vulnerability never goes in an issue; it follows the private reporting in `SECURITY.md`.
+- **Body** (English), so the Spec review can check it line by line:
+  - `## Problem`: what is wrong or missing now, with a reproduction when there is one.
+  - `## Expected`: the behaviour after the change. For a refactor: what moves where.
+  - `## Acceptance`: checkable conditions, at least how the regression test is red before and green after. For a refactor: how "behaviour unchanged" is proved.
+  - `## Out of scope`, only when the boundary is contested.
+- **A review round** gets one issue, with a checkbox per finding. **Urgent fixes** are no exception; the issue can be three lines.
+- **Linking**: at least one commit message carries `Refs #N` (`/code-review` finds the spec in commit messages), and the PR description says `Closes #N`. `.github/workflows/pr-issue-link.yml` (job `issue-link`) checks both and that #N is an existing issue, not a PR.
+
+## Spec source for `/code-review`
+
+- A behaviour change: the issue its commits reference.
+- An exempt change (see above) has no spec: skip the Spec axis and report "no spec available" without asking the user.
+- A behaviour change with no referenced issue breaks the rule above: report that as a Spec finding instead of skipping.

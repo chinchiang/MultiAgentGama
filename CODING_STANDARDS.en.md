@@ -58,4 +58,5 @@ Apply every rule below to a diff under review. Only rules that need judgement li
 | Third-party actions pinned to a commit SHA with a version comment | `tests/test_review_build.py`, the repo's Actions settings |
 | zh / en document pairs have the same line count, version numbers agree | `tests/test_r2_packaging.py` |
 | `path:line` references in the design documents | `tests/test_design_refs.py` |
+| A behaviour-changing PR links an issue (`Closes #N`, `Refs #N` in a commit) | `.github/workflows/pr-issue-link.yml` |
 | Lint, types, coverage ≥ 93% | CI's `ruff check .`, `mypy`, `pytest --cov-fail-under=93` |

@@ -1,3 +1,8 @@
+## Issue
+
+<!-- fix／feat／perf，以及動到 vibeharness/ 的 refactor 必填（pr-issue-link 會檢查）。 / Required for fix / feat / perf, and refactor touching vibeharness/ (checked by pr-issue-link). -->
+Closes #
+
 ## 摘要／Summary
 
 <!-- 做了什麼、為什麼。修正類請說明原本的錯誤行為與根因。 / What and why; for fixes, the old behaviour and root cause. -->

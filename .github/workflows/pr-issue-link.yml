@@ -1,0 +1,39 @@
+name: PR issue link
+
+# 行為改動的 PR 必須連到 issue（規則見 docs/agents/issue-tracker.md 與 CONTRIBUTING.md 的 Pull request 段）。
+# edited 也觸發：改了標題或描述就重新檢查。這是 master 的必要檢查，不要改 workflow 名稱或 job 名稱。
+# A behaviour-changing PR must link an issue (rules in docs/agents/issue-tracker.md and the Pull request section of
+# CONTRIBUTING.md). edited triggers too, so a changed title or description is checked again. This is a required
+# check on master: keep the workflow name and the job name.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions: {}
+
+# 同一個 PR 的新事件取消被取代的檢查 ／ A newer event on the same PR cancels the superseded check
+concurrency:
+  group: pr-issue-link-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  issue-link:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      # 第三方 action 釘在 commit SHA；升版時同步改註解裡的 tag
+      # Third-party actions are pinned to commit SHAs; bump the tag in the comment
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # 標題與描述不進 shell：script 自己用 gh 讀 PR ／ The title and body never reach the shell: the script reads the PR with gh
+      - name: Check the linked issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python3 scripts/check_pr_issue_link.py

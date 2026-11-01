@@ -58,4 +58,5 @@
 | 第三方 action 釘 commit SHA 並附版本註解 | `tests/test_review_build.py`、repo 的 Actions 設定 |
 | 中英文件成對的行數相同、版本號一致 | `tests/test_r2_packaging.py` |
 | 設計文件的 `path:line` 引用 | `tests/test_design_refs.py` |
+| 行為改動的 PR 連到 issue（`Closes #N`，commit 帶 `Refs #N`） | `.github/workflows/pr-issue-link.yml` |
 | lint、型別、覆蓋率 ≥ 93% | CI 的 `ruff check .`、`mypy`、`pytest --cov-fail-under=93` |
