@@ -258,7 +258,7 @@ _SEPARATOR_COMMENT_RE = re.compile(r"^#\s*[-=#*~_]{3,}\s*$")
 
 def _repo_python_files():
     import glob
-    patterns = ("vibeharness/**/*.py", "tests/*.py", "examples/*.py", "main.py")
+    patterns = ("vibeharness/**/*.py", "tests/*.py", "examples/*.py", "scripts/*.py", "main.py")
     files = sorted({p for pattern in patterns for p in glob.glob(os.path.join(REPO_ROOT, pattern), recursive=True)})
     assert files
     return files

@@ -976,7 +976,7 @@ DAST／fuzzing、以 hypothesis 為測試策略（Docker 沙盒映像已附 `hyp
 
 ## 18. 附錄
 
-行號對應 commit `219b9db` 的程式碼（發布時改為 release tag）；核對方式為 `grep -n "def 名稱" 檔案`。
+行號對應 commit `219b9db` 的程式碼（發布時改為 release tag）；`python scripts/recite_design_refs.py --check` 核對每個引用（`tests/test_design_refs.py` 在 CI 跑同一套檢查），不帶參數執行則把引用重新對應到目前的程式碼。
 
 ### 18.1 關鍵常數
 

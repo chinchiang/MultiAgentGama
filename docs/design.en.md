@@ -976,7 +976,7 @@ DAST / fuzzing, hypothesis as a test strategy (the Docker sandbox image ships `h
 
 ## 18. Appendix
 
-Line numbers refer to the code at commit `219b9db` (the release tag will replace it); verify with `grep -n "def name" file`.
+Line numbers refer to the code at commit `219b9db` (the release tag will replace it); `python scripts/recite_design_refs.py --check` verifies every reference (`tests/test_design_refs.py` runs the same check in CI), and running it without arguments remaps them to the current code.
 
 ### 18.1 Key constants
 

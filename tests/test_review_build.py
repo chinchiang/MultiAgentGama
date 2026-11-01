@@ -255,6 +255,7 @@ SDIST_REQUIRED = [
     "docker/sandbox.Dockerfile", "docker/sandbox-node.Dockerfile", "vibeharness/py.typed",
     "docker/sandbox-requirements.in", "docker/sandbox-requirements.txt", "examples/vibe_sample_app.py",
     "tests/conftest.py", "tests/test_review_build.py", "vibeharness/config/agents_config.yaml", "docs/design.md",
+    "scripts/recite_design_refs.py",
 ]
 
 
@@ -282,5 +283,5 @@ def test_manifest_lists_the_sdist_extras():
     manifest = _read("MANIFEST.in")
     for needle in ("CONTRIBUTING.md", "SECURITY.md", "main.py", "action.yml", "requirements.lock", "requirements-build.txt",
                    "requirements-dev.txt", "docker/sandbox-requirements.txt", "recursive-include tests *.py",
-                   "recursive-include examples *.py", "CHANGELOG.en.md"):
+                   "recursive-include examples *.py", "recursive-include scripts *.py", "CHANGELOG.en.md"):
         assert needle in manifest, needle
