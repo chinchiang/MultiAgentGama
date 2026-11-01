@@ -26,6 +26,7 @@
 ### 工程
 
 - 行為改動先開 issue：標題是 `fix:`、`feat:`、`perf:`，或改到 `vibeharness/` 的 `refactor:` 的 PR，描述必須以 `Closes #N` 連到存在的 issue，而且至少一個 commit 訊息帶 `Refs #N`，讓 `/code-review` 的 Spec 審查有東西可比對。新的 `.github/workflows/pr-issue-link.yml`（job `issue-link`，只有讀取權限）以 `scripts/check_pr_issue_link.py` 檢查，成為 master 的第 15 個必要檢查；Dependabot 的 PR 不檢查。PR 範本最上面加了 `## Issue`，`CONTRIBUTING.md` 與 `docs/agents/issue-tracker.md` 記載規則（issue 的三段欄位、審查輪一個 issue、資安漏洞走 `SECURITY.md`）。
+- CodeQL 對所有 PR 執行，不再只限以 `master` 為目標的 PR：疊在其他 PR 上的 PR 在下層合併、被改成以 `master` 為目標後，改目標不會觸發 workflow，`Analyze (python)`／`Analyze (actions)` 這兩個必要檢查會一直等不到結果。
 
 ## [0.15.0] - 2026-10-31
 

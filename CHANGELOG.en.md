@@ -26,6 +26,7 @@ All notable changes to this project are documented in this file. The format foll
 ### Engineering
 
 - A behaviour change gets an issue first: a PR titled `fix:`, `feat:` or `perf:`, or a `refactor:` that changes `vibeharness/`, must link an existing issue with `Closes #N` in its description and carry `Refs #N` in at least one commit message, so the Spec review of `/code-review` has something to compare against. The new `.github/workflows/pr-issue-link.yml` (job `issue-link`, read-only permissions) checks it with `scripts/check_pr_issue_link.py` and becomes the 15th required check on master; Dependabot PRs are not checked. The PR template starts with an `## Issue` section, and `CONTRIBUTING.md` and `docs/agents/issue-tracker.md` hold the rules (the issue's three sections, one issue per review round, vulnerabilities through `SECURITY.md`).
+- CodeQL runs on every PR, not only those targeting `master`: a PR stacked on another one is retargeted to `master` once the one below merges, a retarget triggers no workflow, and the required `Analyze (python)` / `Analyze (actions)` checks would wait forever.
 
 ## [0.15.0] - 2026-10-31
 
