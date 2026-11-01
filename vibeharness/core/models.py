@@ -321,7 +321,7 @@ class VibeHarnessSummary(BaseModel):
     confirmed_whitebox_bugs: Optional[int]
     whitebox_tests_passed: int
     whitebox_tests_failed: int
-    whitebox_tests_errored: int = 0
+    whitebox_tests_not_run: int = 0
     total_threats_modeled: int
     critical_threats_count: int
     blackbox_tests_passed: int
@@ -331,7 +331,7 @@ class VibeHarnessSummary(BaseModel):
     # Attack tests that FAILED without matching the exploit predicate: ambiguous evidence that
     # must be investigated manually; counts as an evidence gap (never a silent pass)
     blackbox_tests_failed: int = 0
-    blackbox_tests_errored: int = 0
+    blackbox_tests_not_run: int = 0
     untested_threat_ids: List[str] = Field(default_factory=list)
     agent_calls: List[AgentCallRecord] = Field(default_factory=list)
     inconclusive_reasons: List[str] = Field(default_factory=list)
@@ -354,10 +354,15 @@ class VibeHarnessSummary(BaseModel):
     # Blocking rule hits (HIGH and above) counted toward the verdict; only the new ones with --baseline. None for a
     # summary the quality gate did not produce
     new_blocking_rule_hits: Optional[int] = None
-    # --baseline：先前報告已包含的問題列在這裡，且不計入判定（whitebox_tests_failed／
-    # blackbox_security_breaches／new_blocking_rule_hits 只含新的問題）
-    # --baseline: problems the previous report already contained are listed here and not counted
-    # in the verdict (whitebox_tests_failed / blackbox_security_breaches / new_blocking_rule_hits hold new ones only)
+    # 沒有前綴的計數算全部，new_ 只算新的（決定判定結果的那些；沒有 --baseline 時兩者相同）。不是品質閘門產生的摘要為 None
+    # Unprefixed counts are all, new_ ones only the new ones (those that decide the verdict; the same without
+    # --baseline). None for a summary the quality gate did not produce
+    blocking_rule_hits: Optional[int] = None
+    new_whitebox_tests_failed: Optional[int] = None
+    new_blackbox_security_breaches: Optional[int] = None
+    # --baseline：先前報告已包含的問題（已知問題）列在這裡，且不計入判定（new_ 計數不含它們）
+    # --baseline: problems the previous report already contained (Known problems) are listed here and not counted
+    # in the verdict (the new_ counts leave them out)
     baseline_path: Optional[str] = None
     baseline_suppressed: List["BaselineSuppressedItem"] = Field(default_factory=list)
 

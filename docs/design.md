@@ -84,10 +84,10 @@ flowchart TD
     P1 -- "解析失敗、略過／過大的檔案、<br/>不支援語言的檔案、超過上限的設定類檔案" --> GATE
     SAST -- "HIGH 以上命中；VH-AI-008／009 完整性命中；<br/>未完整掃描（30 秒上限）" --> GATE
     GEN -- "沒有模型測試的發現" --> GATE
-    EXE1 -- "FAILED；錯誤／未執行、<br/>JS/TS 未執行" --> GATE
+    EXE1 -- "FAILED；未執行、<br/>JS/TS 未執行" --> GATE
     MUT -- "只產生證據缺口" --> GATE
     TM -- "未測試的威脅／沒有威脅" --> GATE
-    EXE2 -- "突破；未分類的 FAILED；<br/>錯誤／未執行" --> GATE
+    EXE2 -- "突破；未分類的 FAILED；<br/>未執行" --> GATE
     GW -- "call_log：模擬、invalid、預算用盡、快取未命中" --> GATE
     BASE -- "已知問題不計入" --> GATE
     GATE --> OUT["ReportGenerator<br/>Markdown / JSON（+ annotate_report_payload 指紋）/ SARIF 2.1.0<br/>harness：崩潰時寫 &lt;output&gt;.partial.json"]

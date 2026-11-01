@@ -74,10 +74,10 @@ flowchart TD
     AST -- "解析失敗、略過／過大的檔案、<br/>不支援語言的檔案、超過上限的設定類檔案" --> GATE
     SAST -- "HIGH 以上命中；VH-AI-008／009 完整性命中；<br/>未完整掃描（30 秒上限）" --> GATE
     GEN -- "沒有模型測試的發現" --> GATE
-    SBX -- "FAILED；錯誤／未執行、<br/>JS/TS 未執行" --> GATE
+    SBX -- "FAILED；未執行、<br/>JS/TS 未執行" --> GATE
     MUT -- "證據缺口：分數過低、被截斷、沒有結論" --> GATE
     TM -- "未測試的威脅／沒有威脅" --> GATE
-    BEX -- "突破；未分類的 FAILED；<br/>錯誤／未執行" --> GATE
+    BEX -- "突破；未分類的 FAILED；<br/>未執行" --> GATE
     BASE -- "已知問題不計入" --> GATE
     GW -- "call_log：模擬、invalid、預算用盡、快取未命中" --> GATE
     GATE --> OUT["審計報告 report_generator.py<br/>md / json / SARIF；CLI 的 --summary-json<br/>崩潰時寫 &lt;output&gt;.partial.json"]
@@ -441,7 +441,7 @@ python main.py --target examples --output vibe_harness_report.md
 
 執行前可先用 `--estimate` 看規模：它只跑第 1 階段的符號擷取（不跑確定性規則，也不呼叫模型），印出每個 agent 與每個模型的預期呼叫數（審查者與威脅建模的次數是精確值，驗證、測試生成與攻擊合成依「每批發現數」等假設列為情境值，另給含重問與自癒修復的最大值）、估計的 prompt／輸出 token，以及設定了 `price_per_million_*` 的模型的估計花費；`--format json` 時寫到 `--output`，exit code 為 0（`--changed-since` 的 ref 無法解析或 `--output` 寫不進去時為 5）。規模與成本上限可從 CLI 直接覆蓋設定檔：`--max-files`（單次分析的檔案數上限，預設 50，須 ≥ 1；其餘檔案列為 skipped 並記為證據缺口）與 `--max-model-calls`（單次執行的模型呼叫數上限，預設不限制，`0` 亦表示不限制，負數為用法錯誤；litellm 的重試與 fallback 不另計次，但無法使用的回答每重問一次都算一次；用完時 hybrid 退回模擬並列為證據缺口、live 直接失敗）。檔案篩選：`--include GLOB`／`--exclude GLOB`（可重複，比對相對於 `--target` 的路徑或檔名，例如 `--exclude 'tests/*' --exclude '*.min.js'`；會覆蓋設定檔的 `include`／`exclude`），以及 `--changed-since <git ref>`（只分析相對該 ref 有變更的檔案，含未暫存與未追蹤，適合 PR 檢查：`--changed-since origin/main`）。超過 `max_file_bytes`（預設 1 MB）的檔案不分析並列為證據缺口。模型回應無法使用時會先重問一次（`retry_invalid_output`）再記為 `invalid`。`--output`／`--sarif`／`--summary-json` 的位置不可寫時在任何模型呼叫前就以 exit 5 結束；執行中途崩潰或被 Ctrl-C 中斷時，已完成的階段（模型呼叫紀錄、發現、測試結果、威脅）會寫到 `<output>.partial.json`。`--cache-dir DIR` 開啟回應快取：可用的 live 回應存在 DIR，之後相同提示直接取用、不呼叫供應商也不扣預算（適合重跑或切換報告格式）；重問後才可用的回答也會存在原始提示的 key 下，重跑時第一次嘗試就能命中。`--cache-only` 只從回應快取取用（需要 `--cache-dir` 或 `global.cache_dir`，否則 exit 5）：絕不呼叫供應商、不扣預算、不重問；快取沒有的呼叫列為證據缺口，hybrid 改用模擬（判定不會是 `READY_TO_SHIP`），live 以 exit 4 中止。`--estimate` 加上 `--cache-only` 時照樣列出呼叫數，並註明不會呼叫供應商、沒有花費。詳見 [`docs/configuration.md`](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/configuration.md)。
 
-報告格式以 `--format`（短旗標 `-f`）指定：`md`（預設）或 `json`（機器可讀，含完整的 findings、威脅模型與測試結果，適合接 CI/CD；`schema_version` 為 `"2"`：沒有套用交叉驗證時 `summary.confirmed_whitebox_bugs` 為 `null`，舊的 `"1"` 報告仍可當 `--baseline` 使用；行涵蓋率分成 `summary.line_coverage_pct`（Python）與新增的 `summary.js_line_coverage_pct`（JS/TS），新增欄位不改版本，Markdown 指標表在有 JS/TS 白箱測試時顯示「Python X% / JS/TS Y%」）。兩種格式都會保存每個生成測試的程式碼：Markdown 附錄「產生的測試程式碼（稽核軌跡） ／ Generated Test Code (audit trail)」以可收合區塊列出程式碼與其執行結果（已去除控制字元）；JSON 的 `whitebox.generated_tests`／`blackbox_generated_tests` 則原封不動保存，可用來稽核或重跑。模型寫的測試也只是假設——「通過」的測試可能是在斷言缺陷本身（例如 `pytest.raises(KeyError)`），請一併檢查斷言是否描述正確的行為：
+報告格式以 `--format`（短旗標 `-f`）指定：`md`（預設）或 `json`（機器可讀，含完整的 findings、威脅模型與測試結果，適合接 CI/CD；`schema_version` 為 `"3"`：summary 沒有前綴的計數算全部，`new_` 計數只算決定判定的新項目（有 `--baseline` 時才會不同），未執行（ERROR 與 SKIPPED）的計數是 `whitebox_tests_not_run`／`blackbox_tests_not_run`；沒有套用交叉驗證時 `summary.confirmed_whitebox_bugs` 為 `null`；舊的 `"1"`、`"2"` 報告仍可當 `--baseline` 使用；行涵蓋率分成 `summary.line_coverage_pct`（Python）與新增的 `summary.js_line_coverage_pct`（JS/TS），新增欄位不改版本，Markdown 指標表在有 JS/TS 白箱測試時顯示「Python X% / JS/TS Y%」）。兩種格式都會保存每個生成測試的程式碼：Markdown 附錄「產生的測試程式碼（稽核軌跡） ／ Generated Test Code (audit trail)」以可收合區塊列出程式碼與其執行結果（已去除控制字元）；JSON 的 `whitebox.generated_tests`／`blackbox_generated_tests` 則原封不動保存，可用來稽核或重跑。模型寫的測試也只是假設——「通過」的測試可能是在斷言缺陷本身（例如 `pytest.raises(KeyError)`），請一併檢查斷言是否描述正確的行為：
 
 ```bash
 python main.py --target examples --output report.json --format json

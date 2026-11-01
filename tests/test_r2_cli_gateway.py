@@ -50,8 +50,8 @@ def _capture_run(monkeypatch):
 # --- 1. Without cross-verification the confirmed count is null (not a 0 that reads as clean) --------------
 
 def test_json_report_has_null_confirmed_count_without_verification(tmp_path):
-    """mock 執行沒有真實的驗證投票：JSON 的 summary.confirmed_whitebox_bugs 是 null，schema_version 是 "2"。
-    A mock run casts no real verifier vote: summary.confirmed_whitebox_bugs is null in the JSON, schema_version is "2"."""
+    """mock 執行沒有真實的驗證投票：JSON 的 summary.confirmed_whitebox_bugs 是 null，schema_version 是 "3"。
+    A mock run casts no real verifier vote: summary.confirmed_whitebox_bugs is null in the JSON, schema_version is "3"."""
     target = tmp_path / "app"
     target.mkdir()
     shutil.copy(os.path.join(EXAMPLES, "vibe_sample_app.py"), target)
@@ -59,9 +59,28 @@ def test_json_report_has_null_confirmed_count_without_verification(tmp_path):
     VibeHarnessCommander(execution_mode="mock").run_full_pipeline(
         target_dir=str(target), output_report_path=str(report), output_format="json")
     payload = json.loads(report.read_text(encoding="utf-8"))
-    assert JSON_SCHEMA_VERSION == "2" and payload["schema_version"] == "2"
+    assert JSON_SCHEMA_VERSION == "3" and payload["schema_version"] == "3"
     assert payload["summary"]["confirmed_whitebox_bugs"] is None
     assert payload["whitebox"]["debate"]["arbitration_applied"] is False
+
+
+def test_json_summary_schema_3_names_the_not_run_counts_and_carries_new_counts(tmp_path):
+    """schema_version "3"（#111）：未執行（ERROR 與 SKIPPED）的計數叫 *_not_run，不再叫 *_errored；另有 new_ 計數與
+    阻擋性規則命中的總數。
+    schema_version "3" (#111): the Not run (ERROR and SKIPPED) counts are *_not_run, no longer *_errored; there are
+    new_ counts and the total of blocking rule hits."""
+    target = tmp_path / "app"
+    target.mkdir()
+    shutil.copy(os.path.join(EXAMPLES, "vibe_sample_app.py"), target)
+    report = tmp_path / "r.json"
+    VibeHarnessCommander(execution_mode="mock").run_full_pipeline(
+        target_dir=str(target), output_report_path=str(report), output_format="json")
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    summary = payload["summary"]
+    assert payload["schema_version"] == "3"
+    assert {"whitebox_tests_not_run", "blackbox_tests_not_run", "new_whitebox_tests_failed",
+            "new_blackbox_security_breaches", "blocking_rule_hits", "new_blocking_rule_hits"} <= summary.keys()
+    assert not {"whitebox_tests_errored", "blackbox_tests_errored"} & summary.keys()
 
 
 def test_markdown_shows_na_for_a_null_confirmed_count_even_if_arbitration_is_flagged(tmp_path):

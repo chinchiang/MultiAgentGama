@@ -551,9 +551,6 @@ class VibeHarnessCommander:
                 ),
             ))
             overall_status, inconclusive_reasons, recommendations = gate.verdict, gate.reasons, gate.recommendations
-            # summary 的白箱失敗與資安突破只算新的（#111 會讓各欄位的定義一致）
-            # The summary's white-box failures and Breaches count only new ones (#111 makes the fields consistent)
-            wb_failed, bb_breaches = len(tally.whitebox_failures.new), len(tally.breaches.new)
             known_problems = list(tally.known_problems)
             if known_problems and self.baseline is not None:
                 self.console.print(
@@ -587,14 +584,16 @@ class VibeHarnessCommander:
                 distinct_whitebox_findings=len(findings),
                 confirmed_whitebox_bugs=confirmed_majority,
                 whitebox_tests_passed=wb_passed,
-                whitebox_tests_failed=wb_failed,
-                whitebox_tests_errored=len(tally.whitebox_not_run.all),
+                whitebox_tests_failed=len(tally.whitebox_failures.all),
+                new_whitebox_tests_failed=len(tally.whitebox_failures.new),
+                whitebox_tests_not_run=len(tally.whitebox_not_run.all),
                 total_threats_modeled=len(threat_report.threats),
                 critical_threats_count=critical_threats,
                 blackbox_tests_passed=bb_passed,
-                blackbox_security_breaches=bb_breaches,
+                blackbox_security_breaches=len(tally.breaches.all),
+                new_blackbox_security_breaches=len(tally.breaches.new),
                 blackbox_tests_failed=len(tally.unclassified_failures.all),
-                blackbox_tests_errored=len(tally.blackbox_not_run.all),
+                blackbox_tests_not_run=len(tally.blackbox_not_run.all),
                 untested_threat_ids=list(tally.untested_threats.all),
                 agent_calls=sorted_call_log(self.gateway.call_log),
                 inconclusive_reasons=inconclusive_reasons,
@@ -606,6 +605,7 @@ class VibeHarnessCommander:
                 static_findings=static_findings,
                 ai_components=ai_components,
                 reviewer_models=reviewer_models,
+                blocking_rule_hits=len(tally.blocking_rule_hits.all),
                 new_blocking_rule_hits=len(tally.blocking_rule_hits.new),
                 baseline_path=self.baseline.path if self.baseline else None,
                 baseline_suppressed=known_problems,
@@ -647,7 +647,7 @@ class VibeHarnessCommander:
             verdict_color = {Verdict.READY_TO_SHIP: "green", Verdict.INCONCLUSIVE: "yellow"}.get(overall_status, "red")
             self.console.print(Panel.fit(
                 f"[bold]{bi('品質閘門判定結果', 'Quality Gate Verdict')}:[/bold] [{verdict_color} bold]{overall_status}[/{verdict_color} bold]\n"
-                f"{bi('白箱通過', 'White-Box Passed')}: {wb_passed} | {bi('黑箱突破', 'Black-Box Breaches')}: {bb_breaches}\n"
+                f"{bi('白箱通過', 'White-Box Passed')}: {wb_passed} | {bi('黑箱突破', 'Black-Box Breaches')}: {summary.blackbox_security_breaches}\n"
                 f"{bi('報告', 'Report')}: {output_report_path}",
                 title=bi("驗證摘要", "Verification Summary"),
                 border_style=verdict_color

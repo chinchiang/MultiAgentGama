@@ -84,10 +84,10 @@ flowchart TD
     P1 -- "parse failures, skipped / oversized files,<br/>unsupported-language files, config files over the caps" --> GATE
     SAST -- "HIGH+ hits; VH-AI-008/009 integrity hits;<br/>incomplete scans (30 s cap)" --> GATE
     GEN -- "findings without a model test" --> GATE
-    EXE1 -- "FAILED; errored / not run,<br/>JS/TS not run" --> GATE
+    EXE1 -- "FAILED; not run,<br/>JS/TS not run" --> GATE
     MUT -- "evidence gaps only" --> GATE
     TM -- "untested threats / no threats" --> GATE
-    EXE2 -- "breaches; unclassified FAILED;<br/>errored / not run" --> GATE
+    EXE2 -- "breaches; unclassified FAILED;<br/>not run" --> GATE
     GW -- "call_log: simulated, invalid, budget exhausted, cache misses" --> GATE
     BASE -- "known problems not counted" --> GATE
     GATE --> OUT["ReportGenerator<br/>Markdown / JSON (+ annotate_report_payload fingerprints) / SARIF 2.1.0<br/>harness: &lt;output&gt;.partial.json on a crash"]

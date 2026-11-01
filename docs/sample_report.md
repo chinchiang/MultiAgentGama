@@ -25,7 +25,7 @@
 | **程式碼行涵蓋率 ／ Code Line Coverage** | `63.0%` | 基準 ≥ 80% ／ ≥ 80% Baseline |
 | **審查者發現（原始 → 去重後） ／ Reviewer Findings (raw → distinct)** | `4 → 4` | - |
 | **已確認的白箱邏輯缺陷 ／ Confirmed White-Box Logic Flaws** | `N/A` (4 個未經驗證的假設；未套用驗證 ／ 4 unverified hypotheses; verification not applied) | 0 個關鍵 ／ 0 Critical |
-| **白箱測試通過 ／ White-Box Tests Passed** | `1 / 3` (0 個錯誤或未執行 ／ 0 errored / not run) | 通過率 100% ／ 100% Pass Rate |
+| **白箱測試通過 ／ White-Box Tests Passed** | `1 / 3` (0 個未執行 ／ 0 not run) | 通過率 100% ／ 100% Pass Rate |
 | **已建模的 STRIDE 威脅情境 ／ STRIDE Threat Scenarios Modeled** | `3` | 完整資產涵蓋 ／ Full Asset Coverage |
 | **沒有可執行測試的威脅 ／ Threats Without Executable Test** | `3` | 0 個未測試 ／ 0 Untested |
 | **已確認的黑箱資安突破 ／ Confirmed Black-Box Security Breaches** | `0` | 不容許任何突破 ／ 0 Breaches Tolerated |

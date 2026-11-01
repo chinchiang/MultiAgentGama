@@ -142,7 +142,10 @@ def test_known_problems_are_reported_but_no_longer_decide_the_verdict(tmp_path, 
     monkeypatch.setattr(second.executor, "execute_test_suite", _forced_outcomes(["THREAT-01"]))
     summary = second.run_full_pipeline(target_dir=EXAMPLES, output_report_path=str(tmp_path / "r.md"))
     assert summary.overall_status == "INCONCLUSIVE"
-    assert summary.blackbox_security_breaches == 0 and summary.whitebox_tests_failed == 0
+    # 沒有前綴的計數算全部，new_ 只算新的（#111；過去前者只算新的） ／ Unprefixed counts are all, new_ only the new
+    # ones (#111; the former used to count only the new ones)
+    assert (summary.blackbox_security_breaches, summary.new_blackbox_security_breaches) == (1, 0)
+    assert (summary.whitebox_tests_failed, summary.new_whitebox_tests_failed) == (1, 0)
     assert sorted(s.kind for s in summary.baseline_suppressed) == ["breach", "whitebox_failure"]
     assert summary.baseline_path == str(tmp_path / "base.json")
     md = (tmp_path / "r.md").read_text(encoding="utf-8")
@@ -155,7 +158,9 @@ def test_known_problems_are_reported_but_no_longer_decide_the_verdict(tmp_path, 
     third.baseline = bl.load_baseline(str(tmp_path / "base.json"))
     monkeypatch.setattr(third.executor, "execute_test_suite", _forced_outcomes(["THREAT-01", "THREAT-02"]))
     summary = third.run_full_pipeline(target_dir=EXAMPLES, output_report_path=str(tmp_path / "r2.md"))
-    assert summary.overall_status == "BLOCKED_CRITICAL_RISK" and summary.blackbox_security_breaches == 1
+    assert summary.overall_status == "BLOCKED_CRITICAL_RISK"
+    assert (summary.blackbox_security_breaches, summary.new_blackbox_security_breaches) == (2, 1)
+    assert (summary.whitebox_tests_failed, summary.new_whitebox_tests_failed) == (1, 0)
     assert [s.id for s in summary.baseline_suppressed] == ["WB-PROBE-01", "BB-TEST-THREAT-01"]
 
 
@@ -239,6 +244,10 @@ def test_container_level_simulated_flag_never_overrides_an_items_own_flag():
 # --- The report's rule-hit row agrees with the verdict -------------------------------------------
 
 def _rule_row(**summary_fields):
+    return _summary_row("Deterministic AI-Security Rule Hits", **summary_fields)
+
+
+def _summary_row(label, **summary_fields):
     from vibeharness.core.models import MultiModelDebateResult, ThreatModelReport, VibeHarnessSummary
     from vibeharness.reports.report_generator import ReportGenerator
     hits = [StaticFinding(rule_id=f"VH-AI-00{n}", title="t", severity=FindingSeverity.HIGH, file_path="app.py", line_number=n)
@@ -246,21 +255,121 @@ def _rule_row(**summary_fields):
     summary = VibeHarnessSummary(
         overall_status="READY_TO_SHIP", total_whitebox_findings=0, confirmed_whitebox_bugs=0, whitebox_tests_passed=0,
         whitebox_tests_failed=0, total_threats_modeled=0, critical_threats_count=0, blackbox_tests_passed=0,
-        blackbox_security_breaches=0, static_findings=hits, **summary_fields,
+        static_findings=hits, **{"blackbox_security_breaches": 0, **summary_fields},
     )
     md = ReportGenerator().generate_markdown_report(summary, MultiModelDebateResult(consensus_summary=""),
                                                     ThreatModelReport(system_description=""), [], [], "app")
-    return next(line for line in md.splitlines() if "Deterministic AI-Security Rule Hits" in line)
+    return next(line for line in md.splitlines() if label in line)
 
 
-def test_report_rule_hit_row_counts_only_new_hits_under_a_baseline():
-    """--baseline 下判定只計入新的命中，報告列也必須如此（過去會顯示全部 HIGH+，與 READY_TO_SHIP 矛盾）。
-    Under --baseline the verdict counts only new hits, and so must the report row (it used to show every HIGH+
-    hit, contradicting READY_TO_SHIP)."""
-    row = _rule_row(baseline_path="old.json", new_blocking_rule_hits=1)
-    assert "`3` (" in row and "1 HIGH+ new, 2 known from baseline" in row and "0 new HIGH+" in row
+def test_report_rule_hit_row_reads_known_hits_from_the_known_problems_under_a_baseline():
+    """--baseline 下報告列的總數讀 blocking_rule_hits，已知的數量讀 baseline_suppressed 中的規則命中，不再用減法算（#111）。
+    這裡故意讓兩者不一致：減法會得出 2，清單裡只有 1 個已知的規則命中。
+    Under --baseline the report row reads the total from blocking_rule_hits and the known count from the rule hits in
+    baseline_suppressed, no longer by subtraction (#111). The two disagree on purpose here: subtraction gives 2, the
+    list holds 1 known rule hit."""
+    from vibeharness.core.models import BaselineSuppressedItem
+    known = [BaselineSuppressedItem(kind="static", id="VH-AI-001@app.py:1", title="t", fingerprint="s1"),
+             BaselineSuppressedItem(kind="breach", id="BB-1", title="t", fingerprint="b1")]
+    row = _rule_row(baseline_path="old.json", blocking_rule_hits=3, new_blocking_rule_hits=1, baseline_suppressed=known)
+    assert "`3` (" in row and "1 HIGH+ new, 1 known from baseline" in row and "0 new HIGH+" in row
 
 
 @pytest.mark.parametrize("fields", [{}, {"new_blocking_rule_hits": 3}, {"baseline_path": "old.json"}])
 def test_report_rule_hit_row_without_a_baseline_is_unchanged(fields):
-    assert _rule_row(**fields).endswith("| `3` (3 HIGH+) | 0 HIGH+ |")
+    assert _rule_row(blocking_rule_hits=3, **fields).endswith("| `3` (3 HIGH+) | 0 HIGH+ |")
+
+
+def test_report_rule_hit_row_leaves_out_the_blocking_count_the_gate_did_not_produce():
+    """沒有 blocking_rule_hits（不是品質閘門產生的摘要）時不顯示 HIGH+ 數，報告不自己從 static_findings 重算（#111）。
+    Without blocking_rule_hits (a summary the Quality Gate did not produce) the row shows no HIGH+ count; the report
+    does not recount static_findings itself (#111)."""
+    assert _rule_row().endswith("| `3` | 0 HIGH+ |")
+
+
+def _rule_hit_target(root, *files):
+    # torch.load 是 HIGH 以上的規則命中；import 放在函式裡，目標本身才匯入得了
+    # torch.load is a HIGH+ rule hit; the import sits inside the function so the target itself still imports
+    root.mkdir(exist_ok=True)
+    for name, arg in files:
+        (root / name).write_text(f"def load_{arg}({arg}):\n    import torch\n    return torch.load({arg})\n", encoding="utf-8")
+    return str(root)
+
+
+def test_under_a_baseline_the_summary_counts_all_and_new_blocking_rule_hits(tmp_path, monkeypatch):
+    """沒有前綴的 blocking_rule_hits 算全部，new_blocking_rule_hits 只算新的；已知的命中列在 baseline_suppressed（#111）。
+    The unprefixed blocking_rule_hits counts all of them and new_blocking_rule_hits only the new ones; the known hit
+    is listed in baseline_suppressed (#111)."""
+    target = tmp_path / "target"
+    first = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
+    monkeypatch.setattr(first.executor, "execute_test_suite", _forced_outcomes([], wb_fail=False))
+    first.run_full_pipeline(target_dir=_rule_hit_target(target, ("app.py", "f")),
+                            output_report_path=str(tmp_path / "base.json"), output_format="json")
+
+    second = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
+    second.baseline = bl.load_baseline(str(tmp_path / "base.json"))
+    monkeypatch.setattr(second.executor, "execute_test_suite", _forced_outcomes([], wb_fail=False))
+    summary = second.run_full_pipeline(target_dir=_rule_hit_target(target, ("app.py", "f"), ("extra.py", "g")),
+                                       output_report_path=str(tmp_path / "r.json"), output_format="json")
+    assert (summary.blocking_rule_hits, summary.new_blocking_rule_hits) == (2, 1)
+    assert [s.kind for s in summary.baseline_suppressed] == ["static"]
+
+
+def test_report_breach_row_shows_new_and_known_breaches_under_a_baseline():
+    """--baseline 下突破列比照規則命中列：全部，再列出新的與基準中已知的（已知讀已知問題清單），目標是 0 個新的突破（#111）。
+    Under --baseline the Breach row reads like the rule-hit row: all of them, then the new and the known ones (the
+    known ones from the Known problems), aiming at 0 new breaches (#111)."""
+    from vibeharness.core.models import BaselineSuppressedItem
+    known = [BaselineSuppressedItem(kind="breach", id="BB-1", title="t", fingerprint="b1"),
+             BaselineSuppressedItem(kind="static", id="VH-AI-001@app.py:1", title="t", fingerprint="s1")]
+    row = _summary_row("Confirmed Black-Box Security Breaches", baseline_path="old.json", blackbox_security_breaches=2,
+                       new_blackbox_security_breaches=1, baseline_suppressed=known)
+    assert row.endswith("| `2` (1 個新的，1 個基準中已知 ／ 1 new, 1 known from baseline) | 0 個新的突破 ／ 0 new breaches |")
+
+
+@pytest.mark.parametrize("fields", [{}, {"new_blackbox_security_breaches": 2}, {"baseline_path": "old.json"}])
+def test_report_breach_row_without_a_baseline_is_unchanged(fields):
+    row = _summary_row("Confirmed Black-Box Security Breaches", blackbox_security_breaches=2, **fields)
+    assert row.endswith("| `2` | 不容許任何突破 ／ 0 Breaches Tolerated |")
+
+
+def test_report_white_box_row_calls_error_and_skipped_tests_not_run():
+    """白箱列把 ERROR 與 SKIPPED 稱為「未執行」，不再說 errored（GLOSSARY；#111）。
+    The white-box row calls ERROR and SKIPPED tests Not run, no longer errored (GLOSSARY; #111)."""
+    row = _summary_row("White-Box Tests Passed", whitebox_tests_not_run=2)
+    assert "(2 個未執行 ／ 2 not run)" in row
+
+
+def test_under_a_baseline_the_console_counts_agree_with_the_summary(tmp_path, monkeypatch):
+    """同一次 --baseline 執行裡，console 第 3、5 階段印的計數等於 summary 沒有前綴的同名欄位（#111；過去 summary 的白箱失敗
+    與資安突破只算新的，與 console 的總數不一致）。
+    In one --baseline run the counts the console prints in phases 3 and 5 equal the summary's unprefixed fields of the
+    same name (#111; the summary's white-box failures and Breaches used to count only new ones, disagreeing with the
+    console's totals)."""
+    import io
+    import re
+
+    from rich.console import Console
+    first = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
+    monkeypatch.setattr(first.executor, "execute_test_suite", _forced_outcomes(["THREAT-01"]))
+    first.run_full_pipeline(target_dir=EXAMPLES, output_report_path=str(tmp_path / "base.json"), output_format="json")
+
+    second = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
+    second.baseline = bl.load_baseline(str(tmp_path / "base.json"))
+    out = io.StringIO()
+    second.console = Console(file=out, force_terminal=False, width=400)
+    monkeypatch.setattr(second.executor, "execute_test_suite", _forced_outcomes(["THREAT-01", "THREAT-02"]))
+    summary = second.run_full_pipeline(target_dir=EXAMPLES, output_report_path=str(tmp_path / "r.json"),
+                                       output_format="json")
+    console = out.getvalue()
+
+    def printed(label):
+        return int(re.search(rf"(\d+) [^|]*{re.escape(label)}", console).group(1))
+
+    assert (printed("Failed/Exposed"), printed("Confirmed Breaches")) == (1, 2)
+    assert printed("Failed/Exposed") == summary.whitebox_tests_failed
+    assert printed("Confirmed Breaches") == summary.blackbox_security_breaches
+    assert printed("Failed (unclassified)") == summary.blackbox_tests_failed
+    assert printed("Threats Not Tested") == len(summary.untested_threat_ids)
+    # 最後的結果方框也一樣 ／ So does the closing panel
+    assert int(re.search(r"Black-Box Breaches: (\d+)", console).group(1)) == summary.blackbox_security_breaches == 2
