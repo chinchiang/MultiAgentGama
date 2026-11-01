@@ -17,6 +17,7 @@
 - 新增 `tests/test_repo_docs.py`：兩份 README 的檔案樹必須列出每個測試檔、script、workflow、`vibeharness/` 模組與 `docs/` 文件；`CODING_STANDARDS*.md`、`CONTRIBUTING.md`、`AGENTS.md` 點名的檔案與函式、類別、常數必須存在（只在 docstring 裡被提到不算）；讀 repo `.github/` 的測試必須有 `needs_github` 或自行略過，因為 CI 的 package job 在不含 `.github/` 的 sdist 裡重跑測試。兩份 README 補上原本漏列的 `tests/test_r6_review.py`、`tests/test_windows_env_limit.py` 與 `docs/agents/`；sdist 補上 `CODING_STANDARDS.md` 引用的 `GLOSSARY.md`。
 - 新增 `tests/test_pr_issue_link.py`：哪些 PR 需要 issue（`fix`／`feat`／`perf` 只看前綴，`refactor` 看有沒有改到 `vibeharness/`）、關閉關鍵字、commit 訊息裡的 `#N`，以及 `pr-issue-link.yml` 只有讀取權限、標題與描述不經 `${{ }}` 進 shell。
 - 新增 `tests/test_sdist_script.py`：`scripts/test_sdist.py` 在解開的 sdist 裡跑 pytest 並帶 `VIBEHARNESS_SDIST`、建置失敗就停、封存檔只能有一個頂層目錄、拒絕 `..` 路徑，沒有 tarfile data filter 的 Python 直接報錯。
+- 新增 `tests/test_required_checks.py`：matrix 依 GitHub 的規則展開成檢查名稱、每一種不一致都會報告、`CONTRIBUTING.md` 與 workflow 的必要檢查一致（目前 15 項）、比對 ruleset 的 workflow 不在 PR 上跑且只有讀取權限。
 
 ### 文件
 
@@ -29,6 +30,7 @@
 - 行為改動先開 issue：標題是 `fix:`、`feat:`、`perf:`，或改到 `vibeharness/` 的 `refactor:` 的 PR，描述必須以 `Closes #N` 連到存在的 issue，而且至少一個 commit 訊息帶 `Refs #N`，讓 `/code-review` 的 Spec 審查有東西可比對。新的 `.github/workflows/pr-issue-link.yml`（job `issue-link`，只有讀取權限）以 `scripts/check_pr_issue_link.py` 檢查，成為 master 的第 15 個必要檢查；Dependabot 的 PR 不檢查。PR 範本最上面加了 `## Issue`，`CONTRIBUTING.md` 與 `docs/agents/issue-tracker.md` 記載規則（issue 的三段欄位、審查輪一個 issue、資安漏洞走 `SECURITY.md`）。
 - CodeQL 對所有 PR 執行，不再只限以 `master` 為目標的 PR：疊在其他 PR 上的 PR 在下層合併、被改成以 `master` 為目標後，改目標不會觸發 workflow，`Analyze (python)`／`Analyze (actions)` 這兩個必要檢查會一直等不到結果。
 - 新增 `scripts/test_sdist.py`：在本機重現 CI 的 package job，建 sdist、解到暫存目錄、在裡面跑測試套件並設定 `VIBEHARNESS_SDIST`。sdist 不帶 `.github/` 與 `AGENTS.md`，在 repo 裡跑會漏掉讀這些檔案卻沒略過的測試，以及 sdist 漏打包的檔案；`CONTRIBUTING.md` 的「提交前請跑」新增這一行。
+- 新增 `.github/workflows/required-checks.yml` 與 `scripts/check_required_checks.py`：push 到 `master` 與每週比對 workflow 產生的必要檢查名稱、`CONTRIBUTING.md` 寫的數量，以及 ruleset 的實際設定，不一致就失敗（例如 ruleset 少了一項、改名後的檢查永遠等不到、文件數量過時）。不在 PR 上執行，免得新增必要檢查的 PR 卡住自己。
 
 ## [0.15.0] - 2026-10-31
 

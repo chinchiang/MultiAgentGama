@@ -1,0 +1,42 @@
+name: required checks
+
+# 比對 master 的必要檢查：workflow 產生的名稱、CONTRIBUTING.md 寫的數量與名稱、ruleset 的實際設定
+# （scripts/check_required_checks.py）。只在 push 到 master、每週與手動時執行，不在 PR 上：新增必要檢查時，
+# 文件在 PR 裡先改、ruleset 合併後才能改，在 PR 上跑會讓那個 PR 自己卡住。失敗代表要去改 ruleset 或文件。
+# Compare master's required checks: the names the workflows produce, the count and names in CONTRIBUTING.md, and
+# the ruleset's actual setting (scripts/check_required_checks.py). Runs only on pushes to master, weekly and by
+# hand, never on PRs: when a required check is added the docs change in the PR and the ruleset only after the
+# merge, so running on the PR would block that PR. A failure means the ruleset or the docs need updating.
+on:
+  push:
+    branches: [master]
+  # 每週一次，抓到在 repo 設定裡做的改動 ／ Weekly, to catch changes made in the repository settings
+  schedule:
+    - cron: '23 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # 第三方 action 釘在 commit SHA；升版時同步改註解裡的 tag
+      # Third-party actions are pinned to commit SHAs; bump the tag in the comment
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.lock
+      # script 需要 PyYAML；以帶雜湊的鎖定檔安裝，與其他 job 相同 ／ The script needs PyYAML; install from the hashed lock like the other jobs
+      - run: python -m pip install --require-hashes -r requirements.lock
+      - name: Compare the workflows, CONTRIBUTING.md and the ruleset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python scripts/check_required_checks.py
