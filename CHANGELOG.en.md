@@ -14,12 +14,17 @@ All notable changes to this project are documented in this file. The format foll
 
 - New regression tests in `tests/test_review_whitebox_fixes.py`.
 - New `tests/test_design_refs.py`: every `path:line` reference in the design documents must land on the definition or a use of the name it points at, every entry of the appendix index must be exactly the definition line, the zh and en documents must cite the same files and lines line for line, and both must cite one commit or tag.
+- New `tests/test_pr_issue_link.py`: which PRs need an issue (`fix` / `feat` / `perf` by prefix alone, `refactor` by whether it changes `vibeharness/`), closing keywords, `#N` in the commit messages, and that `pr-issue-link.yml` has read-only permissions and never passes the title or body to the shell through `${{ }}`.
 
 ### Documentation
 
 - The design document describes the call-registered views, and its line references into `vibeharness/agents/whitebox/ast_extractor.py` are updated to the current code, including the ones previously missed in the `parse_directory`, JS/TS extraction and JS/TS route paragraphs of section 6.1.
 - New `scripts/recite_design_refs.py`: remaps the line references of the design documents to the current code via git diff and updates the cited commit (`--tag` cites a release tag instead, `--check` only checks); `CONTRIBUTING.md` now says to use it.
 - New `CODING_STANDARDS.md` / `CODING_STANDARDS.en.md`: the coding rules applied in review (regression tests, the quality gate, untrusted input, config validation, generated tests, output strings, keeping docs in sync), each with what a violation looks like, plus the rules tests already check; the principles in `CONTRIBUTING.md` now point to it, keeping only the design-reference and dependency steps. The config validation location it gave (`LLMGateway.__init__` / `VibeHarnessCommander.__init__`) and the prompt wrapping it described (calling `untrusted_block` directly) were stale and now read `load_settings` in `vibeharness/core/settings.py` and `Untrusted` content for `vibeharness/core/agent_call.py`. Both rule files join the zh / en line-count check and ship in the sdist.
+
+### Engineering
+
+- A behaviour change gets an issue first: a PR titled `fix:`, `feat:` or `perf:`, or a `refactor:` that changes `vibeharness/`, must link an existing issue with `Closes #N` in its description and carry `Refs #N` in at least one commit message, so the Spec review of `/code-review` has something to compare against. The new `.github/workflows/pr-issue-link.yml` (job `issue-link`, read-only permissions) checks it with `scripts/check_pr_issue_link.py` and becomes the 15th required check on master; Dependabot PRs are not checked. The PR template starts with an `## Issue` section, and `CONTRIBUTING.md` and `docs/agents/issue-tracker.md` hold the rules (the issue's three sections, one issue per review round, vulnerabilities through `SECURITY.md`).
 
 ## [0.15.0] - 2026-10-31
 

@@ -181,6 +181,7 @@ MultiAgentGama/
 │       ├── codeql.yml           # CodeQL code scanning (Python and the workflows, security-extended queries); Analyze (python) / Analyze (actions) are required checks on master
 │       ├── tests.yml            # CI: lint (ruff / mypy), audit (pip-audit), package (sdist + wheel: wheel smoke test, suite run from the sdist), test (Ubuntu / Windows × Python 3.11–3.14 plus macOS × 3.12, 93% coverage floor)
 │       ├── publish.yml          # Release: on tag push, run tests.yml first, verify the version matches, build sdist / wheel, smoke-test the wheel in a clean venv, upload to the GitHub Release (its body taken from the matching CHANGELOG.en.md section) and publish to PyPI via Trusted Publishing
+│       ├── pr-issue-link.yml    # A behaviour-changing PR (fix / feat / perf, refactor touching vibeharness/) must link an issue; issue-link is a required check on master
 │       └── live-smoke.yml       # Manual: one live / hybrid run of a target (default examples) with the repo's provider secrets, reports uploaded
 ├── docker/
 │   ├── sandbox.Dockerfile       # Base image for the docker sandbox (digest-pinned python:3.12-slim, USER 65534; pytest / pytest-cov / requests / hypothesis)
@@ -248,6 +249,7 @@ MultiAgentGama/
 │   ├── design.md                # Design document: architecture, data flow, gate verdicts, sandbox security model (Traditional Chinese)
 │   └── design.en.md             # Design document (English)
 ├── scripts/
+│   ├── check_pr_issue_link.py   # pr-issue-link's logic: which PRs need an issue, whether the description and commits link an existing one
 │   └── recite_design_refs.py    # Checks the design documents' path:line references and remaps them to the current code via git diff
 ├── tests/                       # The toolkit's own tests (offline, no API keys needed)
 │   ├── config_files.py          # Read the bundled config, write an edited copy for a test (load_config / write_config)
@@ -276,6 +278,7 @@ MultiAgentGama/
 │   ├── test_node_runtime.py            # Choosing the Node runtime: build_node_sandbox, probing the version inside docker, the harness's factory, SuiteResult.node_runtime
 │   ├── test_p0_regressions.py          # Executor correctness, self-repair and result-provenance honesty regressions
 │   ├── test_parallel_and_budgets.py    # Parallel test generation, model-call budget, file / worker caps
+│   ├── test_pr_issue_link.py           # Which PRs need an issue, closing keywords, commit Refs, the workflow's read-only permissions
 │   ├── test_prompt_context.py          # Live mode: prompts carry real code and import paths, gateway call robustness
 │   ├── test_quality_fixes.py           # Packaging, model-output robustness, execution and SARIF fix regressions
 │   ├── test_quality_gate.py            # The quality gate through evaluate(): verdict rungs, every evidence-gap code, gap order, baseline split, recommendations; one pipeline wiring test

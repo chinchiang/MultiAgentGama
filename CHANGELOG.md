@@ -14,12 +14,17 @@
 
 - 新增回歸測試於 `tests/test_review_whitebox_fixes.py`。
 - 新增 `tests/test_design_refs.py`：設計文件的每個 `path:line` 引用必須落在它指向的名稱的定義或使用處，附錄索引的項目必須正好是定義那一行，中英文件逐行引用相同的檔案與行號，兩份文件引用同一個 commit 或 tag。
+- 新增 `tests/test_pr_issue_link.py`：哪些 PR 需要 issue（`fix`／`feat`／`perf` 只看前綴，`refactor` 看有沒有改到 `vibeharness/`）、關閉關鍵字、commit 訊息裡的 `#N`，以及 `pr-issue-link.yml` 只有讀取權限、標題與描述不經 `${{ }}` 進 shell。
 
 ### 文件
 
 - 設計文件記載以函式呼叫註冊的檢視函式，並依目前的程式碼更新指向 `vibeharness/agents/whitebox/ast_extractor.py` 的行號引用；第 6.1 節 `parse_directory`、JS/TS 擷取與 JS/TS 路由三段先前漏掉的引用也一併更新。
 - 新增 `scripts/recite_design_refs.py`：依 git diff 把設計文件的行號引用重新對應到目前的程式碼並更新引用的 commit（`--tag` 改引用 release tag，`--check` 只檢查）；`CONTRIBUTING.md` 改為說明用它更新引用。
 - 新增 `CODING_STANDARDS.md`／`CODING_STANDARDS.en.md`：審查時套用的程式碼規則（回歸測試、品質閘門、不可信的輸入、設定驗證、生成的測試、輸出字串、文件同步），每條附上違規的樣子，並列出已由測試檢查的規則；`CONTRIBUTING.md` 的修改原則改為指向它，只留下設計文件引用與依賴的步驟。原本寫的設定驗證位置（`LLMGateway.__init__`／`VibeHarnessCommander.__init__`）與提示詞包裝方式（直接呼叫 `untrusted_block`）已過時，改為 `vibeharness/core/settings.py` 的 `load_settings` 與 `vibeharness/core/agent_call.py` 的 `Untrusted` 內容。兩份規則檔加入中英成對的行數檢查並隨 sdist 發布。
+
+### 工程
+
+- 行為改動先開 issue：標題是 `fix:`、`feat:`、`perf:`，或改到 `vibeharness/` 的 `refactor:` 的 PR，描述必須以 `Closes #N` 連到存在的 issue，而且至少一個 commit 訊息帶 `Refs #N`，讓 `/code-review` 的 Spec 審查有東西可比對。新的 `.github/workflows/pr-issue-link.yml`（job `issue-link`，只有讀取權限）以 `scripts/check_pr_issue_link.py` 檢查，成為 master 的第 15 個必要檢查；Dependabot 的 PR 不檢查。PR 範本最上面加了 `## Issue`，`CONTRIBUTING.md` 與 `docs/agents/issue-tracker.md` 記載規則（issue 的三段欄位、審查輪一個 issue、資安漏洞走 `SECURITY.md`）。
 
 ## [0.15.0] - 2026-10-31
 

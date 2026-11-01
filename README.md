@@ -181,6 +181,7 @@ MultiAgentGama/
 │       ├── codeql.yml           # CodeQL 程式碼掃描（Python 與 workflow，security-extended 查詢）；Analyze (python)／Analyze (actions) 是 master 的必要檢查
 │       ├── tests.yml            # CI：lint（ruff／mypy）、audit（pip-audit）、package（sdist＋wheel：wheel 冒煙測試、從 sdist 跑測試套件）、test（Ubuntu／Windows × Python 3.11–3.14，另加 macOS × 3.12，覆蓋率門檻 93%）
 │       ├── publish.yml          # 發佈：tag 推送時先跑 tests.yml、驗證版本一致、建置 sdist／wheel、在乾淨的 venv 對 wheel 冒煙測試、上傳 GitHub Release（內文取自 CHANGELOG.en.md 的對應區段），並以 Trusted Publishing 發布到 PyPI
+│       ├── pr-issue-link.yml    # 行為改動（fix／feat／perf、動到 vibeharness/ 的 refactor）的 PR 必須連到 issue；issue-link 是 master 的必要檢查
 │       └── live-smoke.yml       # 手動觸發：以 repo secrets 的真實金鑰對指定目標（預設 examples）跑一次 live／hybrid，上傳報告
 ├── docker/
 │   ├── sandbox.Dockerfile       # docker 沙盒的基底映像（以 digest 釘死的 python:3.12-slim，USER 65534；pytest / pytest-cov / requests / hypothesis）
@@ -248,6 +249,7 @@ MultiAgentGama/
 │   ├── design.md                # 設計文件：架構、資料流、閘門判定、沙盒安全模型（正體中文）
 │   └── design.en.md             # Design document (English)
 ├── scripts/
+│   ├── check_pr_issue_link.py   # pr-issue-link 的判斷：哪些 PR 需要 issue、描述與 commit 是否連到存在的 issue
 │   └── recite_design_refs.py    # 檢查設計文件的 path:line 引用，並依 git diff 重新對應到目前的程式碼
 ├── tests/                       # 工具包本身之測試（離線、不需 API 金鑰）
 │   ├── config_files.py          # 讀出內建設定、寫出修改後的測試用設定檔（load_config／write_config）
@@ -276,6 +278,7 @@ MultiAgentGama/
 │   ├── test_node_runtime.py            # Node 執行環境的選擇：build_node_sandbox、docker 內的版本偵測、harness 的工廠、SuiteResult.node_runtime
 │   ├── test_p0_regressions.py          # 執行器正確性、自我修復與結果來源誠實性的回歸測試
 │   ├── test_parallel_and_budgets.py    # 測試生成並行、模型呼叫預算、檔案／worker 上限
+│   ├── test_pr_issue_link.py           # 哪些 PR 需要 issue、關閉關鍵字、commit 的 Refs、workflow 只有讀取權限
 │   ├── test_prompt_context.py          # live 模式：提示帶入真實程式碼與 import 路徑、閘道呼叫健壯性
 │   ├── test_quality_fixes.py           # 打包、模型輸出健壯性、執行與 SARIF 修正的回歸測試
 │   ├── test_quality_gate.py            # 透過 evaluate() 測試品質閘門：各級判定、每種證據缺口代碼、缺口順序、基準拆分、建議；另有一個 pipeline 接線測試
