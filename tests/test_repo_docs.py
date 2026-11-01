@@ -27,25 +27,70 @@ _TREE_SOURCES = (
 
 def _tree_files(directory, extensions, recursive):
     pattern = os.path.join(REPO_ROOT, directory, "**" if recursive else "", "*")
-    return sorted(os.path.relpath(p, REPO_ROOT) for p in glob.glob(pattern, recursive=recursive)
+    # 一律用 `/`：Windows 的 relpath 是反斜線 ／ Always `/`: relpath gives backslashes on Windows
+    return sorted(os.path.relpath(p, REPO_ROOT).replace(os.sep, "/") for p in glob.glob(pattern, recursive=recursive)
                   if p.endswith(extensions) and os.path.basename(p) != "__init__.py" and "__pycache__" not in p)
+
+
+_TREE_ENTRY_RE = re.compile(r"^((?:│   |    )*)[├└]── (\S+)")
+TREE_ROOT = "MultiAgentGama/"
+
+
+def tree_paths(text):
+    """把 README 的檔案樹還原成相對於 repo 根目錄的路徑：每層縮排 4 個字元，目錄以 `/` 結尾。
+    Turn a README file tree back into paths relative to the repo root: each level indents 4 characters, and
+    directories end in `/`."""
+    lines = text.split("\n")
+    start = next(i for i, line in enumerate(lines) if line.strip() == TREE_ROOT)
+    stack, paths = [], set()
+    for line in lines[start + 1:]:
+        if line.startswith("```"):
+            break
+        match = _TREE_ENTRY_RE.match(line)
+        if not match:
+            continue
+        depth, name = len(match.group(1)) // 4, match.group(2)
+        stack = stack[:depth] + [name.rstrip("/")]
+        paths.add("/".join(stack) + ("/" if name.endswith("/") else ""))
+    return paths
 
 
 @pytest.mark.parametrize("readme", ["README.md", "README.en.md"])
 def test_the_readme_file_tree_lists_every_file(readme):
-    """README 的檔案樹列出每個測試檔、script、workflow、`vibeharness/` 模組與 `docs/` 文件（`── 檔名`）。
-    The README file tree lists every test file, script, workflow, `vibeharness/` module and `docs/` document
-    (`── name`)."""
+    """README 的檔案樹在正確的目錄底下列出每個測試檔、script、workflow、`vibeharness/` 模組與 `docs/` 文件。
+    The README file tree lists every test file, script, workflow, `vibeharness/` module and `docs/` document under
+    the right directory."""
     with open(os.path.join(REPO_ROOT, readme), encoding="utf-8") as f:
-        tree = f.read()
+        listed = tree_paths(f.read())
     missing = []
     for directory, extensions, recursive in _TREE_SOURCES:
         # sdist 不帶 .github/：沒有的目錄略過 ／ The sdist does not ship .github/: a missing directory is skipped
         if not os.path.isdir(os.path.join(REPO_ROOT, directory)):
             continue
-        missing += [p for p in _tree_files(directory, extensions, recursive)
-                    if f"── {os.path.basename(p)}" not in tree]
-    assert missing == [], f"add these to the file tree of {readme}:\n" + "\n".join(missing)
+        missing += [p for p in _tree_files(directory, extensions, recursive) if p not in listed]
+    assert missing == [], f"list these under their directory in the file tree of {readme}:\n" + "\n".join(missing)
+
+
+def test_tree_paths_follows_the_indentation_and_catches_a_file_under_the_wrong_directory():
+    """縮排決定所屬目錄：列在 `scripts/` 底下的測試檔還原成 `scripts/…`，不會被當成 `tests/…`。
+    Indentation decides the directory: a test file listed under `scripts/` comes back as `scripts/…`, not
+    `tests/…`."""
+    text = "\n".join([
+        "```text", TREE_ROOT,
+        "├── scripts/",
+        "│   ├── tool.py                  # a script",
+        "│   └── test_misplaced.py        # listed in the wrong place",
+        "├── tests/",
+        "│   └── test_a.py",
+        "└── vibeharness/",
+        "    └── core/",
+        "        └── gate.py",
+        "```",
+        "├── ignored.py  (after the tree)",
+    ])
+    assert tree_paths(text) == {"scripts/", "scripts/tool.py", "scripts/test_misplaced.py", "tests/", "tests/test_a.py",
+                                "vibeharness/", "vibeharness/core/", "vibeharness/core/gate.py"}
+    assert "tests/test_misplaced.py" not in tree_paths(text)
 
 
 # --- 規則文件點名的名稱與路徑 ----------------------------------------------------------------------------
