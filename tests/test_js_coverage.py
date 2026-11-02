@@ -374,7 +374,7 @@ def test_json_summary_carries_js_line_coverage_additively(tmp_path):
         MultiModelDebateResult(confirmed_findings=[], disputed_findings=[], consensus_summary="c"),
         ThreatModelReport(system_description="s", entrypoints=[], trust_boundaries=[], assets=[], threats=[]),
         [], [], str(tmp_path)))
-    assert payload["schema_version"] == "2"  # 新增欄位不改版 ／ an additive field keeps the version
+    assert payload["schema_version"] == "3"  # 新增欄位本身不改版（"3" 是 #111 的改名） ／ an additive field alone keeps the version ("3" is #111's rename)
     assert payload["summary"]["js_line_coverage_pct"] == 71.4 and payload["summary"]["line_coverage_pct"] is None
 
 
