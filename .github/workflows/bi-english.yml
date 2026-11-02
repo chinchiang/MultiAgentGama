@@ -1,10 +1,10 @@
 name: bi English halves
 
 # 既有 bi() 的英文半被改掉或移除時，兩份 CHANGELOG 的 [Unreleased] 都要寫出舊的英文（CODING_STANDARDS 第 6 條）。
-# 不是 master 的必要檢查（要列為必要檢查得改 ruleset，由維護者決定）。
+# 這是 master 的必要檢查，不要改 workflow 名稱或 job 名稱。
 # When the English half of an existing bi() changes or goes away, both CHANGELOGs' [Unreleased] must name the old
-# English text (CODING_STANDARDS rule 6). Not a required check on master (that needs a ruleset change, the
-# maintainer's decision).
+# English text (CODING_STANDARDS rule 6). This is a required check on master: keep the workflow name and the job
+# name.
 on:
   pull_request:
     types: [opened, synchronize, reopened]

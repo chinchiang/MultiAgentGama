@@ -98,15 +98,15 @@ def test_each_kind_of_drift_is_reported():
 
 @needs_github
 def test_contributing_and_the_workflows_agree_on_the_required_checks():
-    """不用網路的那一半：CONTRIBUTING 的數量與點名和 workflow 產生的必要檢查一致（目前 15 項）。
+    """不用網路的那一半：CONTRIBUTING 的數量與點名和 workflow 產生的必要檢查一致（目前 16 項）。
     The offline half: CONTRIBUTING's count and named jobs agree with the required checks the workflows produce
-    (15 today)."""
+    (16 today)."""
     required = rc.required_from_workflows(WORKFLOWS)
     with open(os.path.join(REPO_ROOT, "CONTRIBUTING.md"), encoding="utf-8") as f:
         counts, named = rc.documented(f.read())
     assert rc.problems(required, counts, named, None) == []
-    assert len(required) == 15
-    assert {"lint", "audit", "package", "issue-link", "Analyze (python)", "Analyze (actions)",
+    assert len(required) == 16
+    assert {"lint", "audit", "package", "issue-link", "bi-english", "Analyze (python)", "Analyze (actions)",
             "test (macos-latest, 3.12)", "test (windows-latest, 3.14)"} <= set(required)
 
 

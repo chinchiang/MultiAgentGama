@@ -42,7 +42,7 @@
 - 新增 `scripts/recite_design_refs.py`：依 git diff 把設計文件的行號引用重新對應到目前的程式碼並更新引用的 commit（`--tag` 改引用 release tag，`--check` 只檢查）；`CONTRIBUTING.md` 改為說明用它更新引用。
 - 新增 `CODING_STANDARDS.md`／`CODING_STANDARDS.en.md`：審查時套用的程式碼規則（回歸測試、品質閘門、不可信的輸入、設定驗證、生成的測試、輸出字串、文件同步），每條附上違規的樣子，並列出已由測試檢查的規則；`CONTRIBUTING.md` 的修改原則改為指向它，只留下設計文件引用與依賴的步驟。原本寫的設定驗證位置（`LLMGateway.__init__`／`VibeHarnessCommander.__init__`）與提示詞包裝方式（直接呼叫 `untrusted_block`）已過時，改為 `vibeharness/core/settings.py` 的 `load_settings` 與 `vibeharness/core/agent_call.py` 的 `Untrusted` 內容。兩份規則檔加入中英成對的行數檢查並隨 sdist 發布。
 - `CODING_STANDARDS.md`／`CODING_STANDARDS.en.md` 第 7 條：文件、CHANGELOG、docstring 與註解裡「哪段程式碼讀、寫或產生什麼」的說法要對照 diff 驗證，範圍不能比程式碼大；#110、#111 都有這類說法，只被 Spec 審查抓到（#120）。
-- `CODING_STANDARDS.md`／`CODING_STANDARDS.en.md` 第 6 條：維護者核准的英文半改動，兩份 CHANGELOG 的 `[Unreleased]` 都要寫出舊的與新的英文；新增 `scripts/check_bi_english.py` 與 PR workflow `bi-english.yml`（不是必要檢查）檢查舊的英文有沒有寫出。#111 改白箱列的英文半時漏寫了，只被審查抓到（#119）。
+- `CODING_STANDARDS.md`／`CODING_STANDARDS.en.md` 第 6 條：維護者核准的英文半改動，兩份 CHANGELOG 的 `[Unreleased]` 都要寫出舊的與新的英文；新增 `scripts/check_bi_english.py` 與 PR workflow `bi-english.yml`檢查舊的英文有沒有寫出，`bi-english` 也列為 master 的必要檢查（#124）。#111 改白箱列的英文半時漏寫了，只被審查抓到（#119）。
 
 ### 工程
 

@@ -31,7 +31,7 @@ import yaml
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 這些 workflow 的每個 job 都是 master 的必要檢查 ／ Every job of these workflows is a required check on master
-REQUIRED_WORKFLOWS = ("tests.yml", "codeql.yml", "pr-issue-link.yml")
+REQUIRED_WORKFLOWS = ("tests.yml", "codeql.yml", "pr-issue-link.yml", "bi-english.yml")
 _COUNT_RES = (re.compile(r"必要檢查共 (\d+) 項：([^。]*)"), re.compile(r"There are (\d+) required checks: ([^.]*)"))
 _JOB_NAME_RE = re.compile(r"^[A-Za-z][\w-]*$")
 _MATRIX_EXPR_RE = re.compile(r"\$\{\{\s*matrix\.([\w-]+)\s*\}\}")

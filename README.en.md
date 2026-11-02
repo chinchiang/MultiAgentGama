@@ -178,7 +178,7 @@ MultiAgentGama/
 │   ├── ISSUE_TEMPLATE/          # bug report / feature request templates
 │   ├── PULL_REQUEST_TEMPLATE.md
 │   └── workflows/
-│       ├── bi-english.yml       # PR: when an existing bi() English half changes or goes away, both CHANGELOGs' [Unreleased] must name the old text (not a required check)
+│       ├── bi-english.yml       # PR: when an existing bi() English half changes or goes away, both CHANGELOGs' [Unreleased] must name the old text; bi-english is a required check on master
 │       ├── codeql.yml           # CodeQL code scanning (Python and the workflows, security-extended queries); Analyze (python) / Analyze (actions) are required checks on master
 │       ├── required-checks.yml  # On pushes to master and weekly: compare the required checks the workflows produce, CONTRIBUTING's count and the ruleset (never on PRs)
 │       ├── tests.yml            # CI: lint (ruff / mypy), audit (pip-audit), package (sdist + wheel: wheel smoke test, suite run from the sdist), test (Ubuntu / Windows × Python 3.11–3.14 plus macOS × 3.12, 93% coverage floor)
