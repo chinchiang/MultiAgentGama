@@ -32,6 +32,8 @@
 - 新增 `tests/test_result_predicates.py`：三個判斷在 PASSED、FAILED（是／不是資安突破）、ERROR、SKIPPED 下的答案；`tests/test_baseline.py` 鎖住帶指紋、解析不成結果的 FAILED 白箱項目仍算已知。
 - 新增 `tests/test_evidence_tally.py`：每一種計數在有、沒有基準時的全部／新的／已知、已知問題的順序與部分計數；`tests/test_quality_gate.py` 改以真的證據計數餵品質閘門，計數的斷言移到計數的測試，不重複保留。
 - `tests/test_baseline.py`：有 `--baseline` 時 summary 的全部與 `new_` 計數（資安突破、白箱失敗、阻擋性規則命中）、console 第 3、5 階段與結果方框的數字等於 summary 同名欄位、Markdown 突破列與規則命中列的已知數量讀已知問題清單、白箱列的「未執行」；`tests/test_r2_cli_gateway.py` 鎖住 schema `"3"` 的欄位名稱。在先前的行為下，這些測試都會失敗（#111）。
+- `tests/test_docker_sandbox.py::test_container_is_killed_on_timeout` 只檢查這次執行自己的容器名稱，不再把主機上其他 `vibeharness-` 容器（同時跑的另一份 pytest 或真的執行）當成殘留而失敗；容器真的殘留時照樣失敗（#116）。
+- `tests/test_design_refs.py`：設計文件 §4 資料模型表與 §10.2 證據缺口表的一般數字行號也算引用：§4 的範圍必須正好是 class 的定義範圍（只有部分重疊不算），§10.2 的範圍裡必須用到該列的 `GapCode`；`scripts/recite_design_refs.py` 重新對應時也會一起移動這兩張表的列。原本 `--check` 看不到它們，#109 讓 §4 從 `TestExecutionResult` 起的 8 列偏掉，到 #111 才人工發現（#115）。
 - 新增 `tests/test_bi_english.py`：英文半取自 `bi()` 第二個參數的字串常值（f-string 的欄位寫成 `{}`）、只改變數名稱或把字串搬進 helper 的參數不算改動、改了或移除的英文半要寫進兩份 CHANGELOG 的 `[Unreleased]`、workflow 只有讀取權限且基準 commit 經 env 傳入。
 
 ### 文件
@@ -39,6 +41,7 @@
 - 設計文件記載以函式呼叫註冊的檢視函式，並依目前的程式碼更新指向 `vibeharness/agents/whitebox/ast_extractor.py` 的行號引用；第 6.1 節 `parse_directory`、JS/TS 擷取與 JS/TS 路由三段先前漏掉的引用也一併更新。
 - 新增 `scripts/recite_design_refs.py`：依 git diff 把設計文件的行號引用重新對應到目前的程式碼並更新引用的 commit（`--tag` 改引用 release tag，`--check` 只檢查）；`CONTRIBUTING.md` 改為說明用它更新引用。
 - 新增 `CODING_STANDARDS.md`／`CODING_STANDARDS.en.md`：審查時套用的程式碼規則（回歸測試、品質閘門、不可信的輸入、設定驗證、生成的測試、輸出字串、文件同步），每條附上違規的樣子，並列出已由測試檢查的規則；`CONTRIBUTING.md` 的修改原則改為指向它，只留下設計文件引用與依賴的步驟。原本寫的設定驗證位置（`LLMGateway.__init__`／`VibeHarnessCommander.__init__`）與提示詞包裝方式（直接呼叫 `untrusted_block`）已過時，改為 `vibeharness/core/settings.py` 的 `load_settings` 與 `vibeharness/core/agent_call.py` 的 `Untrusted` 內容。兩份規則檔加入中英成對的行數檢查並隨 sdist 發布。
+- `CODING_STANDARDS.md`／`CODING_STANDARDS.en.md` 第 7 條：文件、CHANGELOG、docstring 與註解裡「哪段程式碼讀、寫或產生什麼」的說法要對照 diff 驗證，範圍不能比程式碼大；#110、#111 都有這類說法，只被 Spec 審查抓到（#120）。
 - `CODING_STANDARDS.md`／`CODING_STANDARDS.en.md` 第 6 條：維護者核准的英文半改動，兩份 CHANGELOG 的 `[Unreleased]` 都要寫出舊的與新的英文；新增 `scripts/check_bi_english.py` 與 PR workflow `bi-english.yml`（不是必要檢查）檢查舊的英文有沒有寫出。#111 改白箱列的英文半時漏寫了，只被審查抓到（#119）。
 
 ### 工程

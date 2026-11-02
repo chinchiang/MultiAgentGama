@@ -46,7 +46,8 @@
 
 - 行為改了，同一個 PR 更新 `README.md`／`README.en.md`、`docs/configuration*.md`，以及兩份 CHANGELOG `[Unreleased]` 的同一個區段；設計層面的改動更新 `docs/design*.md`。
 - 設定檔、workflow、`action.yml`、Dockerfile、打包檔的註解與說明文字，以及 CLI `--help`，正體中文（臺灣）在前、English 在後。
-- 違規的樣子：新增設定鍵或 CLI 參數，文件沒提；只寫了一份 CHANGELOG，或兩份寫在不同區段；中英文件內容不一致。
+- 文件、CHANGELOG、docstring 與註解裡「哪段程式碼讀、寫或產生什麼」的每一句說法，都對照 diff 驗證；範圍不能比程式碼大（說「全部」其實只有一部分，說「一律」其實只在某個旗標下）。
+- 違規的樣子：新增設定鍵或 CLI 參數，文件沒提；只寫了一份 CHANGELOG，或兩份寫在不同區段；中英文件內容不一致；寫「閘門、console 與 summary 都讀同一份計數」，但 console 讀的是各階段的部分計數。
 
 ## 由測試與 CI 檢查（審查時不必重查）
 
