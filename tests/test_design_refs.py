@@ -184,3 +184,111 @@ def test_with_revision_switches_between_a_commit_and_the_release_tag():
     assert refs_tool.with_revision(zh_commit, "v0.16.0", tag=True) == zh.replace("v0.15.0", "v0.16.0")
     assert refs_tool.with_revision(en_commit, "v0.16.0", tag=True) == en.replace("v0.15.0", "v0.16.0")
     assert refs_tool.cited_revision(zh_commit + en_commit) == {"abc1234"}
+
+
+# --- 一般數字的表格：§4 資料模型、§10.2 證據缺口（#115） ----------------------------------------------------
+# --- Plain-number tables: §4 data models, §10.2 evidence gaps (#115) ------------------------------------------
+
+MODELS = "vibeharness/core/models.py"
+GATE = "vibeharness/core/gate.py"
+
+OLD_MODELS = """\
+class Alpha:
+    a: int
+
+
+class Beta:
+    b: int
+    c: int
+"""
+
+# Alpha 多一個欄位：Alpha 的結尾與 Beta 整個往後移
+# Alpha gains a field: Alpha's end and all of Beta move down
+NEW_MODELS = """\
+class Alpha:
+    a: int
+    z: int
+
+
+class Beta:
+    b: int
+    c: int
+"""
+
+OLD_GATE = """\
+class GapCode:
+    FIRST = "first"
+    SECOND = "second"
+
+
+def gaps(x):
+    out = []
+    if x:
+        out.append(GapCode.FIRST)
+    if not x:
+        out.append(GapCode.SECOND)
+    return out
+"""
+
+# 函式開頭多兩行，兩個缺口都往後移兩行
+# Two more lines at the top of the function: both gaps move down two lines
+NEW_GATE = OLD_GATE.replace("    out = []\n", "    out = []\n    # normalised first\n    x = bool(x)\n")
+
+TABLE_DOC = """\
+# Design
+
+## 4. Data models
+
+| Type | Lines | Purpose |
+| :--- | :--- | :--- |
+| `Alpha` | 1-2 | the first |
+| `Alpha`／`Beta` | 1-7 | both |
+
+## 10. The quality gate
+
+### 10.2 The complete evidence-gap list
+
+| # | Lines (`gate.py`) | Condition | `GapCode` · `GateEvidence` field |
+| :--- | :--- | :--- | :--- |
+| 1 | 8-9 | x is set | `FIRST` · `call_log` |
+| 2 | 10-11 | x is not set | `SECOND` · `scope.symbols_found` |
+"""
+
+OLD_FILES = {MODELS: OLD_MODELS, GATE: OLD_GATE}
+NEW_FILES = {MODELS: NEW_MODELS, GATE: NEW_GATE}
+
+
+def test_the_data_model_and_evidence_gap_tables_are_references():
+    """§4 的列指向 models.py 的 class（範圍必須正好是定義範圍），§10.2 的列指向 gate.py、以最後一欄的 GapCode 為名稱。
+    A §4 row points at classes in models.py (its range must be exactly their span), a §10.2 row at gate.py, named
+    by the GapCode in its last cell."""
+    refs = refs_tool.parse_refs(TABLE_DOC)
+    assert [(r.line, r.path, r.span, r.names, r.whole) for r in refs] == [
+        (7, MODELS, "1-2", ("Alpha",), True),
+        (8, MODELS, "1-7", ("Alpha", "Beta"), True),
+        (16, GATE, "8-9", ("FIRST",), False),
+        (17, GATE, "10-11", ("SECOND",), False),
+    ]
+    assert refs_tool.check(TABLE_DOC, _reader(OLD_FILES)) == []
+
+
+def test_check_reports_table_rows_left_behind_by_moved_code():
+    """程式碼移動後：§4 只剩部分重疊的列（過去會被當成落在定義上）與 §10.2 範圍裡已經沒有 GapCode 的列都會被列出。
+    After the code moved: a §4 row that still overlaps only part of its class (it used to count as landing on the
+    definition) and a §10.2 row whose range no longer holds its GapCode are both listed."""
+    assert refs_tool.check(TABLE_DOC, _reader(NEW_FILES)) == [
+        f"7: Alpha {MODELS}:1-2: is not the span of Alpha 1-3",
+        f"8: Alpha/Beta {MODELS}:1-7: is not the span of Alpha/Beta 1-8",
+        f"16: FIRST {GATE}:8-9: does not land on FIRST 2",
+        f"17: SECOND {GATE}:10-11: does not land on SECOND 3",
+    ]
+
+
+def test_recite_moves_the_table_rows_with_the_code():
+    """重新對應後兩張表的列都指向新的程式碼，而且通過檢查。
+    After remapping the rows of both tables point at the new code and pass the check."""
+    new_doc, unresolved = refs_tool.recite(TABLE_DOC, _reader(OLD_FILES), _reader(NEW_FILES))
+    assert unresolved == []
+    assert "| `Alpha` | 1-3 | the first |" in new_doc and "| `Alpha`／`Beta` | 1-8 | both |" in new_doc
+    assert "| 1 | 10-11 | x is set |" in new_doc and "| 2 | 12-13 | x is not set |" in new_doc
+    assert refs_tool.check(new_doc, _reader(NEW_FILES)) == []

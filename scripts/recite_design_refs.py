@@ -1,8 +1,9 @@
 """檢查並重新對應設計文件裡的 `path:line` 引用。
 
-`docs/design.md` 與 `docs/design.en.md` 以三種寫法引用程式碼行號：`path.py:N`（或 `N-M`）、只寫 `:N`
-（指同一段文字裡最近一次出現的檔案），以及附錄 18.2 索引裡的「`名稱` N」。這支 script 解析三種寫法，
-`--check` 檢查每個緊跟在名稱後面的引用仍落在那個名稱的定義上；不帶參數時，依 git diff 把每個引用從文件
+`docs/design.md` 與 `docs/design.en.md` 以四種寫法引用程式碼行號：`path.py:N`（或 `N-M`）、只寫 `:N`
+（指同一段文字裡最近一次出現的檔案）、附錄 18.2 索引裡的「`名稱` N」，以及兩張以一般數字寫行號的表格
+（§4 資料模型表指向 `models.py`，範圍必須正好是 class 的定義範圍；§10.2 證據缺口表指向 `gate.py`，範圍裡
+必須用到該列的 `GapCode`）。這支 script 解析四種寫法，`--check` 檢查每個緊跟在名稱後面的引用仍落在那個名稱的定義上；不帶參數時，依 git diff 把每個引用從文件
 引用的 commit 對應到目前的程式碼，再把文件引用的 commit 改成 HEAD。`tests/test_design_refs.py` 在 CI 跑同一套檢查。
 
 用法：
@@ -12,9 +13,11 @@
 
 Check and remap the `path:line` references in the design documents.
 
-`docs/design.md` and `docs/design.en.md` cite code lines in three forms: `path.py:N` (or `N-M`), a bare `:N`
-(the file named last in the same text), and "`name` N" in the index of appendix 18.2. This script parses all
-three; `--check` verifies that every reference right after a name still lands on that name's definition, and
+`docs/design.md` and `docs/design.en.md` cite code lines in four forms: `path.py:N` (or `N-M`), a bare `:N`
+(the file named last in the same text), "`name` N" in the index of appendix 18.2, and two tables that cite
+lines as plain numbers (the §4 data-model table points at `models.py`, and a row's range must be exactly the
+class's span; the §10.2 evidence-gap table points at `gate.py`, and a row's range must use its `GapCode`).
+This script parses all four; `--check` verifies that every reference right after a name still lands on that name's definition, and
 without arguments it maps every reference from the commit the documents cite to the current code via git diff,
 then makes the documents cite HEAD. `tests/test_design_refs.py` runs the same check in CI.
 
@@ -61,6 +64,16 @@ _LOOSE_ANCHORS = {
     ("DockerSandbox", "vibeharness/core/sandbox.py"),
 }
 _INDEX_HEADINGS = ("### 18.2",)
+# 以一般數字寫行號的表格：標題、指向的檔案，以及範圍是否必須正好是名稱的定義範圍。§4 的第一欄是 class 名稱；
+# §10.2 以最後一欄的第一個名稱（GapCode）為名稱，範圍裡必須用到它
+# Tables that cite lines as plain numbers: the heading, the file they point at, and whether the range must be
+# exactly the names' span. §4's first cell holds class names; §10.2 is named by the first name in its last cell
+# (the GapCode), which the range must use
+_PLAIN_TABLES = (
+    ("## 4.", "vibeharness/core/models.py", True),
+    ("### 10.2", "vibeharness/core/gate.py", False),
+)
+_PLAIN_SPAN_RE = re.compile(r"^\s*(\d+)(?:-(\d+))?\s*$")
 _CONSTANT_TABLE_HEADINGS = ("### 18.1",)
 _INDEX_LINE_RE = re.compile(r"^- `([^`]+)`(?:：|: )(.*)$")
 # 索引項目：一個或多個以 ／ 或 / 相連的名稱，可選的說明，接著行號
@@ -97,6 +110,10 @@ class Ref:
     # 索引的單一名稱、無說明的項目：行號必須正好是定義那一行
     # An index entry with one name and no note: the line must be exactly the definition line
     exact: bool = False
+    # 一般數字表格（§4）的列：範圍必須從第一個名稱的定義開頭到最後一個名稱的定義結尾
+    # A row of a plain-number table (§4): the range must run from the first name's first line to the last name's
+    # last line
+    whole: bool = False
 
     @property
     def span(self) -> str:
@@ -115,10 +132,14 @@ def parse_refs(text: str) -> list[Ref]:
     refs: list[Ref] = []
     current: str | None = None
     in_index = in_constants = False
+    plain: tuple[str, bool] | None = None
     for lineno, line in enumerate(text.splitlines(), 1):
         if line.startswith("#"):
             in_index = line.startswith(_INDEX_HEADINGS)
             in_constants = line.startswith(_CONSTANT_TABLE_HEADINGS)
+            plain = next(((path, whole) for heading, path, whole in _PLAIN_TABLES if line.startswith(heading)), None)
+        if plain is not None and line.startswith("|"):
+            refs.extend(_parse_plain_row(lineno, line, *plain))
         index_line = _INDEX_LINE_RE.match(line) if in_index else None
         if index_line and _PATH_RE.match(index_line.group(1)):
             refs.extend(_parse_index_line(lineno, line, index_line))
@@ -148,6 +169,29 @@ def parse_refs(text: str) -> list[Ref]:
                 names = (anchor[0],)
             refs.append(Ref(lineno, num_col, match.end() - 1, current, start, end, names))
     return refs
+
+
+def _parse_plain_row(lineno: int, line: str, path: str, whole: bool) -> list[Ref]:
+    # 第二欄是行號；表頭與分隔列沒有數字，不算
+    # The second cell holds the lines; the header and separator rows have no number and are skipped
+    cells = line.split("|")
+    span = _PLAIN_SPAN_RE.match(cells[2]) if len(cells) > 3 else None
+    if span is None:
+        return []
+    names = _names_in(cells[1]) if whole else _names_in(cells[-2])[:1]
+    col = len(cells[0]) + len(cells[1]) + 2 + span.start(1)
+    end_col = len(cells[0]) + len(cells[1]) + 2 + span.end(2 if span.group(2) else 1)
+    start, end = int(span.group(1)), int(span.group(2) or span.group(1))
+    return [Ref(lineno, col, end_col, path, start, end, names, whole=whole)]
+
+
+def _whole_span(names: tuple[str, ...], defs: dict[str, list[tuple[int, int]]]) -> tuple[int, int] | None:
+    # 第一個名稱的定義開頭到最後一個名稱的定義結尾；任一名稱沒有唯一的定義時為 None
+    # From the first name's first line to the last name's last line; None when either has no single definition
+    first, last = defs.get(_bare(names[0]), []), defs.get(_bare(names[-1]), [])
+    if len(first) != 1 or len(last) != 1:
+        return None
+    return first[0][0], last[0][1]
 
 
 def _parse_index_line(lineno: int, line: str, index_line: re.Match[str]) -> list[Ref]:
@@ -201,6 +245,13 @@ def problem(ref: Ref, source: str | None) -> str | None:
     if not ref.names or not ref.path.endswith(".py"):
         return None
     defs = definitions(source)
+    if ref.whole:
+        expected = _whole_span(ref.names, defs)
+        if expected is None:
+            return f"{'/'.join(ref.names)} has no single definition here"
+        if (ref.start, ref.end) != expected:
+            return f"is not the span of {'/'.join(ref.names)} {_spans_text([expected])}"
+        return None
     known = [n for n in ref.names if _bare(n) in defs and (n, ref.path) not in _LOOSE_ANCHORS]
     if not known:
         return None
@@ -294,6 +345,8 @@ def remap(ref: Ref, lines: LineMap) -> tuple[int, int] | None:
     Map a reference's lines from the old version to the new one; None when it cannot (check by hand). The start
     and the end are each mapped via the diff; either one that falls in a changed block is anchored on the
     definition of a name the reference points at instead."""
+    if ref.whole:
+        return _whole_span(ref.names, lines.defs("new"))
     if ref.exact:
         mapped = lines.line(ref.start)
         new_defs = lines.defs("new").get(_bare(ref.names[0]), []) if ref.path.endswith(".py") else []
