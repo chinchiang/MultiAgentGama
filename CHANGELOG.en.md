@@ -50,6 +50,7 @@ All notable changes to this project are documented in this file. The format foll
 - CodeQL runs on every PR, not only those targeting `master`: a PR stacked on another one is retargeted to `master` once the one below merges, a retarget triggers no workflow, and the required `Analyze (python)` / `Analyze (actions)` checks would wait forever.
 - New `scripts/test_sdist.py`: reproduces CI's package job locally by building the sdist, extracting it into a temporary directory and running the suite there with `VIBEHARNESS_SDIST` set. The sdist ships neither `.github/` nor `AGENTS.md`, so running from the repo misses tests that read those files without skipping and files the sdist fails to ship; the pre-push checks in `CONTRIBUTING.md` list it.
 - New `.github/workflows/required-checks.yml` and `scripts/check_required_checks.py`: on pushes to `master` and weekly, compare the required check names the workflows produce, the count in `CONTRIBUTING.md` and the ruleset's actual setting, and fail when they disagree (e.g. a check missing from the ruleset, a renamed check that would wait forever, a stale count in the docs). It never runs on PRs, so a PR adding a required check cannot block itself.
+- `scripts/check_bi_english.py` no longer cuts its base to the first 12 characters: a commit prints as its short SHA and a ref as "ref (short SHA)", e.g. `origin/master (53b1c6f73dfa)` (it printed `origin/maste`); a base that does not resolve to a commit fails with exit code 2 before any file is read (#126).
 
 ## [0.15.0] - 2026-10-31
 

@@ -104,3 +104,15 @@ def test_the_workflow_runs_the_script_against_the_pr_base_with_read_only_permiss
     assert "fetch-depth: 0" in text
     assert "BASE_SHA: ${{ github.event.pull_request.base.sha }}" in text
     assert 'run: python3 scripts/check_bi_english.py --base "$BASE_SHA"' in text
+
+
+def test_the_base_label_names_a_ref_and_its_commit_without_cutting_either():
+    """基準的標籤：commit 印成 12 字元的短 SHA，ref 印成 ref 名稱加上它指向的短 SHA，兩者都不會被截斷（#126；過去一律取
+    前 12 個字元，`origin/master` 會印成 `origin/maste`）。
+    The base label: a commit prints as its 12-character short SHA, a ref as the ref name plus the short SHA it points
+    at, and neither is cut (#126; it used to take the first 12 characters, printing `origin/master` as
+    `origin/maste`)."""
+    sha = "53b1c6fd1a2b"
+    assert tool.base_label("53b1c6fd1a2b3c4d5e6f708192a3b4c5d6e7f809", sha) == sha
+    assert tool.base_label("53b1c6f", sha) == sha
+    assert tool.base_label("origin/master", sha) == f"origin/master ({sha})"

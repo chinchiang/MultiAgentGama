@@ -108,6 +108,15 @@ def unnamed_changes(old: Iterable[str], new: Iterable[str], changelogs: Iterable
     return sorted(e for e in gone if not all(piece in s for s in sections for piece in _pieces(e)))
 
 
+def base_label(base: str, short_sha: str) -> str:
+    """訊息裡的基準：commit（完整或縮寫的 SHA）印成短 SHA，ref 印成「ref (短 SHA)」。
+    The base as messages name it: a commit (full or abbreviated SHA) prints as its short SHA, a ref as
+    "ref (short SHA)"."""
+    if base.startswith(short_sha) or short_sha.startswith(base):
+        return short_sha
+    return f"{base} ({short_sha})"
+
+
 def _git(*args: str) -> str:
     return subprocess.run(["git", *args], cwd=REPO_ROOT, check=True, capture_output=True, text=True,
                           encoding="utf-8").stdout
@@ -144,6 +153,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         base = args.base or _git("merge-base", "HEAD", "origin/master").strip()
+        # 先確認基準是 commit，才讀任何檔案 ／ Resolve the base to a commit before reading any file
+        label = base_label(base, _git("rev-parse", "--short=12", "--verify", f"{base}^{{commit}}").strip())
         old = _halves_at(base)
     except subprocess.CalledProcessError as e:
         print(f"git failed: {' '.join(e.cmd)}\n{e.stderr}", file=sys.stderr)
@@ -155,9 +166,9 @@ def main(argv: list[str] | None = None) -> int:
     new, new_strings = _worktree()
     missing = unnamed_changes(old, new, texts, new_strings)
     if not missing:
-        print(f"No English half of an existing bi() changed without a CHANGELOG entry (base {base[:12]}).")
+        print(f"No English half of an existing bi() changed without a CHANGELOG entry since {label}.")
         return 0
-    print(f"These English halves of bi() changed or went away since {base[:12]}. Rule 6 of CODING_STANDARDS: name "
+    print(f"These English halves of bi() changed or went away since {label}. Rule 6 of CODING_STANDARDS: name "
           "the old (and the new) English text in [Unreleased] of both CHANGELOG.md and CHANGELOG.en.md, or keep it.")
     for english in missing:
         print(f"  - {english!r}")
