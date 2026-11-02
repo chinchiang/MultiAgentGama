@@ -178,6 +178,7 @@ MultiAgentGama/
 │   ├── ISSUE_TEMPLATE/          # 錯誤回報／功能提議模板
 │   ├── PULL_REQUEST_TEMPLATE.md
 │   └── workflows/
+│       ├── bi-english.yml       # PR：既有 bi() 的英文半改了或移除時，兩份 CHANGELOG 的 [Unreleased] 必須寫出舊的英文（不是必要檢查）
 │       ├── codeql.yml           # CodeQL 程式碼掃描（Python 與 workflow，security-extended 查詢）；Analyze (python)／Analyze (actions) 是 master 的必要檢查
 │       ├── required-checks.yml  # push 到 master 與每週：比對 workflow 產生的必要檢查、CONTRIBUTING 的數量與 ruleset 的實際設定（不在 PR 上跑）
 │       ├── tests.yml            # CI：lint（ruff／mypy）、audit（pip-audit）、package（sdist＋wheel：wheel 冒煙測試、從 sdist 跑測試套件）、test（Ubuntu／Windows × Python 3.11–3.14，另加 macOS × 3.12，覆蓋率門檻 93%）
@@ -255,6 +256,7 @@ MultiAgentGama/
 │       ├── issue-tracker.md     # GitHub Issues 的操作；本 repo 什麼時候開 issue、/code-review 的 spec 來源
 │       └── triage-labels.md     # triage 角色對應的標籤名稱
 ├── scripts/
+│   ├── check_bi_english.py      # bi-english 的判斷：與基準 commit 比對每個 bi() 的英文半，改了或移除的要寫進兩份 CHANGELOG
 │   ├── check_pr_issue_link.py   # pr-issue-link 的判斷：哪些 PR 需要 issue、描述與 commit 是否連到存在的 issue
 │   ├── check_required_checks.py # 必要檢查的三方比對：workflow 的 job 與 matrix、CONTRIBUTING、ruleset
 │   ├── recite_design_refs.py    # 檢查設計文件的 path:line 引用，並依 git diff 重新對應到目前的程式碼
@@ -265,6 +267,7 @@ MultiAgentGama/
 │   ├── test_agent_call.py       # 透過 ask／ask_text 測試代理呼叫：提示組裝與通道、只有可用的 items 到 mapper、模擬輸出、純文字呼叫
 │   ├── test_ai_security.py      # OWASP LLM Top 10 2026／ATLAS 控制與確定性 AI 安全規則
 │   ├── test_baseline.py                # --baseline：載入與重算、已知問題不計入、action.yml 結構
+│   ├── test_bi_english.py              # bi() 英文半的比對：f-string 欄位、搬進 helper 的字串、[Unreleased] 區段、workflow 權限
 │   ├── test_call_kinds.py              # 每筆呼叫紀錄、送出的請求與報告都帶著呼叫的種類（含修復與當掉的呼叫）
 │   ├── test_call_plans.py              # 每個代理的呼叫計畫（plan）等於它實際發出的呼叫
 │   ├── test_cross_verification.py      # 交叉驗證：模型不評審自己的發現、依票數判定

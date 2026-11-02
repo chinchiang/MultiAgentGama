@@ -1,0 +1,36 @@
+name: bi English halves
+
+# 既有 bi() 的英文半被改掉或移除時，兩份 CHANGELOG 的 [Unreleased] 都要寫出舊的英文（CODING_STANDARDS 第 6 條）。
+# 不是 master 的必要檢查（要列為必要檢查得改 ruleset，由維護者決定）。
+# When the English half of an existing bi() changes or goes away, both CHANGELOGs' [Unreleased] must name the old
+# English text (CODING_STANDARDS rule 6). Not a required check on master (that needs a ruleset change, the
+# maintainer's decision).
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions: {}
+
+# 同一個 PR 的新事件取消被取代的檢查 ／ A newer event on the same PR cancels the superseded check
+concurrency:
+  group: bi-english-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  bi-english:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      # 第三方 action 釘在 commit SHA；需要完整歷史才讀得到基準 commit
+      # Third-party actions are pinned to commit SHAs; the full history is needed to read the base commit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # 基準 commit 經 env 傳入，不在 shell 裡展開 ${{ }} ／ The base commit goes through env, not ${{ }} in the shell
+      - name: Check changed English halves
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python3 scripts/check_bi_english.py --base "$BASE_SHA"

@@ -178,6 +178,7 @@ MultiAgentGama/
 │   ├── ISSUE_TEMPLATE/          # bug report / feature request templates
 │   ├── PULL_REQUEST_TEMPLATE.md
 │   └── workflows/
+│       ├── bi-english.yml       # PR: when an existing bi() English half changes or goes away, both CHANGELOGs' [Unreleased] must name the old text (not a required check)
 │       ├── codeql.yml           # CodeQL code scanning (Python and the workflows, security-extended queries); Analyze (python) / Analyze (actions) are required checks on master
 │       ├── required-checks.yml  # On pushes to master and weekly: compare the required checks the workflows produce, CONTRIBUTING's count and the ruleset (never on PRs)
 │       ├── tests.yml            # CI: lint (ruff / mypy), audit (pip-audit), package (sdist + wheel: wheel smoke test, suite run from the sdist), test (Ubuntu / Windows × Python 3.11–3.14 plus macOS × 3.12, 93% coverage floor)
@@ -255,6 +256,7 @@ MultiAgentGama/
 │       ├── issue-tracker.md     # GitHub Issues operations; when this repo opens an issue, the spec source for /code-review
 │       └── triage-labels.md     # Label names for the triage roles
 ├── scripts/
+│   ├── check_bi_english.py      # bi-english's logic: compare every bi() English half with the base commit; changed or removed ones must be in both CHANGELOGs
 │   ├── check_pr_issue_link.py   # pr-issue-link's logic: which PRs need an issue, whether the description and commits link an existing one
 │   ├── check_required_checks.py # Three-way comparison of the required checks: workflow jobs and matrices, CONTRIBUTING, the ruleset
 │   ├── recite_design_refs.py    # Checks the design documents' path:line references and remaps them to the current code via git diff
@@ -265,6 +267,7 @@ MultiAgentGama/
 │   ├── test_agent_call.py       # Agent calls through ask / ask_text: prompt assembly and channels, only usable items to the mapper, Simulated output, the plain-text call
 │   ├── test_ai_security.py      # OWASP LLM Top 10 2026 / ATLAS controls and the deterministic AI-security rules
 │   ├── test_baseline.py                # --baseline: loading and recomputing, known problems not counted, action.yml structure
+│   ├── test_bi_english.py              # bi() English-half comparison: f-string fields, strings moved into helpers, the [Unreleased] section, workflow permissions
 │   ├── test_call_kinds.py              # Every call record, request sent and report carries its call's kind (heals and crashed calls included)
 │   ├── test_call_plans.py              # Each agent's call plan (plan) equals the calls it actually makes
 │   ├── test_cross_verification.py      # Cross-verification: models never judge their own findings, vote tallies
