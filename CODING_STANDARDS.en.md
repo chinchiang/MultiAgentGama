@@ -38,7 +38,7 @@ Apply every rule below to a diff under review. Only rules that need judgement li
 ## 6. Fixed output strings are bilingual and their English half stays
 
 - Fixed strings in reports, the console, logs, failure reasons and SARIF text all go through `bi("中文", "English")` from `vibeharness/core/i18n.py`.
-- The English half of an existing string does not change: CI and fingerprint matching rely on it.
+- The English half of an existing string does not change: CI and fingerprint matching rely on it. A change the maintainer approves names the old and the new English text in `[Unreleased]` of both CHANGELOGs (`scripts/check_bi_english.py` checks on each PR that the old text is named).
 - Prompts sent to a model stay English; a bilingual reason goes through `en_only()` before it enters a prompt.
 - A violation looks like: a new fixed string in one language only; a changed English half of an existing `bi()`; Chinese or bilingual text in a prompt.
 
