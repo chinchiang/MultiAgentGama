@@ -178,7 +178,7 @@ MultiAgentGama/
 │   ├── ISSUE_TEMPLATE/          # 錯誤回報／功能提議模板
 │   ├── PULL_REQUEST_TEMPLATE.md
 │   └── workflows/
-│       ├── bi-english.yml       # PR：既有 bi() 的英文半改了或移除時，兩份 CHANGELOG 的 [Unreleased] 必須寫出舊的英文（不是必要檢查）
+│       ├── bi-english.yml       # PR：既有 bi() 的英文半改了或移除時，兩份 CHANGELOG 的 [Unreleased] 必須寫出舊的英文；bi-english 是 master 的必要檢查
 │       ├── codeql.yml           # CodeQL 程式碼掃描（Python 與 workflow，security-extended 查詢）；Analyze (python)／Analyze (actions) 是 master 的必要檢查
 │       ├── required-checks.yml  # push 到 master 與每週：比對 workflow 產生的必要檢查、CONTRIBUTING 的數量與 ruleset 的實際設定（不在 PR 上跑）
 │       ├── tests.yml            # CI：lint（ruff／mypy）、audit（pip-audit）、package（sdist＋wheel：wheel 冒煙測試、從 sdist 跑測試套件）、test（Ubuntu／Windows × Python 3.11–3.14，另加 macOS × 3.12，覆蓋率門檻 93%）
