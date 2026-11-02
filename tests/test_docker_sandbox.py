@@ -235,11 +235,26 @@ def test_container_runs_tests_against_the_mounted_target(tmp_path, monkeypatch):
 
 
 @docker_only
-def test_container_is_killed_on_timeout(tmp_path):
+def test_container_is_killed_on_timeout(tmp_path, monkeypatch):
+    """逾時後這次執行自己的容器不能殘留。只看自己的容器名稱：主機上其他 harness 容器（同時跑的另一份 pytest、真的執行）
+    與這個測試無關（#116）。
+    After a timeout this run's own container must not linger. Only its own container name is checked: other harness
+    containers on the host (another pytest run at the same time, a real run) are not this test's business (#116)."""
     sandbox = DockerSandbox(timeout_seconds=5)
+    names = []
+    build = sandbox._docker_run_prefix
+
+    def recording_prefix(*args, **kwargs):
+        cmd = build(*args, **kwargs)
+        names.append(cmd[cmd.index("--name") + 1])
+        return cmd
+
+    monkeypatch.setattr(sandbox, "_docker_run_prefix", recording_prefix)
     run = sandbox.execute_pytest_files(
         {"test_hang.py": "import time\n\ndef test_hang():\n    time.sleep(120)\n"}, working_dir=str(tmp_path)
     )
     assert run.exit_code == TIMEOUT_EXIT_CODE
-    running = subprocess.run(["docker", "ps", "-q", "--filter", "name=vibeharness-"], capture_output=True, text=True)
-    assert running.stdout.strip() == ""
+    assert len(names) == 1
+    listed = subprocess.run(["docker", "ps", "-a", "--format", "{{.Names}}", "--filter", f"name={names[0]}"],
+                            capture_output=True, text=True)
+    assert listed.returncode == 0 and names[0] not in listed.stdout.split()
