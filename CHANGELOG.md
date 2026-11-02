@@ -11,7 +11,7 @@
 - **破壞性**：JSON 報告的 `schema_version` 升為 `"3"`，summary 的計數一律取自證據計數，並採用同一套定義：沒有前綴的計數算全部，`new_` 計數只算決定判定的新項目，已知問題是 `baseline_suppressed` 清單（沒有 `--baseline` 時全部等於新的）。原本有 `--baseline` 時，`whitebox_tests_failed` 與 `blackbox_security_breaches` 只算新的，未分類失敗、未執行與規則命中卻算全部，console 第 3、5 階段印的總數也和同一次執行的 summary 對不上。
   - `whitebox_tests_failed`、`blackbox_security_breaches` 改為全部；新增 `new_whitebox_tests_failed`、`new_blackbox_security_breaches`，以及阻擋性規則命中的總數 `blocking_rule_hits`（與既有的 `new_blocking_rule_hits` 並列）。不是品質閘門產生的 summary，這三個欄位是 `null`。
   - `whitebox_tests_errored`／`blackbox_tests_errored` 改名為 `whitebox_tests_not_run`／`blackbox_tests_not_run`，值不變（它們也算 SKIPPED）。
-  - Markdown：有 `--baseline` 時，「已確認的黑箱資安突破」列比照規則命中列，列出全部，再列出新的與基準中已知的數量，目標改為「0 個新的突破」；規則命中列的已知數量改讀已知問題清單，不再用減法算，總數讀 `blocking_rule_hits`，不再自己重算 `static_findings`。白箱列改為「N 個未執行 ／ N not run」。
+  - Markdown：有 `--baseline` 時，「已確認的黑箱資安突破」列比照規則命中列，列出全部，再列出新的與基準中已知的數量，目標改為「0 個新的突破」；規則命中列的已知數量改讀已知問題清單，不再用減法算；沒有 `--baseline` 時，「(N HIGH+)」讀 `blocking_rule_hits`，不再自己重算 `static_findings`（不是品質閘門產生的摘要沒有這個值，就不顯示）。白箱列改為「N 個未執行 ／ N not run」：英文半由「errored / not run」改為「not run」，比對這段英文的 CI 要跟著更新。
   - console 結束時的結果方框「黑箱突破 ／ Black-Box Breaches」改為全部，與第 5 階段的數字和 summary 一致。
   - `--baseline` 照樣接受 `"1"`、`"2"` 的報告（只讀項目清單，不讀計數）；`--summary-json` 與 GitHub Action 只看判定結果，不受影響；崩潰時的 `.partial.json` 也標為 `"3"`，內容不變（#111）。
 - 單一測試結果的判斷集中到 `TestExecutionResult` 上：`is_failure`（FAILED）、`is_not_run`（未執行：ERROR 或 SKIPPED）、`is_unclassified_failure`（未分類失敗：FAILED 但不是資安突破）；pipeline 的計數、品質閘門的證據缺口與建議、基準比對都改用它們，不再各自比對狀態（`baseline.py` 原本以字串比對 `status.value` 與先前報告的 `status`；讀先前報告時改以只帶狀態的探測物件詢問，帶指紋但解析不成結果的 FAILED 項目照舊算已知）。輸出不變（#109）。

@@ -263,15 +263,15 @@ def _summary_row(label, **summary_fields):
 
 
 def test_report_rule_hit_row_reads_known_hits_from_the_known_problems_under_a_baseline():
-    """--baseline 下報告列的總數讀 blocking_rule_hits，已知的數量讀 baseline_suppressed 中的規則命中，不再用減法算（#111）。
-    這裡故意讓兩者不一致：減法會得出 2，清單裡只有 1 個已知的規則命中。
-    Under --baseline the report row reads the total from blocking_rule_hits and the known count from the rule hits in
-    baseline_suppressed, no longer by subtraction (#111). The two disagree on purpose here: subtraction gives 2, the
-    list holds 1 known rule hit."""
+    """--baseline 下報告列的已知數量讀 baseline_suppressed 中的規則命中，不再用減法算（#111）。這裡故意讓兩者不一致：
+    3 個 HIGH 命中減掉 1 個新的會得出 2，清單裡只有 1 個已知的規則命中。
+    Under --baseline the report row reads the known count from the rule hits in baseline_suppressed, no longer by
+    subtraction (#111). The two disagree on purpose here: 3 HIGH hits minus 1 new gives 2, the list holds 1 known
+    rule hit."""
     from vibeharness.core.models import BaselineSuppressedItem
     known = [BaselineSuppressedItem(kind="static", id="VH-AI-001@app.py:1", title="t", fingerprint="s1"),
              BaselineSuppressedItem(kind="breach", id="BB-1", title="t", fingerprint="b1")]
-    row = _rule_row(baseline_path="old.json", blocking_rule_hits=3, new_blocking_rule_hits=1, baseline_suppressed=known)
+    row = _rule_row(baseline_path="old.json", new_blocking_rule_hits=1, baseline_suppressed=known)
     assert "`3` (" in row and "1 HIGH+ new, 1 known from baseline" in row and "0 new HIGH+" in row
 
 

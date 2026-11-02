@@ -60,9 +60,16 @@ SARIF_RULE_STATIC_PREFIX = "vibeharness/"
 JSON_SCHEMA_VERSION = "3"
 
 
-def _known_count(summary: VibeHarnessSummary, kind: str) -> int:
-    """已知問題清單中某一種的數量 ／ How many of one kind the Known problems list holds."""
-    return sum(1 for item in summary.baseline_suppressed if item.kind == kind)
+def _new_and_known(summary: VibeHarnessSummary, new: Optional[int], kind: str, zh_new: str, en_new: str) -> Optional[str]:
+    """--baseline 時摘要表一列的「N 個新的，M 個基準中已知」：新的計入判定，已知的依 kind 數已知問題清單，不用減法算；
+    沒有 --baseline 或不是品質閘門產生的摘要時為 None。
+    A summary-table row's "N new, M known from baseline" under --baseline: the new ones count toward the verdict, the
+    known ones are counted by kind in the Known problems list, not by subtraction; None without --baseline or for a
+    summary the Quality Gate did not produce."""
+    if not summary.baseline_path or new is None:
+        return None
+    known = sum(1 for item in summary.baseline_suppressed if item.kind == kind)
+    return bi(f"{new} {zh_new}，{known} 個基準中已知", f"{new} {en_new}, {known} known from baseline")
 
 
 def agreement_display(result: MultiModelDebateResult) -> str:
@@ -240,31 +247,17 @@ class ReportGenerator:
                   f"({bi(f'{n_not_run} 個未執行', f'{n_not_run} not run')}) | {bi('通過率 100%', '100% Pass Rate')} |")
         md.append(f"| **{bi('已建模的 STRIDE 威脅情境', 'STRIDE Threat Scenarios Modeled')}** | `{summary.total_threats_modeled}` | {bi('完整資產涵蓋', 'Full Asset Coverage')} |")
         md.append(f"| **{bi('沒有可執行測試的威脅', 'Threats Without Executable Test')}** | `{len(summary.untested_threat_ids)}` | {bi('0 個未測試', '0 Untested')} |")
-        new_breaches = summary.new_blackbox_security_breaches
-        if summary.baseline_path and new_breaches is not None:
-            # --baseline：與規則命中列相同，新的計入判定，已知的讀已知問題清單
-            # --baseline: as in the rule-hit row, the new ones count, the known ones come from the Known problems
-            known = _known_count(summary, "breach")
-            breaches = (f"`{summary.blackbox_security_breaches}` ("
-                        + bi(f"{new_breaches} 個新的，{known} 個基準中已知", f"{new_breaches} new, {known} known from baseline")
-                        + ")")
-            breach_target = bi("0 個新的突破", "0 new breaches")
+        breach_split = _new_and_known(summary, summary.new_blackbox_security_breaches, "breach", "個新的", "new")
+        if breach_split:
+            breaches, breach_target = f"`{summary.blackbox_security_breaches}` ({breach_split})", bi("0 個新的突破", "0 new breaches")
         else:
             breaches, breach_target = f"`{summary.blackbox_security_breaches}`", bi("不容許任何突破", "0 Breaches Tolerated")
         md.append(f"| **{bi('已確認的黑箱資安突破', 'Confirmed Black-Box Security Breaches')}** | {breaches} | {breach_target} |")
         md.append(f"| **{bi('黑箱測試失敗（未分類）', 'Black-Box Tests Failed (unclassified)')}** | `{summary.blackbox_tests_failed}` | "
                   f"{bi('0 — 失敗的攻擊腳本需人工審查', '0 — failing attack scripts need manual review')} |")
-        new_blocking = summary.new_blocking_rule_hits
-        hits: Optional[str] = None
-        target = "0 HIGH+"
-        if summary.baseline_path and new_blocking is not None:
-            # --baseline：與判定結果一致，只有新的 HIGH 以上命中計入；已知的讀已知問題清單
-            # --baseline: as in the verdict, only new HIGH+ hits count; the known ones come from the Known problems
-            known = _known_count(summary, "static")
-            hits = bi(f"{new_blocking} 個新的 HIGH+，{known} 個基準中已知",
-                      f"{new_blocking} HIGH+ new, {known} known from baseline")
-            target = bi("0 個新的 HIGH+", "0 new HIGH+")
-        elif summary.blocking_rule_hits is not None:
+        hits = _new_and_known(summary, summary.new_blocking_rule_hits, "static", "個新的 HIGH+", "HIGH+ new")
+        target = bi("0 個新的 HIGH+", "0 new HIGH+") if hits else "0 HIGH+"
+        if not hits and summary.blocking_rule_hits is not None:
             hits = f"{summary.blocking_rule_hits} HIGH+"
         hits_note = f" ({hits})" if hits else ""
         md.append(f"| **{bi('確定性 AI 資安規則命中', 'Deterministic AI-Security Rule Hits')}** | `{len(summary.static_findings)}`{hits_note} | {target} |")
