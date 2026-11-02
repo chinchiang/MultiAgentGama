@@ -46,7 +46,8 @@ Apply every rule below to a diff under review. Only rules that need judgement li
 
 - When behaviour changes, the same PR updates `README.md` / `README.en.md`, `docs/configuration*.md`, and the same section of `[Unreleased]` in both CHANGELOGs; a design-level change updates `docs/design*.md`.
 - Comments and descriptions in config files, workflows, `action.yml`, Dockerfiles and packaging files, and the CLI `--help`, put Traditional Chinese (Taiwan) first and English second.
-- A violation looks like: a new config key or CLI flag the docs do not mention; only one CHANGELOG updated, or the two in different sections; zh and en documents that disagree.
+- Every claim in docs, CHANGELOGs, docstrings and comments about which code reads, writes or produces what is checked against the diff, and is no broader than the code ("all" when it is some, "always" when it is only under a flag).
+- A violation looks like: a new config key or CLI flag the docs do not mention; only one CHANGELOG updated, or the two in different sections; zh and en documents that disagree; "the gate, the console and the summary all read one tally" when the console reads per-phase partial tallies.
 
 ## Checked by tests and CI (no re-check in review)
 
