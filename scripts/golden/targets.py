@@ -68,3 +68,19 @@ def lookup_role(name: str) -> str:
     return ROLES[name]
 ''',
 }
+
+# 混合基準線配對第 2 步的目標：多一個呼叫 torch.load 的函式，觸發 VH-AI-002（HIGH）規則命中，假 litellm 也為它多回報
+# 一個發現與 THREAT-05。torch 在函式內匯入，測試匯入 shop 時不需要裝 torch
+# The target of the mixed baseline pair's step 2: one more function calling torch.load, which triggers a VH-AI-002
+# (HIGH) rule hit, and the fake litellm reports one more finding and THREAT-05 for it. torch is imported inside the
+# function, so a test importing shop does not need torch installed
+LIVE_TARGET_CHANGED = {
+    "shop.py": LIVE_TARGET["shop.py"] + '''
+
+def load_model(path: str):
+    """Flaw: unpickles a model file without weights_only=True."""
+    import torch
+    with open(path, "rb") as f:
+        return torch.load(f)
+''',
+}

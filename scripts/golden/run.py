@@ -16,7 +16,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from golden.compare import IMPORT_MARKER  # noqa: E402
-from golden.targets import LIVE_TARGET, MOCK_TARGET  # noqa: E402
+from golden.targets import LIVE_TARGET, LIVE_TARGET_CHANGED, MOCK_TARGET  # noqa: E402
 
 # 子行程：從指定的 repo 匯入 vibeharness、記下匯入位置，live 情境再裝上這份工具的假 litellm（兩邊用同一份），
 # 最後以其餘參數執行 CLI
@@ -49,15 +49,17 @@ _GOLDEN_PARENT = str(Path(__file__).resolve().parent.parent)
 
 @dataclass(frozen=True)
 class Scenario:
-    """一個情境：目標檔案、依序執行的各步驟 CLI 參數（例如 --baseline 要先有一份報告）、要收集的輸出檔，
-    以及是否以 live 模式經過假 litellm。
+    """一個情境：目標檔案、依序執行的各步驟 CLI 參數（例如 --baseline 要先有一份報告）、要收集的輸出檔、
+    是否以 live 模式經過假 litellm，以及第 2 步起換上的目標檔案（基準線之後目標改了）。
     One scenario: the target files, the CLI arguments of each step in order (--baseline, say, needs a report
-    first), the output files to collect, and whether it runs in live mode through the fake litellm."""
+    first), the output files to collect, whether it runs in live mode through the fake litellm, and the target files
+    swapped in from step 2 on (the target changed after the baseline)."""
 
     target: dict[str, str]
     steps: tuple[tuple[str, ...], ...]
     outputs: tuple[str, ...]
     live: bool = False
+    changed_target: Optional[dict[str, str]] = None
 
 
 _MOCK = ("-m", "mock")
@@ -90,6 +92,10 @@ SCENARIOS = {
         (*_LIVE, "--format", "json", "-o", "baseline.json"),
         (*_LIVE, "--baseline", "baseline.json", "--format", "md", "-o", "report.md"),
     ), ("baseline.json", "report.md"), live=True),
+    "live_baseline_changed": Scenario(LIVE_TARGET, (
+        (*_LIVE, "--format", "json", "-o", "baseline.json"),
+        (*_LIVE, "--baseline", "baseline.json", "--format", "json", "-o", "report.json", "--sarif", "report.sarif"),
+    ), ("baseline.json", "report.json", "report.sarif"), live=True, changed_target=LIVE_TARGET_CHANGED),
 }
 
 
@@ -117,6 +123,9 @@ def _run(repo: str, name: str, scenario: Scenario, out: Path, work: Path) -> Non
     shutil.copyfile(os.path.join(repo, "vibeharness", "config", "agents_config.yaml"), work / "vibeharness.yaml")
     target = next(iter(scenario.target)) if len(scenario.target) == 1 else "."
     for number, args in enumerate(scenario.steps, 1):
+        if number == 2 and scenario.changed_target:
+            for rel, content in scenario.changed_target.items():
+                (work / rel).write_text(content, encoding="utf-8")
         proc = subprocess.run(
             [sys.executable, "-I", "-c", _CHILD, repo, str(out / IMPORT_MARKER), _GOLDEN_PARENT if scenario.live else "",
              "-t", target, "-c", "vibeharness.yaml", *args],

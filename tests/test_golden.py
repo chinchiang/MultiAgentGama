@@ -184,3 +184,24 @@ def test_the_live_baseline_scenario_suppresses_what_the_first_run_found(tmp_path
     assert summary["blackbox_security_breaches"] >= 1 and summary["whitebox_tests_failed"] >= 1
     assert summary["new_blackbox_security_breaches"] == 0 and summary["new_whitebox_tests_failed"] == 0
     assert {item["kind"] for item in summary["baseline_suppressed"]} >= {"breach", "whitebox_failure"}
+
+
+def test_a_new_rule_hit_after_the_baseline_decides_the_verdict(tmp_path):
+    """live_baseline_changed 的第 2 步換成多了 torch.load 的目標：舊的突破與白箱失敗仍被基準線壓下，新的 HIGH 規則命中
+    沒有被壓下、決定判定為 NEEDS_FIXES（1），SARIF 帶著它的 static fingerprint；新函式帶來的 THREAT-05 沒有攻擊測試。
+    抓得到換目標的步驟沒生效、新舊問題分錯邊，以及 SARIF 不再寫出 static fingerprint。
+    live_baseline_changed's step 2 swaps in the target with a torch.load added: the old breach and white-box failure
+    are still suppressed by the baseline, the new HIGH rule hit is not and makes the verdict NEEDS_FIXES (1), and the
+    SARIF carries its static fingerprint; THREAT-05, brought by the new function, gets no attack test. Catches the
+    target swap not taking effect, new and Known problems landing on the wrong side, and SARIF no longer writing static
+    fingerprints."""
+    run_scenarios(REPO_ROOT, tmp_path / "out", tmp_path / "work", names=["live_baseline_changed"])
+    out = tmp_path / "out" / "live_baseline_changed"
+    assert [(out / f"step{n}.exit_code").read_text(encoding="utf-8").strip() for n in (1, 2)] == ["2", "1"]
+    summary = json.loads((out / "report.json").read_text(encoding="utf-8"))["summary"]
+    assert summary["new_blocking_rule_hits"] >= 1
+    assert summary["new_blackbox_security_breaches"] == 0 and summary["new_whitebox_tests_failed"] == 0
+    assert {item["kind"] for item in summary["baseline_suppressed"]} >= {"breach", "whitebox_failure"}
+    assert "THREAT-05" in summary["untested_threat_ids"]
+    results = json.loads((out / "report.sarif").read_text(encoding="utf-8"))["runs"][0]["results"]
+    assert any(r["ruleId"] == "vibeharness/VH-AI-002" and r.get("partialFingerprints") for r in results)
