@@ -357,3 +357,24 @@ def test_a_filled_response_cache_answers_every_call_of_a_cache_only_rerun(tmp_pa
     assert {(call["mode"], call["cached"]) for call in fill["agent_calls"]} == {("live", False)}
     assert {(call["mode"], call["cached"]) for call in replay["agent_calls"]} == {("live", True)}
     assert not any("had no answer in the response cache" in reason for reason in replay["inconclusive_reasons"])
+
+
+def test_unusable_output_is_re_asked_once_and_booked_invalid_when_it_stays_unusable(tmp_path):
+    """invalid_output 讓威脅建模第一次回答非 JSON、重問後才給有效的 JSON，Claude 審查者則一律回答非 JSON：
+    威脅建模是一次 retried（attempt 0）接一次 live（attempt 1）；Claude 審查者重問一次後仍無法使用，最後記成 invalid，
+    品質閘門記下無效輸出的證據缺口。
+    抓得到重問次數改變、重問後的可用回答沒被採用，以及無效輸出被當成「沒有發現」而不是證據缺口。
+    invalid_output makes the threat modeler answer non-JSON first and valid JSON once re-asked, and the Claude reviewer
+    always answer non-JSON: the threat modeler is one retried call (attempt 0) then one live call (attempt 1); the
+    Claude reviewer is still unusable after one re-ask and ends booked invalid, and the Quality Gate records the
+    invalid-output Evidence gap. Catches the number of re-asks changing, a usable answer after a re-ask not being
+    used, and invalid output taken as "no findings" instead of an Evidence gap."""
+    run_scenarios(REPO_ROOT, tmp_path / "out", tmp_path / "work", names=["invalid_output"])
+    summary = json.loads((tmp_path / "out" / "invalid_output" / "report.json").read_text(encoding="utf-8"))["summary"]
+    calls = summary["agent_calls"]
+    threat = [(call["mode"], call["attempt"]) for call in calls if call["kind"] == "threat_modeler"]
+    claude = [(call["mode"], call["attempt"]) for call in calls if call["agent_id"] == "whitebox_reviewer_claude"]
+    assert threat == [("retried", 0), ("live", 1)]
+    assert claude == [("retried", 0), ("invalid", 1)]
+    assert any("model call(s) returned unusable output or crashed before answering" in reason
+               for reason in summary["inconclusive_reasons"])

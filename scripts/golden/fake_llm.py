@@ -109,6 +109,11 @@ def respond(system: str, user: str) -> str:
 # primary_down：這個模型字串一律失敗，gateway 改呼叫設定裡的 fallback_model
 # primary_down: this model string always fails, so the gateway calls the configured fallback_model
 _DOWN_MODEL = "deepseek/deepseek-v4-pro"
+# invalid_output：重問的提示詞以這句接在原本的使用者提示詞後面（vibeharness/core/llm_gateway.py 的 _RETRY_SUFFIX）
+# invalid_output: a re-ask appends this sentence to the original user prompt (_RETRY_SUFFIX in
+# vibeharness/core/llm_gateway.py)
+_RE_ASK = "Your previous answer could not be used ("
+_UNUSABLE = "not json"
 
 
 class _FakeLiteLLM:
@@ -122,11 +127,24 @@ class _FakeLiteLLM:
         if self.profile == "primary_down" and kwargs["model"] == _DOWN_MODEL:
             raise RuntimeError(f"golden fake: {_DOWN_MODEL} is down")
         messages = kwargs["messages"]
-        text = respond(messages[0]["content"], messages[1]["content"])
+        system, user = messages[0]["content"], messages[1]["content"]
+        if self.profile == "invalid_output" and _unusable(system, user):
+            text = _UNUSABLE
+        else:
+            text = respond(system, user)
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text), finish_reason="stop")])
 
 
-PROFILES = ("standard", "primary_down")
+def _unusable(system: str, user: str) -> bool:
+    """invalid_output 要回答無法使用的輸出的呼叫：威脅建模只有第一次（重問後才給有效的 JSON），Claude 審查者每一次都是。
+    The invalid_output calls answered with unusable output: the threat modeler only the first time (valid JSON once
+    re-asked), the Claude reviewer every time."""
+    if "Threat Modeling Specialist" in system:
+        return _RE_ASK not in user
+    return "white-box AI code auditor" in system and "(Claude)" in system
+
+
+PROFILES = ("standard", "primary_down", "invalid_output")
 
 
 def install(profile: str) -> None:

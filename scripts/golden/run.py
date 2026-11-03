@@ -136,6 +136,8 @@ SCENARIOS = {
         (*_LIVE, "--cache-dir", "cache", "--format", "json", "-o", "fill.json"),
         (*_LIVE, "--cache-dir", "cache", "--cache-only", "--format", "json", "-o", "replay.json"),
     ), ("fill.json", "replay.json"), fake="standard"),
+    "invalid_output": Scenario(LIVE_TARGET, ((*_LIVE, "--format", "json", "-o", "report.json"),), ("report.json",),
+                               fake="invalid_output"),
 }
 
 
