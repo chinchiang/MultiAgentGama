@@ -3,7 +3,9 @@
 
 import json
 import os
+import subprocess
 import sys
+import tempfile
 
 import pytest
 
@@ -18,7 +20,8 @@ if not os.path.isdir(GOLDEN_DIR):
 sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))
 from golden.compare import IMPORT_MARKER, compare  # noqa: E402
 from golden.normalize import normalize  # noqa: E402
-from golden.run import run_scenarios  # noqa: E402
+import golden.run as golden_run  # noqa: E402
+from golden.run import main, run_scenarios  # noqa: E402
 
 
 def test_iso_timestamps_become_a_placeholder():
@@ -205,3 +208,60 @@ def test_a_new_rule_hit_after_the_baseline_decides_the_verdict(tmp_path):
     assert "THREAT-05" in summary["untested_threat_ids"]
     results = json.loads((out / "report.sarif").read_text(encoding="utf-8"))["runs"][0]["results"]
     assert any(r["ruleId"] == "vibeharness/VH-AI-002" and r.get("partialFingerprints") for r in results)
+
+
+def _git_repo(root):
+    """在 root 建一個只有一次提交的 git repo。
+    Creates a git repo in root with a single commit."""
+    root.mkdir()
+    (root / "README").write_text("x\n", encoding="utf-8")
+    for args in (["init", "-q"], ["add", "README"],
+                 ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"]):
+        subprocess.run(["git", *args], cwd=root, check=True)
+    return root
+
+
+def _worktrees(repo):
+    """git worktree list 的行數（只有主目錄時是 1）。
+    The number of lines of git worktree list (1 when only the main checkout is left)."""
+    return len(subprocess.run(["git", "worktree", "list"], cwd=repo, check=True, capture_output=True,
+                              text=True).stdout.splitlines())
+
+
+@pytest.fixture
+def scratch(tmp_path, monkeypatch):
+    """main 的暫存目錄改在這裡建，測試才看得到有沒有留下東西。
+    main's temporary directories are created here, so the test sees whether anything is left behind."""
+    root = tmp_path / "scratch"
+    root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(root))
+    return root
+
+
+def test_an_unknown_revision_fails_without_leaving_anything_behind(tmp_path, scratch):
+    """--against 給了不存在的 revision：結束碼是 2（無法比對，不同於有差異的 1），不留下 worktree 或暫存目錄。
+    抓得到 git 失敗時被當成沒有差異，以及失敗路徑漏掉清除。
+    --against names a revision that does not exist: the exit code is 2 (could not compare, unlike 1 for differences),
+    and no worktree or temporary directory is left. Catches a git failure taken as no differences, and the failure
+    path skipping the cleanup."""
+    repo = _git_repo(tmp_path / "repo")
+    assert main(["--against", "no-such-rev"], repo=str(repo)) == 2
+    assert _worktrees(repo) == 1
+    assert list(scratch.iterdir()) == []
+
+
+def test_a_crashing_scenario_run_fails_and_still_removes_the_worktree(tmp_path, scratch, monkeypatch):
+    """worktree 建好之後情境執行當掉：結束碼是 2，worktree 和暫存的輸出都被移除。
+    抓得到例外跳過清除，留下 worktree 讓下一次 git worktree add 失敗。
+    The scenario run crashes after the worktree is added: the exit code is 2, and the worktree and the temporary
+    outputs are removed. Catches an exception skipping the cleanup and leaving a worktree that breaks the next git
+    worktree add."""
+    repo = _git_repo(tmp_path / "repo")
+
+    def crash(*args, **kwargs):
+        raise RuntimeError("scenario crashed")
+
+    monkeypatch.setattr(golden_run, "run_scenarios", crash)
+    assert main(["--against", "HEAD"], repo=str(repo)) == 2
+    assert _worktrees(repo) == 1
+    assert list(scratch.iterdir()) == []

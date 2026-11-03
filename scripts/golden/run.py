@@ -2,10 +2,13 @@
 The golden diff entry point: runs one set of scenarios on a revision and on the working tree and compares the
 output (#128)."""
 
+import argparse
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -15,7 +18,7 @@ if __package__ in (None, ""):
     # When run as `python scripts/golden/run.py`, make the `golden` package importable
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from golden.compare import IMPORT_MARKER  # noqa: E402
+from golden.compare import IMPORT_MARKER, compare  # noqa: E402
 from golden.targets import LIVE_TARGET, LIVE_TARGET_CHANGED, MOCK_TARGET  # noqa: E402
 
 # 子行程：從指定的 repo 匯入 vibeharness、記下匯入位置，live 情境再裝上這份工具的假 litellm（兩邊用同一份），
@@ -45,6 +48,9 @@ _ENV = {"COLUMNS": "120", "PYTHONHASHSEED": "0", "PYTHONIOENCODING": "utf-8"}
 # Live mode requires API keys; the fake litellm never uses them
 _FAKE_KEYS = {var: "golden-fake-key" for var in ("ANTHROPIC_API_KEY", "ZAI_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY")}
 _GOLDEN_PARENT = str(Path(__file__).resolve().parent.parent)
+# 這份工具所在的 repo：工作目錄那一邊，也是 worktree 掛上去的地方
+# The repo this tool lives in: the working-tree side, and where the worktree is added
+_REPO = str(Path(__file__).resolve().parent.parent.parent)
 
 
 @dataclass(frozen=True)
@@ -138,3 +144,54 @@ def _run(repo: str, name: str, scenario: Scenario, out: Path, work: Path) -> Non
     for rel in scenario.outputs:
         if (work / rel).is_file():
             shutil.copyfile(work / rel, out / rel)
+
+
+def main(argv: Optional[list[str]] = None, repo: str = _REPO) -> int:
+    """把 --against 的 revision 掛成 detached worktree，兩邊跑同一組情境並印出差異摘要。
+    結束碼：0 沒有差異、1 有差異、2 無法比對（git 或情境執行失敗）。worktree 與輸出一律移除，只有 --keep 留下輸出。
+    Adds the --against revision as a detached worktree, runs the same scenarios on both sides and prints a summary of
+    the differences. Exit code: 0 no differences, 1 differences, 2 could not compare (git or a scenario run failed).
+    The worktree and the outputs are always removed; only --keep keeps the outputs."""
+    parser = argparse.ArgumentParser(prog="python scripts/golden/run.py", description=main.__doc__)
+    parser.add_argument("--against", required=True, metavar="REV", help="the revision to compare the working tree with")
+    parser.add_argument("--keep", metavar="DIR", help="keep both sides' outputs in DIR (base/ and head/)")
+    parser.add_argument("scenarios", nargs="*", metavar="SCENARIO",
+                        help="the scenarios to run (default: all): " + ", ".join(SCENARIOS))
+    args = parser.parse_args(argv)
+    unknown = [name for name in args.scenarios if name not in SCENARIOS]
+    if unknown:
+        parser.error("unknown scenario(s): " + ", ".join(unknown))
+    names = args.scenarios or None
+    scratch = Path(tempfile.mkdtemp(prefix="vh_golden_"))
+    worktree = scratch / "base"
+    out = Path(args.keep) if args.keep else scratch / "out"
+    # --keep 指到先前用過的目錄時，舊的輸出不能混進這次的比對
+    # When --keep points at a directory used before, its old outputs must not mix into this comparison
+    for side in ("base", "head"):
+        shutil.rmtree(out / side, ignore_errors=True)
+    try:
+        subprocess.run(["git", "worktree", "add", "--detach", str(worktree), args.against], cwd=repo, check=True,
+                       capture_output=True, text=True)
+        # 兩邊用同一個工作目錄：報告裡的目標與設定路徑才相同
+        # Both sides use the same working directory, so the target and config paths in the reports are the same
+        run_scenarios(worktree, out / "base", scratch / "work", names)
+        run_scenarios(repo, out / "head", scratch / "work", names)
+        summary = compare(out / "base", out / "head")
+    except Exception as exc:
+        # git 的錯誤訊息在 stderr 裡；其他例外印出 traceback
+        # git's error message is in its stderr; any other exception prints its traceback
+        detail = exc.stderr if isinstance(exc, subprocess.CalledProcessError) else traceback.format_exc()
+        print(f"golden diff could not compare: {exc}\n{detail}", file=sys.stderr)
+        return 2
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=repo, capture_output=True)
+        subprocess.run(["git", "worktree", "prune"], cwd=repo, capture_output=True)
+        shutil.rmtree(scratch, ignore_errors=True)
+    print(f"{summary.lines} differing line(s), {len(summary.distinct)} distinct")
+    for count, line in summary.distinct:
+        print(f"{count:>5}  {line}")
+    return 1 if summary.lines else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
