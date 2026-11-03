@@ -3,6 +3,8 @@
 
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,7 +23,7 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))
 from golden.compare import IMPORT_MARKER, compare  # noqa: E402
 from golden.normalize import normalize  # noqa: E402
 import golden.run as golden_run  # noqa: E402
-from golden.run import main, run_scenarios  # noqa: E402
+from golden.run import ScenarioCrashed, main, run_scenarios  # noqa: E402
 
 
 def test_iso_timestamps_become_a_placeholder():
@@ -378,3 +380,56 @@ def test_unusable_output_is_re_asked_once_and_booked_invalid_when_it_stays_unusa
     assert claude == [("retried", 0), ("invalid", 1)]
     assert any("model call(s) returned unusable output or crashed before answering" in reason
                for reason in summary["inconclusive_reasons"])
+
+
+def test_a_crashed_reviewer_batch_is_booked_as_a_failed_call_and_the_others_carry_on(tmp_path):
+    """crash 讓 Gemini 審查者的批次在 gateway 之外丟出一般例外：那一次呼叫記成當掉的 invalid 呼叫，其他審查者照常 live，
+    品質閘門記下證據缺口；stderr 只有一行錯誤、沒有 traceback（否則 run_scenarios 會丟出 ScenarioCrashed）。
+    抓得到當掉的批次讓整次執行失敗、被悄悄丟掉（變成「沒有發現」），以及它的紀錄不再標明是當掉。
+    crash makes the Gemini reviewer's batch raise an ordinary exception outside the gateway: that call is booked as a
+    crashed invalid call, the other reviewers stay live, and the Quality Gate records the Evidence gap; stderr holds one
+    error line and no traceback (run_scenarios would raise ScenarioCrashed otherwise). Catches a crashed batch failing
+    the whole run or being dropped silently (as "no findings"), and its record no longer saying it crashed."""
+    run_scenarios(REPO_ROOT, tmp_path / "out", tmp_path / "work", names=["crash"])
+    summary = json.loads((tmp_path / "out" / "crash" / "report.json").read_text(encoding="utf-8"))["summary"]
+    reviewers = {call["agent_id"]: call for call in summary["agent_calls"] if call["kind"] == "reviewer"}
+    crashed = reviewers.pop("whitebox_reviewer_gemini")
+    assert crashed["mode"] == "invalid" and "agent call crashed before producing output" in crashed["reason"]
+    assert reviewers and {call["mode"] for call in reviewers.values()} == {"live"}
+    assert any("model call(s) returned unusable output or crashed before answering" in reason
+               for reason in summary["inconclusive_reasons"])
+
+
+def _copy_of_vibeharness(root):
+    """把這個 repo 的 vibeharness/ 複製到 root 底下，當作另一個 revision。
+    Copies this repo's vibeharness/ under root, standing in for another revision."""
+    shutil.copytree(os.path.join(REPO_ROOT, "vibeharness"), root / "vibeharness",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    return root
+
+
+def test_the_crash_scenario_fails_to_compare_when_its_patch_target_is_missing(tmp_path):
+    """另一個 revision 把 _review_batch 改了名：crash 的 patch 目標不存在，情境當掉（之後 main 回傳 2），
+    不會悄悄沒注入就跑完、被當成行為不同或相同。
+    Another revision renamed _review_batch: crash's patch target is missing, so the scenario crashes (main then exits
+    2) instead of running without the injection and comparing as different or the same."""
+    repo = _copy_of_vibeharness(tmp_path / "repo")
+    reviewer = repo / "vibeharness" / "agents" / "whitebox" / "multi_reviewer.py"
+    reviewer.write_text(re.sub(r"\b_review_batch\b", "_review_one", reviewer.read_text(encoding="utf-8")),
+                        encoding="utf-8")
+    with pytest.raises(ScenarioCrashed):
+        run_scenarios(repo, tmp_path / "out", tmp_path / "work", names=["crash"])
+
+
+def test_the_crash_scenario_fails_to_compare_when_its_patch_never_fires(tmp_path):
+    """另一個 revision 的 Gemini 審查者換了 agent id：patch 還在，卻從沒判斷到要當掉的批次，情境照樣當掉（main 回傳 2）。
+    抓得到參數形狀改變讓注入悄悄失效。
+    Another revision gives the Gemini reviewer another agent id: the patch is in place but never meets the batch it
+    should crash, and the scenario still crashes (main exits 2). Catches a changed argument shape silently disabling the
+    injection."""
+    repo = _copy_of_vibeharness(tmp_path / "repo")
+    config = repo / "vibeharness" / "config" / "agents_config.yaml"
+    config.write_text(config.read_text(encoding="utf-8").replace("whitebox_reviewer_gemini:", "whitebox_reviewer_gem:"),
+                      encoding="utf-8")
+    with pytest.raises(ScenarioCrashed):
+        run_scenarios(repo, tmp_path / "out", tmp_path / "work", names=["crash"])

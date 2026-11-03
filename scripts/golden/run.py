@@ -37,11 +37,18 @@ with open(marker, "w", encoding="utf-8") as f:
     f.write(os.path.dirname(os.path.abspath(vibeharness.__file__)) + "\\n")
 if fake:
     sys.path.append(golden_parent)
-    from golden.fake_llm import install
+    from golden.fake_llm import install, verify
     install(fake)
 from vibeharness.cli import main
 sys.argv = ["vibeharness"] + sys.argv[5:]
-main()
+try:
+    main()
+finally:
+    # sys.exit 時也執行：沒觸發的注入以 traceback 收場，run_scenarios 會把它當成無法比對
+    # Runs on sys.exit too: an injection that never fired ends in a traceback, which run_scenarios treats as a
+    # failure to compare
+    if fake:
+        verify()
 """
 
 # 主控台寬度固定，輸出才不隨終端機而變。子行程以 -I 執行，PYTHON* 環境變數對它無效，UTF-8 改由命令列的 -X utf8 指定
@@ -138,6 +145,8 @@ SCENARIOS = {
     ), ("fill.json", "replay.json"), fake="standard"),
     "invalid_output": Scenario(LIVE_TARGET, ((*_LIVE, "--format", "json", "-o", "report.json"),), ("report.json",),
                                fake="invalid_output"),
+    "crash": Scenario(LIVE_TARGET, ((*_LIVE, "--format", "json", "-o", "report.json"),), ("report.json",),
+                      fake="crash"),
 }
 
 

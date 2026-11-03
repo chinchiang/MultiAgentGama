@@ -4,6 +4,8 @@ The fake litellm of the live scenarios: recognises the agent by the role sentenc
 fixed answer by the content of the user prompt. No network, and the answer depends on the prompt alone, so the same
 prompt gets the same answer on both runs and both revisions."""
 
+import functools
+import importlib
 import json
 import re
 from types import SimpleNamespace
@@ -144,7 +146,37 @@ def _unusable(system: str, user: str) -> bool:
     return "white-box AI code auditor" in system and "(Claude)" in system
 
 
-PROFILES = ("standard", "primary_down", "invalid_output")
+# crash：讓 Gemini 審查者的批次在 gateway 之外丟出一般例外（fan_out 把它記成當掉的呼叫）。patch 的是私有方法：
+# 另一個 revision 沒有它，或參數形狀改了而從沒觸發，都要讓情境當掉（main 回傳 2），不能悄悄沒注入就跑完
+# crash: makes the Gemini reviewer's batch raise an ordinary exception outside the gateway (fan_out books it as a
+# crashed call). The patch targets a private method: when another revision lacks it, or a changed argument shape keeps
+# it from ever firing, the scenario must crash (main exits 2) rather than quietly run without the injection
+_CRASH_TARGET = ("vibeharness.agents.whitebox.multi_reviewer", "HeterogeneousReviewerEnsemble", "_review_batch")
+_CRASH_AGENT = "whitebox_reviewer_gemini"
+_installed: list[str] = []
+_crashed: list[str] = []
+
+
+def _install_crash() -> None:
+    """把 crash 的 patch 裝到 _CRASH_TARGET 上；目標不存在時丟出例外。
+    Installs crash's patch on _CRASH_TARGET; raises when the target is missing."""
+    module_name, class_name, method_name = _CRASH_TARGET
+    owner = getattr(importlib.import_module(module_name), class_name, None)
+    original = getattr(owner, method_name, None)
+    if original is None:
+        raise RuntimeError(f"golden fake: patch target {'.'.join(_CRASH_TARGET)} is missing on this revision")
+
+    @functools.wraps(original)
+    def crashing(self, reviewer, *args, **kwargs):
+        if isinstance(reviewer, dict) and reviewer.get("agent_id") == _CRASH_AGENT:
+            _crashed.append(_CRASH_AGENT)
+            raise RuntimeError(f"golden fake: injected crash in {_CRASH_AGENT}'s batch")
+        return original(self, reviewer, *args, **kwargs)
+
+    setattr(owner, method_name, crashing)
+
+
+PROFILES = ("standard", "primary_down", "invalid_output", "crash")
 
 
 def install(profile: str) -> None:
@@ -155,3 +187,14 @@ def install(profile: str) -> None:
         raise ValueError(f"golden fake: unknown profile {profile!r}")
     import vibeharness.core.transport as transport
     transport.litellm = _FakeLiteLLM(profile)  # type: ignore[assignment]
+    if profile == "crash":
+        _install_crash()
+    _installed.append(profile)
+
+
+def verify() -> None:
+    """CLI 結束後（包括 sys.exit）呼叫：crash 的 patch 從沒觸發就丟出例外，讓情境當掉而不是悄悄沒注入。
+    Called after the CLI ends (sys.exit included): raises when crash's patch never fired, so the scenario crashes
+    instead of quietly running without the injection."""
+    if "crash" in _installed and not _crashed:
+        raise RuntimeError(f"golden fake: the crash patch never met {_CRASH_AGENT}'s batch on this revision")
