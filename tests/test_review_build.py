@@ -261,9 +261,9 @@ SDIST_REQUIRED = [
 
 def test_sdist_ships_everything_needed_to_rebuild_and_test():
     """VIBEHARNESS_SDIST 指向的 sdist（CI 的 package job 設定）必須含有重建與測試所需的全部檔案，
-    包括 tests/ 底下的每一個 .py；沒有設定時略過。
+    包括 tests/ 底下的每一個 .py，但不含只供開發用的 scripts/golden/；沒有設定時略過。
     The sdist VIBEHARNESS_SDIST points at (set by CI's package job) must ship everything needed to rebuild and
-    test, including every .py under tests/; skipped when unset."""
+    test, including every .py under tests/, but not the development-only scripts/golden/; skipped when unset."""
     sdist = os.environ.get("VIBEHARNESS_SDIST")
     if not sdist:
         pytest.skip("VIBEHARNESS_SDIST is not set (CI's package job sets it)")
@@ -275,13 +275,16 @@ def test_sdist_ships_everything_needed_to_rebuild_and_test():
     local_tests = {f"tests/{f}" for f in os.listdir(tests_dir) if f.endswith(".py")}
     assert local_tests - names == set()
     assert not [n for n in names if "__pycache__" in n or n.endswith(".pyc")]
+    assert not [n for n in names if n.startswith("scripts/golden")]
 
 
 def test_manifest_lists_the_sdist_extras():
-    """MANIFEST.in 明列 sdist 額外需要的檔案（setuptools 預設不會帶的那些）。
-    MANIFEST.in lists the extra files the sdist needs (the ones setuptools would not include by default)."""
+    """MANIFEST.in 明列 sdist 額外需要的檔案（setuptools 預設不會帶的那些），並排除只供開發用的 scripts/golden/。
+    MANIFEST.in lists the extra files the sdist needs (the ones setuptools would not include by default) and leaves
+    out the development-only scripts/golden/."""
     manifest = _read("MANIFEST.in")
     for needle in ("CONTRIBUTING.md", "CODING_STANDARDS.md", "CODING_STANDARDS.en.md", "SECURITY.md", "main.py", "action.yml", "requirements.lock", "requirements-build.txt",
                    "requirements-dev.txt", "docker/sandbox-requirements.txt", "recursive-include tests *.py",
                    "recursive-include examples *.py", "recursive-include scripts *.py", "CHANGELOG.en.md"):
         assert needle in manifest, needle
+    assert "prune scripts/golden" in manifest

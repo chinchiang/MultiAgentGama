@@ -259,6 +259,7 @@ MultiAgentGama/
 │   ├── check_bi_english.py      # bi-english's logic: compare every bi() English half with the base commit; changed or removed ones must be in both CHANGELOGs
 │   ├── check_pr_issue_link.py   # pr-issue-link's logic: which PRs need an issue, whether the description and commits link an existing one
 │   ├── check_required_checks.py # Three-way comparison of the required checks: workflow jobs and matrices, CONTRIBUTING, the ruleset
+│   ├── golden/                  # Golden diff (development only, not in the sdist): run.py --against <rev> compares a revision's output with the working tree's
 │   ├── recite_design_refs.py    # Checks the design documents' path:line references and remaps them to the current code via git diff
 │   └── test_sdist.py            # Reproduces CI's package job locally: build the sdist, extract it, run the suite inside
 ├── tests/                       # The toolkit's own tests (offline, no API keys needed)
@@ -277,6 +278,7 @@ MultiAgentGama/
 │   ├── test_estimate.py                # --estimate: exact and scenario figures, prices, no model call
 │   ├── test_evidence_tally.py          # Evidence tally: each kind's all / new / known with and without a Baseline, the Known problems' order, partial tallies
 │   ├── test_fanout.py                  # The fan-out through fan_out: order, a crash replaced by the fallback and booked, no queued call after a live failure or Ctrl-C
+│   ├── test_golden.py                  # Golden diff: normalisation, comparison, scenario determinism, --against's cleanup path (skips without scripts/golden/)
 │   ├── test_harness_components.py      # Component integration tests in mock mode
 │   ├── test_i18n.py                    # Bilingual helpers, report / console / CLI strings, bilingual docstrings and comments
 │   ├── test_i18n_output.py             # Prompts stay English, bilingual rule titles, executor reasons and PoCs
