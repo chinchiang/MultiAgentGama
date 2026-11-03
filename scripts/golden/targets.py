@@ -33,3 +33,38 @@ def price_with_tax(price: float, rate: float) -> float:
     return round(price * (1 + rate), 2)
 ''',
 }
+
+# live 情境的目標：假 litellm 依函式名稱寫測試，讓每一種結果都出現（見 fake_llm）
+# The live scenarios' target: the fake litellm writes tests by function name, so every kind of result shows up (see
+# fake_llm)
+LIVE_TARGET = {
+    "shop.py": '''\
+"""A small shop with deliberate flaws, used as a golden diff target."""
+from typing import Dict
+
+ORDERS: Dict[int, dict] = {1: {"owner": "alice", "total": 30}, 2: {"owner": "bob", "total": 99}}
+ROLES: Dict[str, str] = {"alice": "user", "root": "admin"}
+
+
+def get_order(order_id: int, user: str) -> dict:
+    """Flaw: any user can read any order (no owner check)."""
+    return ORDERS[order_id]
+
+
+def apply_discount(total: float, percent: float) -> float:
+    """Flaw: a discount over 100 percent makes the total negative."""
+    return total - total * percent / 100
+
+
+def safe_quantity(value: int) -> int:
+    """Correct: rejects anything that is not a positive integer."""
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError("quantity must be a positive integer")
+    return value
+
+
+def lookup_role(name: str) -> str:
+    """Flaw: an unknown user raises KeyError instead of getting the guest role."""
+    return ROLES[name]
+''',
+}

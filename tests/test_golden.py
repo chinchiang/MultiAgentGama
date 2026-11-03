@@ -1,6 +1,7 @@
 """`scripts/golden/`：重構前後比對輸出的 golden diff 工具（只供開發用，#128）。
 `scripts/golden/`: the golden diff tool that compares output before and after a refactor (development only, #128)."""
 
+import json
 import os
 import sys
 
@@ -129,16 +130,27 @@ def test_harness_logs_and_the_import_marker_are_not_compared_and_one_sided_files
     assert summary.distinct == [(1, "> new")]
 
 
-def test_a_mock_scenario_runs_from_the_given_repo_and_twice_gives_the_same_output(tmp_path):
-    """mock 情境從指定的 repo 匯入 vibeharness，寫出報告、主控台輸出與 exit code；跑兩次結果相同。
-    抓得到內部改動讓工具壞掉，以及每次不同的輸出。
-    A mock scenario imports vibeharness from the given repo and writes the report, the console output and the exit
-    code; two runs give the same result. Catches the tool breaking on an internal change and non-deterministic output."""
+def test_a_mock_and_a_live_scenario_run_from_the_given_repo_and_twice_give_the_same_output(tmp_path):
+    """一個 mock 與一個 live（假 litellm）情境從指定的 repo 匯入 vibeharness，寫出報告、主控台輸出與 exit code；
+    跑兩次結果相同。live 的每一次 agent 呼叫都經過假 litellm，目標產生每一種結果。
+    抓得到內部改動讓工具壞掉（例如假 litellm 的 patch 失效、悄悄退回模擬），每次不同的輸出，以及某種結果不再出現。
+    A mock and a live (fake litellm) scenario import vibeharness from the given repo and write the report, the
+    console output and the exit code; two runs give the same result. Every agent call of the live run goes through the
+    fake litellm, and the target produces every kind of result. Catches the tool breaking on an internal change (the
+    fake litellm patch no longer taking effect and the run falling back to simulation, say), non-deterministic output,
+    and a kind of result no longer showing up."""
     for run in ("one", "two"):
-        run_scenarios(REPO_ROOT, tmp_path / run, tmp_path / "work", names=["mock_md"])
-    out = tmp_path / "one" / "mock_md"
-    assert (out / IMPORT_MARKER).read_text(encoding="utf-8").strip() == os.path.join(REPO_ROOT, "vibeharness")
-    assert "# " in (out / "report.md").read_text(encoding="utf-8")
-    assert (out / "step1.exit_code").read_text(encoding="utf-8").strip() == "1"
-    assert (out / "step1.stdout").stat().st_size > 0 and (out / "step1.stderr").stat().st_size > 0
+        run_scenarios(REPO_ROOT, tmp_path / run, tmp_path / "work", names=["mock_md", "live_json"])
+    mock = tmp_path / "one" / "mock_md"
+    assert (mock / IMPORT_MARKER).read_text(encoding="utf-8").strip() == os.path.join(REPO_ROOT, "vibeharness")
+    assert "# " in (mock / "report.md").read_text(encoding="utf-8")
+    assert (mock / "step1.exit_code").read_text(encoding="utf-8").strip() == "1"
+    assert (mock / "step1.stdout").stat().st_size > 0 and (mock / "step1.stderr").stat().st_size > 0
+
+    summary = json.loads((tmp_path / "one" / "live_json" / "report.json").read_text(encoding="utf-8"))["summary"]
+    assert summary["agent_calls"] and {call["mode"] for call in summary["agent_calls"]} == {"live"}
+    for count in ("whitebox_tests_passed", "whitebox_tests_failed", "whitebox_tests_not_run",
+                  "blackbox_security_breaches", "blackbox_tests_failed", "blackbox_tests_not_run"):
+        assert summary[count] >= 1, count
+    assert summary["untested_threat_ids"]
     assert compare(tmp_path / "one", tmp_path / "two").lines == 0
