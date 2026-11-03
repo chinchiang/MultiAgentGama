@@ -117,6 +117,8 @@ SCENARIOS = {
     ), ("baseline.json", "report.json", "report.sarif"), fake="standard", changed_target=LIVE_TARGET_CHANGED),
     "hybrid_missing_key": Scenario(LIVE_TARGET, (("-m", "hybrid", "--format", "json", "-o", "report.json"),),
                                    ("report.json",), fake="standard", unset_env=("GEMINI_API_KEY",)),
+    "primary_down": Scenario(LIVE_TARGET, ((*_LIVE, "--format", "json", "-o", "report.json"),), ("report.json",),
+                             fake="primary_down"),
 }
 
 

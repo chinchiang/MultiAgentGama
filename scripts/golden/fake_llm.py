@@ -106,18 +106,27 @@ def respond(system: str, user: str) -> str:
     raise AssertionError("fake litellm: unknown agent: " + system[:80])
 
 
-class _FakeLiteLLM:
-    """litellm.completion 的替身。
-    A stand-in for litellm.completion."""
+# primary_down：這個模型字串一律失敗，gateway 改呼叫設定裡的 fallback_model
+# primary_down: this model string always fails, so the gateway calls the configured fallback_model
+_DOWN_MODEL = "deepseek/deepseek-v4-pro"
 
-    @staticmethod
-    def completion(**kwargs):
+
+class _FakeLiteLLM:
+    """litellm.completion 的替身，行為依 profile。
+    A stand-in for litellm.completion, behaving as its profile."""
+
+    def __init__(self, profile: str) -> None:
+        self.profile = profile
+
+    def completion(self, **kwargs):
+        if self.profile == "primary_down" and kwargs["model"] == _DOWN_MODEL:
+            raise RuntimeError(f"golden fake: {_DOWN_MODEL} is down")
         messages = kwargs["messages"]
         text = respond(messages[0]["content"], messages[1]["content"])
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text), finish_reason="stop")])
 
 
-PROFILES = ("standard",)
+PROFILES = ("standard", "primary_down")
 
 
 def install(profile: str) -> None:
@@ -127,4 +136,4 @@ def install(profile: str) -> None:
     if profile not in PROFILES:
         raise ValueError(f"golden fake: unknown profile {profile!r}")
     import vibeharness.core.transport as transport
-    transport.litellm = _FakeLiteLLM()  # type: ignore[assignment]
+    transport.litellm = _FakeLiteLLM(profile)  # type: ignore[assignment]

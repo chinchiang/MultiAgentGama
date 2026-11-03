@@ -305,3 +305,21 @@ def test_hybrid_with_one_key_unset_simulates_that_model_even_when_the_shell_has_
     assert all("API key env var GEMINI_API_KEY is not set" in call["reason"] for call in gemini)
     assert {call["mode"] for call in others} == {"live"}
     assert any("Simulation engine (not real models) was used for" in reason for reason in summary["inconclusive_reasons"])
+
+
+def test_a_primary_model_that_fails_is_answered_by_its_fallback_and_the_run_stays_live(tmp_path):
+    """primary_down 讓 DeepSeek 的主模型（deepseek/deepseek-v4-pro）一律失敗：每一次 DeepSeek 呼叫都由
+    fallback_model（deepseek/deepseek-v4-flash）回答，仍是 live，主模型的失敗只在 stderr 記一行，判定和 live_json 一樣。
+    抓得到 fallback 路徑不再被走到、失敗被改成模擬，以及呼叫紀錄記錯回答的模型。
+    primary_down makes DeepSeek's primary model (deepseek/deepseek-v4-pro) always fail: every DeepSeek call is answered
+    by its fallback_model (deepseek/deepseek-v4-flash) and stays live, the primary's failure is one stderr line, and the
+    Verdict matches live_json's. Catches the fallback path no longer being reached, a failure turned into simulation,
+    and the call log naming the wrong answering model."""
+    run_scenarios(REPO_ROOT, tmp_path / "out", tmp_path / "work", names=["primary_down"])
+    out = tmp_path / "out" / "primary_down"
+    summary = json.loads((out / "report.json").read_text(encoding="utf-8"))["summary"]
+    deepseek = [call for call in summary["agent_calls"] if call["model_alias"] == "deepseek"]
+    assert deepseek and {call["mode"] for call in summary["agent_calls"]} == {"live"}
+    assert {call["model_name"] for call in deepseek} == {"deepseek/deepseek-v4-flash"}
+    assert "Model deepseek/deepseek-v4-pro failed" in (out / "step1.stderr").read_text(encoding="utf-8")
+    assert (out / "step1.exit_code").read_text(encoding="utf-8").strip() == "2"
