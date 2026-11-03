@@ -64,16 +64,21 @@ class ScenarioCrashed(RuntimeError):
 @dataclass(frozen=True)
 class Scenario:
     """一個情境：目標檔案、依序執行的各步驟 CLI 參數（例如 --baseline 要先有一份報告）、要收集的輸出檔、
-    要裝上的假 litellm profile（None 是不裝，mock 情境用），以及第 2 步起換上的目標檔案（基準線之後目標改了）。
+    要裝上的假 litellm profile（None 是不裝，mock 情境用）、第 2 步起換上的目標檔案（基準線之後目標改了），
+    以及要從子行程環境移除的變數。
     One scenario: the target files, the CLI arguments of each step in order (--baseline, say, needs a report
     first), the output files to collect, the fake litellm profile to install (None installs none, as mock
-    scenarios do), and the target files swapped in from step 2 on (the target changed after the baseline)."""
+    scenarios do), the target files swapped in from step 2 on (the target changed after the baseline), and the
+    variables to remove from the child's environment."""
 
     target: dict[str, str]
     steps: tuple[tuple[str, ...], ...]
     outputs: tuple[str, ...]
     fake: Optional[str] = None
     changed_target: Optional[dict[str, str]] = None
+    # 在 os.environ 與假金鑰合併之後才移除：開發者 shell 裡真的金鑰也帶不進去
+    # Removed after os.environ and the fake keys are merged, so a real key in the developer's shell cannot get in
+    unset_env: tuple[str, ...] = ()
 
 
 _MOCK = ("-m", "mock")
@@ -110,6 +115,8 @@ SCENARIOS = {
         (*_LIVE, "--format", "json", "-o", "baseline.json"),
         (*_LIVE, "--baseline", "baseline.json", "--format", "json", "-o", "report.json", "--sarif", "report.sarif"),
     ), ("baseline.json", "report.json", "report.sarif"), fake="standard", changed_target=LIVE_TARGET_CHANGED),
+    "hybrid_missing_key": Scenario(LIVE_TARGET, (("-m", "hybrid", "--format", "json", "-o", "report.json"),),
+                                   ("report.json",), fake="standard", unset_env=("GEMINI_API_KEY",)),
 }
 
 
@@ -138,6 +145,9 @@ def _run(repo: str, name: str, scenario: Scenario, out: Path, work: Path) -> Non
     # content still shows
     shutil.copyfile(os.path.join(repo, "vibeharness", "config", "agents_config.yaml"), work / "vibeharness.yaml")
     target = next(iter(scenario.target)) if len(scenario.target) == 1 else "."
+    env = {**os.environ, **_ENV, **(_FAKE_KEYS if scenario.fake else {})}
+    for var in scenario.unset_env:
+        env.pop(var, None)
     for number, args in enumerate(scenario.steps, 1):
         if number == 2 and scenario.changed_target:
             for rel, content in scenario.changed_target.items():
@@ -145,7 +155,7 @@ def _run(repo: str, name: str, scenario: Scenario, out: Path, work: Path) -> Non
         proc = subprocess.run(
             [sys.executable, "-I", "-X", "utf8", "-c", _CHILD, repo, str(out / IMPORT_MARKER), _GOLDEN_PARENT, scenario.fake or "",
              "-t", target, "-c", "vibeharness.yaml", *args],
-            cwd=work, env={**os.environ, **_ENV, **(_FAKE_KEYS if scenario.fake else {})}, capture_output=True,
+            cwd=work, env=env, capture_output=True,
             text=True, encoding="utf-8",
         )
         (out / f"step{number}.stdout").write_text(proc.stdout, encoding="utf-8")

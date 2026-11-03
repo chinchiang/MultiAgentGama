@@ -285,3 +285,23 @@ def test_both_sides_crashing_the_same_way_is_a_failure_to_compare_not_zero_diffe
     assert main(["--against", "HEAD", "mock_md"], repo=str(repo)) == 2
     assert _worktrees(repo) == 1
     assert list(scratch.iterdir()) == []
+
+
+def test_hybrid_with_one_key_unset_simulates_that_model_even_when_the_shell_has_a_real_key(tmp_path, monkeypatch):
+    """hybrid_missing_key 移除 GEMINI_API_KEY：即使開發者的 shell 有一把真的金鑰，Gemini 的每一次呼叫都是模擬的，
+    原因寫著金鑰沒設定，其他模型照常 live；品質閘門記下模擬引擎的證據缺口。
+    抓得到真的金鑰漏進子行程（會打到真的供應商，或讓情境悄悄變成全 live），以及缺金鑰的 hybrid 路徑不再出現。
+    hybrid_missing_key removes GEMINI_API_KEY: even with a real key in the developer's shell, every Gemini call is
+    simulated with the key named as not set, the other models stay live, and the Quality Gate records the simulation
+    Evidence gap. Catches a real key leaking into the child (which would reach the real provider, or quietly make the
+    scenario all live) and the missing-key hybrid path no longer showing up."""
+    monkeypatch.setenv("GEMINI_API_KEY", "real-looking-key")
+    run_scenarios(REPO_ROOT, tmp_path / "out", tmp_path / "work", names=["hybrid_missing_key"])
+    summary = json.loads((tmp_path / "out" / "hybrid_missing_key" / "report.json").read_text(encoding="utf-8"))["summary"]
+    gemini = [call for call in summary["agent_calls"] if call["model_alias"] == "gemini"]
+    others = [call for call in summary["agent_calls"] if call["model_alias"] != "gemini"]
+    assert gemini and others
+    assert {call["mode"] for call in gemini} == {"simulated"}
+    assert all("API key env var GEMINI_API_KEY is not set" in call["reason"] for call in gemini)
+    assert {call["mode"] for call in others} == {"live"}
+    assert any("Simulation engine (not real models) was used for" in reason for reason in summary["inconclusive_reasons"])
