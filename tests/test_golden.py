@@ -167,3 +167,20 @@ def test_the_live_markdown_scenario_writes_a_real_audit_report(tmp_path):
     report = (out / "report.md").read_text(encoding="utf-8")
     assert "🟢" in report and "SIMULATED" not in report and "🟡" not in report
     assert (out / "step1.exit_code").read_text(encoding="utf-8").strip() == "2"
+
+
+def test_the_live_baseline_scenario_suppresses_what_the_first_run_found(tmp_path):
+    """live_baseline_json 先寫出基準線，再以 --baseline 重跑同一個目標：突破與白箱失敗都成為已知問題、仍列在報告裡，
+    但不再決定判定；剩下的只有證據缺口（沒測到的威脅、Not run），所以從 BLOCKED（2）變成 INCONCLUSIVE（3）。
+    抓得到基準線步驟的參數錯誤、指紋在兩次 live 執行之間不穩定，以及已知問題不再被壓下。
+    live_baseline_json writes a baseline, then reruns the same target with --baseline: the breach and the white-box
+    failure become Known problems, still listed but no longer deciding the verdict; only evidence gaps remain (an
+    untested threat, Not run), so BLOCKED (2) becomes INCONCLUSIVE (3). Catches wrong baseline step arguments,
+    fingerprints that are unstable between two live runs, and Known problems no longer being suppressed."""
+    run_scenarios(REPO_ROOT, tmp_path / "out", tmp_path / "work", names=["live_baseline_json"])
+    out = tmp_path / "out" / "live_baseline_json"
+    assert [(out / f"step{n}.exit_code").read_text(encoding="utf-8").strip() for n in (1, 2)] == ["2", "3"]
+    summary = json.loads((out / "report.json").read_text(encoding="utf-8"))["summary"]
+    assert summary["blackbox_security_breaches"] >= 1 and summary["whitebox_tests_failed"] >= 1
+    assert summary["new_blackbox_security_breaches"] == 0 and summary["new_whitebox_tests_failed"] == 0
+    assert {item["kind"] for item in summary["baseline_suppressed"]} >= {"breach", "whitebox_failure"}

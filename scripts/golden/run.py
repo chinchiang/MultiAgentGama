@@ -82,6 +82,14 @@ SCENARIOS = {
         (*_LIVE, "--format", "json", "-o", "report.json", "--sarif", "report.sarif"),
     ), ("report.json", "report.sarif"), live=True),
     "live_md": Scenario(LIVE_TARGET, ((*_LIVE, "--format", "md", "-o", "report.md"),), ("report.md",), live=True),
+    "live_baseline_json": Scenario(LIVE_TARGET, (
+        (*_LIVE, "--format", "json", "-o", "baseline.json"),
+        (*_LIVE, "--baseline", "baseline.json", "--format", "json", "-o", "report.json"),
+    ), ("baseline.json", "report.json"), live=True),
+    "live_baseline_md": Scenario(LIVE_TARGET, (
+        (*_LIVE, "--format", "json", "-o", "baseline.json"),
+        (*_LIVE, "--baseline", "baseline.json", "--format", "md", "-o", "report.md"),
+    ), ("baseline.json", "report.md"), live=True),
 }
 
 
