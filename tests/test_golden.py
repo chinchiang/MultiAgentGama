@@ -15,6 +15,7 @@ if not os.path.isdir(GOLDEN_DIR):
     pytest.skip("scripts/golden/ is not shipped in the sdist", allow_module_level=True)
 
 sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))
+from golden.compare import IMPORT_MARKER, compare  # noqa: E402
 from golden.normalize import normalize  # noqa: E402
 
 
@@ -55,3 +56,73 @@ def test_stderr_drops_the_clock_prefix_and_sorts_lines_interleaved_by_threads():
     text = "08:41:31 [INFO] b\n08:41:32 [INFO] a\n"
     assert normalize(text, stderr=True) == "[INFO] a\n[INFO] b\n"
     assert normalize(text) == text
+
+
+def _write(root, files):
+    """在 root 底下寫出 {相對路徑: 內容}。
+    Writes {relative path: content} under root."""
+    for rel, content in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+
+def test_a_changed_line_counts_once_on_each_side(tmp_path):
+    """改了一行：基準那邊少一行、工作目錄這邊多一行，共 2 行、2 種。
+    One changed line: one line gone on the base side and one added on the working tree's, 2 lines and 2 distinct."""
+    _write(tmp_path / "base", {"md/report.md": "# Report\nPassed\nend\n"})
+    _write(tmp_path / "head", {"md/report.md": "# Report\nAll passed\nend\n"})
+    summary = compare(tmp_path / "base", tmp_path / "head")
+    assert summary.lines == 2
+    assert summary.distinct == [(1, "< Passed"), (1, "> All passed")]
+
+
+def test_lines_that_differ_only_in_their_hashes_count_as_one_distinct_difference(tmp_path):
+    """訊息改了，SARIF 和 JSON 報告裡的 fingerprint 都跟著變：N 算每一行，M 把只差在雜湊的行合併。
+    A changed message changes the fingerprints in both the SARIF and the JSON report: N counts every line, M merges
+    lines that differ only in their hashes."""
+    old_fp, new_fp = "a" * 40, "b" * 40
+    _write(tmp_path / "base", {
+        "json/report.sarif": f'"vibeharness/v1": "{old_fp}"\n',
+        "json/report.json": f'"fingerprint": "{old_fp}"\n',
+        "mixed/report.json": f'"fingerprint": "{"c" * 40}"\n"prompt_sha256": "{"d" * 64}"\n',
+    })
+    _write(tmp_path / "head", {
+        "json/report.sarif": f'"vibeharness/v1": "{new_fp}"\n',
+        "json/report.json": f'"fingerprint": "{new_fp}"\n',
+        "mixed/report.json": f'"fingerprint": "{"e" * 40}"\n"prompt_sha256": "{"f" * 64}"\n',
+    })
+    summary = compare(tmp_path / "base", tmp_path / "head")
+    assert summary.lines == 8
+    assert summary.distinct == [
+        (2, '< "fingerprint": "<HASH>"'), (2, '> "fingerprint": "<HASH>"'),
+        (1, '< "prompt_sha256": "<HASH>"'), (1, '< "vibeharness/v1": "<HASH>"'),
+        (1, '> "prompt_sha256": "<HASH>"'), (1, '> "vibeharness/v1": "<HASH>"'),
+    ]
+
+
+def test_stderr_files_compare_regardless_of_line_order_and_other_files_do_not(tmp_path):
+    """.stderr 檔的行序由執行緒決定，不算差異；報告的行序是真正的輸出，算差異。
+    A .stderr file's line order is up to the threads and is no difference; a report's line order is real output and
+    is."""
+    _write(tmp_path / "base", {"md/run.stderr": "08:00:01 [INFO] a\n08:00:01 [INFO] b\n", "md/report.md": "a\nb\n"})
+    _write(tmp_path / "head", {"md/run.stderr": "09:30:00 [INFO] b\n09:30:02 [INFO] a\n", "md/report.md": "b\na\n"})
+    summary = compare(tmp_path / "base", tmp_path / "head")
+    assert summary.lines == 2
+    assert summary.distinct == [(1, "< b"), (1, "> b")]
+
+
+def test_harness_logs_and_the_import_marker_are_not_compared_and_one_sided_files_are(tmp_path):
+    """harness log 與 import marker 本來就因 revision 而不同，不比對；只在一邊出現的檔案，每一行都算差異。
+    The harness log and the import marker differ by revision by design and are not compared; every line of a file
+    present on one side only counts as a difference."""
+    _write(tmp_path / "base", {
+        "md/report.harness.log": "base log\n", f"md/{IMPORT_MARKER}": "/tmp/base/vibeharness\n",
+    })
+    _write(tmp_path / "head", {
+        "md/report.harness.log": "head log\n", f"md/{IMPORT_MARKER}": "/repo/vibeharness\n",
+        "md/new.md": "new\n",
+    })
+    summary = compare(tmp_path / "base", tmp_path / "head")
+    assert summary.lines == 1
+    assert summary.distinct == [(1, "> new")]
