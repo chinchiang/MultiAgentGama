@@ -340,3 +340,20 @@ def test_an_exhausted_budget_simulates_every_later_call_in_hybrid_mode(tmp_path)
     assert len(live) == 5 and later
     assert all(call["mode"] == "simulated" and "max_model_calls budget exhausted" in call["reason"] for call in later)
     assert any("The max_model_calls budget (5) was exhausted" in reason for reason in summary["inconclusive_reasons"])
+
+
+def test_a_filled_response_cache_answers_every_call_of_a_cache_only_rerun(tmp_path):
+    """live_cache 第 1 步以 --cache-dir 填滿回應快取，第 2 步加 --cache-only 在同一個工作目錄重跑：第 1 步每一次呼叫都是
+    真實呼叫，第 2 步同樣多的呼叫全部由快取回答，沒有快取未命中的證據缺口。
+    抓得到快取鍵改變（重跑全部未命中）、快取不再寫入，以及 --cache-only 仍呼叫模型。
+    live_cache step 1 fills the response cache with --cache-dir, and step 2 reruns in the same working directory with
+    --cache-only: every call of step 1 is a real call, the same number of calls in step 2 are all answered from the
+    cache, and there is no cache-miss Evidence gap. Catches a changed cache key (every rerun call missing), the cache no
+    longer being written, and --cache-only still calling a model."""
+    run_scenarios(REPO_ROOT, tmp_path / "out", tmp_path / "work", names=["live_cache"])
+    out = tmp_path / "out" / "live_cache"
+    fill, replay = (json.loads((out / name).read_text(encoding="utf-8"))["summary"] for name in ("fill.json", "replay.json"))
+    assert fill["agent_calls"] and len(replay["agent_calls"]) == len(fill["agent_calls"])
+    assert {(call["mode"], call["cached"]) for call in fill["agent_calls"]} == {("live", False)}
+    assert {(call["mode"], call["cached"]) for call in replay["agent_calls"]} == {("live", True)}
+    assert not any("had no answer in the response cache" in reason for reason in replay["inconclusive_reasons"])

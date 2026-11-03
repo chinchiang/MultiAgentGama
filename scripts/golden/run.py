@@ -130,6 +130,12 @@ SCENARIOS = {
     # whichever verifier finishes first)
     "budget": Scenario(LIVE_TARGET, (("-m", "hybrid", "--max-model-calls", "5", "--format", "json", "-o", "report.json"),),
                        ("report.json",), fake="standard", config={"global.max_concurrent_calls": 1}),
+    # 兩步共用工作目錄：提示詞帶著路徑，換目錄快取鍵就不同
+    # Both steps share the working directory: prompts carry paths, so another directory gives other cache keys
+    "live_cache": Scenario(LIVE_TARGET, (
+        (*_LIVE, "--cache-dir", "cache", "--format", "json", "-o", "fill.json"),
+        (*_LIVE, "--cache-dir", "cache", "--cache-only", "--format", "json", "-o", "replay.json"),
+    ), ("fill.json", "replay.json"), fake="standard"),
 }
 
 
