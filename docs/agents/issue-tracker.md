@@ -54,7 +54,7 @@ Repo-specific rules, not part of the setup template.
 - **Body** (English), so the Spec review can check it line by line:
   - `## Problem`: what is wrong or missing now, with a reproduction when there is one.
   - `## Expected`: the behaviour after the change. For a refactor: what moves where.
-  - `## Acceptance`: checkable conditions, at least how the regression test is red before and green after. For a refactor: how "behaviour unchanged" is proved.
+  - `## Acceptance`: checkable conditions, at least how the regression test is red before and green after. For a refactor: how "behaviour unchanged" is proved, normally `python scripts/golden/run.py --against master` reporting 0 differing lines (its limits are in `CONTRIBUTING.md`, under Golden diff).
   - `## Out of scope`, only when the boundary is contested.
 - **A review round** gets one issue, with a checkbox per finding. **Urgent fixes** are no exception; the issue can be three lines.
 - **Linking**: at least one commit message carries `Refs #N` (`/code-review` finds the spec in commit messages), and the PR description says `Closes #N`. `.github/workflows/pr-issue-link.yml` (job `issue-link`) checks both and that #N is an existing issue, not a PR.

@@ -259,6 +259,7 @@ MultiAgentGama/
 │   ├── check_bi_english.py      # bi-english 的判斷：與基準 commit 比對每個 bi() 的英文半，改了或移除的要寫進兩份 CHANGELOG
 │   ├── check_pr_issue_link.py   # pr-issue-link 的判斷：哪些 PR 需要 issue、描述與 commit 是否連到存在的 issue
 │   ├── check_required_checks.py # 必要檢查的三方比對：workflow 的 job 與 matrix、CONTRIBUTING、ruleset
+│   ├── golden/                  # golden diff（只供開發用、不進 sdist）：run.py --against <rev> 比對 revision 與工作目錄的輸出
 │   ├── recite_design_refs.py    # 檢查設計文件的 path:line 引用，並依 git diff 重新對應到目前的程式碼
 │   └── test_sdist.py            # 在本機重現 CI 的 package job：建 sdist、解開、在裡面跑測試套件
 ├── tests/                       # 工具包本身之測試（離線、不需 API 金鑰）
@@ -277,6 +278,7 @@ MultiAgentGama/
 │   ├── test_estimate.py                # --estimate：精確值與情境值、價格、不呼叫模型
 │   ├── test_evidence_tally.py          # 證據計數：每一種在有、沒有基準時的全部／新的／已知、已知問題的順序、部分計數
 │   ├── test_fanout.py                  # 透過 fan_out 測試扇出：順序、當掉換成 fallback 並記錄、live 失敗與 Ctrl-C 不再開始佇列中的呼叫
+│   ├── test_golden.py                  # golden diff：正規化、比對、情境決定性、--against 的清除路徑（沒有 scripts/golden/ 時略過）
 │   ├── test_harness_components.py      # 各元件於 mock 模式下的整合測試
 │   ├── test_i18n.py                    # 雙語工具、報告／console／CLI 字串、雙語的 docstring 與註解
 │   ├── test_i18n_output.py             # 提示詞維持英文、雙語的規則標題、執行器原因與 PoC
