@@ -265,3 +265,23 @@ def test_a_crashing_scenario_run_fails_and_still_removes_the_worktree(tmp_path, 
     assert main(["--against", "HEAD"], repo=str(repo)) == 2
     assert _worktrees(repo) == 1
     assert list(scratch.iterdir()) == []
+
+
+def test_both_sides_crashing_the_same_way_is_a_failure_to_compare_not_zero_differences(tmp_path, scratch):
+    """兩邊的 CLI 子行程以同樣的方式當掉（這裡是 vibeharness.cli 不存在，像內部改名讓匯入失敗）：輸出一模一樣，
+    但那不是「行為不變」，所以結束碼是 2，不是 0；worktree 照樣移除。抓得到 traceback 或沒寫出報告被當成 0 行差異。
+    Both sides' CLI child processes crash the same way (here vibeharness.cli does not exist, as when an internal rename
+    breaks an import): the outputs are identical, but that is not "behaviour unchanged", so the exit code is 2, not 0,
+    and the worktree is still removed. Catches a traceback or a missing report being taken as 0 differing lines."""
+    repo = _git_repo(tmp_path / "repo")
+    config = repo / "vibeharness" / "config"
+    config.mkdir(parents=True)
+    (repo / "vibeharness" / "__init__.py").write_text("", encoding="utf-8")
+    with open(os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml"), encoding="utf-8") as f:
+        (config / "agents_config.yaml").write_text(f.read(), encoding="utf-8")
+    subprocess.run(["git", "add", "vibeharness"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "broken"], cwd=repo,
+                   check=True)
+    assert main(["--against", "HEAD", "mock_md"], repo=str(repo)) == 2
+    assert _worktrees(repo) == 1
+    assert list(scratch.iterdir()) == []

@@ -51,6 +51,12 @@ _GOLDEN_PARENT = str(Path(__file__).resolve().parent.parent)
 # 這份工具所在的 repo：工作目錄那一邊，也是 worktree 掛上去的地方
 # The repo this tool lives in: the working-tree side, and where the worktree is added
 _REPO = str(Path(__file__).resolve().parent.parent.parent)
+_TRACEBACK = "Traceback (most recent call last)"
+
+
+class ScenarioCrashed(RuntimeError):
+    """情境的某一步當掉（stderr 有未捕捉例外的 traceback），或沒寫出宣告的輸出檔。
+    A scenario step crashed (an uncaught exception's traceback in its stderr) or did not write a declared output."""
 
 
 @dataclass(frozen=True)
@@ -107,8 +113,10 @@ SCENARIOS = {
 
 def run_scenarios(repo, out, work, names: Optional[list[str]] = None) -> None:
     """在子行程裡以 repo 的 vibeharness 跑各情境，結果寫到 out/<情境>/；work 是兩邊共用的工作目錄。
+    某一步當掉或沒寫出宣告的輸出檔時丟出 ScenarioCrashed（已寫出的輸出留在 out）。
     Runs each scenario with repo's vibeharness in a child process and writes the results to out/<scenario>/; work is
-    the working directory both sides share."""
+    the working directory both sides share. Raises ScenarioCrashed when a step crashes or a declared output is not
+    written (the output written so far stays in out)."""
     repo = os.path.abspath(repo)
     for name in names or list(SCENARIOS):
         _run(repo, name, SCENARIOS[name], Path(out) / name, Path(work) / name)
@@ -141,17 +149,29 @@ def _run(repo: str, name: str, scenario: Scenario, out: Path, work: Path) -> Non
         (out / f"step{number}.stdout").write_text(proc.stdout, encoding="utf-8")
         (out / f"step{number}.stderr").write_text(proc.stderr, encoding="utf-8")
         (out / f"step{number}.exit_code").write_text(f"{proc.returncode}\n", encoding="utf-8")
+        # 結束碼不能拿來判斷當掉：mock 的 1、2、3 本來就是判定結果。兩邊以同樣方式當掉時輸出相同，卻不代表行為不變
+        # The exit code cannot tell a crash: mock's 1, 2 and 3 are Verdicts. Two sides crashing the same way give the
+        # same output, which does not mean the behaviour is unchanged
+        if _TRACEBACK in proc.stderr:
+            raise ScenarioCrashed(f"{name} step {number} crashed; see {out / f'step{number}.stderr'}")
+    missing = []
     for rel in scenario.outputs:
         if (work / rel).is_file():
             shutil.copyfile(work / rel, out / rel)
+        else:
+            missing.append(rel)
+    if missing:
+        raise ScenarioCrashed(f"{name} wrote no {', '.join(missing)}; see the stepN.stderr files in {out}")
 
 
 def main(argv: Optional[list[str]] = None, repo: str = _REPO) -> int:
     """把 --against 的 revision 掛成 detached worktree，兩邊跑同一組情境並印出差異摘要。
-    結束碼：0 沒有差異、1 有差異、2 無法比對（git 或情境執行失敗）。worktree 與輸出一律移除，只有 --keep 留下輸出。
+    結束碼：0 沒有差異、1 有差異、2 無法比對（git 失敗、某一邊的情境步驟丟出 traceback 或沒寫出宣告的輸出檔、參數錯誤，
+    或這份工具本身出錯）。worktree 與輸出一律移除，只有 --keep 留下輸出。
     Adds the --against revision as a detached worktree, runs the same scenarios on both sides and prints a summary of
-    the differences. Exit code: 0 no differences, 1 differences, 2 could not compare (git or a scenario run failed).
-    The worktree and the outputs are always removed; only --keep keeps the outputs."""
+    the differences. Exit code: 0 no differences, 1 differences, 2 could not compare (git failed, a scenario step on
+    either side printed a traceback or wrote no declared output, a bad argument, or this tool itself failed). The
+    worktree and the outputs are always removed; only --keep keeps the outputs."""
     parser = argparse.ArgumentParser(prog="python scripts/golden/run.py", description=main.__doc__)
     parser.add_argument("--against", required=True, metavar="REV", help="the revision to compare the working tree with")
     parser.add_argument("--keep", metavar="DIR", help="keep both sides' outputs in DIR (base/ and head/)")
@@ -178,9 +198,15 @@ def main(argv: Optional[list[str]] = None, repo: str = _REPO) -> int:
         run_scenarios(repo, out / "head", scratch / "work", names)
         summary = compare(out / "base", out / "head")
     except Exception as exc:
-        # git 的錯誤訊息在 stderr 裡；其他例外印出 traceback
-        # git's error message is in its stderr; any other exception prints its traceback
-        detail = exc.stderr if isinstance(exc, subprocess.CalledProcessError) else traceback.format_exc()
+        # git 的錯誤訊息在它的 stderr 裡；當掉的情境已經指向它的 stderr 檔；其他例外是這份工具的錯，印出 traceback
+        # git's error message is in its stderr; a crashed scenario already points at its stderr file; any other
+        # exception is this tool's fault and prints its traceback
+        if isinstance(exc, subprocess.CalledProcessError):
+            detail = exc.stderr
+        elif isinstance(exc, ScenarioCrashed):
+            detail = ""
+        else:
+            detail = traceback.format_exc()
         print(f"golden diff could not compare: {exc}\n{detail}", file=sys.stderr)
         return 2
     finally:
