@@ -117,8 +117,14 @@ class _FakeLiteLLM:
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text), finish_reason="stop")])
 
 
-def install() -> None:
-    """把 vibeharness 的 litellm 換成假的；要在 CLI 執行前、vibeharness 匯入後呼叫。
-    Replaces vibeharness's litellm with the fake; call it after vibeharness is imported and before the CLI runs."""
+PROFILES = ("standard",)
+
+
+def install(profile: str) -> None:
+    """以 profile 的行為把 vibeharness 的 litellm 換成假的；要在 CLI 執行前、vibeharness 匯入後呼叫。
+    Replaces vibeharness's litellm with the fake, behaving as profile; call it after vibeharness is imported and
+    before the CLI runs."""
+    if profile not in PROFILES:
+        raise ValueError(f"golden fake: unknown profile {profile!r}")
     import vibeharness.core.transport as transport
     transport.litellm = _FakeLiteLLM()  # type: ignore[assignment]

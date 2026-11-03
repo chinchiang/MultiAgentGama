@@ -21,23 +21,24 @@ if __package__ in (None, ""):
 from golden.compare import IMPORT_MARKER, compare  # noqa: E402
 from golden.targets import LIVE_TARGET, LIVE_TARGET_CHANGED, MOCK_TARGET  # noqa: E402
 
-# 子行程：從指定的 repo 匯入 vibeharness、記下匯入位置，live 情境再裝上這份工具的假 litellm（兩邊用同一份），
-# 最後以其餘參數執行 CLI
-# The child process: imports vibeharness from the given repo, records where it came from, for a live scenario
-# installs this tool's fake litellm (the same one on both sides), then runs the CLI with the remaining arguments
+# 子行程：從指定的 repo 匯入 vibeharness、記下匯入位置，有 fake 的情境再以它的 profile 裝上這份工具的假 litellm
+# （兩邊用同一份），最後以其餘參數執行 CLI
+# The child process: imports vibeharness from the given repo, records where it came from, for a scenario with a fake
+# installs this tool's fake litellm with that profile (the same one on both sides), then runs the CLI with the
+# remaining arguments
 _CHILD = """\
 import os, sys
-repo, marker, golden_parent = sys.argv[1], sys.argv[2], sys.argv[3]
+repo, marker, golden_parent, fake = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 sys.path.insert(0, repo)
 import vibeharness
 with open(marker, "w", encoding="utf-8") as f:
     f.write(os.path.dirname(os.path.abspath(vibeharness.__file__)) + "\\n")
-if golden_parent:
+if fake:
     sys.path.append(golden_parent)
     from golden.fake_llm import install
-    install()
+    install(fake)
 from vibeharness.cli import main
-sys.argv = ["vibeharness"] + sys.argv[4:]
+sys.argv = ["vibeharness"] + sys.argv[5:]
 main()
 """
 
@@ -63,15 +64,15 @@ class ScenarioCrashed(RuntimeError):
 @dataclass(frozen=True)
 class Scenario:
     """一個情境：目標檔案、依序執行的各步驟 CLI 參數（例如 --baseline 要先有一份報告）、要收集的輸出檔、
-    是否以 live 模式經過假 litellm，以及第 2 步起換上的目標檔案（基準線之後目標改了）。
+    要裝上的假 litellm profile（None 是不裝，mock 情境用），以及第 2 步起換上的目標檔案（基準線之後目標改了）。
     One scenario: the target files, the CLI arguments of each step in order (--baseline, say, needs a report
-    first), the output files to collect, whether it runs in live mode through the fake litellm, and the target files
-    swapped in from step 2 on (the target changed after the baseline)."""
+    first), the output files to collect, the fake litellm profile to install (None installs none, as mock
+    scenarios do), and the target files swapped in from step 2 on (the target changed after the baseline)."""
 
     target: dict[str, str]
     steps: tuple[tuple[str, ...], ...]
     outputs: tuple[str, ...]
-    live: bool = False
+    fake: Optional[str] = None
     changed_target: Optional[dict[str, str]] = None
 
 
@@ -95,20 +96,20 @@ SCENARIOS = {
     ), ("baseline.json", "report.json")),
     "live_json": Scenario(LIVE_TARGET, (
         (*_LIVE, "--format", "json", "-o", "report.json", "--sarif", "report.sarif"),
-    ), ("report.json", "report.sarif"), live=True),
-    "live_md": Scenario(LIVE_TARGET, ((*_LIVE, "--format", "md", "-o", "report.md"),), ("report.md",), live=True),
+    ), ("report.json", "report.sarif"), fake="standard"),
+    "live_md": Scenario(LIVE_TARGET, ((*_LIVE, "--format", "md", "-o", "report.md"),), ("report.md",), fake="standard"),
     "live_baseline_json": Scenario(LIVE_TARGET, (
         (*_LIVE, "--format", "json", "-o", "baseline.json"),
         (*_LIVE, "--baseline", "baseline.json", "--format", "json", "-o", "report.json"),
-    ), ("baseline.json", "report.json"), live=True),
+    ), ("baseline.json", "report.json"), fake="standard"),
     "live_baseline_md": Scenario(LIVE_TARGET, (
         (*_LIVE, "--format", "json", "-o", "baseline.json"),
         (*_LIVE, "--baseline", "baseline.json", "--format", "md", "-o", "report.md"),
-    ), ("baseline.json", "report.md"), live=True),
+    ), ("baseline.json", "report.md"), fake="standard"),
     "live_baseline_changed": Scenario(LIVE_TARGET, (
         (*_LIVE, "--format", "json", "-o", "baseline.json"),
         (*_LIVE, "--baseline", "baseline.json", "--format", "json", "-o", "report.json", "--sarif", "report.sarif"),
-    ), ("baseline.json", "report.json", "report.sarif"), live=True, changed_target=LIVE_TARGET_CHANGED),
+    ), ("baseline.json", "report.json", "report.sarif"), fake="standard", changed_target=LIVE_TARGET_CHANGED),
 }
 
 
@@ -142,9 +143,9 @@ def _run(repo: str, name: str, scenario: Scenario, out: Path, work: Path) -> Non
             for rel, content in scenario.changed_target.items():
                 (work / rel).write_text(content, encoding="utf-8")
         proc = subprocess.run(
-            [sys.executable, "-I", "-X", "utf8", "-c", _CHILD, repo, str(out / IMPORT_MARKER), _GOLDEN_PARENT if scenario.live else "",
+            [sys.executable, "-I", "-X", "utf8", "-c", _CHILD, repo, str(out / IMPORT_MARKER), _GOLDEN_PARENT, scenario.fake or "",
              "-t", target, "-c", "vibeharness.yaml", *args],
-            cwd=work, env={**os.environ, **_ENV, **(_FAKE_KEYS if scenario.live else {})}, capture_output=True,
+            cwd=work, env={**os.environ, **_ENV, **(_FAKE_KEYS if scenario.fake else {})}, capture_output=True,
             text=True, encoding="utf-8",
         )
         (out / f"step{number}.stdout").write_text(proc.stdout, encoding="utf-8")
