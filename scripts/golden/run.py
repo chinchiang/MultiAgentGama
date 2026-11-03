@@ -11,7 +11,9 @@ import tempfile
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
+import yaml
 
 if __package__ in (None, ""):
     # 以 `python scripts/golden/run.py` 執行時，讓 `golden` 套件可以匯入
@@ -65,11 +67,11 @@ class ScenarioCrashed(RuntimeError):
 class Scenario:
     """一個情境：目標檔案、依序執行的各步驟 CLI 參數（例如 --baseline 要先有一份報告）、要收集的輸出檔、
     要裝上的假 litellm profile（None 是不裝，mock 情境用）、第 2 步起換上的目標檔案（基準線之後目標改了），
-    以及要從子行程環境移除的變數。
+    要從子行程環境移除的變數，以及寫進設定檔的覆寫值。
     One scenario: the target files, the CLI arguments of each step in order (--baseline, say, needs a report
     first), the output files to collect, the fake litellm profile to install (None installs none, as mock
-    scenarios do), the target files swapped in from step 2 on (the target changed after the baseline), and the
-    variables to remove from the child's environment."""
+    scenarios do), the target files swapped in from step 2 on (the target changed after the baseline), the variables
+    to remove from the child's environment, and the overrides written into the config."""
 
     target: dict[str, str]
     steps: tuple[tuple[str, ...], ...]
@@ -79,6 +81,10 @@ class Scenario:
     # 在 os.environ 與假金鑰合併之後才移除：開發者 shell 裡真的金鑰也帶不進去
     # Removed after os.environ and the fake keys are merged, so a real key in the developer's shell cannot get in
     unset_env: tuple[str, ...] = ()
+    # 點號路徑 → 值，例如 {"global.max_concurrent_calls": 1}；兩邊都經過同樣的讀寫，設定內容的差異仍然看得到
+    # Dotted path -> value, e.g. {"global.max_concurrent_calls": 1}; both sides go through the same load and dump, so
+    # a difference in the config's content still shows
+    config: Optional[dict[str, Any]] = None
 
 
 _MOCK = ("-m", "mock")
@@ -119,6 +125,11 @@ SCENARIOS = {
                                    ("report.json",), fake="standard", unset_env=("GEMINI_API_KEY",)),
     "primary_down": Scenario(LIVE_TARGET, ((*_LIVE, "--format", "json", "-o", "report.json"),), ("report.json",),
                              fake="primary_down"),
+    # 呼叫一次一個：哪幾次拿到預算才每次相同（並行時，最後一次預算由先完成的驗證者搶到）
+    # One call at a time, so the same calls get the budget on every run (concurrently, the last unit of budget goes to
+    # whichever verifier finishes first)
+    "budget": Scenario(LIVE_TARGET, (("-m", "hybrid", "--max-model-calls", "5", "--format", "json", "-o", "report.json"),),
+                       ("report.json",), fake="standard", config={"global.max_concurrent_calls": 1}),
 }
 
 
@@ -146,6 +157,8 @@ def _run(repo: str, name: str, scenario: Scenario, out: Path, work: Path) -> Non
     # The config is copied into work: the path the report records is the same on both sides, and a change to its
     # content still shows
     shutil.copyfile(os.path.join(repo, "vibeharness", "config", "agents_config.yaml"), work / "vibeharness.yaml")
+    if scenario.config:
+        _override(work / "vibeharness.yaml", scenario.config)
     target = next(iter(scenario.target)) if len(scenario.target) == 1 else "."
     env = {**os.environ, **_ENV, **(_FAKE_KEYS if scenario.fake else {})}
     for var in scenario.unset_env:
@@ -176,6 +189,20 @@ def _run(repo: str, name: str, scenario: Scenario, out: Path, work: Path) -> Non
             missing.append(rel)
     if missing:
         raise ScenarioCrashed(f"{name} wrote no {', '.join(missing)}; see the stepN.stderr files in {out}")
+
+
+def _override(path: Path, overrides: dict[str, Any]) -> None:
+    """把點號路徑的覆寫值寫進 YAML 設定檔；路徑上缺少的層級視為錯誤（兩邊的設定形狀不同時要明確失敗）。
+    Writes dotted-path overrides into a YAML config; a missing level on the path is an error (a config whose shape
+    differs on one side must fail loudly)."""
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    for dotted, value in overrides.items():
+        *parents, key = dotted.split(".")
+        node = config
+        for part in parents:
+            node = node[part]
+        node[key] = value
+    path.write_text(yaml.safe_dump(config, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
 
 def main(argv: Optional[list[str]] = None, repo: str = _REPO) -> int:

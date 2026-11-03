@@ -323,3 +323,20 @@ def test_a_primary_model_that_fails_is_answered_by_its_fallback_and_the_run_stay
     assert {call["model_name"] for call in deepseek} == {"deepseek/deepseek-v4-flash"}
     assert "Model deepseek/deepseek-v4-pro failed" in (out / "step1.stderr").read_text(encoding="utf-8")
     assert (out / "step1.exit_code").read_text(encoding="utf-8").strip() == "2"
+
+
+def test_an_exhausted_budget_simulates_every_later_call_in_hybrid_mode(tmp_path):
+    """budget 以 hybrid 模式、--max-model-calls 5 執行：剛好 5 次呼叫是 live，其後每一次都改用模擬並寫明預算用盡，
+    品質閘門記下預算用盡的證據缺口。max_concurrent_calls 設為 1，哪 5 次拿到預算才每次相同。
+    抓得到預算計數改變（多扣或少扣）、用盡後仍呼叫模型，以及預算缺口不再出現。
+    budget runs hybrid with --max-model-calls 5: exactly 5 calls are live, every later one is simulated with the
+    budget named as exhausted, and the Quality Gate records the exhausted-budget Evidence gap. max_concurrent_calls is
+    1, so the same 5 calls get the budget on every run. Catches the budget counting changing (charging more or less),
+    calls still reaching a model after it runs out, and the budget gap no longer showing up."""
+    run_scenarios(REPO_ROOT, tmp_path / "out", tmp_path / "work", names=["budget"])
+    summary = json.loads((tmp_path / "out" / "budget" / "report.json").read_text(encoding="utf-8"))["summary"]
+    live = [call for call in summary["agent_calls"] if call["mode"] == "live"]
+    later = [call for call in summary["agent_calls"] if call["mode"] != "live"]
+    assert len(live) == 5 and later
+    assert all(call["mode"] == "simulated" and "max_model_calls budget exhausted" in call["reason"] for call in later)
+    assert any("The max_model_calls budget (5) was exhausted" in reason for reason in summary["inconclusive_reasons"])
