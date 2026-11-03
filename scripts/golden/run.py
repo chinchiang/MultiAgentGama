@@ -41,9 +41,10 @@ sys.argv = ["vibeharness"] + sys.argv[4:]
 main()
 """
 
-# 主控台寬度與雜湊種子固定，輸出才不隨終端機或執行而變
-# A fixed console width and hash seed, so the output does not vary with the terminal or the run
-_ENV = {"COLUMNS": "120", "PYTHONHASHSEED": "0", "PYTHONIOENCODING": "utf-8"}
+# 主控台寬度固定，輸出才不隨終端機而變。子行程以 -I 執行，PYTHON* 環境變數對它無效，UTF-8 改由命令列的 -X utf8 指定
+# A fixed console width, so the output does not vary with the terminal. The child runs with -I, which ignores the
+# PYTHON* environment variables, so UTF-8 comes from -X utf8 on its command line instead
+_ENV = {"COLUMNS": "120"}
 # live 模式要求有 API 金鑰；假 litellm 不會用到它們
 # Live mode requires API keys; the fake litellm never uses them
 _FAKE_KEYS = {var: "golden-fake-key" for var in ("ANTHROPIC_API_KEY", "ZAI_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY")}
@@ -141,7 +142,7 @@ def _run(repo: str, name: str, scenario: Scenario, out: Path, work: Path) -> Non
             for rel, content in scenario.changed_target.items():
                 (work / rel).write_text(content, encoding="utf-8")
         proc = subprocess.run(
-            [sys.executable, "-I", "-c", _CHILD, repo, str(out / IMPORT_MARKER), _GOLDEN_PARENT if scenario.live else "",
+            [sys.executable, "-I", "-X", "utf8", "-c", _CHILD, repo, str(out / IMPORT_MARKER), _GOLDEN_PARENT if scenario.live else "",
              "-t", target, "-c", "vibeharness.yaml", *args],
             cwd=work, env={**os.environ, **_ENV, **(_FAKE_KEYS if scenario.live else {})}, capture_output=True,
             text=True, encoding="utf-8",

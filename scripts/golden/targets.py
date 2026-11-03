@@ -1,11 +1,13 @@
-"""情境用的目標程式碼，以字串保存，執行時才寫進工作目錄（Q7：不能是會被 CodeQL、ruff、mypy 掃描的 .py 檔）。
-The scenarios' target code, kept as strings and written into the working directory at run time (Q7: never .py files
-that CodeQL, ruff or mypy would scan)."""
+"""情境用的目標程式碼，以字串保存，執行時才寫進工作目錄：故意寫壞的程式碼若是 repo 裡的 .py 檔，CodeQL、ruff、mypy
+都會掃描並回報它。
+The scenarios' target code, kept as strings and written into the working directory at run time: as .py files in the
+repo, the deliberately flawed code would be scanned and flagged by CodeQL, ruff and mypy."""
 
-# 有缺陷的小型庫存服務：不存在的品項、負數數量、None 輸入都會出錯；in_stock 正確處理 None，
-# 它的探測會通過，突變測試才有通過的測試可用
+# 有缺陷的小型庫存服務：不存在的品項、負數數量、None 輸入都會出錯；in_stock 正確處理 None，所以報告裡有一個通過的探測。
+# 突變測試只用通過的單元／性質測試，探測不算，所以 mock_mutation 只涵蓋突變測試的略過路徑
 # A small, flawed inventory service: an unknown item, a negative quantity and None inputs all go wrong; in_stock
-# handles None correctly, so its probe passes and mutation testing has a passed test to work with
+# handles None correctly, so the report has one passed probe. Mutation testing uses only passed unit / property tests,
+# and probes do not count, so mock_mutation covers only mutation testing's skip path
 MOCK_TARGET = {
     "inventory.py": '''\
 """A small inventory service with deliberate flaws, used as a golden diff target."""

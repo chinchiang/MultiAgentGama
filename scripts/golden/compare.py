@@ -10,13 +10,13 @@ from pathlib import Path
 
 from golden.normalize import normalize
 
-# fingerprint（sha1，40 字元）與 prompt_sha256（64 字元）：只在計算種類時合併，行數照原樣算
-# Fingerprints (sha1, 40 characters) and prompt_sha256 (64 characters): merged only when counting distinct
-# differences; the line count is taken as is
 # run_scenarios 記錄這次匯入的 vibeharness 位置的檔名
 # The name of the file in which run_scenarios records where vibeharness was imported from
 IMPORT_MARKER = "imported_from.txt"
 
+# fingerprint（sha1，40 字元）與 prompt_sha256（64 字元）：只在計算種類時合併，行數照原樣算
+# Fingerprints (sha1, 40 characters) and prompt_sha256 (64 characters): merged only when counting distinct
+# differences; the line count is taken as is
 _HASH = re.compile(r"\b(?:[0-9a-f]{64}|[0-9a-f]{40})\b")
 
 
