@@ -17,6 +17,7 @@ if not os.path.isdir(GOLDEN_DIR):
 sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))
 from golden.compare import IMPORT_MARKER, compare  # noqa: E402
 from golden.normalize import normalize  # noqa: E402
+from golden.run import run_scenarios  # noqa: E402
 
 
 def test_iso_timestamps_become_a_placeholder():
@@ -126,3 +127,18 @@ def test_harness_logs_and_the_import_marker_are_not_compared_and_one_sided_files
     summary = compare(tmp_path / "base", tmp_path / "head")
     assert summary.lines == 1
     assert summary.distinct == [(1, "> new")]
+
+
+def test_a_mock_scenario_runs_from_the_given_repo_and_twice_gives_the_same_output(tmp_path):
+    """mock 情境從指定的 repo 匯入 vibeharness，寫出報告、主控台輸出與 exit code；跑兩次結果相同。
+    抓得到內部改動讓工具壞掉，以及每次不同的輸出。
+    A mock scenario imports vibeharness from the given repo and writes the report, the console output and the exit
+    code; two runs give the same result. Catches the tool breaking on an internal change and non-deterministic output."""
+    for run in ("one", "two"):
+        run_scenarios(REPO_ROOT, tmp_path / run, tmp_path / "work", names=["mock_md"])
+    out = tmp_path / "one" / "mock_md"
+    assert (out / IMPORT_MARKER).read_text(encoding="utf-8").strip() == os.path.join(REPO_ROOT, "vibeharness")
+    assert "# " in (out / "report.md").read_text(encoding="utf-8")
+    assert (out / "exit_code").read_text(encoding="utf-8").strip() == "1"
+    assert (out / "stdout").stat().st_size > 0 and (out / "run.stderr").stat().st_size > 0
+    assert compare(tmp_path / "one", tmp_path / "two").lines == 0
