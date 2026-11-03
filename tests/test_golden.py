@@ -139,6 +139,6 @@ def test_a_mock_scenario_runs_from_the_given_repo_and_twice_gives_the_same_outpu
     out = tmp_path / "one" / "mock_md"
     assert (out / IMPORT_MARKER).read_text(encoding="utf-8").strip() == os.path.join(REPO_ROOT, "vibeharness")
     assert "# " in (out / "report.md").read_text(encoding="utf-8")
-    assert (out / "exit_code").read_text(encoding="utf-8").strip() == "1"
-    assert (out / "stdout").stat().st_size > 0 and (out / "run.stderr").stat().st_size > 0
+    assert (out / "step1.exit_code").read_text(encoding="utf-8").strip() == "1"
+    assert (out / "step1.stdout").stat().st_size > 0 and (out / "step1.stderr").stat().st_size > 0
     assert compare(tmp_path / "one", tmp_path / "two").lines == 0

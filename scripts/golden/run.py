@@ -40,16 +40,32 @@ _ENV = {"COLUMNS": "120", "PYTHONHASHSEED": "0", "PYTHONIOENCODING": "utf-8"}
 
 @dataclass(frozen=True)
 class Scenario:
-    """一個情境：目標檔案、CLI 參數，以及要收集的輸出檔。
-    One scenario: the target files, the CLI arguments and the output files to collect."""
+    """一個情境：目標檔案、依序執行的各步驟 CLI 參數（例如 --baseline 要先有一份報告），以及要收集的輸出檔。
+    One scenario: the target files, the CLI arguments of each step in order (--baseline, say, needs a report
+    first) and the output files to collect."""
 
     target: dict[str, str]
-    args: tuple[str, ...]
+    steps: tuple[tuple[str, ...], ...]
     outputs: tuple[str, ...]
 
 
+_MOCK = ("-m", "mock")
+
 SCENARIOS = {
-    "mock_md": Scenario(MOCK_TARGET, ("-m", "mock", "--format", "md", "-o", "report.md"), ("report.md",)),
+    "mock_md": Scenario(MOCK_TARGET, ((*_MOCK, "--format", "md", "-o", "report.md"),), ("report.md",)),
+    "mock_json": Scenario(MOCK_TARGET, (
+        (*_MOCK, "--format", "json", "-o", "report.json", "--sarif", "report.sarif", "--summary-json", "summary.json"),
+    ), ("report.json", "report.sarif", "summary.json")),
+    "mock_estimate": Scenario(MOCK_TARGET, ((*_MOCK, "--estimate"),), ()),
+    "mock_estimate_json": Scenario(MOCK_TARGET, (
+        (*_MOCK, "--estimate", "--format", "json", "-o", "estimate.json"),
+    ), ("estimate.json",)),
+    "mock_mutation": Scenario(MOCK_TARGET, ((*_MOCK, "--mutation", "--format", "json", "-o", "report.json"),),
+                              ("report.json",)),
+    "mock_baseline": Scenario(MOCK_TARGET, (
+        (*_MOCK, "--format", "json", "-o", "baseline.json"),
+        (*_MOCK, "--baseline", "baseline.json", "--format", "json", "-o", "report.json"),
+    ), ("baseline.json", "report.json")),
 }
 
 
@@ -63,8 +79,9 @@ def run_scenarios(repo, out, work, names: Optional[list[str]] = None) -> None:
 
 
 def _run(repo: str, name: str, scenario: Scenario, out: Path, work: Path) -> None:
-    """在全新的 work 裡寫出目標與設定、跑一次 CLI，把輸出收進 out。
-    Writes the target and the config into a fresh work, runs the CLI once and collects the output into out."""
+    """在全新的 work 裡寫出目標與設定、依序跑每一步，把輸出收進 out（第 N 步的主控台輸出是 stepN.*）。
+    Writes the target and the config into a fresh work, runs each step in order and collects the output into out
+    (step N's console output is stepN.*)."""
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
     out.mkdir(parents=True, exist_ok=True)
@@ -75,14 +92,15 @@ def _run(repo: str, name: str, scenario: Scenario, out: Path, work: Path) -> Non
     # content still shows
     shutil.copyfile(os.path.join(repo, "vibeharness", "config", "agents_config.yaml"), work / "vibeharness.yaml")
     target = next(iter(scenario.target)) if len(scenario.target) == 1 else "."
-    proc = subprocess.run(
-        [sys.executable, "-I", "-c", _CHILD, repo, str(out / IMPORT_MARKER), "-t", target, "-c", "vibeharness.yaml",
-         *scenario.args],
-        cwd=work, env={**os.environ, **_ENV}, capture_output=True, text=True, encoding="utf-8",
-    )
-    (out / "stdout").write_text(proc.stdout, encoding="utf-8")
-    (out / "run.stderr").write_text(proc.stderr, encoding="utf-8")
-    (out / "exit_code").write_text(f"{proc.returncode}\n", encoding="utf-8")
+    for number, args in enumerate(scenario.steps, 1):
+        proc = subprocess.run(
+            [sys.executable, "-I", "-c", _CHILD, repo, str(out / IMPORT_MARKER), "-t", target, "-c", "vibeharness.yaml",
+             *args],
+            cwd=work, env={**os.environ, **_ENV}, capture_output=True, text=True, encoding="utf-8",
+        )
+        (out / f"step{number}.stdout").write_text(proc.stdout, encoding="utf-8")
+        (out / f"step{number}.stderr").write_text(proc.stderr, encoding="utf-8")
+        (out / f"step{number}.exit_code").write_text(f"{proc.returncode}\n", encoding="utf-8")
     for rel in scenario.outputs:
         if (work / rel).is_file():
             shutil.copyfile(work / rel, out / rel)

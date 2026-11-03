@@ -34,6 +34,7 @@ def compare(base_out: Path, head_out: Path) -> Summary:
     """比對 base_out 與 head_out 底下的每一個檔案。
     Compares every file under base_out and head_out."""
     differing: list[str] = []
+    base_out, head_out = Path(base_out), Path(head_out)
     for rel in sorted(_files(base_out) | _files(head_out)):
         base_lines = _read(base_out / rel)
         head_lines = _read(head_out / rel)
