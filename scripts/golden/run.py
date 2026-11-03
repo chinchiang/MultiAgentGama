@@ -81,6 +81,7 @@ SCENARIOS = {
     "live_json": Scenario(LIVE_TARGET, (
         (*_LIVE, "--format", "json", "-o", "report.json", "--sarif", "report.sarif"),
     ), ("report.json", "report.sarif"), live=True),
+    "live_md": Scenario(LIVE_TARGET, ((*_LIVE, "--format", "md", "-o", "report.md"),), ("report.md",), live=True),
 }
 
 

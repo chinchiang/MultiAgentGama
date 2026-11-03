@@ -154,3 +154,16 @@ def test_a_mock_and_a_live_scenario_run_from_the_given_repo_and_twice_give_the_s
         assert summary[count] >= 1, count
     assert summary["untested_threat_ids"]
     assert compare(tmp_path / "one", tmp_path / "two").lines == 0
+
+
+def test_the_live_markdown_scenario_writes_a_real_audit_report(tmp_path):
+    """live_md 用同一個目標與假 litellm 寫出 Markdown 報告：每一次呼叫都是真實模式、沒有模擬的段落，結論和 live_json 一樣。
+    抓得到情境沒註冊、參數錯誤或 md 報告沒寫出來；決定性已由上面的冒煙測試涵蓋，這裡只跑一次。
+    live_md writes a Markdown report from the same target through the fake litellm: every call is live, no section is
+    simulated, and the verdict matches live_json's. Catches the scenario missing, wrong arguments or no md report;
+    determinism is covered by the smoke test above, so this runs once."""
+    run_scenarios(REPO_ROOT, tmp_path / "out", tmp_path / "work", names=["live_md"])
+    out = tmp_path / "out" / "live_md"
+    report = (out / "report.md").read_text(encoding="utf-8")
+    assert "🟢" in report and "SIMULATED" not in report and "🟡" not in report
+    assert (out / "step1.exit_code").read_text(encoding="utf-8").strip() == "2"
