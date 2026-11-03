@@ -46,6 +46,7 @@
 
 ### 工程
 
+- `.pre-commit-config.yaml` 新增 `repo-structure` hook：commit 前跑 `tests/test_repo_docs.py`、`tests/test_i18n.py`、`tests/test_review_build.py`（約 3 秒）。這些 repo 結構的檢查平常只在全套測試裡跑，#128 的 9 個 commit 只跑了相關測試，新增的測試檔沒列進兩份 README 的目錄樹也沒發現。`requirements-dev.txt` 釘 `pre-commit==4.7.0`。
 - 新增 golden diff 工具 `scripts/golden/`：`python scripts/golden/run.py --against <rev>` 把 revision 掛成暫時的 worktree，與工作目錄各跑一組 mock 與 live（假 litellm，不需 API 金鑰）情境，正規化時間、沙盒路徑、執行時間、記憶體位址與 stderr 行序之後，印出不同的行數、種類數與每一種差異；結束碼 0 是沒有差異、1 是有差異、2 是無法比對，worktree 與輸出一律清除（`--keep DIR` 留下輸出）。它只供開發用，不進 sdist。`CONTRIBUTING.md` 規定改到 `vibeharness/` 的 `refactor` 要在 PR 附上它的摘要，`docs/agents/issue-tracker.md` 的 refactor Acceptance 也指向它；雙語註解檢查（`tests/test_i18n.py`）擴大到 `scripts/**/*.py`（#128）。
 - 行為改動先開 issue：標題是 `fix:`、`feat:`、`perf:`，或改到 `vibeharness/` 的 `refactor:` 的 PR，描述必須以 `Closes #N` 連到存在的 issue，而且至少一個 commit 訊息帶 `Refs #N`，讓 `/code-review` 的 Spec 審查有東西可比對。新的 `.github/workflows/pr-issue-link.yml`（job `issue-link`，只有讀取權限）以 `scripts/check_pr_issue_link.py` 檢查，成為 master 的第 15 個必要檢查；Dependabot 的 PR 不檢查。PR 範本最上面加了 `## Issue`，`CONTRIBUTING.md` 與 `docs/agents/issue-tracker.md` 記載規則（issue 的三段欄位、審查輪一個 issue、資安漏洞走 `SECURITY.md`）。
 - CodeQL 對所有 PR 執行，不再只限以 `master` 為目標的 PR：疊在其他 PR 上的 PR 在下層合併、被改成以 `master` 為目標後，改目標不會觸發 workflow，`Analyze (python)`／`Analyze (actions)` 這兩個必要檢查會一直等不到結果。

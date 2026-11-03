@@ -20,3 +20,14 @@ repos:
         language: system
         pass_filenames: false
         files: \.py$
+      # repo 結構的檢查（README 目錄樹、雙語註解、sdist 內容與釘版）只花幾秒，
+      # 但平常只在全套測試裡跑：只跑相關測試的 commit 會漏掉它們，例如新增測試檔卻沒列進兩份 README 的目錄樹（#128）
+      # The repo-structure checks (README trees, bilingual comments, sdist contents and pins) take a few seconds but otherwise
+      # run only in the full suite, so a commit that ran only the related tests misses them, e.g. a new test file not
+      # listed in both README trees (#128)
+      - id: repo-structure
+        name: repo structure tests
+        entry: python -m pytest -q -p no:cacheprovider tests/test_repo_docs.py tests/test_i18n.py tests/test_review_build.py
+        language: system
+        pass_filenames: false
+        always_run: true
