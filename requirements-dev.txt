@@ -12,3 +12,5 @@ pytest-cov==7.1.0
 build==1.6.1
 # CI 的 audit job 對 requirements.lock 使用 ／ Used by the CI audit job against requirements.lock
 pip-audit==2.10.1
+# commit 前的 hook（.pre-commit-config.yaml）：pre-commit install 之後每次 commit 都跑 ／ The commit hooks (.pre-commit-config.yaml), run on every commit after pre-commit install
+pre-commit==4.7.0

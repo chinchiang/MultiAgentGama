@@ -5,9 +5,9 @@
 ## 開發環境
 
 ```bash
-pip install -r requirements-dev.txt   # 含執行期依賴、ruff、mypy、pytest-cov、build、pip-audit（版本釘死）
+pip install -r requirements-dev.txt   # 含執行期依賴、ruff、mypy、pytest-cov、build、pip-audit、pre-commit（版本釘死）
 # 或與 CI 測試矩陣完全相同的相依套件（帶雜湊驗證）：pip install --require-hashes -r requirements.lock
-pre-commit install                     # 可選：提交前自動跑 ruff 與 mypy
+pre-commit install                     # 可選：commit 前自動跑 ruff、mypy 與 repo 結構的測試（hook 用 PATH 上的 python，先啟用 venv）
 ```
 
 ## 提交前請跑
@@ -58,7 +58,7 @@ CI（`.github/workflows/tests.yml`）跑的是同一組指令，加上 Ubuntu／
 
 ## English
 
-**Setup**: `pip install -r requirements-dev.txt` (the runtime dependencies plus pinned ruff, mypy, pytest-cov, build, pip-audit) and optionally `pre-commit install`; for exactly the CI test matrix's dependencies, hash-verified: `pip install --require-hashes -r requirements.lock`.
+**Setup**: `pip install -r requirements-dev.txt` (the runtime dependencies plus pinned ruff, mypy, pytest-cov, build, pip-audit, pre-commit) and optionally `pre-commit install`, which runs ruff, mypy and the repo-structure tests before each commit (the hooks use the `python` on PATH, so activate the venv first); for exactly the CI test matrix's dependencies, hash-verified: `pip install --require-hashes -r requirements.lock`.
 
 **Before you push**, run the same checks CI runs: `python -m pytest --cov=vibeharness --cov-fail-under=93`, `python -m ruff check .`, `python -m mypy vibeharness/ main.py` and `python -m pip_audit -r requirements.lock --disable-pip --require-hashes`; when you add files or tests, also run `python scripts/test_sdist.py`, which builds the sdist and runs the suite from it like CI's package job (the sdist has no `.github/` or `AGENTS.md`). CI adds a test matrix of Ubuntu / Windows x Python 3.11-3.14 (plus one macOS + 3.12 cell), the real-container tests on Linux against the sandbox images, a wheel install smoke test, and a full test run from the extracted sdist (`tests/test_review_build.py` checks the sdist contents) — update `MANIFEST.in` when adding files the sdist must ship. The real-Node tests in `tests/test_js_execution.py` and `tests/test_js_coverage.py` need a local Node (≥ 20; ≥ 22.6 for `.ts` type stripping, ≥ 20.11 or ≥ 21.3 for JS/TS coverage); without a usable Node they skip, and `VIBEHARNESS_REQUIRE_NODE=1` turns a missing Node into a failure while a Node too old for a feature still skips (CI installs Node 22 and sets it, so tests skipped locally still run in CI). The real-container tests need both sandbox images built first (`docker build -t vibeharness-sandbox:latest -f docker/sandbox.Dockerfile .` and `docker build -t vibeharness-sandbox-node:latest -f docker/sandbox-node.Dockerfile .`); without Docker or an image they skip, and `VIBEHARNESS_REQUIRE_DOCKER=1` (Python container) / `VIBEHARNESS_REQUIRE_DOCKER_NODE=1` (Node container) turn that into a failure (as on CI's Linux cells).
 
