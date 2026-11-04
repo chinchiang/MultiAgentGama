@@ -13,6 +13,7 @@ from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
 from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
 from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
 from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
+from vibeharness.runners.attribution import parse_junit
 from vibeharness.runners.test_executor import SuiteResult, TestSuiteExecutor
 from vibeharness.core.harness import VibeHarnessCommander
 from vibeharness.reports.report_generator import METRIC_TABLE_HEADER
@@ -232,12 +233,12 @@ def test_junit_modules_beyond_999_are_not_merged():
         "<testcase classname='test_vh_1001' name='test_b' time='0.1'/>"
         "</testsuite>"
     )
-    cases = TestSuiteExecutor._parse_junit(xml)
+    cases = parse_junit(xml)
     assert sorted(cases) == ["test_vh_1000", "test_vh_1001"]
 
 
 def test_junit_garbage_time_does_not_crash():
-    cases = TestSuiteExecutor._parse_junit(
+    cases = parse_junit(
         "<testsuite><testcase classname='test_vh_000' name='test_a' time='not-a-float'/></testsuite>"
     )
     assert cases["test_vh_000"][0]["time"] == 0.0

@@ -4,7 +4,6 @@ import re
 import os
 import time
 import logging
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Any, Callable, List, Tuple, Optional, Dict, Set
 from vibeharness.core.models import GeneratedTest, TestExecutionResult, TestStatus
@@ -15,6 +14,7 @@ from vibeharness.core.sandbox import (
 from vibeharness.core.codecheck import check_test_code_for
 from vibeharness.core.jscoverage import JsLineCoverage
 from vibeharness.core.i18n import bi
+from vibeharness.runners.attribution import _JS_FILE_CASE_RE, parse_junit
 
 logger = logging.getLogger("VibeHarness.TestExecutor")
 
@@ -138,10 +138,6 @@ _JS_ERROR_LINE_RE = re.compile(r"^\s*\[?(\w*Error(?: \[\w+\])?: .+)$", re.MULTIL
 # Node 22 tags the error name with its constructor ('TypeError [Error]: null'); only such class-name tags are stripped,
 # meaningful codes ('Error [ERR_MODULE_NOT_FOUND]: ...') are kept, the harness markers match on them
 _JS_CLASS_TAG_RE = re.compile(r"^([\w$]*Error) \[[\w$]*Error\]:")
-# 檔案層級 case 的名字就是測試檔路徑：對 basename 做完整比對，名稱只是「結尾像檔名」的 test() 不算
-# A file-level case is named after the test file path: full match on the basename, a test() whose name merely ends
-# like a file name does not count
-_JS_FILE_CASE_RE = re.compile(r"test_vh_\d+\.(?:mjs|cjs|js)")
 _V8_STACK_LINE_RE = re.compile(r"^\s+at ", re.MULTILINE)
 
 def _remaining_seconds(deadline: float, budget: float) -> int:
@@ -290,7 +286,7 @@ class TestSuiteExecutor:
         )
         if run.exit_code == TIMEOUT_EXIT_CODE:
             return "killed"
-        cases = self._parse_junit(run.junit_xml, "python")
+        cases = parse_junit(run.junit_xml, "python")
         if not cases:
             return "invalid"
         flat = [case for module_cases in cases.values() for case in module_cases]
@@ -419,7 +415,7 @@ class TestSuiteExecutor:
             )
             exit_code, stdout, stderr, coverage_pct, junit_xml = (
                 run.exit_code, run.stdout, run.stderr, run.coverage_pct, run.junit_xml)
-            cases = self._parse_junit(junit_xml, language)
+            cases = parse_junit(junit_xml, language)
             if exit_code == TIMEOUT_EXIT_CODE and len(files) > 1:
                 # 一個卡住的測試不能讓整個批次作廢：用各自的預算重跑每個模組
                 # One hanging test must not void the whole batch: rerun each module on its own budget
@@ -536,7 +532,7 @@ class TestSuiteExecutor:
             if run.exit_code == TIMEOUT_EXIT_CODE:
                 timed_out.add(module)
                 continue
-            module_cases = self._parse_junit(run.junit_xml, language)
+            module_cases = parse_junit(run.junit_xml, language)
             if module_cases is None:
                 parse_failed.add(module)
                 continue
@@ -626,19 +622,10 @@ class TestSuiteExecutor:
             if run.exit_code == TIMEOUT_EXIT_CODE:
                 return False
             timed_out.discard(module)
-            parsed = self._parse_junit(run.junit_xml, language, module=module)
+            parsed = parse_junit(run.junit_xml, language, module=module, runner_stdout=stdout)
             if parsed is None:
                 parse_failed.add(module)
                 return True
-            for case in parsed.get(module, []):
-                # 載入失敗的模組是單一個檔案層級的案例，其 junit 內文只說
-                # "test failed"；實際的錯誤（ERR_MODULE_NOT_FOUND、載入時的 ReferenceError）
-                # 在執行器的 stdout 上，分類時需要先看到它。
-                # A module that failed to load is one file-level case whose junit body only says
-                # "test failed"; the actual error (ERR_MODULE_NOT_FOUND, a ReferenceError at load)
-                # is on the runner's stdout, which the classification needs to see first.
-                if case["outcome"] == "failure" and _JS_FILE_CASE_RE.fullmatch(os.path.basename(case["name"] or "")):
-                    case["details"] = f"{stdout[:6000]}\n{case['details'] or ''}"
             cases.update(parsed)
             return True
 
@@ -728,86 +715,6 @@ class TestSuiteExecutor:
             seen[t.test_id] = count
             unique.append(t.test_id if count == 1 else f"{t.test_id}-{count}")
         return unique
-
-    @staticmethod
-    def _parse_junit(junit_xml: Optional[str], language: str = "python",
-                     module: Optional[str] = None) -> Optional[Dict[str, List[dict]]]:
-        """把 JUnit 的 testcase 依產生的模組名稱（test_vh_NNN）分組。
-
-        pytest 把模組放在 `classname`（收集錯誤時放在 `name`）。Node 的 junit 報告器
-        兩者都不填（classname 是字面上的 "test"；只有從未執行到 test() 的檔案
-        會以名稱出現），所以 Node 的報告是每個模組各產一份，由 `module` 把每個案例
-        歸給它；外層的 `<testsuite name>` 祖先則作為後備來搜尋。從未執行到 test() 的
-        Node 檔案會被回報成單一個通過的檔案層級案例：這個
-        偽案例會被丟棄（空檔案不能算通過），而失敗的那種
-        （載入錯誤）則保留為該模組的失敗。
-        什麼都沒產生（或什麼都沒比對到）時回傳 {}，報告存在但無法解析時回傳
-        None——呼叫端不得把後者回報成「沒有收集到測試」，那會把壞掉的沙盒報告
-        歸咎於產生的程式碼。
-        Groups JUnit testcases by generated module name (test_vh_NNN).
-
-        pytest puts the module in `classname` (collection errors: in `name`). Node's junit reporter
-        names neither (classname is the literal "test"; only a file that never reached a test()
-        appears by name), so a Node report is produced per module and `module` assigns every case
-        to it; the enclosing `<testsuite name>` ancestors are searched as a fallback. A Node file
-        that never reached a test() is reported as a single passing file-level case: that
-        pseudo-case is dropped (an empty file must not count as a pass), while a failing one (a
-        load error) is kept as the module's failure.
-        Returns {} when nothing was produced (or nothing matched), and None when a report
-        existed but could not be parsed — the caller must not report that as "no test
-        collected", which blames the generated code for a broken sandbox report.
-        """
-        grouped: Dict[str, List[dict]] = {}
-        if module is not None:
-            grouped[module] = []  # 模組有執行；沒有任何案例就是「沒有收集到測試」，絕不是通過 ／ the module ran; without any case it is "no test collected", never a pass
-        if not junit_xml:
-            return grouped
-        try:
-            root = ET.fromstring(junit_xml)
-        except ET.ParseError as e:
-            logger.error(bi(f"無法解析 JUnit XML：{e}", f"Unable to parse JUnit XML: {e}"))
-            return None
-
-        parents = {child: parent for parent in root.iter() for child in parent}
-        for tc in root.iter("testcase"):
-            match = re.search(r"test_vh_\d+", tc.get("classname") or "") or re.search(r"test_vh_\d+", tc.get("name") or "")
-            node = tc
-            while match is None and node in parents:
-                node = parents[node]
-                if node.tag == "testsuite":
-                    match = re.search(r"test_vh_\d+", node.get("name") or "")
-            group = match.group(0) if match else module
-            if not group:
-                continue
-            is_file_case = language != "python" and bool(_JS_FILE_CASE_RE.fullmatch(os.path.basename(tc.get("name") or "")))
-            outcome, message, details = "passed", None, None
-            out, err = "", ""
-            for child in tc:
-                if child.tag in ("failure", "error", "skipped") and outcome == "passed":
-                    outcome = child.tag
-                    message = child.get("message") or ""
-                    details = child.text or ""
-                elif child.tag == "system-out":
-                    out += child.text or ""
-                elif child.tag == "system-err":
-                    err += child.text or ""
-            if is_file_case and outcome == "passed":
-                grouped.setdefault(group, [])  # 檔案有執行，但裡面沒有 test()：沒有可計算的東西 ／ the file ran, but no test() inside it: nothing to count
-                continue
-            try:
-                case_time = float(tc.get("time") or 0.0)
-            except (TypeError, ValueError):
-                case_time = 0.0  # 這份 XML 來自執行不受信任程式碼的容器；絕不能因它崩潰 ／ the XML came from a container running untrusted code; never crash on it
-            grouped.setdefault(group, []).append({
-                "name": tc.get("name"),
-                "time": case_time,
-                "outcome": outcome,
-                "message": message,
-                "details": details,
-                "stdout": out,
-                "stderr": err,
-            })
-        return grouped
 
     def _aggregate(
         self,

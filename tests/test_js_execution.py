@@ -23,6 +23,7 @@ from vibeharness.core.sandbox import (
     DEFAULT_DOCKER_NODE_IMAGE, MIN_NODE_VERSION, TIMEOUT_EXIT_CODE, NodeDockerSandbox, NodeRuntime,
     NodeSubprocessSandbox, SandboxRun, SandboxUnavailableError, detect_node, node_test_command, parse_node_version,
 )
+from vibeharness.runners.attribution import parse_junit
 from vibeharness.runners.test_executor import (
     TestSuiteExecutor, POC_HEADER_JS, REASON_NOT_RUN_CORRECTLY, REASON_TARGET_BROKEN,
 )
@@ -260,7 +261,7 @@ SUITE_NAMED_JUNIT = ('<?xml version="1.0" encoding="utf-8"?>\n<testsuites>\n'
 
 
 def test_parse_node_junit_assigns_every_case_to_the_module():
-    cases = TestSuiteExecutor._parse_junit(NODE_JUNIT, "javascript", module="test_vh_000")
+    cases = parse_junit(NODE_JUNIT, "javascript", module="test_vh_000")
     assert list(cases) == ["test_vh_000"]
     assert [c["name"] for c in cases["test_vh_000"]] == ["ok", "bad"]
     assert cases["test_vh_000"][1]["outcome"] == "failure"
@@ -268,26 +269,40 @@ def test_parse_node_junit_assigns_every_case_to_the_module():
 
 
 def test_parse_node_junit_file_level_cases():
-    failed = TestSuiteExecutor._parse_junit(FILE_FAIL_JUNIT, "javascript", module="test_vh_001")
+    failed = parse_junit(FILE_FAIL_JUNIT, "javascript", module="test_vh_001")
     assert len(failed["test_vh_001"]) == 1 and failed["test_vh_001"][0]["outcome"] == "failure"
     # 通過的檔案層級偽測試案例代表「什麼都沒執行」：模組存在但沒有任何案例
     # A passing file-level pseudo-case means "nothing ran": the module exists but has no case
-    empty = TestSuiteExecutor._parse_junit(EMPTY_FILE_JUNIT, "javascript", module="test_vh_002")
+    empty = parse_junit(EMPTY_FILE_JUNIT, "javascript", module="test_vh_002")
     assert empty == {"test_vh_002": []}
     # 沒有模組時，檔名本身仍會把案例歸組（較舊／其他的回報器）
     # Without a module the file name itself still groups the case (older/other reporters)
-    assert TestSuiteExecutor._parse_junit(FILE_FAIL_JUNIT, "javascript") == {
+    assert parse_junit(FILE_FAIL_JUNIT, "javascript") == {
         "test_vh_001": [failed["test_vh_001"][0]]
     }
     # pytest 會保留以模組命名的通過案例：只有 JS 會捨棄它
     # pytest keeps a passing module-named case: only JS drops it
-    assert len(TestSuiteExecutor._parse_junit(EMPTY_FILE_JUNIT, "python", module="test_vh_002")["test_vh_002"]) == 1
+    assert len(parse_junit(EMPTY_FILE_JUNIT, "python", module="test_vh_002")["test_vh_002"]) == 1
+
+
+def test_parse_node_junit_prepends_the_runner_output_to_a_file_level_failure_only():
+    """載入失敗的模組只有一個檔案層級的失敗案例，junit 內文只說「test failed」，真正的錯誤在 runner 的 stdout：
+    把 stdout 補在它的 details 前面；一般 test() 的失敗保留自己的 details。
+    A module that failed to load is one file-level failing case whose junit body only says "test failed", while the
+    real error is on the runner's stdout: that stdout is prepended to its details; an ordinary test() failure keeps
+    its own details."""
+    out = "Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'left-pad'\n"
+    plain = parse_junit(FILE_FAIL_JUNIT, "javascript", module="test_vh_001")["test_vh_001"][0]["details"]
+    folded = parse_junit(FILE_FAIL_JUNIT, "javascript", module="test_vh_001", runner_stdout=out)
+    assert folded["test_vh_001"][0]["details"] == f"{out}\n{plain}"
+    cases = parse_junit(NODE_JUNIT, "javascript", module="test_vh_000", runner_stdout=out)
+    assert "ERR_MODULE_NOT_FOUND" not in cases["test_vh_000"][1]["details"]
 
 
 def test_parse_node_junit_searches_ancestor_suite_names():
-    assert list(TestSuiteExecutor._parse_junit(SUITE_NAMED_JUNIT, "javascript")) == ["test_vh_007"]
-    assert TestSuiteExecutor._parse_junit("", "javascript", module="test_vh_003") == {"test_vh_003": []}
-    assert TestSuiteExecutor._parse_junit("<broken", "javascript", module="test_vh_003") is None
+    assert list(parse_junit(SUITE_NAMED_JUNIT, "javascript")) == ["test_vh_007"]
+    assert parse_junit("", "javascript", module="test_vh_003") == {"test_vh_003": []}
+    assert parse_junit("<broken", "javascript", module="test_vh_003") is None
 
 
 def _case(message, details, name="c"):
@@ -860,7 +875,7 @@ def test_file_level_case_match_is_exact():
     result = TestSuiteExecutor(sandbox=None)._aggregate(_js_test("BB", "x", test_type="blackbox_security"), "BB", [case])
     assert result.status == TestStatus.FAILED and result.is_security_exploit_confirmed
     assert TestSuiteExecutor._js_is_harness_failure(dict(ASSERTION_CASE, name="/run/test_vh_000.mjs"))
-    assert TestSuiteExecutor._parse_junit(EMPTY_FILE_JUNIT, "javascript", module="test_vh_002") == {"test_vh_002": []}
+    assert parse_junit(EMPTY_FILE_JUNIT, "javascript", module="test_vh_002") == {"test_vh_002": []}
 
 
 def test_load_time_reference_error_wins_over_target_noise():
