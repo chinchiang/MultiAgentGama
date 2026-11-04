@@ -24,6 +24,7 @@ from golden.compare import IMPORT_MARKER, compare  # noqa: E402
 from golden.normalize import normalize  # noqa: E402
 import golden.run as golden_run  # noqa: E402
 from golden.run import ScenarioCrashed, main, run_scenarios  # noqa: E402
+import golden.fake_llm as fake_llm  # noqa: E402
 
 
 def test_iso_timestamps_become_a_placeholder():
@@ -481,3 +482,13 @@ def test_invalid_output_fails_to_compare_when_the_re_ask_sentence_changed_on_tha
                                                                    "Your last answer was unusable ("), encoding="utf-8")
     with pytest.raises(ScenarioCrashed):
         run_scenarios(repo, tmp_path / "out", tmp_path / "work", names=["invalid_output"])
+
+
+def test_every_injecting_profile_names_an_event_its_injection_must_trigger():
+    """standard 以外的 profile 都會注入錯誤：每一個都要在 _REQUIRED 登記至少一個必須觸發的事件，verify() 才擋得住
+    注入悄悄失效。漏登記的新 profile 會沒注入就照常比對，這個測試列出它們的名字。
+    Every profile but standard injects a fault: each must list at least one event in _REQUIRED that its injection
+    must trigger, or verify() cannot stop the injection from silently failing. A new profile that lists none would
+    compare without its injection; this test names such profiles."""
+    unchecked = [profile for profile in fake_llm.PROFILES if profile != "standard" and not fake_llm._REQUIRED[profile]]
+    assert unchecked == []
