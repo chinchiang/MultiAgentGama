@@ -8,6 +8,7 @@ import functools
 import importlib
 import json
 import re
+import threading
 from types import SimpleNamespace
 
 # 審查者：依模型名稱各回報 LIVE_TARGET 裡的一個不同缺陷（相同的發現不會送去交叉驗證）；Gemini 回報沒有缺陷
@@ -117,6 +118,29 @@ _DOWN_MODEL = "deepseek/deepseek-v4-pro"
 _RE_ASK = "Your previous answer could not be used ("
 _UNUSABLE = "not json"
 
+# 每個 profile 的注入必須觸發的事件：其中一個從沒發生，表示這一邊的 revision 讓注入失效或變形（模型字串、重問的句子、
+# patch 目標的參數形狀改了），verify() 會讓情境當掉（main 回傳 2），不讓它悄悄沒注入就被比對
+# The events each profile's injection must trigger: one that never happens means this side's revision disabled or
+# warped the injection (a changed model string, re-ask sentence or patch target argument shape), and verify() crashes
+# the scenario (main exits 2) rather than letting it be compared without the injection
+_REQUIRED = {
+    "standard": set(),
+    "primary_down": {"primary model blocked"},
+    "invalid_output": {"threat modeler re-asked", "Claude reviewer blocked"},
+    "crash": {"Gemini reviewer batch crashed"},
+}
+# 呼叫在 fan_out 的執行緒上並行，記錄要上鎖 ／ Calls run concurrently on fan_out's threads, so recording takes a lock
+_lock = threading.Lock()
+_fired: set[str] = set()
+_profile = ""
+
+
+def _fire(event: str) -> None:
+    """記下注入觸發了 event。
+    Records that the injection triggered event."""
+    with _lock:
+        _fired.add(event)
+
 
 class _FakeLiteLLM:
     """litellm.completion 的替身，行為依 profile。
@@ -127,13 +151,11 @@ class _FakeLiteLLM:
 
     def completion(self, **kwargs):
         if self.profile == "primary_down" and kwargs["model"] == _DOWN_MODEL:
+            _fire("primary model blocked")
             raise RuntimeError(f"golden fake: {_DOWN_MODEL} is down")
         messages = kwargs["messages"]
         system, user = messages[0]["content"], messages[1]["content"]
-        if self.profile == "invalid_output" and _unusable(system, user):
-            text = _UNUSABLE
-        else:
-            text = respond(system, user)
+        text = _UNUSABLE if self.profile == "invalid_output" and _unusable(system, user) else respond(system, user)
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text), finish_reason="stop")])
 
 
@@ -142,8 +164,14 @@ def _unusable(system: str, user: str) -> bool:
     The invalid_output calls answered with unusable output: the threat modeler only the first time (valid JSON once
     re-asked), the Claude reviewer every time."""
     if "Threat Modeling Specialist" in system:
-        return _RE_ASK not in user
-    return "white-box AI code auditor" in system and "(Claude)" in system
+        if _RE_ASK in user:
+            _fire("threat modeler re-asked")
+            return False
+        return True
+    if "white-box AI code auditor" in system and "(Claude)" in system:
+        _fire("Claude reviewer blocked")
+        return True
+    return False
 
 
 # crash：讓 Gemini 審查者的批次在 gateway 之外丟出一般例外（fan_out 把它記成當掉的呼叫）。patch 的是私有方法：
@@ -153,8 +181,6 @@ def _unusable(system: str, user: str) -> bool:
 # it from ever firing, the scenario must crash (main exits 2) rather than quietly run without the injection
 _CRASH_TARGET = ("vibeharness.agents.whitebox.multi_reviewer", "HeterogeneousReviewerEnsemble", "_review_batch")
 _CRASH_AGENT = "whitebox_reviewer_gemini"
-_installed: list[str] = []
-_crashed: list[str] = []
 
 
 def _install_crash() -> None:
@@ -169,14 +195,14 @@ def _install_crash() -> None:
     @functools.wraps(original)
     def crashing(self, reviewer, *args, **kwargs):
         if isinstance(reviewer, dict) and reviewer.get("agent_id") == _CRASH_AGENT:
-            _crashed.append(_CRASH_AGENT)
+            _fire("Gemini reviewer batch crashed")
             raise RuntimeError(f"golden fake: injected crash in {_CRASH_AGENT}'s batch")
         return original(self, reviewer, *args, **kwargs)
 
     setattr(owner, method_name, crashing)
 
 
-PROFILES = ("standard", "primary_down", "invalid_output", "crash")
+PROFILES = tuple(_REQUIRED)
 
 
 def install(profile: str) -> None:
@@ -189,12 +215,15 @@ def install(profile: str) -> None:
     transport.litellm = _FakeLiteLLM(profile)  # type: ignore[assignment]
     if profile == "crash":
         _install_crash()
-    _installed.append(profile)
+    global _profile
+    _profile = profile
 
 
 def verify() -> None:
-    """CLI 結束後（包括 sys.exit）呼叫：crash 的 patch 從沒觸發就丟出例外，讓情境當掉而不是悄悄沒注入。
-    Called after the CLI ends (sys.exit included): raises when crash's patch never fired, so the scenario crashes
-    instead of quietly running without the injection."""
-    if "crash" in _installed and not _crashed:
-        raise RuntimeError(f"golden fake: the crash patch never met {_CRASH_AGENT}'s batch on this revision")
+    """CLI 結束後（包括 sys.exit）呼叫：已安裝的 profile 有必須觸發的事件從沒發生就丟出例外，讓情境當掉而不是悄悄沒注入。
+    Called after the CLI ends (sys.exit included): raises when an event the installed profile must trigger never
+    happened, so the scenario crashes instead of quietly running without the injection."""
+    with _lock:
+        missing = sorted(_REQUIRED.get(_profile, set()) - _fired)
+    if missing:
+        raise RuntimeError(f"golden fake: the {_profile} injection never triggered on this revision: {', '.join(missing)}")

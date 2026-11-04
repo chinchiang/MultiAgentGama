@@ -447,3 +447,30 @@ def test_a_config_override_fails_to_compare_when_its_key_is_missing_on_that_side
                       encoding="utf-8")
     with pytest.raises(ScenarioCrashed):
         run_scenarios(repo, tmp_path / "out", tmp_path / "work", names=["budget"])
+
+
+def test_primary_down_fails_to_compare_when_its_model_string_is_gone_on_that_side(tmp_path):
+    """另一個 revision 把 DeepSeek 的主模型換了字串：primary_down 的注入從沒擋下任何呼叫，情境當掉（main 回傳 2），
+    不會悄悄沒注入就跑完、被當成行為不同。
+    Another revision gives DeepSeek another primary model string: primary_down's injection never blocks a call, so the
+    scenario crashes (main exits 2) instead of quietly running without it and comparing as a behaviour change."""
+    repo = _copy_of_vibeharness(tmp_path / "repo")
+    config = repo / "vibeharness" / "config" / "agents_config.yaml"
+    config.write_text(config.read_text(encoding="utf-8").replace('model: "deepseek/deepseek-v4-pro"',
+                                                                 'model: "deepseek/deepseek-v5-pro"'), encoding="utf-8")
+    with pytest.raises(ScenarioCrashed):
+        run_scenarios(repo, tmp_path / "out", tmp_path / "work", names=["primary_down"])
+
+
+def test_invalid_output_fails_to_compare_when_the_re_ask_sentence_changed_on_that_side(tmp_path):
+    """另一個 revision 改寫了重問的句子：invalid_output 認不出重問，威脅建模從沒在重問後拿到有效的 JSON，情境當掉
+    （main 回傳 2），不會把變形的注入當成行為不同。
+    Another revision rewords the re-ask sentence: invalid_output no longer recognises a re-ask, so the threat modeler
+    never gets valid JSON after one, and the scenario crashes (main exits 2) instead of comparing a warped injection
+    as a behaviour change."""
+    repo = _copy_of_vibeharness(tmp_path / "repo")
+    gateway = repo / "vibeharness" / "core" / "llm_gateway.py"
+    gateway.write_text(gateway.read_text(encoding="utf-8").replace("Your previous answer could not be used (",
+                                                                   "Your last answer was unusable ("), encoding="utf-8")
+    with pytest.raises(ScenarioCrashed):
+        run_scenarios(repo, tmp_path / "out", tmp_path / "work", names=["invalid_output"])
