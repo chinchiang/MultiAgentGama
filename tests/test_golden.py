@@ -311,11 +311,11 @@ def test_hybrid_with_one_key_unset_simulates_that_model_even_when_the_shell_has_
 
 def test_a_primary_model_that_fails_is_answered_by_its_fallback_and_the_run_stays_live(tmp_path):
     """primary_down 讓 DeepSeek 的主模型（deepseek/deepseek-v4-pro）一律失敗：每一次 DeepSeek 呼叫都由
-    fallback_model（deepseek/deepseek-v4-flash）回答，仍是 live，主模型的失敗只在 stderr 記一行，判定和 live_json 一樣。
+    fallback_model（deepseek/deepseek-v4-flash）回答，仍是 live，每一次主模型的失敗在 stderr 記一行，判定和 live_json 一樣。
     抓得到 fallback 路徑不再被走到、失敗被改成模擬，以及呼叫紀錄記錯回答的模型。
     primary_down makes DeepSeek's primary model (deepseek/deepseek-v4-pro) always fail: every DeepSeek call is answered
-    by its fallback_model (deepseek/deepseek-v4-flash) and stays live, the primary's failure is one stderr line, and the
-    Verdict matches live_json's. Catches the fallback path no longer being reached, a failure turned into simulation,
+    by its fallback_model (deepseek/deepseek-v4-flash) and stays live, each failure of the primary is one stderr line, and
+    the Verdict matches live_json's. Catches the fallback path no longer being reached, a failure turned into simulation,
     and the call log naming the wrong answering model."""
     run_scenarios(REPO_ROOT, tmp_path / "out", tmp_path / "work", names=["primary_down"])
     out = tmp_path / "out" / "primary_down"
@@ -323,7 +323,7 @@ def test_a_primary_model_that_fails_is_answered_by_its_fallback_and_the_run_stay
     deepseek = [call for call in summary["agent_calls"] if call["model_alias"] == "deepseek"]
     assert deepseek and {call["mode"] for call in summary["agent_calls"]} == {"live"}
     assert {call["model_name"] for call in deepseek} == {"deepseek/deepseek-v4-flash"}
-    assert "Model deepseek/deepseek-v4-pro failed" in (out / "step1.stderr").read_text(encoding="utf-8")
+    assert (out / "step1.stderr").read_text(encoding="utf-8").count("Model deepseek/deepseek-v4-pro failed") == len(deepseek)
     assert (out / "step1.exit_code").read_text(encoding="utf-8").strip() == "2"
 
 
@@ -383,19 +383,25 @@ def test_unusable_output_is_re_asked_once_and_booked_invalid_when_it_stays_unusa
 
 
 def test_a_crashed_reviewer_batch_is_booked_as_a_failed_call_and_the_others_carry_on(tmp_path):
-    """crash 讓 Gemini 審查者的批次在 gateway 之外丟出一般例外：那一次呼叫記成當掉的 invalid 呼叫，其他審查者照常 live，
+    """crash 讓 Gemini 審查者的批次在 gateway 之外丟出一般例外：那一次呼叫記成當掉的 invalid 呼叫，其他每一次呼叫照常 live，
     品質閘門記下證據缺口；stderr 只有一行錯誤、沒有 traceback（否則 run_scenarios 會丟出 ScenarioCrashed）。
     抓得到當掉的批次讓整次執行失敗、被悄悄丟掉（變成「沒有發現」），以及它的紀錄不再標明是當掉。
     crash makes the Gemini reviewer's batch raise an ordinary exception outside the gateway: that call is booked as a
-    crashed invalid call, the other reviewers stay live, and the Quality Gate records the Evidence gap; stderr holds one
-    error line and no traceback (run_scenarios would raise ScenarioCrashed otherwise). Catches a crashed batch failing
+    crashed invalid call, every other call stays live, and the Quality Gate records the Evidence gap; stderr holds one
+    error line for it and no traceback (run_scenarios would raise ScenarioCrashed otherwise). Catches a crashed batch failing
     the whole run or being dropped silently (as "no findings"), and its record no longer saying it crashed."""
     run_scenarios(REPO_ROOT, tmp_path / "out", tmp_path / "work", names=["crash"])
-    summary = json.loads((tmp_path / "out" / "crash" / "report.json").read_text(encoding="utf-8"))["summary"]
-    reviewers = {call["agent_id"]: call for call in summary["agent_calls"] if call["kind"] == "reviewer"}
-    crashed = reviewers.pop("whitebox_reviewer_gemini")
-    assert crashed["mode"] == "invalid" and "agent call crashed before producing output" in crashed["reason"]
-    assert reviewers and {call["mode"] for call in reviewers.values()} == {"live"}
+    out = tmp_path / "out" / "crash"
+    summary = json.loads((out / "report.json").read_text(encoding="utf-8"))["summary"]
+    crashed = [call for call in summary["agent_calls"]
+               if call["kind"] == "reviewer" and call["agent_id"] == "whitebox_reviewer_gemini"]
+    others = [call for call in summary["agent_calls"] if call not in crashed]
+    assert len(crashed) == 1 and crashed[0]["mode"] == "invalid"
+    assert "agent call crashed before producing output" in crashed[0]["reason"]
+    assert {call["kind"] for call in others} > {"reviewer"} and {call["mode"] for call in others} == {"live"}
+    # fan_out 的錯誤是雙語的一行，中英兩半都帶著例外訊息 ／ fan_out's error is one bilingual line, the exception in both halves
+    lines = (out / "step1.stderr").read_text(encoding="utf-8").splitlines()
+    assert len([line for line in lines if "golden fake: injected crash in whitebox_reviewer_gemini's batch" in line]) == 1
     assert any("model call(s) returned unusable output or crashed before answering" in reason
                for reason in summary["inconclusive_reasons"])
 
@@ -423,9 +429,10 @@ def test_the_crash_scenario_fails_to_compare_when_its_patch_target_is_missing(tm
 
 def test_the_crash_scenario_fails_to_compare_when_its_patch_never_fires(tmp_path):
     """另一個 revision 的 Gemini 審查者換了 agent id：patch 還在，卻從沒判斷到要當掉的批次，情境照樣當掉（main 回傳 2）。
-    抓得到參數形狀改變讓注入悄悄失效。
+    改 agent id 代表 patch 用來認出批次的依據變了這一類改動（參數形狀改變也屬於這類）：抓得到它們讓注入悄悄失效。
     Another revision gives the Gemini reviewer another agent id: the patch is in place but never meets the batch it
-    should crash, and the scenario still crashes (main exits 2). Catches a changed argument shape silently disabling the
+    should crash, and the scenario still crashes (main exits 2). The agent id stands for any change to what the patch
+    recognises its batch by (a changed argument shape is another): catches such a change silently disabling the
     injection."""
     repo = _copy_of_vibeharness(tmp_path / "repo")
     config = repo / "vibeharness" / "config" / "agents_config.yaml"
