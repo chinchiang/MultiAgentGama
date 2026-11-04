@@ -11,7 +11,9 @@ import tempfile
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
+import yaml
 
 if __package__ in (None, ""):
     # 以 `python scripts/golden/run.py` 執行時，讓 `golden` 套件可以匯入
@@ -21,24 +23,32 @@ if __package__ in (None, ""):
 from golden.compare import IMPORT_MARKER, compare  # noqa: E402
 from golden.targets import LIVE_TARGET, LIVE_TARGET_CHANGED, MOCK_TARGET  # noqa: E402
 
-# 子行程：從指定的 repo 匯入 vibeharness、記下匯入位置，live 情境再裝上這份工具的假 litellm（兩邊用同一份），
-# 最後以其餘參數執行 CLI
-# The child process: imports vibeharness from the given repo, records where it came from, for a live scenario
-# installs this tool's fake litellm (the same one on both sides), then runs the CLI with the remaining arguments
+# 子行程：從指定的 repo 匯入 vibeharness、記下匯入位置，有 fake 的情境再以它的 profile 裝上這份工具的假 litellm
+# （兩邊用同一份），最後以其餘參數執行 CLI
+# The child process: imports vibeharness from the given repo, records where it came from, for a scenario with a fake
+# installs this tool's fake litellm with that profile (the same one on both sides), then runs the CLI with the
+# remaining arguments
 _CHILD = """\
 import os, sys
-repo, marker, golden_parent = sys.argv[1], sys.argv[2], sys.argv[3]
+repo, marker, golden_parent, fake = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 sys.path.insert(0, repo)
 import vibeharness
 with open(marker, "w", encoding="utf-8") as f:
     f.write(os.path.dirname(os.path.abspath(vibeharness.__file__)) + "\\n")
-if golden_parent:
+if fake:
     sys.path.append(golden_parent)
-    from golden.fake_llm import install
-    install()
+    from golden.fake_llm import install, verify
+    install(fake)
 from vibeharness.cli import main
-sys.argv = ["vibeharness"] + sys.argv[4:]
-main()
+sys.argv = ["vibeharness"] + sys.argv[5:]
+try:
+    main()
+finally:
+    # sys.exit 時也執行：沒觸發的注入以 traceback 收場，run_scenarios 會把它當成無法比對
+    # Runs on sys.exit too: an injection that never fired ends in a traceback, which run_scenarios treats as a
+    # failure to compare
+    if fake:
+        verify()
 """
 
 # 主控台寬度固定，輸出才不隨終端機而變。子行程以 -I 執行，PYTHON* 環境變數對它無效，UTF-8 改由命令列的 -X utf8 指定
@@ -56,23 +66,33 @@ _TRACEBACK = "Traceback (most recent call last)"
 
 
 class ScenarioCrashed(RuntimeError):
-    """情境的某一步當掉（stderr 有未捕捉例外的 traceback），或沒寫出宣告的輸出檔。
-    A scenario step crashed (an uncaught exception's traceback in its stderr) or did not write a declared output."""
+    """情境的某一步當掉（stderr 有未捕捉例外的 traceback）、沒寫出宣告的輸出檔，或它的設定覆寫套不上這一邊的設定檔。
+    A scenario step crashed (an uncaught exception's traceback in its stderr), did not write a declared output, or its
+    config overrides do not fit this side's config."""
 
 
 @dataclass(frozen=True)
 class Scenario:
     """一個情境：目標檔案、依序執行的各步驟 CLI 參數（例如 --baseline 要先有一份報告）、要收集的輸出檔、
-    是否以 live 模式經過假 litellm，以及第 2 步起換上的目標檔案（基準線之後目標改了）。
+    要裝上的假 litellm profile（None 是不裝，mock 情境用）、第 2 步起換上的目標檔案（基準線之後目標改了），
+    要從子行程環境移除的變數，以及寫進設定檔的覆寫值。
     One scenario: the target files, the CLI arguments of each step in order (--baseline, say, needs a report
-    first), the output files to collect, whether it runs in live mode through the fake litellm, and the target files
-    swapped in from step 2 on (the target changed after the baseline)."""
+    first), the output files to collect, the fake litellm profile to install (None installs none, as mock
+    scenarios do), the target files swapped in from step 2 on (the target changed after the baseline), the variables
+    to remove from the child's environment, and the overrides written into the config."""
 
     target: dict[str, str]
     steps: tuple[tuple[str, ...], ...]
     outputs: tuple[str, ...]
-    live: bool = False
+    fake: Optional[str] = None
     changed_target: Optional[dict[str, str]] = None
+    # 在 os.environ 與假金鑰合併之後才移除：開發者 shell 裡真的金鑰也帶不進去
+    # Removed after os.environ and the fake keys are merged, so a real key in the developer's shell cannot get in
+    unset_env: tuple[str, ...] = ()
+    # 點號路徑 → 值，例如 {"global.max_concurrent_calls": 1}；兩邊都經過同樣的讀寫，設定內容的差異仍然看得到
+    # Dotted path -> value, e.g. {"global.max_concurrent_calls": 1}; both sides go through the same load and dump, so
+    # a difference in the config's content still shows
+    config: Optional[dict[str, Any]] = None
 
 
 _MOCK = ("-m", "mock")
@@ -95,20 +115,39 @@ SCENARIOS = {
     ), ("baseline.json", "report.json")),
     "live_json": Scenario(LIVE_TARGET, (
         (*_LIVE, "--format", "json", "-o", "report.json", "--sarif", "report.sarif"),
-    ), ("report.json", "report.sarif"), live=True),
-    "live_md": Scenario(LIVE_TARGET, ((*_LIVE, "--format", "md", "-o", "report.md"),), ("report.md",), live=True),
+    ), ("report.json", "report.sarif"), fake="standard"),
+    "live_md": Scenario(LIVE_TARGET, ((*_LIVE, "--format", "md", "-o", "report.md"),), ("report.md",), fake="standard"),
     "live_baseline_json": Scenario(LIVE_TARGET, (
         (*_LIVE, "--format", "json", "-o", "baseline.json"),
         (*_LIVE, "--baseline", "baseline.json", "--format", "json", "-o", "report.json"),
-    ), ("baseline.json", "report.json"), live=True),
+    ), ("baseline.json", "report.json"), fake="standard"),
     "live_baseline_md": Scenario(LIVE_TARGET, (
         (*_LIVE, "--format", "json", "-o", "baseline.json"),
         (*_LIVE, "--baseline", "baseline.json", "--format", "md", "-o", "report.md"),
-    ), ("baseline.json", "report.md"), live=True),
+    ), ("baseline.json", "report.md"), fake="standard"),
     "live_baseline_changed": Scenario(LIVE_TARGET, (
         (*_LIVE, "--format", "json", "-o", "baseline.json"),
         (*_LIVE, "--baseline", "baseline.json", "--format", "json", "-o", "report.json", "--sarif", "report.sarif"),
-    ), ("baseline.json", "report.json", "report.sarif"), live=True, changed_target=LIVE_TARGET_CHANGED),
+    ), ("baseline.json", "report.json", "report.sarif"), fake="standard", changed_target=LIVE_TARGET_CHANGED),
+    "hybrid_missing_key": Scenario(LIVE_TARGET, (("-m", "hybrid", "--format", "json", "-o", "report.json"),),
+                                   ("report.json",), fake="standard", unset_env=("GEMINI_API_KEY",)),
+    "primary_down": Scenario(LIVE_TARGET, ((*_LIVE, "--format", "json", "-o", "report.json"),), ("report.json",),
+                             fake="primary_down"),
+    # 呼叫一次一個：哪幾次拿到預算才每次相同（並行時，最後一次預算由先完成的驗證者搶到）
+    # One call at a time, so the same calls get the budget on every run (concurrently, the last unit of budget goes to
+    # whichever verifier finishes first)
+    "budget": Scenario(LIVE_TARGET, (("-m", "hybrid", "--max-model-calls", "5", "--format", "json", "-o", "report.json"),),
+                       ("report.json",), fake="standard", config={"global.max_concurrent_calls": 1}),
+    # 兩步共用工作目錄：提示詞帶著路徑，換目錄快取鍵就不同
+    # Both steps share the working directory: prompts carry paths, so another directory gives other cache keys
+    "live_cache": Scenario(LIVE_TARGET, (
+        (*_LIVE, "--cache-dir", "cache", "--format", "json", "-o", "fill.json"),
+        (*_LIVE, "--cache-dir", "cache", "--cache-only", "--format", "json", "-o", "replay.json"),
+    ), ("fill.json", "replay.json"), fake="standard"),
+    "invalid_output": Scenario(LIVE_TARGET, ((*_LIVE, "--format", "json", "-o", "report.json"),), ("report.json",),
+                               fake="invalid_output"),
+    "crash": Scenario(LIVE_TARGET, ((*_LIVE, "--format", "json", "-o", "report.json"),), ("report.json",),
+                      fake="crash"),
 }
 
 
@@ -136,15 +175,20 @@ def _run(repo: str, name: str, scenario: Scenario, out: Path, work: Path) -> Non
     # The config is copied into work: the path the report records is the same on both sides, and a change to its
     # content still shows
     shutil.copyfile(os.path.join(repo, "vibeharness", "config", "agents_config.yaml"), work / "vibeharness.yaml")
+    if scenario.config:
+        _override(work / "vibeharness.yaml", scenario.config)
     target = next(iter(scenario.target)) if len(scenario.target) == 1 else "."
+    env = {**os.environ, **_ENV, **(_FAKE_KEYS if scenario.fake else {})}
+    for var in scenario.unset_env:
+        env.pop(var, None)
     for number, args in enumerate(scenario.steps, 1):
         if number == 2 and scenario.changed_target:
             for rel, content in scenario.changed_target.items():
                 (work / rel).write_text(content, encoding="utf-8")
         proc = subprocess.run(
-            [sys.executable, "-I", "-X", "utf8", "-c", _CHILD, repo, str(out / IMPORT_MARKER), _GOLDEN_PARENT if scenario.live else "",
+            [sys.executable, "-I", "-X", "utf8", "-c", _CHILD, repo, str(out / IMPORT_MARKER), _GOLDEN_PARENT, scenario.fake or "",
              "-t", target, "-c", "vibeharness.yaml", *args],
-            cwd=work, env={**os.environ, **_ENV, **(_FAKE_KEYS if scenario.live else {})}, capture_output=True,
+            cwd=work, env=env, capture_output=True,
             text=True, encoding="utf-8",
         )
         (out / f"step{number}.stdout").write_text(proc.stdout, encoding="utf-8")
@@ -163,6 +207,23 @@ def _run(repo: str, name: str, scenario: Scenario, out: Path, work: Path) -> Non
             missing.append(rel)
     if missing:
         raise ScenarioCrashed(f"{name} wrote no {', '.join(missing)}; see the stepN.stderr files in {out}")
+
+
+def _override(path: Path, overrides: dict[str, Any]) -> None:
+    """把點號路徑的覆寫值寫進 YAML 設定檔。路徑上的每一層、包括最後的鍵，都必須已經存在：vibeharness 不會拒絕
+    不認得的鍵，悄悄新增的鍵沒人讀，覆寫就失效了，所以兩邊的設定形狀不同時丟出 ScenarioCrashed。
+    Writes dotted-path overrides into a YAML config. Every level of the path, the final key included, must already
+    exist: vibeharness does not reject an unknown key, so a quietly added one is read by nothing and the override is
+    lost; a config whose shape differs on one side raises ScenarioCrashed."""
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    for dotted, value in overrides.items():
+        node = config
+        for part in dotted.split("."):
+            if not isinstance(node, dict) or part not in node:
+                raise ScenarioCrashed(f"config override {dotted!r} does not fit {path}: no {part!r}")
+            parent, node = node, node[part]
+        parent[part] = value
+    path.write_text(yaml.safe_dump(config, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
 
 def main(argv: Optional[list[str]] = None, repo: str = _REPO) -> int:

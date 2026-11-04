@@ -4,8 +4,11 @@ The fake litellm of the live scenarios: recognises the agent by the role sentenc
 fixed answer by the content of the user prompt. No network, and the answer depends on the prompt alone, so the same
 prompt gets the same answer on both runs and both revisions."""
 
+import functools
+import importlib
 import json
 import re
+import threading
 from types import SimpleNamespace
 
 # 審查者：依模型名稱各回報 LIVE_TARGET 裡的一個不同缺陷（相同的發現不會送去交叉驗證）；Gemini 回報沒有缺陷
@@ -106,19 +109,121 @@ def respond(system: str, user: str) -> str:
     raise AssertionError("fake litellm: unknown agent: " + system[:80])
 
 
-class _FakeLiteLLM:
-    """litellm.completion 的替身。
-    A stand-in for litellm.completion."""
+# primary_down：這個模型字串一律失敗，gateway 改呼叫設定裡的 fallback_model
+# primary_down: this model string always fails, so the gateway calls the configured fallback_model
+_DOWN_MODEL = "deepseek/deepseek-v4-pro"
+# invalid_output：重問的提示詞以這句接在原本的使用者提示詞後面（vibeharness/core/llm_gateway.py 的 _RETRY_SUFFIX）
+# invalid_output: a re-ask appends this sentence to the original user prompt (_RETRY_SUFFIX in
+# vibeharness/core/llm_gateway.py)
+_RE_ASK = "Your previous answer could not be used ("
+_UNUSABLE = "not json"
 
-    @staticmethod
-    def completion(**kwargs):
+# 每個 profile 的注入必須觸發的事件：其中一個從沒發生，表示這一邊的 revision 讓注入失效或變形（模型字串、重問的句子、
+# patch 目標的參數形狀改了），verify() 會讓情境當掉（main 回傳 2），不讓它悄悄沒注入就被比對
+# The events each profile's injection must trigger: one that never happens means this side's revision disabled or
+# warped the injection (a changed model string, re-ask sentence or patch target argument shape), and verify() crashes
+# the scenario (main exits 2) rather than letting it be compared without the injection
+_REQUIRED = {
+    "standard": set(),
+    "primary_down": {"primary model blocked"},
+    "invalid_output": {"threat modeler re-asked", "Claude reviewer blocked"},
+    "crash": {"Gemini reviewer batch crashed"},
+}
+# 呼叫在 fan_out 的執行緒上並行，記錄要上鎖 ／ Calls run concurrently on fan_out's threads, so recording takes a lock
+_lock = threading.Lock()
+_fired: set[str] = set()
+_profile = ""
+
+
+def _fire(event: str) -> None:
+    """記下注入觸發了 event。
+    Records that the injection triggered event."""
+    with _lock:
+        _fired.add(event)
+
+
+class _FakeLiteLLM:
+    """litellm.completion 的替身，行為依 profile。
+    A stand-in for litellm.completion, behaving as its profile."""
+
+    def __init__(self, profile: str) -> None:
+        self.profile = profile
+
+    def completion(self, **kwargs):
+        if self.profile == "primary_down" and kwargs["model"] == _DOWN_MODEL:
+            _fire("primary model blocked")
+            raise RuntimeError(f"golden fake: {_DOWN_MODEL} is down")
         messages = kwargs["messages"]
-        text = respond(messages[0]["content"], messages[1]["content"])
+        system, user = messages[0]["content"], messages[1]["content"]
+        text = _UNUSABLE if self.profile == "invalid_output" and _unusable(system, user) else respond(system, user)
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text), finish_reason="stop")])
 
 
-def install() -> None:
-    """把 vibeharness 的 litellm 換成假的；要在 CLI 執行前、vibeharness 匯入後呼叫。
-    Replaces vibeharness's litellm with the fake; call it after vibeharness is imported and before the CLI runs."""
+def _unusable(system: str, user: str) -> bool:
+    """invalid_output 要回答無法使用的輸出的呼叫：威脅建模只有第一次（重問後才給有效的 JSON），Claude 審查者每一次都是。
+    The invalid_output calls answered with unusable output: the threat modeler only the first time (valid JSON once
+    re-asked), the Claude reviewer every time."""
+    if "Threat Modeling Specialist" in system:
+        if _RE_ASK in user:
+            _fire("threat modeler re-asked")
+            return False
+        return True
+    if "white-box AI code auditor" in system and "(Claude)" in system:
+        _fire("Claude reviewer blocked")
+        return True
+    return False
+
+
+# crash：讓 Gemini 審查者的批次在 gateway 之外丟出一般例外（fan_out 把它記成當掉的呼叫）。patch 的是私有方法：
+# 另一個 revision 沒有它，或參數形狀改了而從沒觸發，都要讓情境當掉（main 回傳 2），不能悄悄沒注入就跑完
+# crash: makes the Gemini reviewer's batch raise an ordinary exception outside the gateway (fan_out books it as a
+# crashed call). The patch targets a private method: when another revision lacks it, or a changed argument shape keeps
+# it from ever firing, the scenario must crash (main exits 2) rather than quietly run without the injection
+_CRASH_TARGET = ("vibeharness.agents.whitebox.multi_reviewer", "HeterogeneousReviewerEnsemble", "_review_batch")
+_CRASH_AGENT = "whitebox_reviewer_gemini"
+
+
+def _install_crash() -> None:
+    """把 crash 的 patch 裝到 _CRASH_TARGET 上；目標不存在時丟出例外。
+    Installs crash's patch on _CRASH_TARGET; raises when the target is missing."""
+    module_name, class_name, method_name = _CRASH_TARGET
+    owner = getattr(importlib.import_module(module_name), class_name, None)
+    original = getattr(owner, method_name, None)
+    if original is None:
+        raise RuntimeError(f"golden fake: patch target {'.'.join(_CRASH_TARGET)} is missing on this revision")
+
+    @functools.wraps(original)
+    def crashing(self, reviewer, *args, **kwargs):
+        if isinstance(reviewer, dict) and reviewer.get("agent_id") == _CRASH_AGENT:
+            _fire("Gemini reviewer batch crashed")
+            raise RuntimeError(f"golden fake: injected crash in {_CRASH_AGENT}'s batch")
+        return original(self, reviewer, *args, **kwargs)
+
+    setattr(owner, method_name, crashing)
+
+
+PROFILES = tuple(_REQUIRED)
+
+
+def install(profile: str) -> None:
+    """以 profile 的行為把 vibeharness 的 litellm 換成假的；要在 CLI 執行前、vibeharness 匯入後呼叫。
+    Replaces vibeharness's litellm with the fake, behaving as profile; call it after vibeharness is imported and
+    before the CLI runs."""
+    if profile not in PROFILES:
+        raise ValueError(f"golden fake: unknown profile {profile!r}")
     import vibeharness.core.transport as transport
-    transport.litellm = _FakeLiteLLM()  # type: ignore[assignment]
+    transport.litellm = _FakeLiteLLM(profile)  # type: ignore[assignment]
+    if profile == "crash":
+        _install_crash()
+    global _profile
+    _profile = profile
+
+
+def verify() -> None:
+    """CLI 結束後（包括 sys.exit）呼叫：已安裝的 profile 有必須觸發的事件從沒發生就丟出例外，讓情境當掉而不是悄悄沒注入。
+    Called after the CLI ends (sys.exit included): raises when an event the installed profile must trigger never
+    happened, so the scenario crashes instead of quietly running without the injection."""
+    with _lock:
+        missing = sorted(_REQUIRED.get(_profile, set()) - _fired)
+    if missing:
+        raise RuntimeError(f"golden fake: the {_profile} injection never triggered on this revision: {', '.join(missing)}")
