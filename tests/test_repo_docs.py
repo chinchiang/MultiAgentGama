@@ -134,6 +134,13 @@ def _looks_like_code(name):
             or bool(_CAMEL_RE.match(name)))
 
 
+def pruned_dirs(manifest):
+    """MANIFEST.in 用 prune 排除的目錄，依出現順序。
+    The directories a MANIFEST.in excludes with prune, in order."""
+    with open(manifest, encoding="utf-8") as f:
+        return [line.split(None, 1)[1].strip() for line in f if line.startswith("prune ")]
+
+
 # sdist 刻意不打包的檔案：在 sdist 裡（沒有 .github/）無法核對
 # Files the sdist deliberately leaves out: they cannot be checked from the sdist (no .github/)
 _NOT_SHIPPED = ("AGENTS.md",)
@@ -202,6 +209,19 @@ def test_stale_citations_flags_a_removed_function_but_not_a_docstring_mention():
             "`gone_helper()` `docs/missing.md` `NoSuchClass`")
     assert stale_citations(text, names, literals) == ["_validate_settings", "gone_helper()", "docs/missing.md",
                                                       "NoSuchClass"]
+
+
+def test_pruned_dirs_lists_every_prune_line_of_the_manifest_and_nothing_else(tmp_path):
+    """MANIFEST.in 裡每一條 prune 的目錄都讀出來，依出現順序；註解與其他指令（include、recursive-include）不算。
+    Every directory a MANIFEST.in prunes is read, in order; comments and other commands (include,
+    recursive-include) are not."""
+    manifest = tmp_path / "MANIFEST.in"
+    manifest.write_text("# prune docs/commented-out\n"
+                        "include README.md\n"
+                        "prune scripts/golden\n"
+                        "recursive-include tests *.py\n"
+                        "prune docs/drafts\n", encoding="utf-8")
+    assert pruned_dirs(manifest) == ["scripts/golden", "docs/drafts"]
 
 
 # --- 讀 .github/ 的測試必須在 sdist 裡略過 ------------------------------------------------------------------
