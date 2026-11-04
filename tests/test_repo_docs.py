@@ -145,6 +145,9 @@ def _file_exists(span):
     if "/" in span:
         if span.startswith(".github") and not os.path.isdir(os.path.join(REPO_ROOT, ".github")):
             return True
+        # sdist 也不帶只供開發用的 scripts/golden/（MANIFEST.in 的 prune）／ Nor does it ship the development-only scripts/golden/ (prune in MANIFEST.in)
+        if span.startswith("scripts/golden/") and not os.path.isdir(os.path.join(REPO_ROOT, "scripts", "golden")):
+            return True
         return bool(glob.glob(os.path.join(REPO_ROOT, span)))
     if any(glob.glob(os.path.join(REPO_ROOT, d, span)) for d in _FILE_DIRS):
         return True
