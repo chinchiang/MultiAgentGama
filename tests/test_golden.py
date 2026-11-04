@@ -433,3 +433,17 @@ def test_the_crash_scenario_fails_to_compare_when_its_patch_never_fires(tmp_path
                       encoding="utf-8")
     with pytest.raises(ScenarioCrashed):
         run_scenarios(repo, tmp_path / "out", tmp_path / "work", names=["crash"])
+
+
+def test_a_config_override_fails_to_compare_when_its_key_is_missing_on_that_side(tmp_path):
+    """另一個 revision 把 max_concurrent_calls 改了名（vibeharness 不會拒絕不認得的鍵）：budget 的覆寫找不到要改的鍵，
+    情境當掉（main 回傳 2），不會悄悄新增一個沒人讀的鍵、讓覆寫失效卻照常比對。
+    Another revision renamed max_concurrent_calls (vibeharness does not reject an unknown key): budget's override finds
+    no key to change, so the scenario crashes (main exits 2) instead of quietly adding a key nothing reads and comparing
+    with the override lost."""
+    repo = _copy_of_vibeharness(tmp_path / "repo")
+    config = repo / "vibeharness" / "config" / "agents_config.yaml"
+    config.write_text(config.read_text(encoding="utf-8").replace("  max_concurrent_calls:", "  max_parallel_calls:"),
+                      encoding="utf-8")
+    with pytest.raises(ScenarioCrashed):
+        run_scenarios(repo, tmp_path / "out", tmp_path / "work", names=["budget"])

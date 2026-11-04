@@ -66,8 +66,9 @@ _TRACEBACK = "Traceback (most recent call last)"
 
 
 class ScenarioCrashed(RuntimeError):
-    """情境的某一步當掉（stderr 有未捕捉例外的 traceback），或沒寫出宣告的輸出檔。
-    A scenario step crashed (an uncaught exception's traceback in its stderr) or did not write a declared output."""
+    """情境的某一步當掉（stderr 有未捕捉例外的 traceback）、沒寫出宣告的輸出檔，或它的設定覆寫套不上這一邊的設定檔。
+    A scenario step crashed (an uncaught exception's traceback in its stderr), did not write a declared output, or its
+    config overrides do not fit this side's config."""
 
 
 @dataclass(frozen=True)
@@ -209,16 +210,19 @@ def _run(repo: str, name: str, scenario: Scenario, out: Path, work: Path) -> Non
 
 
 def _override(path: Path, overrides: dict[str, Any]) -> None:
-    """把點號路徑的覆寫值寫進 YAML 設定檔；路徑上缺少的層級視為錯誤（兩邊的設定形狀不同時要明確失敗）。
-    Writes dotted-path overrides into a YAML config; a missing level on the path is an error (a config whose shape
-    differs on one side must fail loudly)."""
+    """把點號路徑的覆寫值寫進 YAML 設定檔。路徑上的每一層、包括最後的鍵，都必須已經存在：vibeharness 不會拒絕
+    不認得的鍵，悄悄新增的鍵沒人讀，覆寫就失效了，所以兩邊的設定形狀不同時丟出 ScenarioCrashed。
+    Writes dotted-path overrides into a YAML config. Every level of the path, the final key included, must already
+    exist: vibeharness does not reject an unknown key, so a quietly added one is read by nothing and the override is
+    lost; a config whose shape differs on one side raises ScenarioCrashed."""
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
     for dotted, value in overrides.items():
-        *parents, key = dotted.split(".")
         node = config
-        for part in parents:
-            node = node[part]
-        node[key] = value
+        for part in dotted.split("."):
+            if not isinstance(node, dict) or part not in node:
+                raise ScenarioCrashed(f"config override {dotted!r} does not fit {path}: no {part!r}")
+            parent, node = node, node[part]
+        parent[part] = value
     path.write_text(yaml.safe_dump(config, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
 
