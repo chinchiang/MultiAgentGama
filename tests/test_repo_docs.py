@@ -97,6 +97,7 @@ def test_tree_paths_follows_the_indentation_and_catches_a_file_under_the_wrong_d
 # --- Names and paths cited by the rule documents -----------------------------------------------------------
 
 RULE_DOCS = ("CODING_STANDARDS.md", "CODING_STANDARDS.en.md", "CONTRIBUTING.md", "AGENTS.md")
+MANIFEST = os.path.join(REPO_ROOT, "MANIFEST.in")
 _SPAN_RE = re.compile(r"`([^`\n]+)`")
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*(?:\(\))?$")
 _FILE_RE = re.compile(r"^[\w.*/-]+\.(?:py|ya?ml|md|toml|in|txt|lock|json|cfg|Dockerfile)$")
@@ -134,19 +135,29 @@ def _looks_like_code(name):
             or bool(_CAMEL_RE.match(name)))
 
 
+def pruned_dirs(manifest):
+    """MANIFEST.in 用 prune 排除的目錄，依出現順序，不帶結尾的 `/`；參數當成字面上的目錄，不展開樣式。
+    The directories a MANIFEST.in excludes with prune, in order and without a trailing `/`; the argument is taken
+    as a literal directory, not expanded as a pattern."""
+    with open(manifest, encoding="utf-8") as f:
+        lines = [line.split() for line in f]
+    return [words[1].rstrip("/") for words in lines if len(words) == 2 and words[0] == "prune"]
+
+
 # sdist 刻意不打包的檔案：在 sdist 裡（沒有 .github/）無法核對
 # Files the sdist deliberately leaves out: they cannot be checked from the sdist (no .github/)
 _NOT_SHIPPED = ("AGENTS.md",)
 
 
-def _file_exists(span):
+def _file_exists(span, pruned):
     if span in _NOT_SHIPPED and not os.path.isdir(os.path.join(REPO_ROOT, ".github")):
         return True
     if "/" in span:
         if span.startswith(".github") and not os.path.isdir(os.path.join(REPO_ROOT, ".github")):
             return True
-        # sdist 也不帶只供開發用的 scripts/golden/（MANIFEST.in 的 prune）／ Nor does it ship the development-only scripts/golden/ (prune in MANIFEST.in)
-        if span.startswith("scripts/golden/") and not os.path.isdir(os.path.join(REPO_ROOT, "scripts", "golden")):
+        # sdist 也不帶 MANIFEST.in prune 掉的目錄（例如只供開發用的 scripts/golden/）
+        # Nor does it ship the directories MANIFEST.in prunes (such as the development-only scripts/golden/)
+        if any(span.startswith(d + "/") and not os.path.isdir(os.path.join(REPO_ROOT, d)) for d in pruned):
             return True
         return bool(glob.glob(os.path.join(REPO_ROOT, span)))
     if any(glob.glob(os.path.join(REPO_ROOT, d, span)) for d in _FILE_DIRS):
@@ -155,17 +166,18 @@ def _file_exists(span):
     return span.endswith((".yml", ".yaml")) and not os.path.isdir(os.path.join(REPO_ROOT, ".github"))
 
 
-def stale_citations(text, names, literals):
+def stale_citations(text, names, literals, manifest=MANIFEST):
     """一份規則文件裡指向不存在的檔案或定義的反引號片段。檔案以路徑（可含 glob）找；看起來像程式碼的名稱
     （底線開頭、`()` 結尾、snake_case 或駝峰式）必須在 vibeharness／scripts／tests 有定義，設定鍵可以只是字串。
     The backticked spans of a rule document that point at a missing file or definition. Files are looked up by
     path (globs allowed); a code-looking name (leading underscore, `()`, snake_case or CamelCase) must be defined in
     vibeharness / scripts / tests, while a config key may be just a string."""
+    pruned = pruned_dirs(manifest)
     known = names | set(dir(builtins)) | set(keyword.kwlist)
     stale = []
     for span in dict.fromkeys(_SPAN_RE.findall(text)):
         if _FILE_RE.match(span) and " " not in span:
-            if not _file_exists(span):
+            if not _file_exists(span, pruned):
                 stale.append(span)
             continue
         if not _IDENT_RE.match(span):
@@ -202,6 +214,59 @@ def test_stale_citations_flags_a_removed_function_but_not_a_docstring_mention():
             "`gone_helper()` `docs/missing.md` `NoSuchClass`")
     assert stale_citations(text, names, literals) == ["_validate_settings", "gone_helper()", "docs/missing.md",
                                                       "NoSuchClass"]
+
+
+def test_pruned_dirs_lists_every_prune_line_of_the_manifest_and_nothing_else(tmp_path):
+    """MANIFEST.in 裡每一條 prune 的目錄都讀出來，依出現順序；註解與其他指令（include、recursive-include）不算。
+    Every directory a MANIFEST.in prunes is read, in order; comments and other commands (include,
+    recursive-include) are not."""
+    manifest = tmp_path / "MANIFEST.in"
+    manifest.write_text("# prune docs/commented-out\n"
+                        "include README.md\n"
+                        "prune scripts/golden\n"
+                        "recursive-include tests *.py\n"
+                        "prune docs/drafts\n", encoding="utf-8")
+    assert pruned_dirs(manifest) == ["scripts/golden", "docs/drafts"]
+
+
+def test_pruned_dirs_reads_indented_tab_separated_and_slash_ended_prune_lines(tmp_path):
+    """行首縮排、prune 後接 tab、目錄以 `/` 結尾的寫法都讀得出來，目錄不帶結尾的 `/`：否則 `prune scripts/golden/`
+    比對不到任何路徑，檢查會悄悄失效。
+    Indented lines, a tab after prune and a directory ending in `/` are all read, without the trailing `/`:
+    otherwise `prune scripts/golden/` matches no path and the check silently stops working."""
+    manifest = tmp_path / "MANIFEST.in"
+    manifest.write_text("  prune docs/indented\n"
+                        "prune\tdocs/tabbed\n"
+                        "prune scripts/golden/\n", encoding="utf-8")
+    assert pruned_dirs(manifest) == ["docs/indented", "docs/tabbed", "scripts/golden"]
+
+
+def test_stale_citations_skips_a_path_under_a_pruned_dir_the_checkout_lacks(tmp_path):
+    """MANIFEST.in prune 掉、而且這份 checkout 裡沒有的目錄（在 sdist 裡跑的情況），底下的路徑無法核對，不算過時；
+    其他不存在的路徑照樣算。
+    A path under a directory MANIFEST.in prunes and this checkout lacks (as when run from the sdist) cannot be
+    checked, so it is not stale; other missing paths still are."""
+    manifest = tmp_path / "MANIFEST.in"
+    manifest.write_text("prune docs/pruned-away\n", encoding="utf-8")
+    text = "`docs/pruned-away/notes.md` `docs/missing.md`"
+    assert stale_citations(text, set(), set(), manifest=manifest) == ["docs/missing.md"]
+
+
+def test_stale_citations_still_flags_a_missing_path_under_a_pruned_dir_the_checkout_has(tmp_path):
+    """MANIFEST.in prune 掉、但這份 checkout 裡還有的目錄（在 repo 裡跑的情況）照樣核對：底下不存在的路徑算過時。
+    A directory MANIFEST.in prunes but this checkout has (as when run from the repo) is still checked: a missing
+    path under it is stale."""
+    manifest = tmp_path / "MANIFEST.in"
+    manifest.write_text("prune docs\n", encoding="utf-8")
+    assert stale_citations("`docs/no-such-file.md`", set(), set(), manifest=manifest) == ["docs/no-such-file.md"]
+
+
+def test_stale_citations_fails_loudly_when_the_manifest_is_missing(tmp_path):
+    """MANIFEST.in 不見時直接出錯，即使文件沒有引用任何路徑：sdist 一定帶著它，不見了表示打包壞了。
+    A missing MANIFEST.in raises even when the document cites no path: the sdist always ships it, so its absence
+    means the packaging broke."""
+    with pytest.raises(FileNotFoundError):
+        stale_citations("`README.md`", set(), set(), manifest=tmp_path / "MANIFEST.in")
 
 
 # --- 讀 .github/ 的測試必須在 sdist 裡略過 ------------------------------------------------------------------
