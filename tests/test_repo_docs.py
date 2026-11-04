@@ -134,6 +134,9 @@ def _looks_like_code(name):
             or bool(_CAMEL_RE.match(name)))
 
 
+MANIFEST = os.path.join(REPO_ROOT, "MANIFEST.in")
+
+
 def pruned_dirs(manifest):
     """MANIFEST.in 用 prune 排除的目錄，依出現順序。
     The directories a MANIFEST.in excludes with prune, in order."""
@@ -146,14 +149,15 @@ def pruned_dirs(manifest):
 _NOT_SHIPPED = ("AGENTS.md",)
 
 
-def _file_exists(span):
+def _file_exists(span, manifest):
     if span in _NOT_SHIPPED and not os.path.isdir(os.path.join(REPO_ROOT, ".github")):
         return True
     if "/" in span:
         if span.startswith(".github") and not os.path.isdir(os.path.join(REPO_ROOT, ".github")):
             return True
-        # sdist 也不帶只供開發用的 scripts/golden/（MANIFEST.in 的 prune）／ Nor does it ship the development-only scripts/golden/ (prune in MANIFEST.in)
-        if span.startswith("scripts/golden/") and not os.path.isdir(os.path.join(REPO_ROOT, "scripts", "golden")):
+        # sdist 也不帶 MANIFEST.in prune 掉的目錄（例如只供開發用的 scripts/golden/）
+        # Nor does it ship the directories MANIFEST.in prunes (such as the development-only scripts/golden/)
+        if any(span.startswith(d + "/") and not os.path.isdir(os.path.join(REPO_ROOT, d)) for d in pruned_dirs(manifest)):
             return True
         return bool(glob.glob(os.path.join(REPO_ROOT, span)))
     if any(glob.glob(os.path.join(REPO_ROOT, d, span)) for d in _FILE_DIRS):
@@ -162,7 +166,7 @@ def _file_exists(span):
     return span.endswith((".yml", ".yaml")) and not os.path.isdir(os.path.join(REPO_ROOT, ".github"))
 
 
-def stale_citations(text, names, literals):
+def stale_citations(text, names, literals, manifest=MANIFEST):
     """一份規則文件裡指向不存在的檔案或定義的反引號片段。檔案以路徑（可含 glob）找；看起來像程式碼的名稱
     （底線開頭、`()` 結尾、snake_case 或駝峰式）必須在 vibeharness／scripts／tests 有定義，設定鍵可以只是字串。
     The backticked spans of a rule document that point at a missing file or definition. Files are looked up by
@@ -172,7 +176,7 @@ def stale_citations(text, names, literals):
     stale = []
     for span in dict.fromkeys(_SPAN_RE.findall(text)):
         if _FILE_RE.match(span) and " " not in span:
-            if not _file_exists(span):
+            if not _file_exists(span, manifest):
                 stale.append(span)
             continue
         if not _IDENT_RE.match(span):
@@ -222,6 +226,26 @@ def test_pruned_dirs_lists_every_prune_line_of_the_manifest_and_nothing_else(tmp
                         "recursive-include tests *.py\n"
                         "prune docs/drafts\n", encoding="utf-8")
     assert pruned_dirs(manifest) == ["scripts/golden", "docs/drafts"]
+
+
+def test_stale_citations_skips_a_path_under_a_pruned_dir_the_checkout_lacks(tmp_path):
+    """MANIFEST.in prune 掉、而且這份 checkout 裡沒有的目錄（在 sdist 裡跑的情況），底下的路徑無法核對，不算過時；
+    其他不存在的路徑照樣算。
+    A path under a directory MANIFEST.in prunes and this checkout lacks (as when run from the sdist) cannot be
+    checked, so it is not stale; other missing paths still are."""
+    manifest = tmp_path / "MANIFEST.in"
+    manifest.write_text("prune docs/pruned-away\n", encoding="utf-8")
+    text = "`docs/pruned-away/notes.md` `docs/missing.md`"
+    assert stale_citations(text, set(), set(), manifest=manifest) == ["docs/missing.md"]
+
+
+def test_stale_citations_still_flags_a_missing_path_under_a_pruned_dir_the_checkout_has(tmp_path):
+    """MANIFEST.in prune 掉、但這份 checkout 裡還有的目錄（在 repo 裡跑的情況）照樣核對：底下不存在的路徑算過時。
+    A directory MANIFEST.in prunes but this checkout has (as when run from the repo) is still checked: a missing
+    path under it is stale."""
+    manifest = tmp_path / "MANIFEST.in"
+    manifest.write_text("prune docs\n", encoding="utf-8")
+    assert stale_citations("`docs/no-such-file.md`", set(), set(), manifest=manifest) == ["docs/no-such-file.md"]
 
 
 # --- 讀 .github/ 的測試必須在 sdist 裡略過 ------------------------------------------------------------------
