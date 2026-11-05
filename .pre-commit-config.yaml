@@ -5,7 +5,7 @@ repos:
     # Pinned to the commit SHA the tag points to (pre-commit's frozen rev; a tag can be moved, a SHA cannot), with the
     # version in the trailing comment, kept in sync with the ruff pin in requirements-dev.txt (tests/test_review_build.py
     # checks it). Dependabot's pre-commit ecosystem bumps the SHA and the comment together
-    rev: f368fb366ff7f2f808dd324b83a6d32267799e19  # frozen: v0.17.2
+    rev: 25bcf95026b96e2dd3c0aec3090c3d6ef6ca2e6c  # frozen: v0.17.3
     hooks:
       - id: ruff
   # mypy 在專案環境執行（與 CI lint job 相同的釘版 mypy 與真實相依套件），
