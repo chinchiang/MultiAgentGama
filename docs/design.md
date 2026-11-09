@@ -131,7 +131,7 @@ flowchart TD
 | `vibeharness/agents/blackbox/threat_modeler.py` | `AutomatedThreatModeler` | 威脅建模；`plan` 回報呼叫計畫 |
 | `vibeharness/agents/blackbox/scenario_builder.py` | `ThreatScenarioBuilder` | 威脅轉攻擊測試；`plan` 回報呼叫計畫 |
 | `vibeharness/runners/test_executor.py` | `TestSuiteExecutor`、`SuiteResult` | 一測試一模組、在沙盒中執行、逾時後逐測重跑；每組測試回傳一個 `SuiteResult`（結果、Python 與 JS/TS 的行涵蓋率、JS 執行器的問題與 Node 執行環境） |
-| `vibeharness/runners/attribution.py` | `parse_junit`、`attribute`、`not_run`、`mutant_outcome` | 結果歸因（純函式）：JUnit 解析、每個測試的狀態與失敗原因、資安突破的判定、FAILED 結果的重現 PoC、沒有報告可判定時的「未執行」結果、變異體批次的判定 |
+| `vibeharness/runners/attribution.py` | `parse_junit`、`attribute`、`not_run`、`mutant_outcome` | 結果歸因（不碰沙盒，除了 log 之外沒有 I/O）：JUnit 解析、每個測試的狀態與失敗原因、資安突破的判定、FAILED 結果的重現 PoC、沒有可判定的 testcase 時的 ERROR 結果（「未執行」的一種）、變異體批次的判定 |
 | `vibeharness/reports/report_generator.py` | `ReportGenerator` | Markdown、JSON、SARIF |
 | `vibeharness/config/agents_config.yaml` | 設定 | 全域參數、模型別名、agent 路由 |
 | `vibeharness/config/threat_rules.yaml` | 設定 | STRIDE、OWASP API Top 10、OWASP LLM Top 10 2026 的提示詞指引 |
@@ -492,9 +492,9 @@ JS/TS 測試走 `check_js_test_code`（`:234-266`，第 9.5 節）；`check_test
 ### 9.2 執行器（`vibeharness/runners/test_executor.py`）
 
 - **一測試一模組**：`execute_test_suite`（`:122-161`）先依 `language` 分成 Python 與 JS 兩組，各交給 `_run_group`（`:220-359`）；每個測試寫成 `test_vh_NNN.py`（JS 為 `.mjs`，編號用全域索引所以跨組唯一），先過 `check_test_code_for`，不過的直接 ERROR「產生的測試無法執行（…）；未執行 ／ Generated test is not executable (…); not run」（`:245-251`）。一個壞掉的測試不會影響其他測試。
-- **header**（`_python_header`，`:187-206`）：先 insert 上層目錄再 insert 目標目錄，所以目標排在 `sys.path[0]`，上層目錄的同名模組不會遮蔽被測模組；JS 的 header 只有註解（`_js_header`，`:209-218`），因為 `import` 會與模組自己的 `import { test }` 衝突。`_split_future_imports` 讓 header 插在 docstring 與 `from __future__` 之後（`:535-564`）。`_header_field` 剝除換行，模型給的 metadata 無法從 `#`／`//` 注釋跳出注入程式碼（`vibeharness/runners/attribution.py:579-589`）。
+- **header**（`_python_header`，`:187-206`）：先 insert 上層目錄再 insert 目標目錄，所以目標排在 `sys.path[0]`，上層目錄的同名模組不會遮蔽被測模組；JS 的 header 只有註解（`_js_header`，`:209-218`），因為 `import` 會與模組自己的 `import { test }` 衝突。`_split_future_imports` 讓 header 插在 docstring 與 `from __future__` 之後（`:535-564`）。`header_field` 剝除換行，模型給的 metadata 無法從 `#`／`//` 注釋跳出注入程式碼（`vibeharness/runners/attribution.py:579-589`）。
 - **批次逾時**（`vibeharness/runners/test_executor.py:297-315`）：Python 整批逾時且模組數 > 1 時，`_run_individually`（`:361-412`）逐一重跑，每個用 `min(per_test_timeout_seconds, 剩下的重跑預算)`（`:396`；`_per_test_budget`，`:424-433`：非正數會退回沙盒的批次預算，逾時原因一律寫實際生效的逾時，絕不會出現「0 秒」），所以重跑的總時間不會超出沙盒的批次預算（只差不到 1 秒的進位），而不是在最後一個模組多出整整一份單測預算；超出預算的模組標 `not_rerun`。此時覆蓋率設為 `None`。
-- **結果歸因**（`:323-358`、`attribute` `vibeharness/runners/attribution.py:215-302`；下表前六列沒有報告可判定，ERROR 由 `not_run` 產生，`:305-309`；JS 的對應規則見第 9.5 節）：
+- **結果歸因**（`:323-358`、`attribute` `vibeharness/runners/attribution.py:215-302`；下表前六列沒有這個模組可判定的 testcase，ERROR 由 `not_run` 產生，`:305-309`；JS 的對應規則見第 9.5 節）：
 
 | 情況 | 狀態與原因 |
 | :--- | :--- |

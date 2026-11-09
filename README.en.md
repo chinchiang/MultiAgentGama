@@ -239,7 +239,7 @@ MultiAgentGama/
 │   │       └── scenario_builder.py  # Turns threats into executable attack scripts
 │   ├── runners/
 │   │   ├── __init__.py
-│   │   ├── attribution.py           # Result attribution: JUnit report → each test's status, Breach and reproduction PoC (pure functions)
+│   │   ├── attribution.py           # Result attribution: JUnit report → each test's status, Breach and reproduction PoC (no sandbox, no I/O beyond logging)
 │   │   └── test_executor.py         # Sandboxed test executor (pytest; JS/TS via node:test; shared by white-box and black-box); one SuiteResult per suite
 │   ├── reports/
 │   │   ├── __init__.py

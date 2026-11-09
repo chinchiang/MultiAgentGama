@@ -1,7 +1,7 @@
 """結果歸因（result attribution）：把沙盒的 JUnit 報告變成每個產生的測試的測試狀態，並判定資安突破（GLOSSARY：Breach）。
-這裡只有純函式，不碰沙盒；沙盒的執行、分組與重跑在 test_executor.py。
+這裡不碰沙盒，除了 log 之外沒有 I/O；沙盒的執行、分組與重跑在 test_executor.py。
 Result attribution: turns the sandbox's JUnit report into each generated test's status and decides Breaches
-(GLOSSARY). Pure functions only, no sandbox; running, grouping and rerunning the sandbox live in test_executor.py."""
+(GLOSSARY). No sandbox and no I/O beyond logging; running, grouping and rerunning the sandbox live in test_executor.py."""
 import logging
 import os
 import re
@@ -303,9 +303,12 @@ def attribute(test: GeneratedTest, test_id: str, cases: List[JunitCase]) -> Test
 
 
 def not_run(test: GeneratedTest, test_id: str, reason: str, *, stdout: str = "", stderr: str = "") -> TestExecutionResult:
-    """執行器沒有可判定的報告時（逾時、沒有報告、預算用盡、無法執行）的結果：帶著原因的 ERROR，絕不是資安突破。
-    The result when the executor has no report to judge (a timeout, no report, an exhausted budget, not
-    executable): an ERROR carrying the reason, never a Breach."""
+    """執行器沒有這個測試可判定的 testcase 時（逾時、沒有報告、報告解析不了、預算用盡、無法執行、沒有收集到測試）的
+    結果：帶著原因的 ERROR，絕不是資安突破。它只涵蓋「未執行」（GLOSSARY：ERROR 或 SKIPPED）的一部分：有 testcase
+    時，ERROR 與 SKIPPED 由 attribute 判定。
+    The result when the executor has no testcase of this test to judge (a timeout, no report, an unparsable report,
+    an exhausted budget, not executable, no test collected): an ERROR carrying the reason, never a Breach. It covers
+    only part of Not run (GLOSSARY: ERROR or SKIPPED): when there are testcases, attribute decides ERROR and SKIPPED."""
     return _result(test, test_id, TestStatus.ERROR, failure_reason=reason, stdout=stdout, stderr=stderr)
 
 
@@ -569,14 +572,14 @@ def _generate_poc(test: GeneratedTest, fn_name: str) -> str:
     header = POC_HEADER_JS if is_js else POC_HEADER_PY
     return (
         f"{header}\n"
-        f"{c} {bi('目標', 'Target')}: {_header_field(test.target_component)}\n"
-        f"{c} {bi('失敗情境', 'Failure Context')}: {_header_field(test.title)}\n"
+        f"{c} {bi('目標', 'Target')}: {header_field(test.target_component)}\n"
+        f"{c} {bi('失敗情境', 'Failure Context')}: {header_field(test.title)}\n"
         f"{c} {bi('測試函式', 'Test Function')}: {fn_name}\n"
         f"{c} {bi('測試程式碼', 'Test Code')}:\n{test.code}\n"
     )
 
 
-def _header_field(text: Optional[str]) -> str:
+def header_field(text: Optional[str]) -> str:
     """插入產生的原始碼中 '#' 註解的中繼資料。
 
     CR／LF（及其他行分隔符）會逃出註解並注入 check_test_code()

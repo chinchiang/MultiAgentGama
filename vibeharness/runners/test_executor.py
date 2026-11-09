@@ -13,7 +13,7 @@ from vibeharness.core.sandbox import (
 from vibeharness.core.codecheck import check_test_code_for
 from vibeharness.core.jscoverage import JsLineCoverage
 from vibeharness.core.i18n import bi
-from vibeharness.runners.attribution import _header_field, attribute, mutant_outcome, not_run, parse_junit
+from vibeharness.runners.attribution import attribute, header_field, mutant_outcome, not_run, parse_junit
 
 logger = logging.getLogger("VibeHarness.TestExecutor")
 
@@ -173,8 +173,8 @@ class TestSuiteExecutor:
         for idx, t in enumerate(tests):
             preamble, body = self._split_future_imports(t.code)
             files[f"test_vh_{idx:03d}.py"] = (
-                f"{preamble}{header}\n# Target: {_header_field(t.target_component)} | "
-                f"Test: {_header_field(t.title)}\n{body}\n"
+                f"{preamble}{header}\n# Target: {header_field(t.target_component)} | "
+                f"Test: {header_field(t.title)}\n{body}\n"
             )
         run = self.sandbox.execute_pytest_files(
             files, working_dir=working_dir, collect_coverage=False, timeout_seconds=timeout_seconds
@@ -253,8 +253,8 @@ class TestSuiteExecutor:
             module_to_idx[module] = idx
             preamble, body = ("", t.code) if is_js else self._split_future_imports(t.code)
             files[f"{module}{ext}"] = (
-                f"{preamble}{header}\n{comment} Target: {_header_field(t.target_component)} | "
-                f"Test: {_header_field(t.title)}\n{body}\n"
+                f"{preamble}{header}\n{comment} Target: {header_field(t.target_component)} | "
+                f"Test: {header_field(t.title)}\n{body}\n"
             )
 
         coverage_pct: Optional[float] = None
