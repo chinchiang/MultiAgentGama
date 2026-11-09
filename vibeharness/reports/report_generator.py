@@ -11,7 +11,6 @@ from vibeharness.core.models import (
     CodeSymbol,
     MultiModelDebateResult,
     ReviewFinding,
-    ThreatItem,
     ThreatModelReport,
     TestExecutionResult,
     GeneratedTest,
@@ -25,6 +24,7 @@ from vibeharness.core.identity import (
 )
 from vibeharness.core.i18n import bi
 from vibeharness.core.sanitize import clean_model_text, markdown_safe
+from vibeharness.core.threat_symbols import target_symbol
 
 # Windows 磁碟機路徑（"C:\..."）即使在 POSIX 主機上也算絕對路徑，讓
 # 在 Windows 產生的 SARIF 交給 Linux CI runner 重新處理時，相對化結果一致。
@@ -624,11 +624,11 @@ class ReportGenerator:
                 "properties": {"testId": r.test_id, "threatId": r.source_ref or "", "security_breach": True,
                                "simulated": False},
             }
-            target_symbol = self._threat_symbol(threat, symbols) if threat else None
-            if target_symbol:
-                uri = self._sarif_uri(target_symbol.file_path, root)
+            target = target_symbol(symbols or [], f"{threat.attack_vector} {threat.attack_scenario}") if threat else None
+            if target:
+                uri = self._sarif_uri(target.file_path, root)
                 if uri:
-                    breach["locations"] = [self._location(uri, max(1, target_symbol.line_start))]
+                    breach["locations"] = [self._location(uri, max(1, target.line_start))]
             results.append(breach)
 
         payload = {
@@ -673,30 +673,6 @@ class ReportGenerator:
             }
         }
 
-
-    @staticmethod
-    def _threat_symbol(threat: ThreatItem, symbols: Optional[List[CodeSymbol]]) -> Optional[CodeSymbol]:
-        """威脅的攻擊向量所指名的擷取符號（整字比對，路由優先）。
-        The extracted symbol the threat's attack vector names (whole-word match, routes first)."""
-        text = f"{threat.attack_vector} {threat.attack_scenario}"
-        best: Optional[Tuple[bool, int, int]] = None
-        chosen: Optional[CodeSymbol] = None
-        for index, sym in enumerate(symbols or []):
-            names = {sym.name, sym.name.split(".")[-1]} - {""}
-            # 只比對完整的識別字／路由：前後不能緊接識別字字元，路由後面也不能接著路徑字元，
-            # 所以 `get` 不會命中 `get_user`，`GET /users` 也不會命中 `GET /users/admin`
-            # Whole identifiers / routes only: no identifier character may touch either end, and no path
-            # character may follow, so `get` does not hit `get_user` and `GET /users` does not hit `GET /users/admin`
-            matched = [n for n in names if re.search(rf"(?<!\w){re.escape(n)}(?![\w/-])", text)]
-            if not matched:
-                continue
-            # 路由優先，其次是最長的命中（最具體的路由或完整的限定名稱），平手時取先出現的符號
-            # Routes first, then the longest match (the most specific route or the full qualified name),
-            # ties go to the earlier symbol
-            rank = (sym.symbol_type == "route", max(len(n) for n in matched), -index)
-            if best is None or rank > best:
-                best, chosen = rank, sym
-        return chosen
 
     @staticmethod
     def _sarif_root(target_path: str) -> str:

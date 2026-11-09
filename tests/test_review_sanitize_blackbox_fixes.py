@@ -9,7 +9,7 @@ import pytest
 
 from vibeharness.core.i18n import bi, en_only, zh_only
 from vibeharness.core.llm_gateway import LLMGateway
-from vibeharness.core.models import CodeSymbol, FindingSeverity, STRIDECategory, ThreatItem
+from vibeharness.core.models import FindingSeverity, STRIDECategory, ThreatItem
 from vibeharness.core.sanitize import (
     UNTRUSTED_MODEL_CLOSE, UNTRUSTED_MODEL_OPEN, find_injection_markers, find_invisible, find_secrets,
     is_placeholder_credential, redact_secrets, untrusted_block, untrusted_model_block,
@@ -217,36 +217,3 @@ def test_threat_severity_is_stripped_and_uppercased(fake_live, raw, expected):
 def test_live_attack_urls_must_use_the_base_port(code, base, offenders):
     from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
     assert ThreatScenarioBuilder._hosts_outside_base_url(code, base) == offenders
-
-
-# --- 符號比對：完整識別字、偏好最長的路由 ------------------------------------------------------------------
-# --- Symbol matching: whole identifiers, the longest route wins ---------------------------------------------
-
-def _sym(name: str, kind: str = "function", path: str = "app.js") -> CodeSymbol:
-    return CodeSymbol(name=name, symbol_type=kind, file_path=path, line_start=1, line_end=2, signature=name,
-                      source_code="x")
-
-
-def _names(vector: str, symbols):
-    from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
-    return [s.name for s in ThreatScenarioBuilder._named_symbols(symbols, vector)]
-
-
-def test_longest_route_match_wins():
-    routes = [_sym("GET /api/users", "route"), _sym("GET /api/users/:id", "route")]
-    assert _names("IDOR on GET /api/users/:id with a foreign id", routes) == ["GET /api/users/:id"]
-    assert _names("list via GET /api/users", routes) == ["GET /api/users"]
-
-
-def test_route_paths_with_dots_and_js_identifiers_match_whole():
-    symbols = [_sym("GET /api/report.json", "route"), _sym("json"), _sym("$fetch"), _sym("fetch")]
-    assert _names("download /api/report.json unauthenticated", symbols) == ["GET /api/report.json"]
-    assert _names("abuse $fetch with a crafted url", symbols) == ["$fetch"]
-
-
-def test_qualified_method_name_does_not_drag_in_a_same_named_function():
-    symbols = [_sym("Service.get_user", "method", "svc.py"), _sym("get_user", "function", "svc.py")]
-    assert _names("tamper Service.get_user", symbols) == ["Service.get_user"]
-    assert sorted(_names("call get_user directly", symbols)) == ["Service.get_user", "get_user"]
-
-

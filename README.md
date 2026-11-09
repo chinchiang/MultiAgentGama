@@ -221,6 +221,7 @@ MultiAgentGama/
 │   │   ├── settings.py              # 設定：設定檔只載入、套用預設值並驗證一次（探索到的設定檔政策、CLI 覆寫值）
 │   │   ├── stdio.py                 # 主控台串流防護：讓 stdout／stderr 寫得出雙語輸出（CLI、Action、harness 共用）
 │   │   ├── tally.py                 # 證據計數：一次執行裡決定判定結果的項目依種類只算一次，各分成全部、新的與已知問題；唯一呼叫基準比對的地方
+│   │   ├── threat_symbols.py        # 威脅文字指向哪些符號：攻擊腳本依據的程式碼與資安突破的 SARIF 位置共用的比對規則
 │   │   ├── transport.py             # 模型呼叫接縫 ModelTransport；預設的 LiteLLMTransport 是唯一 import litellm 的地方
 │   │   └── verdict.py               # 四種判定結果與其結束碼（不匯入第三方套件）
 │   ├── agents/
@@ -331,6 +332,7 @@ MultiAgentGama/
 │   ├── test_review_whitebox_fixes.py   # 路由、Python 巢狀定義、掃描規則、嚴重度、不可信的發現文字
 │   ├── test_sdist_script.py            # test_sdist.py：在解開的 sdist 裡跑 pytest、帶 VIBEHARNESS_SDIST、建置失敗即停、拒絕 .. 路徑
 │   ├── test_settings.py                # 透過 load_settings 測試設定：每個鍵的 null／0 規則、驗證順序、探索到的設定檔政策、覆寫值
+│   ├── test_threat_symbols.py          # 威脅文字指向哪些符號：攻擊腳本的程式碼與 SARIF 位置同一套規則、只寫路徑的路由、JS 的 `$`、較長的路徑不會對到較短的路由
 │   ├── test_transport.py               # 模型呼叫接縫：每次嘗試一個 ModelRequest、fallback、轉接器不可用、scripted fixture
 │   └── test_windows_env_limit.py       # Windows 環境變數上限 32767 字元：長字串參數改用短 ID，測試不會在 setup 就失敗
 ├── .pre-commit-config.yaml      # pre-commit：提交前執行 ruff（釘在 commit SHA）與 mypy

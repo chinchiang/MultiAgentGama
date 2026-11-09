@@ -12,10 +12,8 @@ import time
 
 import pytest
 
-from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
 from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
 from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
-from vibeharness.core.models import CodeSymbol
 
 # 約 1 MB 的一般程式碼 ／ about 1 MB of ordinary code
 _FILLER = "".join(f"function f{i}() {{ return {i} }}\n" for i in range(36000))
@@ -327,32 +325,3 @@ def test_scanner_skips_a_file_whose_analysis_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(AISecurityStaticScanner, "_scan_python", flaky)
     findings = AISecurityStaticScanner().scan_files([str(bad), str(good)])
     assert {f.file_path for f in findings if f.rule_id == "VH-AI-003"} == {str(good)}
-
-
-# --- 6. 根路由與萬用路由的符號比對 ---
-# --- 6. Symbol matching of root and wildcard routes ------------------------------------------------------------------
-
-def _route(name):
-    return CodeSymbol(name=name, symbol_type="route", file_path="a.js", line_start=1, line_end=1, signature=name,
-                      source_code="", parameters=[])
-
-
-_ROUTES = [_route("GET /"), _route("GET *"), _route("POST /login")]
-
-
-@pytest.mark.parametrize("text", ["read/write and/or", "1 * 10^6 requests", "GET /admin bypass", "GET /.env",
-                                  "x / y", "a*b", "path/to/file"])
-def test_bare_slash_and_star_in_prose_do_not_name_root_or_wildcard_routes(text):
-    assert ThreatScenarioBuilder._named_symbols(_ROUTES, text) == []
-
-
-@pytest.mark.parametrize("text,expected", [
-    ("the GET / handler", ["GET /"]),
-    ("route '/' leaks", ["GET /"]),
-    ('the "/" page', ["GET /"]),
-    ("the `*` catch-all", ["GET *"]),
-    ("GET * catch-all", ["GET *"]),
-    ("POST /login brute force", ["POST /login"]),
-])
-def test_root_and_wildcard_routes_match_by_full_form_or_quoted_path(text, expected):
-    assert [s.name for s in ThreatScenarioBuilder._named_symbols(_ROUTES, text)] == expected
