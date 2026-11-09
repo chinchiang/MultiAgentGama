@@ -13,7 +13,7 @@ from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
 from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
 from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
 from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
-from vibeharness.runners.attribution import parse_junit
+from vibeharness.runners.attribution import attribute, parse_junit
 from vibeharness.runners.test_executor import SuiteResult, TestSuiteExecutor
 from vibeharness.core.harness import VibeHarnessCommander
 from vibeharness.reports.report_generator import METRIC_TABLE_HEADER
@@ -172,13 +172,24 @@ def test_did_not_raise_is_recognized_as_confirmed_exploit(executor, tmp_path):
 
 
 def test_is_assertion_recognizes_assertion_and_pytest_fail():
-    assert TestSuiteExecutor._is_assertion("AssertionError: value mismatch")
-    assert TestSuiteExecutor._is_assertion("assert 1 == 2")
-    assert TestSuiteExecutor._is_assertion("Failed: exploit confirmed")
-    assert TestSuiteExecutor._is_assertion("Failed")
-    assert not TestSuiteExecutor._is_assertion("TypeError: takes 0 arguments")
-    assert not TestSuiteExecutor._is_assertion("ValueError: bad value")
-    assert not TestSuiteExecutor._is_assertion("")
+    """黑箱測試的失敗只有斷言失敗（含 pytest.fail()）才是資安突破；其他例外是 FAILED 但不是突破。
+    A black-box failure is a Breach only for an assertion failure (pytest.fail() included); other exceptions are
+    FAILED but not a Breach."""
+    def breach(message):
+        test = GeneratedTest(test_id="B", test_type="blackbox_security", target_component="m", title="t",
+                             code="def test_a():\n    pass\n", rationale="", expected_outcome="")
+        case = {"name": "test_a", "time": 0.0, "outcome": "failure", "message": message, "details": "",
+                "stdout": "", "stderr": ""}
+        result = attribute(test, "B", [case])
+        assert result.status == TestStatus.FAILED, (message, result.failure_reason)
+        return result.is_security_exploit_confirmed
+    assert breach("AssertionError: value mismatch")
+    assert breach("assert 1 == 2")
+    assert breach("Failed: exploit confirmed")
+    assert breach("Failed")
+    assert not breach("TypeError: takes 0 arguments")
+    assert not breach("ValueError: bad value")
+    assert not breach("")
 
 
 def test_import_error_inside_test_is_error_not_exploit(executor, tmp_path):
