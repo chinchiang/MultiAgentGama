@@ -97,8 +97,7 @@ class ThreatScenarioBuilder:
         if not symbols:
             return [], "python"
         root = target_root(root_dir, symbols[0].file_path)
-        text = f"{threat.attack_vector} {threat.attack_scenario}"
-        relevant = named_symbols(symbols, text)
+        relevant = named_symbols(symbols, threat)
         if not relevant:
             relevant = sorted(symbols, key=lambda s: s.symbol_type != "route")
         language = language_for_file(relevant[0].file_path)

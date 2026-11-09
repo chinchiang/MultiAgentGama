@@ -624,7 +624,7 @@ class ReportGenerator:
                 "properties": {"testId": r.test_id, "threatId": r.source_ref or "", "security_breach": True,
                                "simulated": False},
             }
-            target = target_symbol(symbols or [], f"{threat.attack_vector} {threat.attack_scenario}") if threat else None
+            target = target_symbol(symbols or [], threat) if threat else None
             if target:
                 uri = self._sarif_uri(target.file_path, root)
                 if uri:
