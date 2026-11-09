@@ -179,6 +179,20 @@ def test_recite_keeps_references_already_written_against_the_new_code():
     assert unresolved == []
 
 
+def test_recite_keeps_a_reference_to_a_name_the_old_code_does_not_define():
+    """跟程式碼同一個 commit 新增的名稱（舊版根本沒有定義）的引用，算沒有落在舊版上而保留；舊版的那幾行
+    剛好對應得到新版，照 diff 位移會把它推離名稱（#136 的 `_INNERMOST_LOCATION_RE` 就是這樣）。
+    A reference to a name added in the same commit as the code (the old code does not define it at all) counts
+    as not landing in the old code and is kept; the old lines happen to map to the new code, and moving it
+    through the diff would push it off its name (as with #136's `_INNERMOST_LOCATION_RE`)."""
+    old = "def alpha():\n    return 1\n\n\ndef beta():\n    return 2\n"
+    new = "LIMIT = 3\n\n\ndef gamma():\n    return LIMIT\n\n\n" + old
+    doc = "`gamma`（`pkg/mod.py:4-5`）is new.\n"
+    new_doc, unresolved = refs_tool.recite(doc, _reader({"pkg/mod.py": old}), _reader({"pkg/mod.py": new}))
+    assert new_doc == doc
+    assert unresolved == []
+
+
 def test_with_revision_switches_between_a_commit_and_the_release_tag():
     """引用 commit 時附上「發布時改為 release tag」，引用 tag 時拿掉；中英兩種句型都改。
     Citing a commit adds "the release tag will replace it", citing a tag drops it; both the zh and en wordings
