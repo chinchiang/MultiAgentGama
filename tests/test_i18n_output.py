@@ -16,9 +16,10 @@ from vibeharness.core.models import (
     CodeSymbol, FindingSeverity, GeneratedTest, ReviewFinding, STRIDECategory, TestStatus, ThreatItem,
 )
 from vibeharness.core.sandbox import SandboxRun
-from vibeharness.runners.test_executor import (
-    POC_HEADER_JS, POC_HEADER_PY, REASON_NOT_RUN_CORRECTLY, REASON_TARGET_BROKEN, TestSuiteExecutor,
+from vibeharness.runners.attribution import (
+    POC_HEADER_JS, POC_HEADER_PY, REASON_NOT_RUN_CORRECTLY, REASON_TARGET_BROKEN, attribute,
 )
+from vibeharness.runners.test_executor import TestSuiteExecutor
 from vibeharness.core.model_output import ANY, OutputSchema
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -211,7 +212,7 @@ def test_assertion_fallback_and_js_runner_reasons_are_bilingual(tmp_path):
 
     # 沒有任何訊息的斷言失敗，會退回成一句指出測試名稱的雙語句子
     # An assertion failure without any message falls back to a bilingual sentence naming the test
-    fallback = executor._aggregate(
+    fallback = attribute(
         GeneratedTest(test_id="X", test_type="whitebox_unit", target_component="c", title="my case",
                       code="def test_x():\n    assert False\n", rationale="r", expected_outcome="e", source_ref="s"),
         "X", [{"name": "test_x", "time": 0.0, "outcome": "failure", "message": "", "details": "", "stdout": "", "stderr": ""}],

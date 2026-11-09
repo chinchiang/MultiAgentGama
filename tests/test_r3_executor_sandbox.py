@@ -24,7 +24,8 @@ from vibeharness.core.models import GeneratedTest, TestStatus
 from vibeharness.core.sandbox import (
     LocalSubprocessSandbox, NodeRuntime, NodeSubprocessSandbox, detect_node, sandbox_temp_env,
 )
-from vibeharness.runners.test_executor import REASON_NOT_RUN_CORRECTLY, REASON_TARGET_BROKEN, TestSuiteExecutor
+from vibeharness.runners.attribution import REASON_NOT_RUN_CORRECTLY, REASON_TARGET_BROKEN, attribute
+from vibeharness.runners.test_executor import TestSuiteExecutor
 
 _NODE_PATH, _NODE_VERSION, _NODE_PROBLEM = detect_node("node")
 node_only = pytest.mark.skipif(_NODE_PATH is None, reason=f"Node unavailable: {_NODE_PROBLEM}")
@@ -107,7 +108,20 @@ def test_target_parsing_a_real_file_is_a_defect_but_importing_a_broken_module_is
 
 
 def test_target_failed_to_load_unit_cases():
-    loaded = TestSuiteExecutor._target_failed_to_load
+    """目標載入不了（匯入時的 SyntaxError、延遲匯入缺少的套件）是 REASON_TARGET_BROKEN 的 ERROR；目標自己用
+    compile()／ast.parse() 解析而拋出的 SyntaxError、或指向非 .py 檔的錯誤，是目標的行為（FAILED）。
+    A target that cannot load (a SyntaxError raised by an import, a lazy import of a missing package) is an ERROR with
+    REASON_TARGET_BROKEN; a SyntaxError the target raises by parsing with compile() / ast.parse(), or one pointing at a
+    non-.py file, is the target's behaviour (FAILED)."""
+    def loaded(case):
+        test = GeneratedTest(test_id="T", test_type="whitebox_unit", target_component="m", title="t",
+                             code="def test_a():\n    pass\n", rationale="", expected_outcome="")
+        result = attribute(test, "T", [{"name": "test_a", "time": 0.0, "outcome": "failure", "stdout": "", "stderr": "",
+                                        **case}])
+        if result.status == TestStatus.ERROR and result.failure_reason.startswith(REASON_TARGET_BROKEN):
+            return True
+        assert result.status == TestStatus.FAILED, result.failure_reason
+        return False
     syntax = 'E     File "/srv/app/sub.py", line 1\nE       x = (\nE   SyntaxError: \'(\' was never closed\n\n'
     sep = "\n_ _ _ _ _ _ _ _ _ _\n\n"
     import_stmt = {"message": "", "details": "def test_a():\n>       r()\n\n/run/test_vh_000.py:4: " + sep
@@ -138,11 +152,17 @@ def test_target_failed_to_load_unit_cases():
 # --- 2. A JS write hitting the per-file size cap (EFBIG) is a harness error -----------------------------
 
 def _js_case(details):
-    return {"name": "writes", "message": "EFBIG: file too large, write", "details": details}
+    return {"name": "writes", "time": 0.0, "outcome": "failure", "message": "EFBIG: file too large, write",
+            "details": details, "stdout": "", "stderr": ""}
 
 
 def test_js_efbig_classification_needs_the_system_error_fields():
-    harness = TestSuiteExecutor._js_is_harness_failure
+    def harness(case):
+        test = GeneratedTest(test_id="J", test_type="whitebox_unit", target_component="m", title="t", code="x",
+                             rationale="", expected_outcome="", language="javascript")
+        result = attribute(test, "J", [case])
+        assert result.status in (TestStatus.ERROR, TestStatus.FAILED), result.status
+        return result.status == TestStatus.ERROR
     system = ("[Error [ERR_TEST_FAILURE]: EFBIG: file too large, write] {\n  code: 'ERR_TEST_FAILURE',\n"
               "  cause: Error: EFBIG: file too large, write\n      at Object.writeSync (node:fs:924:3)\n"
               "      at big (file:///srv/app/app.mjs:3:31) {\n    errno: -27,\n    syscall: 'write',\n"

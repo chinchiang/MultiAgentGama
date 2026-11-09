@@ -20,6 +20,7 @@ from vibeharness.core.models import (
     FindingSeverity, GeneratedTest, MutantResult, MutationReport, ReviewFinding, TestExecutionResult, TestStatus,
 )
 from vibeharness.core.sandbox import LocalSubprocessSandbox, SandboxRun
+from vibeharness.runners.attribution import mutant_outcome, parse_junit
 from vibeharness.runners.test_executor import TestSuiteExecutor
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -379,19 +380,33 @@ HARNESS_FAIL = ('<testcase classname="test_vh_000" name="test_a" time="0.1"><fai
 ERROR_CASE = '<testcase classname="test_vh_000" name="test_a" time="0.1"><error message="collection failure">boom</error></testcase>'
 
 
+@pytest.mark.parametrize("cases,expected", [
+    (parse_junit(_junit(PASS_CASE)), "survived"),
+    (parse_junit(_junit(PASS_CASE, FAIL_CASE)), "killed"),
+    (parse_junit(_junit(HARNESS_FAIL)), "invalid"),        # 目標壞到匯入／命名錯誤 ／ the code broke import / names
+    (parse_junit(_junit(ERROR_CASE)), "invalid"),
+    (parse_junit(""), "invalid"),                          # 沒有報告 ／ no report
+    (parse_junit("<broken"), "invalid"),                   # 解析不了的報告 ／ an unparsable report
+    (parse_junit(_junit()), "invalid"),                    # 報告裡沒有任何 case ／ a report without a single case
+    ({"test_vh_000": []}, "invalid"),                      # 有模組但沒有 case ／ a module without cases
+])
+def test_mutant_outcome_judges_the_parsed_report(cases, expected):
+    """變異體的判定只看解析後的報告：目標的缺陷造成的失敗 = killed、全過 = survived；沒有報告、解析不了、
+    怪測試的失敗或錯誤，都無法下結論 = invalid。
+    A mutant's outcome depends only on the parsed report: a failure from a defect in the target = killed, all passed
+    = survived; no report, an unparsable report, a test-side failure or an error conclude nothing = invalid."""
+    assert mutant_outcome(cases) == expected
+
+
 @pytest.mark.parametrize("junit,exit_code,expected", [
-    (_junit(PASS_CASE), 0, "survived"),
     (_junit(PASS_CASE, FAIL_CASE), 1, "killed"),
     (_junit(PASS_CASE), 124, "killed"),          # 逾時算殺死 ／ a timeout counts as killed
-    (_junit(HARNESS_FAIL), 1, "invalid"),        # 目標壞到匯入／命名錯誤 ／ the code broke import / names
-    (_junit(ERROR_CASE), 1, "invalid"),
-    ("", 1, "invalid"),
-    ("<broken", 1, "invalid"),
+    ("", 124, "killed"),                         # 逾時時不看報告 ／ on a timeout the report is not read
 ])
 def test_run_mutant_batch_judges_one_sandbox_batch(tmp_path, junit, exit_code, expected):
-    """一個變異體只跑一個批次：失敗或逾時 = killed、全過 = survived、其餘 = invalid；而且傳入逾時、不收覆蓋率。
-    A mutant runs exactly one batch: failure or timeout = killed, all passed = survived, everything else = invalid; the
-    timeout is passed down and coverage is not collected."""
+    """一個變異體只跑一個批次：逾時直接算 killed，否則交給報告判定；而且傳入逾時、不收覆蓋率。
+    A mutant runs exactly one batch: a timeout is killed outright, otherwise the report decides; the timeout is
+    passed down and coverage is not collected."""
     from vibeharness.core.sandbox import TIMEOUT_EXIT_CODE
     sandbox = _JunitSandbox(junit, TIMEOUT_EXIT_CODE if exit_code == 124 else exit_code)
     executor = TestSuiteExecutor(sandbox)

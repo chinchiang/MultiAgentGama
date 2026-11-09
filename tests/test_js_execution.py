@@ -23,9 +23,10 @@ from vibeharness.core.sandbox import (
     DEFAULT_DOCKER_NODE_IMAGE, MIN_NODE_VERSION, TIMEOUT_EXIT_CODE, NodeDockerSandbox, NodeRuntime,
     NodeSubprocessSandbox, SandboxRun, SandboxUnavailableError, detect_node, node_test_command, parse_node_version,
 )
-from vibeharness.runners.test_executor import (
-    TestSuiteExecutor, POC_HEADER_JS, REASON_NOT_RUN_CORRECTLY, REASON_TARGET_BROKEN,
+from vibeharness.runners.attribution import (
+    POC_HEADER_JS, REASON_NOT_RUN_CORRECTLY, REASON_TARGET_BROKEN, attribute, parse_junit,
 )
+from vibeharness.runners.test_executor import TestSuiteExecutor
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
@@ -260,7 +261,7 @@ SUITE_NAMED_JUNIT = ('<?xml version="1.0" encoding="utf-8"?>\n<testsuites>\n'
 
 
 def test_parse_node_junit_assigns_every_case_to_the_module():
-    cases = TestSuiteExecutor._parse_junit(NODE_JUNIT, "javascript", module="test_vh_000")
+    cases = parse_junit(NODE_JUNIT, "javascript", module="test_vh_000")
     assert list(cases) == ["test_vh_000"]
     assert [c["name"] for c in cases["test_vh_000"]] == ["ok", "bad"]
     assert cases["test_vh_000"][1]["outcome"] == "failure"
@@ -268,26 +269,40 @@ def test_parse_node_junit_assigns_every_case_to_the_module():
 
 
 def test_parse_node_junit_file_level_cases():
-    failed = TestSuiteExecutor._parse_junit(FILE_FAIL_JUNIT, "javascript", module="test_vh_001")
+    failed = parse_junit(FILE_FAIL_JUNIT, "javascript", module="test_vh_001")
     assert len(failed["test_vh_001"]) == 1 and failed["test_vh_001"][0]["outcome"] == "failure"
     # 通過的檔案層級偽測試案例代表「什麼都沒執行」：模組存在但沒有任何案例
     # A passing file-level pseudo-case means "nothing ran": the module exists but has no case
-    empty = TestSuiteExecutor._parse_junit(EMPTY_FILE_JUNIT, "javascript", module="test_vh_002")
+    empty = parse_junit(EMPTY_FILE_JUNIT, "javascript", module="test_vh_002")
     assert empty == {"test_vh_002": []}
     # 沒有模組時，檔名本身仍會把案例歸組（較舊／其他的回報器）
     # Without a module the file name itself still groups the case (older/other reporters)
-    assert TestSuiteExecutor._parse_junit(FILE_FAIL_JUNIT, "javascript") == {
+    assert parse_junit(FILE_FAIL_JUNIT, "javascript") == {
         "test_vh_001": [failed["test_vh_001"][0]]
     }
     # pytest 會保留以模組命名的通過案例：只有 JS 會捨棄它
     # pytest keeps a passing module-named case: only JS drops it
-    assert len(TestSuiteExecutor._parse_junit(EMPTY_FILE_JUNIT, "python", module="test_vh_002")["test_vh_002"]) == 1
+    assert len(parse_junit(EMPTY_FILE_JUNIT, "python", module="test_vh_002")["test_vh_002"]) == 1
+
+
+def test_parse_node_junit_prepends_the_runner_output_to_a_file_level_failure_only():
+    """載入失敗的模組只有一個檔案層級的失敗案例，junit 內文只說「test failed」，真正的錯誤在 runner 的 stdout：
+    把 stdout 補在它的 details 前面；一般 test() 的失敗保留自己的 details。
+    A module that failed to load is one file-level failing case whose junit body only says "test failed", while the
+    real error is on the runner's stdout: that stdout is prepended to its details; an ordinary test() failure keeps
+    its own details."""
+    out = "Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'left-pad'\n"
+    plain = parse_junit(FILE_FAIL_JUNIT, "javascript", module="test_vh_001")["test_vh_001"][0]["details"]
+    folded = parse_junit(FILE_FAIL_JUNIT, "javascript", module="test_vh_001", runner_stdout=out)
+    assert folded["test_vh_001"][0]["details"] == f"{out}\n{plain}"
+    cases = parse_junit(NODE_JUNIT, "javascript", module="test_vh_000", runner_stdout=out)
+    assert "ERR_MODULE_NOT_FOUND" not in cases["test_vh_000"][1]["details"]
 
 
 def test_parse_node_junit_searches_ancestor_suite_names():
-    assert list(TestSuiteExecutor._parse_junit(SUITE_NAMED_JUNIT, "javascript")) == ["test_vh_007"]
-    assert TestSuiteExecutor._parse_junit("", "javascript", module="test_vh_003") == {"test_vh_003": []}
-    assert TestSuiteExecutor._parse_junit("<broken", "javascript", module="test_vh_003") is None
+    assert list(parse_junit(SUITE_NAMED_JUNIT, "javascript")) == ["test_vh_007"]
+    assert parse_junit("", "javascript", module="test_vh_003") == {"test_vh_003": []}
+    assert parse_junit("<broken", "javascript", module="test_vh_003") is None
 
 
 def _case(message, details, name="c"):
@@ -315,38 +330,37 @@ TARGET_BROKEN = _case("Cannot find package 'left-pad' imported from /app/svc.mjs
 
 
 def test_js_case_helpers():
-    ex = TestSuiteExecutor
-    assert ex._js_is_assertion(ASSERTION_CASE) and not ex._js_is_assertion(TARGET_TYPEERROR_CASE)
-    assert ex._js_exception_summary(ASSERTION_CASE).startswith("AssertionError [ERR_ASSERTION]")
-    assert ex._js_exception_summary(TARGET_TYPEERROR_CASE).startswith("TypeError: Cannot read")
-    assert ex._js_exception_summary(_case("bare message", "no error line here")) == "bare message"
-    assert ex._js_exception_summary(_case("m", "SyntaxError: Unexpected token\n    at x")) == "SyntaxError: Unexpected token"
-    assert ex._js_raised_in_target_code(TARGET_TYPEERROR_CASE)
-    assert not ex._js_raised_in_target_code(TEST_SIDE_REFERROR_CASE)
-    assert not ex._js_raised_in_target_code(_case("m", "no frames"))
-    assert ex._js_is_harness_failure(TEST_SIDE_REFERROR_CASE)
-    assert ex._js_is_harness_failure(TEST_MODULE_NOT_FOUND)
-    assert not ex._js_is_harness_failure(TARGET_TYPEERROR_CASE)
-    assert not ex._js_is_harness_failure(ASSERTION_CASE)
+    """失敗原因取自 Node 回報的例外；沒有例外行時退回 junit 訊息。沒有 V8 框架時不會歸咎於目標。
+    The failure reason comes from the exception Node reports, falling back to the junit message without an error line;
+    without V8 frames nothing is blamed on the target."""
+    bb = _js_test("BB", "x", test_type="blackbox_security")
+    wb = _js_test("WB", "x")
+    assert attribute(bb, "BB", [ASSERTION_CASE]).failure_reason.startswith("AssertionError [ERR_ASSERTION]")
+    bare = attribute(wb, "WB", [_case("bare message", "no error line here")])
+    assert bare.status == TestStatus.FAILED and bare.failure_reason == "bare message"
+    syntax = attribute(wb, "WB", [_case("m", "SyntaxError: Unexpected token\n    at x")])
+    assert syntax.status == TestStatus.ERROR
+    assert syntax.failure_reason == f"{REASON_NOT_RUN_CORRECTLY}: SyntaxError: Unexpected token"
+    no_frames = attribute(wb, "WB", [_case("m", "Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'x'")])
+    assert no_frames.status == TestStatus.ERROR and no_frames.failure_reason.startswith(REASON_NOT_RUN_CORRECTLY)
 
 
 def test_js_aggregation_classifies_outcomes():
-    executor = TestSuiteExecutor(sandbox=None)
     bb = _js_test("BB", "x", test_type="blackbox_security")
     wb = _js_test("WB", "x")
-    exploit = executor._aggregate(bb, "BB", [ASSERTION_CASE])
+    exploit = attribute(bb, "BB", [ASSERTION_CASE])
     assert exploit.status == TestStatus.FAILED and exploit.is_security_exploit_confirmed
     assert exploit.language == "javascript" and exploit.reproduction_poc.startswith(POC_HEADER_JS)
-    crash = executor._aggregate(bb, "BB", [TARGET_TYPEERROR_CASE])
+    crash = attribute(bb, "BB", [TARGET_TYPEERROR_CASE])
     assert crash.status == TestStatus.FAILED and not crash.is_security_exploit_confirmed
     assert crash.failure_reason.startswith("TypeError: Cannot read")
-    test_side = executor._aggregate(wb, "WB", [TEST_SIDE_REFERROR_CASE])
+    test_side = attribute(wb, "WB", [TEST_SIDE_REFERROR_CASE])
     assert test_side.status == TestStatus.ERROR and "ReferenceError" in test_side.failure_reason
-    missing = executor._aggregate(wb, "WB", [TEST_MODULE_NOT_FOUND])
+    missing = attribute(wb, "WB", [TEST_MODULE_NOT_FOUND])
     assert missing.status == TestStatus.ERROR and missing.failure_reason.startswith(REASON_NOT_RUN_CORRECTLY)
-    broken = executor._aggregate(wb, "WB", [TARGET_BROKEN])
+    broken = attribute(wb, "WB", [TARGET_BROKEN])
     assert broken.status == TestStatus.ERROR and broken.failure_reason.startswith(REASON_TARGET_BROKEN)
-    passed = executor._aggregate(wb, "WB", [{**ASSERTION_CASE, "outcome": "passed"}])
+    passed = attribute(wb, "WB", [{**ASSERTION_CASE, "outcome": "passed"}])
     assert passed.status == TestStatus.PASSED and passed.language == "javascript"
 
 
@@ -798,8 +812,7 @@ def test_breach_whose_body_mentions_a_target_syntax_error_stays_a_breach():
                  "exception.\n  Actual message: \"Unexpected token\"\n      at TestContext.<anonymous> (file:///run/test_vh_000.mjs:7:10) {\n"
                  "    actual: SyntaxError: Unexpected token u in JSON at position 0\n        at JSON.parse (<anonymous>)\n"
                  "        at handler (file:///app/svc.mjs:3:15)\n    code: 'ERR_ASSERTION'\n  }")
-    assert not TestSuiteExecutor._js_is_harness_failure(case)
-    result = TestSuiteExecutor(sandbox=None)._aggregate(_js_test("BB", "x", test_type="blackbox_security"), "BB", [case])
+    result = attribute(_js_test("BB", "x", test_type="blackbox_security"), "BB", [case])
     assert result.status == TestStatus.FAILED and result.is_security_exploit_confirmed
 
 
@@ -845,22 +858,21 @@ def test_file_level_load_failure_is_never_a_breach_even_with_noisy_stdout():
                  "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/run/missing.mjs' imported from /run/test_vh_000.mjs\n"
                  "    at finalizeResolution (node:internal/modules/esm/resolve:274:11)\n"
                  "[Error: test failed] { code: 'ERR_TEST_FAILURE', cause: 'test failed' }", name="/run/test_vh_000.mjs")
-    ex = TestSuiteExecutor
-    assert ex._js_is_harness_failure(case)
-    assert ex._js_exception_summary(case).startswith("Error [ERR_MODULE_NOT_FOUND]")
-    result = TestSuiteExecutor(sandbox=None)._aggregate(_js_test("BB", "x", test_type="blackbox_security"), "BB", [case])
+    result = attribute(_js_test("BB", "x", test_type="blackbox_security"), "BB", [case])
     assert result.status == TestStatus.ERROR and not result.is_security_exploit_confirmed
+    assert result.failure_reason.startswith(f"{REASON_NOT_RUN_CORRECTLY}: Error [ERR_MODULE_NOT_FOUND]")
 
 
 def test_file_level_case_match_is_exact():
     """名稱只是「結尾像 test_vh_000.mjs」的 test() 不是檔案層級 case：它的斷言失敗仍是突破。
     A test() whose name merely ends like test_vh_000.mjs is not a file-level case: its assertion failure stays a breach."""
     case = dict(ASSERTION_CASE, name="rejects path traversal to test_vh_000.mjs")
-    assert not TestSuiteExecutor._js_is_harness_failure(case)
-    result = TestSuiteExecutor(sandbox=None)._aggregate(_js_test("BB", "x", test_type="blackbox_security"), "BB", [case])
+    bb = _js_test("BB", "x", test_type="blackbox_security")
+    result = attribute(bb, "BB", [case])
     assert result.status == TestStatus.FAILED and result.is_security_exploit_confirmed
-    assert TestSuiteExecutor._js_is_harness_failure(dict(ASSERTION_CASE, name="/run/test_vh_000.mjs"))
-    assert TestSuiteExecutor._parse_junit(EMPTY_FILE_JUNIT, "javascript", module="test_vh_002") == {"test_vh_002": []}
+    file_level = attribute(bb, "BB", [dict(ASSERTION_CASE, name="/run/test_vh_000.mjs")])
+    assert file_level.status == TestStatus.ERROR and not file_level.is_security_exploit_confirmed
+    assert parse_junit(EMPTY_FILE_JUNIT, "javascript", module="test_vh_002") == {"test_vh_002": []}
 
 
 def test_load_time_reference_error_wins_over_target_noise():
@@ -871,8 +883,9 @@ def test_load_time_reference_error_wins_over_target_noise():
                  "file:///app/svc.mjs:3\nfoo();\n^\n\nReferenceError: foo is not defined\n"
                  "    at file:///app/svc.mjs:3:1\n    at ModuleJob.run (node:internal/modules/esm/module_job:1:1)\n"
                  "[Error: test failed] { code: 'ERR_TEST_FAILURE', cause: 'test failed' }", name="/run/test_vh_000.mjs")
-    assert TestSuiteExecutor._js_exception_summary(case) == "ReferenceError: foo is not defined"
-    assert TestSuiteExecutor._js_is_harness_failure(case)
+    result = attribute(_js_test("WB", "x"), "WB", [case])
+    assert result.status == TestStatus.ERROR
+    assert result.failure_reason == f"{REASON_NOT_RUN_CORRECTLY}: ReferenceError: foo is not defined"
 
 
 def test_stale_docker_keys_do_not_block_a_local_only_run(tmp_path):
@@ -890,4 +903,5 @@ def test_js_cause_class_names_may_contain_digits():
     A `cause:` class name may contain digits or underscores (HTTP2Error): the summary still takes it, not the outer
     ERR_TEST_FAILURE wrapper."""
     case = _case("bad frame", "Error [ERR_TEST_FAILURE]: bad frame\n  cause: HTTP2Error: bad frame\n      at handler (file:///app/svc.mjs:1:1)")
-    assert TestSuiteExecutor._js_exception_summary(case) == "HTTP2Error: bad frame"
+    result = attribute(_js_test("WB", "x"), "WB", [case])
+    assert result.status == TestStatus.FAILED and result.failure_reason == "HTTP2Error: bad frame"

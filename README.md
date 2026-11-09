@@ -239,7 +239,8 @@ MultiAgentGama/
 │   │       └── scenario_builder.py  # 威脅轉化可執行攻擊腳本
 │   ├── runners/
 │   │   ├── __init__.py
-│   │   └── test_executor.py         # 沙盒測試執行器（pytest；JS/TS 走 node:test）與 PoC 抓取（白箱與黑箱共用）；每組測試回傳一個 SuiteResult
+│   │   ├── attribution.py           # 結果歸因：JUnit 報告 → 每個測試的狀態、資安突破與重現 PoC（不碰沙盒，除了 log 之外沒有 I/O）
+│   │   └── test_executor.py         # 沙盒測試執行器（pytest；JS/TS 走 node:test；白箱與黑箱共用）；每組測試回傳一個 SuiteResult
 │   ├── reports/
 │   │   ├── __init__.py
 │   │   └── report_generator.py      # Markdown／JSON／SARIF 審計報告生成器

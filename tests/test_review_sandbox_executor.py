@@ -13,6 +13,7 @@ from vibeharness.core.models import GeneratedTest, TestStatus
 from vibeharness.core.sandbox import (
     TIMEOUT_EXIT_CODE, LocalSubprocessSandbox, NodeRuntime, SandboxRun, harden_harness_process,
 )
+from vibeharness.runners.attribution import REASON_NOT_RUN_CORRECTLY, attribute
 from vibeharness.runners.test_executor import REASON_RERUN_BUDGET_EXHAUSTED, TestSuiteExecutor
 
 linux_only = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux /proc and prctl semantics")
@@ -22,6 +23,15 @@ posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-g
 def _test(test_id, code, test_type="blackbox_security", language="python"):
     return GeneratedTest(test_id=test_id, test_type=test_type, target_component="x", title=f"t {test_id}",
                          code=code, rationale="", expected_outcome="", language=language)
+
+def _attributed(message, details, test_type="whitebox_unit"):
+    """把一個失敗的 pytest case 交給 attribute 判定。
+    Hands one failing pytest case to attribute."""
+    test = GeneratedTest(test_id="T", test_type=test_type, target_component="m", title="t", code="def test_a():\n    pass\n",
+                         rationale="", expected_outcome="")
+    case = {"name": "test_a", "time": 0.0, "outcome": "failure", "message": message, "details": details,
+            "stdout": "", "stderr": ""}
+    return attribute(test, "T", [case])
 
 
 # --- 1. 本機沙盒不得洩漏 harness 的環境變數或真正的家目錄 ----------------------------------------
@@ -142,12 +152,11 @@ def test_name_error_in_target_is_a_defect_but_in_the_test_is_a_harness_error(tmp
 
 
 def test_name_error_without_traceback_stays_test_side():
-    case = {"message": "NameError: name 'x' is not defined", "details": ""}
-    assert TestSuiteExecutor._is_harness_failure(case)
-    case["details"] = "    def f():\n>       return x\nE       NameError: name 'x' is not defined\n\n/srv/app.py:2: NameError"
-    assert not TestSuiteExecutor._is_harness_failure(case)
-    case["details"] = "/tmp/vibe_sandbox_x/test_vh_000.py:5: NameError"
-    assert TestSuiteExecutor._is_harness_failure(case)
+    message = "NameError: name 'x' is not defined"
+    assert _attributed(message, "").status == TestStatus.ERROR
+    in_target = "    def f():\n>       return x\nE       NameError: name 'x' is not defined\n\n/srv/app.py:2: NameError"
+    assert _attributed(message, in_target).status == TestStatus.FAILED
+    assert _attributed(message, "/tmp/vibe_sandbox_x/test_vh_000.py:5: NameError").status == TestStatus.ERROR
 
 
 # --- 4. Test* 類別中每個測試方法都要有斷言 -----------------------------------------------------
@@ -230,11 +239,15 @@ def test_js_rerun_pass_is_bounded_by_the_batch_budget(tmp_path):
 # --- 6. Node 22's class-name tag is normalised -------------------------------------------------------
 
 def test_js_summary_strips_the_class_tag_but_keeps_error_codes():
-    summary = TestSuiteExecutor._js_exception_summary
-    assert summary({"details": "  cause: TypeError [Error]: null\n      at add (file:///x/calc.mjs:2:9)"}) == "TypeError: null"
-    assert summary({"details": "TypeError [Error]: null\n    at add (file:///x/calc.mjs:2:9)"}) == "TypeError: null"
-    coded = summary({"details": "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/x/y.mjs'\n    at f (node:a:1:1)"})
-    assert coded.startswith("Error [ERR_MODULE_NOT_FOUND]: ")
+    def reason(details):
+        test = GeneratedTest(test_id="J", test_type="whitebox_unit", target_component="m", title="t", code="x",
+                             rationale="", expected_outcome="", language="javascript")
+        case = {"name": "c", "time": 0.0, "outcome": "failure", "message": "", "details": details, "stdout": "", "stderr": ""}
+        return attribute(test, "J", [case]).failure_reason
+    assert reason("  cause: TypeError [Error]: null\n      at add (file:///x/calc.mjs:2:9)") == "TypeError: null"
+    assert reason("TypeError [Error]: null\n    at add (file:///x/calc.mjs:2:9)") == "TypeError: null"
+    coded = reason("Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/x/y.mjs'\n    at f (node:a:1:1)")
+    assert coded.startswith(f"{REASON_NOT_RUN_CORRECTLY}: Error [ERR_MODULE_NOT_FOUND]: ")
 
 
 # --- 7. 0 秒的逐測預算絕不會被回報成「0 秒後逾時」 ---------------------------------------------

@@ -20,9 +20,8 @@ from vibeharness.core.sandbox import (
     EXECUTION_FAILURE_EXIT_CODE, TIMEOUT_EXIT_CODE, DockerSandbox, LocalSubprocessSandbox, NodeRuntime, SandboxRun,
     sandbox_home_env,
 )
-from vibeharness.runners.test_executor import (
-    REASON_NOT_RUN_CORRECTLY, REASON_RERUN_BUDGET_EXHAUSTED, REASON_TARGET_BROKEN, TestSuiteExecutor,
-)
+from vibeharness.runners.attribution import REASON_NOT_RUN_CORRECTLY, REASON_TARGET_BROKEN, attribute
+from vibeharness.runners.test_executor import REASON_RERUN_BUDGET_EXHAUSTED, TestSuiteExecutor
 
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX rlimit / process semantics")
 
@@ -30,6 +29,15 @@ posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX rlimit / 
 def _test(test_id, code, test_type="blackbox_security", language="python"):
     return GeneratedTest(test_id=test_id, test_type=test_type, target_component="x", title=f"t {test_id}",
                          code=code, rationale="", expected_outcome="", language=language)
+
+def _attributed(message, details, test_type="whitebox_unit"):
+    """把一個失敗的 pytest case 交給 attribute 判定。
+    Hands one failing pytest case to attribute."""
+    test = GeneratedTest(test_id="T", test_type=test_type, target_component="m", title="t", code="def test_a():\n    pass\n",
+                         rationale="", expected_outcome="")
+    case = {"name": "test_a", "time": 0.0, "outcome": "failure", "message": message, "details": details,
+            "stdout": "", "stderr": ""}
+    return attribute(test, "T", [case])
 
 
 # --- 1／2. 目標載入失敗與測試端的 AttributeError 歸因 ------------------------------------------------
@@ -107,21 +115,21 @@ def test_missing_target_attribute_called_from_the_test_is_a_harness_error(target
 
 
 def test_is_harness_failure_unit_cases():
-    harness = TestSuiteExecutor._is_harness_failure
-    lazy = {"message": "ModuleNotFoundError: No module named 'm'",
-            "details": "/run/test_vh_000.py:5: \n_ _ _\n    def f():\n>       import m\nE   ModuleNotFoundError\n\n"
-                       "/srv/app.py:2: ModuleNotFoundError"}
-    assert harness(lazy) and TestSuiteExecutor._target_failed_to_load(lazy)
-    runtime_syntax = {"message": '  File "<unknown>", line 1',
-                      "details": 'E     File "<unknown>", line 1\nE   SyntaxError: x\n\n/usr/lib/python3/ast.py:52: SyntaxError'}
-    assert not harness(runtime_syntax)
-    missing = {"message": "AttributeError: module 'app' has no attribute 'nope'",
-               "details": "E   AttributeError\n\n/run/test_vh_003.py:4: AttributeError"}
-    assert harness(missing)
-    assert not harness(dict(missing, details="E   AttributeError\n\n/srv/app.py:4: AttributeError"))
-    assert not harness(dict(missing, details=""))  # 沒有回溯時不降級 ／ without a traceback it is not downgraded
-    too_large = {"message": "OSError: [Errno 27] File too large", "details": "/srv/app.py:3: OSError"}
-    assert harness(too_large)
+    """測試端的錯誤、沙盒限制與目標載入失敗是 ERROR；目標自己的行為是 FAILED。
+    Test-side mistakes, sandbox limits and a target that fails to load are ERROR; the target's own behaviour is FAILED."""
+    lazy = _attributed("ModuleNotFoundError: No module named 'm'",
+                       "/run/test_vh_000.py:5: \n_ _ _\n    def f():\n>       import m\nE   ModuleNotFoundError\n\n"
+                       "/srv/app.py:2: ModuleNotFoundError")
+    assert lazy.status == TestStatus.ERROR and lazy.failure_reason.startswith(REASON_TARGET_BROKEN)
+    runtime_syntax = _attributed('  File "<unknown>", line 1',
+                                 'E     File "<unknown>", line 1\nE   SyntaxError: x\n\n/usr/lib/python3/ast.py:52: SyntaxError')
+    assert runtime_syntax.status == TestStatus.FAILED
+    message = "AttributeError: module 'app' has no attribute 'nope'"
+    missing = _attributed(message, "E   AttributeError\n\n/run/test_vh_003.py:4: AttributeError")
+    assert missing.status == TestStatus.ERROR and missing.failure_reason.startswith(REASON_NOT_RUN_CORRECTLY)
+    assert _attributed(message, "E   AttributeError\n\n/srv/app.py:4: AttributeError").status == TestStatus.FAILED
+    assert _attributed(message, "").status == TestStatus.FAILED  # 沒有回溯時不降級 ／ without a traceback it is not downgraded
+    assert _attributed("OSError: [Errno 27] File too large", "/srv/app.py:3: OSError").status == TestStatus.ERROR
 
 
 def test_mutant_that_breaks_a_lazy_import_is_invalid_but_a_name_error_is_killed(target):
