@@ -252,7 +252,7 @@ def problem(ref: Ref, source: str | None) -> str | None:
         if (ref.start, ref.end) != expected:
             return f"is not the span of {'/'.join(ref.names)} {_spans_text([expected])}"
         return None
-    known = [n for n in ref.names if _bare(n) in defs and (n, ref.path) not in _LOOSE_ANCHORS]
+    known = _anchored_names(ref, defs)
     if not known:
         return None
     cited = "\n".join(lines[ref.start - 1:ref.end])
@@ -269,6 +269,30 @@ def problem(ref: Ref, source: str | None) -> str | None:
                 return None
     where = ", ".join(f"{_bare(n)} {_spans_text(defs[_bare(n)])}" for n in known)
     return f"does not land on {where}"
+
+
+def _anchored_names(ref: Ref, defs: dict[str, list[tuple[int, int]]]) -> list[str]:
+    """引用指向、而且在這個檔案裡有定義的名稱（`_LOOSE_ANCHORS` 裡的除外）；`problem` 只拿這些名稱比對落點。
+    The names the reference points at that this file defines (those in `_LOOSE_ANCHORS` excepted); `problem`
+    checks the landing against these names only."""
+    return [n for n in ref.names if _bare(n) in defs and (n, ref.path) not in _LOOSE_ANCHORS]
+
+
+def _lands_on_its_name(ref: Ref, source: str) -> bool:
+    """引用指向的名稱在這份原始碼裡有定義，而且引用落在它上面（`problem` 的判準）。沒有名稱、名稱不在這個檔案
+    裡定義（包括這一版還沒有這個名稱），或不是 Python 檔時為 False：`problem` 對那種引用只檢查範圍，
+    無法判斷是照哪一版寫的。
+    The name the reference points at is defined in this source and the reference lands on it (`problem`'s test).
+    False without a name, when the name is not defined in this file (this version not having the name yet
+    included), or for a non-Python file: `problem` checks only the range of such a reference, so there is no
+    telling which version it was written against."""
+    if not ref.names or not ref.path.endswith(".py"):
+        return False
+    # 整列範圍的引用由 `problem` 比對定義範圍，對不上名稱就不會通過 ／ `problem` compares a whole-span
+    # reference with the definition span, so it never passes without its name
+    if not ref.whole and not _anchored_names(ref, definitions(source)):
+        return False
+    return problem(ref, source) is None
 
 
 def _spans_text(spans: list[tuple[int, int]]) -> str:
@@ -397,6 +421,11 @@ def recite(text: str, old: Callable[[str], str | None], new: Callable[[str], str
             before, after = old(ref.path), new(ref.path)
             maps[ref.path] = LineMap(before, after) if before is not None and after is not None else None
         line_map = maps[ref.path]
+        if line_map is not None and _lands_on_its_name(ref, line_map.new) and not _lands_on_its_name(ref, line_map.old):
+            # 已經照新版寫的引用（例如跟程式碼同一個 commit 寫的）：再對應一次會把它推離名稱
+            # A reference already written against the new code (e.g. in the same commit as the code): mapping it
+            # again would push it off its name
+            continue
         mapped = remap(ref, line_map) if line_map is not None else None
         if mapped is None:
             label = f"{'/'.join(ref.names)} " if ref.names else ""
