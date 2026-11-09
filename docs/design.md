@@ -131,7 +131,7 @@ flowchart TD
 | `vibeharness/agents/blackbox/threat_modeler.py` | `AutomatedThreatModeler` | 威脅建模；`plan` 回報呼叫計畫 |
 | `vibeharness/agents/blackbox/scenario_builder.py` | `ThreatScenarioBuilder` | 威脅轉攻擊測試；`plan` 回報呼叫計畫 |
 | `vibeharness/runners/test_executor.py` | `TestSuiteExecutor`、`SuiteResult` | 一測試一模組、在沙盒中執行、逾時後逐測重跑；每組測試回傳一個 `SuiteResult`（結果、Python 與 JS/TS 的行涵蓋率、JS 執行器的問題與 Node 執行環境） |
-| `vibeharness/runners/attribution.py` | `parse_junit`、`attribute` | 結果歸因（純函式）：JUnit 解析、每個測試的狀態與失敗原因、資安突破的判定、FAILED 結果的重現 PoC |
+| `vibeharness/runners/attribution.py` | `parse_junit`、`attribute`、`not_run`、`mutant_outcome` | 結果歸因（純函式）：JUnit 解析、每個測試的狀態與失敗原因、資安突破的判定、FAILED 結果的重現 PoC、沒有報告可判定時的「未執行」結果、變異體批次的判定 |
 | `vibeharness/reports/report_generator.py` | `ReportGenerator` | Markdown、JSON、SARIF |
 | `vibeharness/config/agents_config.yaml` | 設定 | 全域參數、模型別名、agent 路由 |
 | `vibeharness/config/threat_rules.yaml` | 設定 | STRIDE、OWASP API Top 10、OWASP LLM Top 10 2026 的提示詞指引 |

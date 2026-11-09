@@ -131,7 +131,7 @@ flowchart TD
 | `vibeharness/agents/blackbox/threat_modeler.py` | `AutomatedThreatModeler` | Threat modeling; `plan` reports its call plan |
 | `vibeharness/agents/blackbox/scenario_builder.py` | `ThreatScenarioBuilder` | Threats to attack tests; `plan` reports its call plan |
 | `vibeharness/runners/test_executor.py` | `TestSuiteExecutor`, `SuiteResult` | One module per test, running it in the sandbox, per-test reruns after a timeout; each suite returns one `SuiteResult` (the results, Python and JS/TS line coverage, the JS runner problem and the Node runtime) |
-| `vibeharness/runners/attribution.py` | `parse_junit`, `attribute` | Result attribution (pure functions): JUnit parsing, each test's status and failure reason, the Breach decision, the reproduction PoC of a FAILED result |
+| `vibeharness/runners/attribution.py` | `parse_junit`, `attribute`, `not_run`, `mutant_outcome` | Result attribution (pure functions): JUnit parsing, each test's status and failure reason, the Breach decision, the reproduction PoC of a FAILED result, the Not run result when there is no report to judge, a mutant batch's outcome |
 | `vibeharness/reports/report_generator.py` | `ReportGenerator` | Markdown, JSON, SARIF |
 | `vibeharness/config/agents_config.yaml` | Config | Global parameters, model aliases, agent routing |
 | `vibeharness/config/threat_rules.yaml` | Config | Prompt guidance for STRIDE, OWASP API Top 10 and OWASP LLM Top 10 2026 |

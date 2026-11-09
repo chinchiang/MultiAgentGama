@@ -4,7 +4,7 @@ import json
 import os
 import sys
 import pytest
-from vibeharness.core.models import GeneratedTest, TestStatus, AgentCallRecord
+from vibeharness.core.models import GeneratedTest, TestExecutionResult, TestStatus, AgentCallRecord
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
 from vibeharness.core.sandbox import LocalSubprocessSandbox, SandboxRun, TIMEOUT_EXIT_CODE
 from vibeharness.core.codecheck import check_test_code, strip_code_fences
@@ -13,7 +13,7 @@ from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
 from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
 from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
 from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
-from vibeharness.runners.attribution import attribute, parse_junit
+from vibeharness.runners.attribution import attribute, not_run, parse_junit
 from vibeharness.runners.test_executor import SuiteResult, TestSuiteExecutor
 from vibeharness.core.harness import VibeHarnessCommander
 from vibeharness.reports.report_generator import METRIC_TABLE_HEADER
@@ -190,6 +190,27 @@ def test_is_assertion_recognizes_assertion_and_pytest_fail():
     assert not breach("TypeError: takes 0 arguments")
     assert not breach("ValueError: bad value")
     assert not breach("")
+
+
+def test_not_run_is_an_error_carrying_its_reason_and_the_tests_identity():
+    """執行器沒拿到判定依據時（逾時、沒有報告、預算用盡）的結果：ERROR、帶著原因，不是資安突破、沒有 PoC；
+    測試的類型、來源與語言照抄，輸出跟其他結果一樣截到 500 字元。
+    The result when the executor has nothing to judge (a timeout, no report, an exhausted budget): ERROR with the
+    reason, never a Breach and without a PoC; the test's type, source and language are carried over, and the output
+    is cut to 500 characters like every other result."""
+    test = GeneratedTest(test_id="BB-1", test_type="blackbox_security", target_component="m", title="t",
+                         code="def test_a():\n    pass\n", rationale="", expected_outcome="", source_ref="F-7",
+                         language="typescript")
+    result = not_run(test, "BB-1-2", "budget exhausted", stdout="o" * 600, stderr="e" * 600)
+    # 逐欄比對，失敗時 pytest 會列出不同的欄位 ／ field by field, so a failure names the differing fields
+    assert result.model_dump() == TestExecutionResult(
+        test_id="BB-1-2", test_type="blackbox_security", status=TestStatus.ERROR, duration_seconds=0.0,
+        stdout="o" * 500, stderr="e" * 500, traceback=None, failure_reason="budget exhausted",
+        is_security_exploit_confirmed=False, reproduction_poc=None, source_ref="F-7", language="typescript",
+    ).model_dump()
+    assert result.is_not_run
+    bare = not_run(test, "BB-1", "no report")
+    assert (bare.stdout, bare.stderr, bare.failure_reason) == ("", "", "no report")
 
 
 def test_import_error_inside_test_is_error_not_exploit(executor, tmp_path):

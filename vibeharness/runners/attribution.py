@@ -302,6 +302,29 @@ def attribute(test: GeneratedTest, test_id: str, cases: List[JunitCase]) -> Test
     return passed
 
 
+def not_run(test: GeneratedTest, test_id: str, reason: str, *, stdout: str = "", stderr: str = "") -> TestExecutionResult:
+    """執行器沒有可判定的報告時（逾時、沒有報告、預算用盡、無法執行）的結果：帶著原因的 ERROR，絕不是資安突破。
+    The result when the executor has no report to judge (a timeout, no report, an exhausted budget, not
+    executable): an ERROR carrying the reason, never a Breach."""
+    return _result(test, test_id, TestStatus.ERROR, failure_reason=reason, stdout=stdout, stderr=stderr)
+
+
+def mutant_outcome(cases: Optional[Dict[str, List[JunitCase]]]) -> str:
+    """一個變異體批次解析後的報告 -> "killed"（有目標缺陷造成的失敗）、"survived"（全部通過），或 "invalid"
+    （沒有報告、解析不了、沒有 case，或怪測試的失敗／錯誤：無法下結論）。逾時算 killed 看的是結束碼，由執行器判斷。
+    One mutant batch's parsed report -> "killed" (a failure caused by a defect in the target), "survived" (all
+    passed) or "invalid" (no report, an unparsable report, no case, or a test-side failure / error: nothing can be
+    concluded). A timeout counting as killed depends on the exit code and is decided by the executor."""
+    if not cases:
+        return "invalid"
+    flat = [case for module_cases in cases.values() for case in module_cases]
+    if any(c["outcome"] == "failure" and not _is_harness_failure(c) for c in flat):
+        return "killed"
+    if any(c["outcome"] in ("error", "failure") for c in flat) or not flat:
+        return "invalid"
+    return "survived"
+
+
 def _is_harness_failure(case: dict) -> bool:
     """由產生的測試本身、沙盒限制或目標根本載入不了（而非目標行為）所造成的失敗。
     A failure caused by the generated test itself, a sandbox limit, or the target failing to load at all,

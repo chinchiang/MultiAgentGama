@@ -5,7 +5,7 @@ import time
 import logging
 from dataclasses import dataclass
 from typing import Any, Callable, List, Tuple, Optional, Dict, Set
-from vibeharness.core.models import GeneratedTest, TestExecutionResult, TestStatus
+from vibeharness.core.models import GeneratedTest, TestExecutionResult
 from vibeharness.core.sandbox import (
     REASON_JS_COVERAGE_UNSUPPORTED as REASON_JS_COVERAGE_UNSUPPORTED, NodeRuntime, Sandbox, SandboxUnavailableError,
     TIMEOUT_EXIT_CODE,
@@ -13,7 +13,7 @@ from vibeharness.core.sandbox import (
 from vibeharness.core.codecheck import check_test_code_for
 from vibeharness.core.jscoverage import JsLineCoverage
 from vibeharness.core.i18n import bi
-from vibeharness.runners.attribution import _header_field, _is_harness_failure, _result, attribute, parse_junit
+from vibeharness.runners.attribution import _header_field, attribute, mutant_outcome, not_run, parse_junit
 
 logger = logging.getLogger("VibeHarness.TestExecutor")
 
@@ -144,15 +144,9 @@ class TestSuiteExecutor:
             for i in js_idx:
                 t = tests[i]
                 if sandbox is None:
-                    results[i] = _result(
-                        t, unique_ids[i], TestStatus.ERROR,
-                        failure_reason=f"{REASON_JS_NOT_RUN}: {self._js_runner_problem}"
-                    )
+                    results[i] = not_run(t, unique_ids[i], f"{REASON_JS_NOT_RUN}: {self._js_runner_problem}")
                 elif t.language == "typescript" and not sandbox.supports_typescript:
-                    results[i] = _result(
-                        t, unique_ids[i], TestStatus.ERROR,
-                        failure_reason=REASON_TS_NOT_RUN
-                    )
+                    results[i] = not_run(t, unique_ids[i], REASON_TS_NOT_RUN)
                 else:
                     runnable.append(i)
             if runnable and sandbox is not None:
@@ -187,15 +181,7 @@ class TestSuiteExecutor:
         )
         if run.exit_code == TIMEOUT_EXIT_CODE:
             return "killed"
-        cases = parse_junit(run.junit_xml, "python")
-        if not cases:
-            return "invalid"
-        flat = [case for module_cases in cases.values() for case in module_cases]
-        if any(c["outcome"] == "failure" and not _is_harness_failure(c) for c in flat):
-            return "killed"
-        if any(c["outcome"] in ("error", "failure") for c in flat) or not flat:
-            return "invalid"
-        return "survived"
+        return mutant_outcome(parse_junit(run.junit_xml, "python"))
 
     @staticmethod
     def _python_header(working_dir: str) -> str:
@@ -258,9 +244,9 @@ class TestSuiteExecutor:
             t = tests[idx]
             is_valid, problem = check_test_code_for(t.code, t.language)
             if not is_valid:
-                results[idx] = _result(
-                    t, unique_ids[idx], TestStatus.ERROR,
-                    failure_reason=bi(f"產生的測試無法執行（{problem}）；未執行", f"Generated test is not executable ({problem}); not run")
+                results[idx] = not_run(
+                    t, unique_ids[idx],
+                    bi(f"產生的測試無法執行（{problem}）；未執行", f"Generated test is not executable ({problem}); not run")
                 )
                 continue
             module = f"test_vh_{idx:03d}"
@@ -339,50 +325,35 @@ class TestSuiteExecutor:
             exit_code, stdout, stderr, junit_xml = runs[module]
             module_cases = cases.get(module) if cases is not None else None
             if module in not_rerun:
-                results[idx] = _result(
-                    t, unique_ids[idx], TestStatus.ERROR,
-                    failure_reason=REASON_RERUN_BUDGET_EXHAUSTED
-                )
+                results[idx] = not_run(t, unique_ids[idx], REASON_RERUN_BUDGET_EXHAUSTED)
             elif module in parse_failed:
-                results[idx] = _result(
-                    t, unique_ids[idx], TestStatus.ERROR,
-                    failure_reason=REASON_REPORT_UNPARSEABLE,
-                    stderr=stderr
-                )
+                results[idx] = not_run(t, unique_ids[idx], REASON_REPORT_UNPARSEABLE, stderr=stderr)
             elif module in timed_out and (is_js or not module_cases):
                 used = timeout_used.get(module, self._per_test_budget(sandbox))
-                results[idx] = _result(
-                    t, unique_ids[idx], TestStatus.ERROR,
-                    failure_reason=bi(f"測試在 {used} 秒後逾時；未執行完畢",
-                                      f"Test timed out after {used}s; not run to completion")
+                results[idx] = not_run(
+                    t, unique_ids[idx],
+                    bi(f"測試在 {used} 秒後逾時；未執行完畢",
+                       f"Test timed out after {used}s; not run to completion")
                 )
             elif junit_xml is None:
                 if exit_code == TIMEOUT_EXIT_CODE:
-                    results[idx] = _result(
-                        t, unique_ids[idx], TestStatus.ERROR,
-                        failure_reason=bi(f"測試批次在 {batch_timeout or '?'} 秒後逾時，且沒有產生逐一測試的報告",
-                                          f"Test batch timed out after {batch_timeout or '?'}s "
-                                          "and no per-test report was produced")
+                    results[idx] = not_run(
+                        t, unique_ids[idx],
+                        bi(f"測試批次在 {batch_timeout or '?'} 秒後逾時，且沒有產生逐一測試的報告",
+                           f"Test batch timed out after {batch_timeout or '?'}s "
+                           "and no per-test report was produced")
                     )
                 else:
-                    results[idx] = _result(
-                        t, unique_ids[idx], TestStatus.ERROR,
-                        failure_reason=f"{bi('沙盒執行沒有產生報告', 'Sandbox run produced no report')}: "
-                                       f"{stderr.strip()[:200] or f'exit code {exit_code}'}",
+                    results[idx] = not_run(
+                        t, unique_ids[idx],
+                        f"{bi('沙盒執行沒有產生報告', 'Sandbox run produced no report')}: "
+                        f"{stderr.strip()[:200] or f'exit code {exit_code}'}",
                         stdout=stdout, stderr=stderr
                     )
             elif cases is None:
-                results[idx] = _result(
-                    t, unique_ids[idx], TestStatus.ERROR,
-                    failure_reason=REASON_REPORT_UNPARSEABLE,
-                    stdout=stdout, stderr=stderr
-                )
+                results[idx] = not_run(t, unique_ids[idx], REASON_REPORT_UNPARSEABLE, stdout=stdout, stderr=stderr)
             elif not module_cases:
-                results[idx] = _result(
-                    t, unique_ids[idx], TestStatus.ERROR,
-                    failure_reason=REASON_NO_TEST_COLLECTED,
-                    stdout=stdout, stderr=stderr
-                )
+                results[idx] = not_run(t, unique_ids[idx], REASON_NO_TEST_COLLECTED, stdout=stdout, stderr=stderr)
             else:
                 results[idx] = attribute(t, unique_ids[idx], module_cases)
         return coverage_pct, coverage_problem
