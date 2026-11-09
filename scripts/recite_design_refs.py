@@ -271,6 +271,20 @@ def problem(ref: Ref, source: str | None) -> str | None:
     return f"does not land on {where}"
 
 
+def _lands_on_its_name(ref: Ref, source: str) -> bool:
+    """引用指向的名稱在這份原始碼裡有定義，而且引用落在它上面（`problem` 的判準）。沒有名稱、名稱不在這個檔案
+    裡定義，或不是 Python 檔時為 False：那種引用無法判斷是照哪一版寫的。
+    The name the reference points at is defined in this source and the reference lands on it (`problem`'s test).
+    False without a name, when the name is not defined in this file, or for a non-Python file: for such a
+    reference there is no telling which version it was written against."""
+    if not ref.names or not ref.path.endswith(".py"):
+        return False
+    defs = definitions(source)
+    if not any(_bare(n) in defs and (n, ref.path) not in _LOOSE_ANCHORS for n in ref.names):
+        return False
+    return problem(ref, source) is None
+
+
 def _spans_text(spans: list[tuple[int, int]]) -> str:
     return "/".join(f"{a}-{b}" if a != b else str(a) for a, b in spans)
 
@@ -397,6 +411,11 @@ def recite(text: str, old: Callable[[str], str | None], new: Callable[[str], str
             before, after = old(ref.path), new(ref.path)
             maps[ref.path] = LineMap(before, after) if before is not None and after is not None else None
         line_map = maps[ref.path]
+        if line_map is not None and _lands_on_its_name(ref, line_map.new) and not _lands_on_its_name(ref, line_map.old):
+            # 已經照新版寫的引用（例如跟程式碼同一個 commit 寫的）：再對應一次會把它推離名稱
+            # A reference already written against the new code (e.g. in the same commit as the code): mapping it
+            # again would push it off its name
+            continue
         mapped = remap(ref, line_map) if line_map is not None else None
         if mapped is None:
             label = f"{'/'.join(ref.names)} " if ref.names else ""

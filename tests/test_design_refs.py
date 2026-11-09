@@ -168,6 +168,17 @@ def test_recite_leaves_unmappable_references_alone_and_lists_them():
     assert unresolved == ["1: pkg/mod.py:5"]
 
 
+def test_recite_keeps_references_already_written_against_the_new_code():
+    """已經照新版程式碼寫的引用（在新版落在名稱上、在舊版沒有）保留原值，也不列入人工核對；不會被再位移一次。
+    A reference already written against the new code (it lands on its name in the new code but not in the old)
+    keeps its value and is not listed for a hand check; it is not shifted a second time."""
+    doc = ("`alpha`（`pkg/mod.py:6-8`）is the new function.\n"
+           "\n### 18.2 Index\n\n- `pkg/mod.py`：`alpha` 6\n")
+    new_doc, unresolved = refs_tool.recite(doc, _reader({"pkg/mod.py": OLD_CODE}), _reader({"pkg/mod.py": NEW_CODE}))
+    assert new_doc == doc
+    assert unresolved == []
+
+
 def test_with_revision_switches_between_a_commit_and_the_release_tag():
     """引用 commit 時附上「發布時改為 release tag」，引用 tag 時拿掉；中英兩種句型都改。
     Citing a commit adds "the release tag will replace it", citing a tag drops it; both the zh and en wordings
