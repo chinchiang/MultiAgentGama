@@ -572,18 +572,13 @@ def test_response_cache_serves_repeat_prompts_without_a_provider_call(fake_live,
     assert len(fake.calls) == 2 and gw2.call_log[-1].cached
 
 
-def test_unusable_answers_are_never_cached_and_bad_entries_are_ignored(fake_live, tmp_path):
-    fake = fake_live(lambda s, u: "not json")
+def test_unusable_answers_are_never_cached_and_a_cache_dir_must_be_a_directory(fake_live, tmp_path):
+    fake_live(lambda s, u: "not json")
     cache = tmp_path / "cache"
     gw = LLMGateway(_config(tmp_path, cache_dir=str(cache), retry_invalid_output=0), execution_mode="hybrid")
     gw.generate("whitebox_reviewer_claude", "sys", "u", schema=OutputSchema(required={"findings": ANY}))
     assert gw.invalid_calls and not list(cache.glob("*.json"))
-    # 該鍵對應的檔案毀損時視為未命中
-    # A corrupt file for the key is treated as a miss
-    key = gw._cache_key("claude", gw.models_config["claude"], 0.2, "sys", "u")
-    (cache / f"{key}.json").write_text("{corrupt", encoding="utf-8")
-    gw.generate("whitebox_reviewer_claude", "sys", "u", schema=OutputSchema(required={"findings": ANY}))
-    assert len(fake.calls) == 2
+    # 毀損的快取檔案算未命中：見 tests/test_response_cache.py ／ a corrupt cache file is a miss: see tests/test_response_cache.py
     with pytest.raises(ConfigError, match="cache_dir"):
         bad = tmp_path / "file.txt"
         bad.write_text("x")

@@ -217,6 +217,7 @@ MultiAgentGama/
 │   │   ├── jscoverage.py            # JS/TS line coverage: Node coverage flags, lcov parsing, union across modules
 │   │   ├── mutation.py              # Optional mutation testing (Python)
 │   │   ├── sanitize.py              # Trust-boundary hygiene: invisible chars, secret redaction, untrusted-code / model-output channels, output sanitizing
+│   │   ├── response_cache.py        # The response cache: usable model answers keyed by the request (key, lookup, atomic store, a re-ask under both keys)
 │   │   ├── sandbox.py               # Sandboxes: local subprocess (not a security boundary) and Docker containers; a Node flavour of each (node --test); choosing and probing the Node runtime
 │   │   ├── settings.py              # Settings: the config file loaded, defaulted and validated once (Discovered config policy, CLI overrides)
 │   │   ├── stdio.py                 # Console-stream guard: stdout / stderr can write the bilingual output (shared by the CLI, the Action and the harness)
@@ -317,6 +318,7 @@ MultiAgentGama/
 │   ├── test_r6_review.py               # Sixth review round: non-ASCII text and paths, a symlinked target, baseline keys, the estimate and the blame of a per-test rerun
 │   ├── test_repo_docs.py               # README file trees list every file, rule documents cite names and paths that exist, tests reading .github/ skip in the sdist
 │   ├── test_required_checks.py         # Matrix expansion into check names, each kind of drift, CONTRIBUTING agreeing with the workflows, the drift workflow never on PRs
+│   ├── test_response_cache.py          # The response cache: the key equals master's, every part of the request is in it, the files that are a miss, a re-ask stored under both keys
 │   ├── test_result_predicates.py       # The single-result predicates (Unclassified failure, Not run, FAILED) for every status
 │   ├── test_review_blackbox.py         # Threat ids, STRIDE spellings, crashed black-box batches booked
 │   ├── test_review_build.py            # Pinned actions, workflow inputs via env, image digests, hashed locks, sdist contents

@@ -320,24 +320,6 @@ def test_reask_after_a_fallback_answer_tries_the_primary_again(tmp_path, monkeyp
     assert fake.models == ["primary-model", "fallback-model", "primary-model", "fallback-model"]
 
 
-# --- 回應快取的鍵包含端點身分 -----------------------------------------------------------------------
-# --- The response-cache key includes the endpoint identity -----------------------------------------
-
-@pytest.mark.parametrize("key, value", [
-    ("api_base", "https://other.example/v1"), ("aws_region_name", "eu-west-1"),
-    ("aws_profile_name", "other"), ("api_key_env", "OTHER_KEY"),
-])
-def test_cache_key_changes_with_the_endpoint(tmp_path, key, value):
-    """同一個模型字串指向不同端點／區域／帳號時，快取鍵不同。
-    The same model string pointed at another endpoint / region / account gets a different cache key."""
-    gw = LLMGateway(_write_config(tmp_path, ""), execution_mode="mock")
-    base = {"model": "m", "api_key_env": "K", "api_base": "https://a.example/v1",
-            "aws_region_name": "us-east-1", "aws_profile_name": "p"}
-    other = dict(base, **{key: value})
-    assert gw._cache_key("a", base, 0.2, "s", "u") != gw._cache_key("a", other, 0.2, "s", "u")
-    assert gw._cache_key("a", base, 0.2, "s", "u") == gw._cache_key("a", dict(base), 0.2, "s", "u")
-
-
 # --- 確定性的呼叫紀錄順序 ----------------------------------------------------------------------------
 # --- Deterministic call-log order ---------------------------------------------------------------------
 

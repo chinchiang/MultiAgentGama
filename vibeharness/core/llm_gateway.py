@@ -1,8 +1,5 @@
-import datetime as _dt
 import hashlib
 import os
-import json
-import tempfile
 import logging
 import threading
 from dataclasses import dataclass, field
@@ -14,6 +11,7 @@ from typing import Callable, Dict, Any, Mapping, Optional, List
 # recognised as broken inside main()'s guard (exit 5 with reinstall instructions) instead of crashing while reading the config
 import yaml  # noqa: F401
 
+from vibeharness.core import response_cache
 from vibeharness.core.models import AgentCallRecord, CallKind
 # 模型呼叫走 core/transport.py 的接縫；只有那裡知道 litellm ／ model calls go through the seam in core/transport.py; only it knows litellm
 from vibeharness.core.transport import LiteLLMTransport, ModelRequest, ModelTransport
@@ -135,13 +133,6 @@ _RETRY_SUFFIX = (
 )
 
 
-
-# 屬於端點身分的模型設定：任一個不同就是不同的服務端點，回應快取不得共用
-# Model settings that identify the endpoint: if any differs it is a different service, so the response cache must not be shared
-_ENDPOINT_IDENTITY_KEYS = ("api_base", "aws_region_name", "aws_profile_name", "api_key_env")
-
-
-
 class LLMGatewayError(RuntimeError):
     """在嚴格的 'live' 模式下，當真實模型呼叫不可能或失敗時拋出。
     Raised in strict 'live' mode when a real model invocation is impossible or fails."""
@@ -226,48 +217,6 @@ class LLMGateway:
         """在 `path` 啟用回應快取（不存在時會建立；見 prepare_cache_dir）。
         Enables the response cache in `path` (created if missing; see prepare_cache_dir)."""
         self.cache_dir = prepare_cache_dir(path)
-
-    def _cache_key(self, model_alias: str, model_info: Dict[str, Any], temperature: float, system_prompt: str, user_prompt: str) -> str:
-        # 端點身分（api_base、AWS 區域／設定檔、金鑰環境變數）也在鍵內：同一個模型字串
-        # 指向另一個端點或帳號時，不得取用前一個端點的回答
-        # The endpoint identity (api_base, AWS region / profile, key env var) is part of the key: the same
-        # model string pointed at another endpoint or account must not be served the previous endpoint's answer
-        endpoint = json.dumps({k: model_info.get(k) for k in _ENDPOINT_IDENTITY_KEYS}, sort_keys=True, default=str)
-        parts = "\x00".join([
-            model_alias, str(model_info.get("model")), str(model_info.get("fallback_model")), str(temperature),
-            str(self._max_output_tokens(model_info)),
-            json.dumps(model_info.get("extra_params") or {}, sort_keys=True, default=str), endpoint,
-            system_prompt, user_prompt,
-        ])
-        return hashlib.sha256(parts.encode("utf-8")).hexdigest()
-
-    def _cache_read(self, key: str) -> Optional[Dict[str, Any]]:
-        if not self.cache_dir:
-            return None
-        path = os.path.join(self.cache_dir, f"{key}.json")
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                entry = json.load(f)
-        except (OSError, ValueError):
-            return None
-        return entry if isinstance(entry, dict) and isinstance(entry.get("raw_text"), str) else None
-
-    def _cache_write(self, key: str, agent_id: str, model_name: str, raw_text: str, finish_reason: Optional[str], prompt_sha256: str) -> None:
-        if not self.cache_dir:
-            return
-        entry = {
-            "agent_id": agent_id, "model": model_name, "finish_reason": finish_reason, "raw_text": raw_text,
-            "prompt_sha256": prompt_sha256, "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
-        }
-        try:
-            # 原子性發佈：並行的代理可能寫入相同的鍵，讀取端絕不能看到寫到一半的檔案
-            # Atomic publish: concurrent agents may write the same key, readers must never see a torn file
-            fd, tmp = tempfile.mkstemp(prefix=".tmp-", suffix=".json", dir=self.cache_dir)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(entry, f, ensure_ascii=False)
-            os.replace(tmp, os.path.join(self.cache_dir, f"{key}.json"))
-        except OSError as e:
-            logger.warning(bi(f"無法寫入回應快取項目：{e}", f"Could not write the response cache entry: {e}"))
 
     @staticmethod
     def _safe_reason(text: str) -> str:
@@ -381,8 +330,9 @@ class LLMGateway:
         # Which ask of this logical call is current, booked on every record so sorted_call_log keeps the chronology
         attempt = 0
         if fallback_reason is None:
-            cache_key = self._cache_key(model_alias, model_info, temperature, system_prompt, user_prompt)
-            cached = self._cache_read(cache_key)
+            cache_key = response_cache.key(model_alias, model_info, temperature, self._max_output_tokens(model_info),
+                                           system_prompt, user_prompt)
+            cached = response_cache.lookup(self.cache_dir, cache_key)
             if cached is None and self.cache_only:
                 # 不呼叫網路、不扣預算；之後與預算用盡相同：live 拋出 LLMGatewayError，hybrid 改用模擬
                 # No network call and no budget spent; then the same as an exhausted budget: live raises LLMGatewayError, hybrid simulates
@@ -437,16 +387,12 @@ class LLMGateway:
                 if problem is None and result is not None:
                     from_cache = cached is not None and attempt == 0
                     if not from_cache:
-                        # 重新詢問後的可用回答也存到原始提示的鍵下：否則重新執行（尤其是 --cache-only）
-                        # 對第一次嘗試永遠未命中，因為重新詢問的提示取決於第一次那個無法使用的回答
-                        # A usable answer after a re-ask is also stored under the original prompt's key: otherwise a
-                        # re-run (especially --cache-only) always misses the first attempt, because the re-ask
-                        # prompt depends on the unusable first answer
-                        keys = [cache_key] if attempt == 0 else [cache_key, self._cache_key(
-                            model_alias, model_info, temperature, system_prompt, prompt_text
-                        )]
-                        for key in keys:
-                            self._cache_write(key, agent_id, model_name, raw_text, finish_reason, prompt_hash)
+                        reask_key = None if attempt == 0 else response_cache.key(
+                            model_alias, model_info, temperature, self._max_output_tokens(model_info),
+                            system_prompt, prompt_text)
+                        response_cache.store(self.cache_dir, cache_key, agent_id=agent_id, model=model_name,
+                                             raw_text=raw_text, finish_reason=finish_reason,
+                                             prompt_sha256=prompt_hash, reask_key=reask_key)
                     self._record(agent_id, model_alias, model_name, "live", prompt_sha256=prompt_hash,
                                  cached=from_cache, attempt=attempt, kind=kind)
                     if not json_output:
