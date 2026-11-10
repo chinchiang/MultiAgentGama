@@ -2,7 +2,7 @@
 
 [English](design.en.md) ｜ 正體中文（臺灣）
 
-本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.15.0`（`CHANGELOG.md` 的 `[0.15.0]`，2026-10-31，相依套件與支援版本整理輪：最低支援版本改為 Python 3.11、鎖定檔升級有已知漏洞的套件，程式碼不變；`[0.14.0]`，2026-10-17，代理呼叫整理輪：五個代理的模型呼叫改經同一個代理呼叫模組、各代理的呼叫計畫與執行共用同一套規則、呼叫紀錄帶上呼叫的種類；`[0.13.0]`，2026-10-17，架構整理輪：品質閘門、設定、模型呼叫傳輸、並行呼叫、身分識別與模型回答的形狀檢查各自集中到一個模組，沙盒、檔案範圍、規則掃描與模型回答以型別化的值回傳，形狀不對的模型回答不再被讀成零個發現；`[0.12.0]`，2026-10-12，第六輪審查：中文的威脅與發現不再被誤合併、`--changed-since` 收得到非 ASCII 檔名與 symlink 目標下的檔案、探針的基準線鍵含檔案、`--estimate` 計入未變異複本的那一批、保留名稱含 `key` 的 litellm 參數；`[0.11.0]`，2026-10-11，第五輪審查：Action 的判定只取自稽核摘要、`extra-args` 以 CLI 的解析器檢查、自動發現的設定檔只能調低花費、保留 litellm 的 callback 參數、揭露不支援語言的檔案與設定檔裡的密鑰、強化報告讀回與 Docker 輸出上限；`[0.10.1]`，2026-10-11，為修正版：Windows 的 JS/TS 涵蓋率也收得到 `node_modules` 底下的目標；`[0.10.0]` 為更嚴格的自動發現設定檔、Action 不再蓋掉設定檔的成本防護、null 保留預設值；`[0.9.0]` 為第三輪審查修正：自動發現設定檔的防護、Action 以 `exec` 執行稽核、SARIF 不收模擬項目、VH-AI-006 改寫、確定性規則的單檔時間上限、`--summary-json`；`[0.8.0]` 新增 JS/TS 行涵蓋率；`[0.7.1]` 為修正版：剩餘逾時預算不再多出一秒、`--init-config` 的提示；`[0.7.0]` 為第二輪審查修正、PyPI 打包、`--init-config` 與設定檔自動尋找；`[0.6.0]` 為依審查結果的強化並新增 `--cache-only`，`[0.5.1]` 為修正版，`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。文中的 `path:line` 引用以 commit `c5a1d3e` 的檔案為準（發布時改為 release tag）。
+本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.15.0`（`CHANGELOG.md` 的 `[0.15.0]`，2026-10-31，相依套件與支援版本整理輪：最低支援版本改為 Python 3.11、鎖定檔升級有已知漏洞的套件，程式碼不變；`[0.14.0]`，2026-10-17，代理呼叫整理輪：五個代理的模型呼叫改經同一個代理呼叫模組、各代理的呼叫計畫與執行共用同一套規則、呼叫紀錄帶上呼叫的種類；`[0.13.0]`，2026-10-17，架構整理輪：品質閘門、設定、模型呼叫傳輸、並行呼叫、身分識別與模型回答的形狀檢查各自集中到一個模組，沙盒、檔案範圍、規則掃描與模型回答以型別化的值回傳，形狀不對的模型回答不再被讀成零個發現；`[0.12.0]`，2026-10-12，第六輪審查：中文的威脅與發現不再被誤合併、`--changed-since` 收得到非 ASCII 檔名與 symlink 目標下的檔案、探針的基準線鍵含檔案、`--estimate` 計入未變異複本的那一批、保留名稱含 `key` 的 litellm 參數；`[0.11.0]`，2026-10-11，第五輪審查：Action 的判定只取自稽核摘要、`extra-args` 以 CLI 的解析器檢查、自動發現的設定檔只能調低花費、保留 litellm 的 callback 參數、揭露不支援語言的檔案與設定檔裡的密鑰、強化報告讀回與 Docker 輸出上限；`[0.10.1]`，2026-10-11，為修正版：Windows 的 JS/TS 涵蓋率也收得到 `node_modules` 底下的目標；`[0.10.0]` 為更嚴格的自動發現設定檔、Action 不再蓋掉設定檔的成本防護、null 保留預設值；`[0.9.0]` 為第三輪審查修正：自動發現設定檔的防護、Action 以 `exec` 執行稽核、SARIF 不收模擬項目、VH-AI-006 改寫、確定性規則的單檔時間上限、`--summary-json`；`[0.8.0]` 新增 JS/TS 行涵蓋率；`[0.7.1]` 為修正版：剩餘逾時預算不再多出一秒、`--init-config` 的提示；`[0.7.0]` 為第二輪審查修正、PyPI 打包、`--init-config` 與設定檔自動尋找；`[0.6.0]` 為依審查結果的強化並新增 `--cache-only`，`[0.5.1]` 為修正版，`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。文中的 `path:line` 引用以 commit `8cf95ed` 的檔案為準（發布時改為 release tag）。
 
 與其他文件的分工：
 
@@ -299,7 +299,7 @@ flowchart TD
 - `prepare_cache_dir`（`vibeharness/core/settings.py:533-545`；載入時處理 `global.cache_dir` 與 `--cache-dir`，`LLMGateway.set_cache_dir` 也用它）建立目錄並確認可寫，否則 `ConfigError`（exit 5）。
 - key 是 `response_cache.key`（`vibeharness/core/response_cache.py:27-45`，`max_output_tokens` 是閘道算好傳入的）：alias、model、`fallback_model`、temperature、`max_output_tokens`、`extra_params`、端點身分（`_ENDPOINT_IDENTITY_KEYS`，`:24`：`api_base`、`aws_region_name`、`aws_profile_name`、`api_key_env`，同一個模型字串指向另一個端點或帳號時不會拿到前一個的答案；舊版寫入的快取會失效一次）與完整 system／user prompt 的 sha256。目標程式碼一改，提示就不同，不會錯用舊答案；換模型或改設定也不會命中。
 - `generate` 在扣預算前先查快取（`vibeharness/core/llm_gateway.py:327-341`）：命中時不呼叫供應商、不扣 `max_model_calls`，紀錄仍是 `live` 但 `cached=True`（`vibeharness/core/llm_gateway.py:388-400`），「執行來源 ／ Execution Provenance」表標「真實（回應快取） ／ live (response cache)」（`vibeharness/reports/report_generator.py:282-291`）。
-- 只有通過驗證的回應才寫入（`store`，`vibeharness/core/response_cache.py:63-79`；寫入本身是 `_write`，`:82-91`）：先寫暫存檔再 `os.replace` 原子取代，平行的 agent 寫同一個 key 時讀端不會看到半截檔案；損壞或缺 `raw_text` 的快取檔視同未命中（`lookup`，`:48-60`）。重問後才成功的回應同時存在原始提示的 key 與重問提示的 key 下（`store` 的 `reask_key`，`:78-79`）：重問提示取決於第一次那個無法使用的回答，只存在重問的 key 下時，重跑（尤其是 `--cache-only`）的第一次嘗試永遠不會命中。
+- 只有通過驗證的回應才寫入（`store`，`vibeharness/core/response_cache.py:63-79`；寫入本身是 `_write`，`:82-100`）：先寫暫存檔再 `os.replace` 原子取代，平行的 agent 寫同一個 key 時讀端不會看到半截檔案；寫入或取代失敗（例如磁碟滿、權限不足）時先刪掉暫存檔再記警告，刪不掉也只記警告、不丟例外，快取寫不進去不會讓模型呼叫失敗（`:91-100`）；損壞或缺 `raw_text` 的快取檔視同未命中（`lookup`，`:48-60`）。重問後才成功的回應同時存在原始提示的 key 與重問提示的 key 下（`store` 的 `reask_key`，`:78-79`）：重問提示取決於第一次那個無法使用的回答，只存在重問的 key 下時，重跑（尤其是 `--cache-only`）的第一次嘗試永遠不會命中。
 - 快取目錄含模型原始回應（可能引用目標程式碼），要當成報告一樣保護；`--estimate` 不預測快取命中。
 - `--cache-only`（`vibeharness/core/settings.py:699-703`）：需要回應快取（`--cache-dir` 或 `global.cache_dir`），否則 `ConfigError`（exit 5）；設定 `gateway.cache_only` 後，每次呼叫只從快取取用，絕不呼叫供應商、不扣 `max_model_calls`、不重問（第 5.1 節第 5 項）。未命中與預算用完同樣處理：hybrid 走模擬並記 `CACHE_MISS_REASON`（evidence gap #22），live 拋 `LLMGatewayError`（exit 4）。搭配 `--mode mock` 時沒有作用（mock 根本不讀快取），CLI 會在 stderr 印出警告，而不是默默接受（`vibeharness/cli.py:584-590`）。`live-smoke.yml` 的 JSON 重跑就用它（第 15.2 節）。
 
@@ -982,7 +982,7 @@ DAST／fuzzing、以 hypothesis 為測試策略（Docker 沙盒映像已附 `hyp
 
 ## 18. 附錄
 
-行號對應 commit `c5a1d3e` 的程式碼（發布時改為 release tag）；`python scripts/recite_design_refs.py --check` 核對每個引用（`tests/test_design_refs.py` 在 CI 跑同一套檢查），不帶參數執行則把引用重新對應到目前的程式碼。
+行號對應 commit `8cf95ed` 的程式碼（發布時改為 release tag）；`python scripts/recite_design_refs.py --check` 核對每個引用（`tests/test_design_refs.py` 在 CI 跑同一套檢查），不帶參數執行則把引用重新對應到目前的程式碼。
 
 ### 18.1 關鍵常數
 

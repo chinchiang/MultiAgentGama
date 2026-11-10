@@ -80,6 +80,7 @@ def store(cache_dir: Optional[str], cache_key: str, *, agent_id: str, model: str
 
 
 def _write(cache_dir: str, cache_key: str, entry: Dict[str, Any]) -> None:
+    tmp: Optional[str] = None
     try:
         # 原子性發佈：並行的代理可能寫入相同的鍵，讀取端絕不能看到寫到一半的檔案
         # Atomic publish: concurrent agents may write the same key, readers must never see a torn file
@@ -88,4 +89,12 @@ def _write(cache_dir: str, cache_key: str, entry: Dict[str, Any]) -> None:
             json.dump(entry, f, ensure_ascii=False)
         os.replace(tmp, os.path.join(cache_dir, f"{cache_key}.json"))
     except OSError as e:
+        if tmp is not None:
+            # 刪不掉就留著：下面的警告已經回報這次寫入失敗，`lookup` 也從不讀 `.tmp-*.json`（#145）
+            # Left in place when it cannot be removed: the warning below already reports the failed write, and
+            # `lookup` never reads `.tmp-*.json` (#145)
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
         logger.warning(bi(f"無法寫入回應快取項目：{e}", f"Could not write the response cache entry: {e}"))
