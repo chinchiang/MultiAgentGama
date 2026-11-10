@@ -133,6 +133,62 @@ def test_a_write_that_fails_halfway_leaves_no_torn_entry_at_the_key(tmp_path, mo
     assert "Could not write the response cache entry" in caplog.text
 
 
+def _leftover_temp_files(cache_dir):
+    return sorted(p.name for p in cache_dir.iterdir() if p.name.startswith(".tmp-"))
+
+
+def test_a_write_that_fails_halfway_leaves_no_temp_file(tmp_path, monkeypatch, caplog):
+    """寫到一半失敗（例如磁碟滿）時，快取目錄不會留下 `.tmp-*.json`：磁碟滿時每次呼叫都會再失敗一次，
+    留下的暫存檔會越積越多，裡面還是寫了一半的模型回答（#145）。
+    A write that fails halfway (e.g. a full disk) leaves no `.tmp-*.json` in the cache directory: on a full disk every
+    further call fails again, so leftovers would pile up, each holding a half-written model answer (#145)."""
+    import vibeharness.core.response_cache as rc
+
+    def half_then_fail(obj, f, **kwargs):
+        f.write('{"raw_text": "par')
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(rc.json, "dump", half_then_fail)
+    _store(str(tmp_path), _key())
+    assert _leftover_temp_files(tmp_path) == []
+    assert "Could not write the response cache entry" in caplog.text
+
+
+def test_a_publish_that_fails_leaves_no_temp_file(tmp_path, monkeypatch, caplog):
+    """暫存檔已經寫完，卻無法換到這把鍵的位置（例如權限不足）時，暫存檔也要刪掉（#145）。
+    When the temporary file is fully written but cannot be moved onto the key (e.g. a permission error), it is
+    removed too (#145)."""
+    import vibeharness.core.response_cache as rc
+
+    def refuse(src, dst):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(rc.os, "replace", refuse)
+    k = _key()
+    _store(str(tmp_path), k)
+    assert _leftover_temp_files(tmp_path) == []
+    assert not (tmp_path / f"{k}.json").exists()
+    assert "Could not write the response cache entry" in caplog.text
+
+
+def test_a_temp_file_that_cannot_be_removed_still_only_warns(tmp_path, monkeypatch, caplog):
+    """寫入失敗後，連暫存檔都刪不掉時，`store` 仍然只記警告、不丟例外：快取寫不進去不能讓模型呼叫失敗（#145）。
+    When the write fails and the temporary file cannot be removed either, `store` still only logs a warning and
+    does not raise: a cache that cannot be written must not fail the model call (#145)."""
+    import vibeharness.core.response_cache as rc
+
+    def full_disk(obj, f, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    def refuse(path):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(rc.json, "dump", full_disk)
+    monkeypatch.setattr(rc.os, "unlink", refuse)
+    _store(str(tmp_path), _key())
+    assert "Could not write the response cache entry" in caplog.text
+
+
 def test_store_that_cannot_write_warns_and_does_not_raise(tmp_path, caplog):
     """寫不進去（目錄不存在）時只記警告，不讓模型呼叫失敗。
     When it cannot write (the directory does not exist) it only logs a warning; the model call does not fail."""
