@@ -217,6 +217,7 @@ MultiAgentGama/
 │   │   ├── jscoverage.py            # JS/TS 行涵蓋率：Node 涵蓋率旗標、lcov 解析、跨模組聯集
 │   │   ├── mutation.py              # 選用的突變測試（Python）
 │   │   ├── sanitize.py              # 信任邊界：去隱形字元、遮蔽密鑰、不受信任程式碼／模型輸出通道、報告消毒
+│   │   ├── response_cache.py        # 回應快取：以請求為鍵存取可用的模型回答（鍵、讀取、原子寫入，重新詢問時存兩把鍵）
 │   │   ├── sandbox.py               # 沙盒：本機子程序（非安全邊界）與 Docker 容器；Node 版本各一（node --test）；Node 執行環境的選擇與版本偵測
 │   │   ├── settings.py              # 設定：設定檔只載入、套用預設值並驗證一次（探索到的設定檔政策、CLI 覆寫值）
 │   │   ├── stdio.py                 # 主控台串流防護：讓 stdout／stderr 寫得出雙語輸出（CLI、Action、harness 共用）
@@ -317,6 +318,7 @@ MultiAgentGama/
 │   ├── test_r6_review.py               # 第六輪審查：非 ASCII 文字與路徑、symlink 目標、基準線鍵、估算與逐測重跑的錯誤歸因
 │   ├── test_repo_docs.py               # README 檔案樹列出每個檔案、規則文件點名的名稱與路徑存在、讀 .github/ 的測試在 sdist 裡略過
 │   ├── test_required_checks.py         # matrix 展開成檢查名稱、各種不一致、CONTRIBUTING 與 workflow 一致、比對 workflow 不在 PR 上跑
+│   ├── test_response_cache.py          # 回應快取：鍵與 master 相同、請求每一部分都在鍵內、未命中的幾種檔案、重新詢問時存兩把鍵
 │   ├── test_result_predicates.py       # 單一測試結果的判斷（未分類失敗、未執行、FAILED）在每種狀態下的答案
 │   ├── test_review_blackbox.py         # 威脅 id、STRIDE 拼法、崩潰的黑箱批次記入 call_log
 │   ├── test_review_build.py            # 釘版的 actions、workflow 輸入經 env、映像 digest、帶雜湊的鎖定檔、sdist 內容
