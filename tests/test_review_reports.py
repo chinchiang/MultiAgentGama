@@ -2,8 +2,9 @@
 Regression tests for report hardening: code spans and table escaping, newline spoofing, SARIF paths,
 threat-symbol matching and unverified hypotheses."""
 import json
-import os
 import re
+
+import pytest
 
 from vibeharness.core.models import (
     AgentCallRecord, CodeSymbol, FindingSeverity, MultiModelDebateResult, ReviewFinding, StaticFinding,
@@ -222,38 +223,48 @@ def test_sarif_location_omits_the_base_for_absolute_uris():
     assert ReportGenerator._location("x.py", 1)["physicalLocation"]["artifactLocation"]["uriBaseId"] == "%SRCROOT%"
 
 
-# --- 威脅符號比對 ------------------------------------------------------------------------------------
-# --- Threat-symbol matching --------------------------------------------------------------------------
+# --- 資安突破的 SARIF 位置 ----------------------------------------------------------------------------
+# --- SARIF location of a Breach -------------------------------------------------------------------------
+# 比對規則本身的測試在 tests/test_threat_symbols.py ／ the matching rule's own tests are in tests/test_threat_symbols.py
 
-def test_threat_symbol_matches_whole_identifiers_only():
-    """`get` 不會命中 `get_user`；完整的識別字才算。
-    `get` does not hit `get_user`; only a whole identifier counts."""
-    pick = ReportGenerator._threat_symbol
-    get = _symbol("get")
-    assert pick(_threat(attack_vector="call get_user with a foreign id", attack_scenario=""), [get]) is None
-    assert pick(_threat(attack_vector="call get(1)", attack_scenario=""), [get]) is get
-
-
-def test_threat_symbol_prefers_the_longest_route():
-    """`GET /users/admin` 優先於 `GET /users`，且 `GET /users` 不會命中 `GET /users/admin`。
-    `GET /users/admin` wins over `GET /users`, and `GET /users` alone does not hit `GET /users/admin`."""
-    pick = ReportGenerator._threat_symbol
-    short = _symbol("GET /users", "route", line=1)
-    long_ = _symbol("GET /users/admin", "route", line=9)
-    threat = _threat(attack_vector="HTTP GET /users/admin without a token", attack_scenario="")
-    assert pick(threat, [short, long_]) is long_
-    assert pick(threat, [long_, short]) is long_
-    assert pick(threat, [short]) is None
-    assert pick(_threat(attack_vector="GET /users?page=2", attack_scenario=""), [short, long_]) is short
+def _breach_location(tmp_path, attack_vector, symbols):
+    """一個衍生自指定威脅的資安突破，在 SARIF 裡的位置：(相對 URI, 行號)，沒有位置時為 None。
+    The SARIF location of one Breach derived from the given threat: (relative URI, line), or None without one."""
+    threat = _threat(threat_id="T-1", attack_vector=attack_vector, attack_scenario="")
+    breach = TestExecutionResult(test_id="BB-1", test_type="blackbox_security", status=TestStatus.FAILED,
+                                 is_security_exploit_confirmed=True, source_ref="T-1")
+    sarif = json.loads(ReportGenerator().generate_sarif_report(
+        summary=_summary(), debate_result=MultiModelDebateResult(consensus_summary="c", arbitration_applied=True),
+        threat_model=ThreatModelReport(system_description="s", threats=[threat]), whitebox_results=[],
+        blackbox_results=[breach], target_path=str(tmp_path), symbols=symbols,
+    ))
+    result = next(r for r in sarif["runs"][0]["results"] if r["properties"].get("security_breach"))
+    if "locations" not in result:
+        return None
+    location = result["locations"][0]["physicalLocation"]
+    return location["artifactLocation"]["uri"], location["region"]["startLine"]
 
 
-def test_threat_symbol_prefers_routes_over_functions():
-    """路由仍然優先於同名的函式。
-    Routes still win over functions."""
-    fn = _symbol("users")
-    route = _symbol("GET /users", "route")
-    assert ReportGenerator._threat_symbol(_threat(attack_vector="GET /users", attack_scenario=""), [fn, route]) is route
-    assert os.path.basename(route.file_path) == "app.py"
+@pytest.mark.parametrize("attack_vector, names, expected", [
+    # 只寫路由的路徑（沒有 HTTP 方法），文中還提到另一個函式 ／ a bare route path (no HTTP method), another function in the text
+    ("Send a crafted body to /api/users; helper is reached.", ["GET /api/users", "helper"], ("app.py", 10)),
+    # 只寫路由的路徑，沒有其他符號 ／ a bare route path and no other symbol
+    ("Send a crafted body to /api/users.", ["GET /api/users"], ("app.py", 10)),
+    # `$init` 是另一個 JS 識別字，不是 `init` ／ `$init` is another JS identifier, not `init`
+    ("Call $init() with a forged token.", ["init"], None),
+], ids=["bare-path-and-helper", "bare-path-only", "js-dollar-prefix"])
+def test_sarif_locates_a_breach_where_the_attack_script_looked(tmp_path, attack_vector, names, expected):
+    """資安突破在 SARIF 的位置，跟攻擊腳本依據的符號同一套規則：只寫路徑的路由指向那個路由；
+    `$init` 不算指名 `init`，所以沒有位置（攻擊腳本也沒拿 `init` 的程式碼）。
+    A Breach's SARIF location follows the same rule as the symbols its attack script was built from: a route named
+    by its bare path points at that route; `$init` does not name `init`, so there is no location (the attack
+    script did not get `init`'s code either)."""
+    catalogue = {
+        "GET /api/users": _symbol("GET /api/users", "route", file_path=str(tmp_path / "app.py"), line=10),
+        "helper": _symbol("helper", file_path=str(tmp_path / "app.py"), line=40),
+        "init": _symbol("init", file_path=str(tmp_path / "app.js"), line=5),
+    }
+    assert _breach_location(tmp_path, attack_vector, [catalogue[n] for n in names]) == expected
 
 
 def test_sarif_uri_escaping_path_is_omitted_whatever_the_working_directory(tmp_path, monkeypatch):

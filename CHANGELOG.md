@@ -20,6 +20,7 @@
 ### 修正
 
 - Python 擷取也認得以函式呼叫（而非裝飾器）註冊的檢視函式：`add_url_rule`（Flask／Quart，`view_func` 用位置或關鍵字引數）、`add_api_route`／`add_api_websocket_route`（FastAPI）、`add_route`／`add_websocket_route`（Starlette），以及從 Starlette 或 FastAPI 匯入的 `Route`／`WebSocketRoute`／`APIRoute`／`APIWebSocketRoute` 類別（別名與 `routing.Route(...)` 也算；從別處來的 `Route` 類別不算）。原本這類處理函式被擷取成一般的 `function`，威脅建模器與情境產生器不會優先處理它，報告歸屬威脅時不會優先選它，執行時的「偵測到 N 個 API 路由處理器」也不會列出它；在 Flask `create_app()` 工廠裡定義、以 `add_url_rule` 註冊的檢視函式更是完全沒被擷取，只能當成工廠的一部分審查。這類巢狀檢視函式現在會擷取成路由，在工廠裡的本體也和有裝飾器的一樣收合。只收裸名稱：`view_func=views.handler` 指向別的模組，`Cls.as_view(...)` 是類別式檢視。這類檢視函式和有裝飾器的路由一樣，不再做 None 輸入探測（框架不會把 None 傳給路徑參數）；原本模組層級的會被探測。
+- 資安突破在 SARIF 的位置，改用攻擊腳本挑選程式碼的同一套規則（新的 `vibeharness/core/threat_symbols.py`）。過去報告另有一套比對，同一個突破的攻擊與 SARIF 可能指向不同的程式碼：威脅只寫路由的路徑（例如「Send a crafted body to /api/users」，沒寫 `GET`）時，SARIF 標在文中另一個函式上，或完全沒有位置；`$init()` 被當成指名 `init`；`GET /api/report.json` 這種路由多了一個 `json` 鍵，提到「json」的威脅會被標在這個路由上。共用的規則兩邊都取比較嚴格的：每一種路由後面都不能接 `/` 或 `-`，只寫路徑時前面也不能（完整 URL 的 `scheme://主機:連接埠` 不算路徑），所以只有 `GET /users` 時，「GET /users/admin」「GET /users-export」或「/v2/users」不再指名它；這也改變攻擊端：這類威脅原本會拿到 `GET /users` 的程式碼，現在改給所有進入點（#142）。
 
 ### 測試
 

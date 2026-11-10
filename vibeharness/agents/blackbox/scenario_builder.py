@@ -13,6 +13,7 @@ from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.codecheck import check_test_code_for, strip_code_fences
 from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import render_symbols, import_instructions, language_for_file, target_root
+from vibeharness.core.threat_symbols import named_symbols
 from vibeharness.core.agent_call import AgentCall, CallContext, Channel, Content, ItemSource, Part, Untrusted, ask
 
 logger = logging.getLogger("VibeHarness.ScenarioBuilder")
@@ -96,8 +97,7 @@ class ThreatScenarioBuilder:
         if not symbols:
             return [], "python"
         root = target_root(root_dir, symbols[0].file_path)
-        text = f"{threat.attack_vector} {threat.attack_scenario}"
-        relevant = ThreatScenarioBuilder._named_symbols(symbols, text)
+        relevant = named_symbols(symbols, threat)
         if not relevant:
             relevant = sorted(symbols, key=lambda s: s.symbol_type != "route")
         language = language_for_file(relevant[0].file_path)
@@ -106,72 +106,6 @@ class ThreatScenarioBuilder:
         listing = render_symbols(relevant, root, max_tokens=CODE_CONTEXT_TOKENS)
         return [f"How to import the target:\n{imports}\n\nRelevant target code:\n",
                 Untrusted(Content.TARGET_CODE, listing), "\n\n"], language
-
-    @staticmethod
-    def _symbol_keys(sym: CodeSymbol) -> List[str]:
-        """威脅文字中可以指名這個符號的寫法：完整名稱，方法再加上最後一段；
-        "GET /api/x" 這種路由再加上路徑本身（路徑裡的 "." 不是方法分隔符）。
-        The spellings by which threat text can name the symbol: the full name, plus the last part for a
-        method; a "GET /api/x" route also by its bare path (a "." in a path is no method separator)."""
-        name = sym.name.strip()
-        if " " in name or name.startswith("/"):
-            path = name.split(" ", 1)[-1].strip()
-            return [k for k in dict.fromkeys([name, path]) if k]
-        return [k for k in dict.fromkeys([name, name.split(".")[-1]]) if k]
-
-    @staticmethod
-    def _key_pattern(key: str) -> str:
-        """比對一個符號鍵的正規表達式：識別字邊界把 `_` 與 JS 的 `$` 都算成識別字字元。
-
-        只由符號組成的路由路徑（根路由 `/`、萬用路由 `*`）在一般文字中到處都是（"and/or"、"read/write"、
-        "1 * 10^6"），所以單獨的路徑只在被引號或反引號包住時才算（`'/'`、`` `*` ``）；完整的 "GET /" 形式
-        後面不可緊接路徑字元，因此 "GET /admin" 或 "GET /.env" 不會指名根路由。
-        The regex matching one symbol key: identifier boundaries count both `_` and the JS `$` as identifier characters.
-
-        Route paths made only of symbols (the root route `/`, the wildcard `*`) occur all over ordinary text
-        ("and/or", "read/write", "1 * 10^6"), so such a bare path only counts inside quotes or backticks (`'/'`,
-        `` `*` ``); the full "GET /" form must not be followed by a path character, so "GET /admin" or "GET /.env"
-        does not name the root route."""
-        path = key.split(" ", 1)[-1]
-        symbolic = not re.search(r"[\w$]", path)
-        if symbolic and " " not in key:
-            return r"(?<=['\"`])" + re.escape(key) + r"(?=['\"`])"
-        head = r"(?<![\w$])" if re.match(r"[\w$]", key) else ""
-        if symbolic:
-            tail = r"(?![\w$/*]|\.[\w$])"
-        else:
-            tail = r"(?![\w$])" if re.search(r"[\w$]$", key) else ""
-        return head + re.escape(key) + tail
-
-    @staticmethod
-    def _named_symbols(symbols: List[CodeSymbol], text: str) -> List[CodeSymbol]:
-        """威脅文字以完整識別字（或完整路由）指名的符號。
-
-        整字比對：子字串測試會把每個提到 "user" 的威脅都綁到 get_user() 符號，把真正相關的程式碼
-        藏在它後面；識別字邊界把 `_` 與 JS 的 `$` 都算成識別字字元。偏好最長的比對：只出現在另一個
-        符號比對範圍內的符號會被丟掉，所以 "/api/users/:id" 不會連帶拉進 "/api/users"，
-        "Service.get_user" 也不會拉進同名函式。
-        Symbols the threat text names by a whole identifier (or a whole route).
-
-        Whole-word matching: a substring test would tie every threat mentioning "user" to a get_user()
-        symbol and hide the actually relevant code behind it; identifier boundaries count both `_` and the
-        JS `$` as identifier characters. The longest match wins: a symbol matched only inside another
-        symbol's match is dropped, so "/api/users/:id" does not drag in "/api/users" and "Service.get_user"
-        does not drag in a same-named function.
-        """
-        spans: List[Tuple[CodeSymbol, List[Tuple[int, int]]]] = []
-        for sym in symbols:
-            found: List[Tuple[int, int]] = []
-            for key in ThreatScenarioBuilder._symbol_keys(sym):
-                found.extend(m.span() for m in re.finditer(ThreatScenarioBuilder._key_pattern(key), text))
-            if found:
-                spans.append((sym, found))
-        all_spans = [span for _sym, found in spans for span in found]
-
-        def inside_longer(span: Tuple[int, int]) -> bool:
-            return any(o[0] <= span[0] and span[1] <= o[1] and o != span for o in all_spans)
-
-        return [sym for sym, found in spans if not all(inside_longer(span) for span in found)]
 
     # 迴環名稱都是同一台機器；目標本身在本機時允許瞄準它們
     # Loopback names are the same machine; targeting them is allowed when the target itself is local

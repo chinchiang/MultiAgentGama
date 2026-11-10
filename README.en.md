@@ -221,6 +221,7 @@ MultiAgentGama/
 │   │   ├── settings.py              # Settings: the config file loaded, defaulted and validated once (Discovered config policy, CLI overrides)
 │   │   ├── stdio.py                 # Console-stream guard: stdout / stderr can write the bilingual output (shared by the CLI, the Action and the harness)
 │   │   ├── tally.py                 # Evidence tally: what decides a run's Verdict, counted once by kind, each split into all, new and Known problems; the only caller of the baseline comparison
+│   │   ├── threat_symbols.py        # Which symbols a threat's text names: the one matching rule for the attack script's code and a Breach's SARIF location
 │   │   ├── transport.py             # The ModelTransport model-call seam; the default LiteLLMTransport is the only place that imports litellm
 │   │   └── verdict.py               # The four verdicts and their exit codes (no third-party imports)
 │   ├── agents/
@@ -331,6 +332,7 @@ MultiAgentGama/
 │   ├── test_review_whitebox_fixes.py   # Routes, nested Python definitions, scanner rules, severity, untrusted finding text
 │   ├── test_sdist_script.py            # test_sdist.py: pytest runs in the extracted sdist with VIBEHARNESS_SDIST, a failed build stops, `..` paths are refused
 │   ├── test_settings.py                # Settings through load_settings: every key's null / 0 rule, validation order, Discovered config policy, overrides
+│   ├── test_threat_symbols.py          # Which symbols a threat's text names: one rule for the attack code and the SARIF location, bare route paths, JS `$`, a longer path never naming a shorter route
 │   ├── test_transport.py               # The model-call seam: one ModelRequest per attempt, fallback, an unavailable transport, the scripted fixture
 │   └── test_windows_env_limit.py       # Windows caps an environment variable at 32767 characters: long string parameters get a short id so tests do not fail at setup
 ├── .pre-commit-config.yaml      # pre-commit: ruff (pinned to a commit SHA) and mypy before every commit

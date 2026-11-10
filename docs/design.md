@@ -2,7 +2,7 @@
 
 [English](design.en.md) ｜ 正體中文（臺灣）
 
-本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.15.0`（`CHANGELOG.md` 的 `[0.15.0]`，2026-10-31，相依套件與支援版本整理輪：最低支援版本改為 Python 3.11、鎖定檔升級有已知漏洞的套件，程式碼不變；`[0.14.0]`，2026-10-17，代理呼叫整理輪：五個代理的模型呼叫改經同一個代理呼叫模組、各代理的呼叫計畫與執行共用同一套規則、呼叫紀錄帶上呼叫的種類；`[0.13.0]`，2026-10-17，架構整理輪：品質閘門、設定、模型呼叫傳輸、並行呼叫、身分識別與模型回答的形狀檢查各自集中到一個模組，沙盒、檔案範圍、規則掃描與模型回答以型別化的值回傳，形狀不對的模型回答不再被讀成零個發現；`[0.12.0]`，2026-10-12，第六輪審查：中文的威脅與發現不再被誤合併、`--changed-since` 收得到非 ASCII 檔名與 symlink 目標下的檔案、探針的基準線鍵含檔案、`--estimate` 計入未變異複本的那一批、保留名稱含 `key` 的 litellm 參數；`[0.11.0]`，2026-10-11，第五輪審查：Action 的判定只取自稽核摘要、`extra-args` 以 CLI 的解析器檢查、自動發現的設定檔只能調低花費、保留 litellm 的 callback 參數、揭露不支援語言的檔案與設定檔裡的密鑰、強化報告讀回與 Docker 輸出上限；`[0.10.1]`，2026-10-11，為修正版：Windows 的 JS/TS 涵蓋率也收得到 `node_modules` 底下的目標；`[0.10.0]` 為更嚴格的自動發現設定檔、Action 不再蓋掉設定檔的成本防護、null 保留預設值；`[0.9.0]` 為第三輪審查修正：自動發現設定檔的防護、Action 以 `exec` 執行稽核、SARIF 不收模擬項目、VH-AI-006 改寫、確定性規則的單檔時間上限、`--summary-json`；`[0.8.0]` 新增 JS/TS 行涵蓋率；`[0.7.1]` 為修正版：剩餘逾時預算不再多出一秒、`--init-config` 的提示；`[0.7.0]` 為第二輪審查修正、PyPI 打包、`--init-config` 與設定檔自動尋找；`[0.6.0]` 為依審查結果的強化並新增 `--cache-only`，`[0.5.1]` 為修正版，`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。文中的 `path:line` 引用以 commit `151ca3e` 的檔案為準（發布時改為 release tag）。
+本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.15.0`（`CHANGELOG.md` 的 `[0.15.0]`，2026-10-31，相依套件與支援版本整理輪：最低支援版本改為 Python 3.11、鎖定檔升級有已知漏洞的套件，程式碼不變；`[0.14.0]`，2026-10-17，代理呼叫整理輪：五個代理的模型呼叫改經同一個代理呼叫模組、各代理的呼叫計畫與執行共用同一套規則、呼叫紀錄帶上呼叫的種類；`[0.13.0]`，2026-10-17，架構整理輪：品質閘門、設定、模型呼叫傳輸、並行呼叫、身分識別與模型回答的形狀檢查各自集中到一個模組，沙盒、檔案範圍、規則掃描與模型回答以型別化的值回傳，形狀不對的模型回答不再被讀成零個發現；`[0.12.0]`，2026-10-12，第六輪審查：中文的威脅與發現不再被誤合併、`--changed-since` 收得到非 ASCII 檔名與 symlink 目標下的檔案、探針的基準線鍵含檔案、`--estimate` 計入未變異複本的那一批、保留名稱含 `key` 的 litellm 參數；`[0.11.0]`，2026-10-11，第五輪審查：Action 的判定只取自稽核摘要、`extra-args` 以 CLI 的解析器檢查、自動發現的設定檔只能調低花費、保留 litellm 的 callback 參數、揭露不支援語言的檔案與設定檔裡的密鑰、強化報告讀回與 Docker 輸出上限；`[0.10.1]`，2026-10-11，為修正版：Windows 的 JS/TS 涵蓋率也收得到 `node_modules` 底下的目標；`[0.10.0]` 為更嚴格的自動發現設定檔、Action 不再蓋掉設定檔的成本防護、null 保留預設值；`[0.9.0]` 為第三輪審查修正：自動發現設定檔的防護、Action 以 `exec` 執行稽核、SARIF 不收模擬項目、VH-AI-006 改寫、確定性規則的單檔時間上限、`--summary-json`；`[0.8.0]` 新增 JS/TS 行涵蓋率；`[0.7.1]` 為修正版：剩餘逾時預算不再多出一秒、`--init-config` 的提示；`[0.7.0]` 為第二輪審查修正、PyPI 打包、`--init-config` 與設定檔自動尋找；`[0.6.0]` 為依審查結果的強化並新增 `--cache-only`，`[0.5.1]` 為修正版，`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。文中的 `path:line` 引用以 commit `c0e0fe0` 的檔案為準（發布時改為 release tag）。
 
 與其他文件的分工：
 
@@ -116,6 +116,7 @@ flowchart TD
 | `vibeharness/core/sanitize.py` | 信任邊界 | 隱形字元、密鑰、注入標記、兩個來源標記通道（目標程式碼、模型輸出）、報告消毒 |
 | `vibeharness/core/sandbox.py` | `LocalSubprocessSandbox`、`DockerSandbox`、`NodeSubprocessSandbox`、`NodeDockerSandbox`、`build_node_sandbox` | 執行生成測試的環境（Python 用 pytest，JS/TS 用 `node --test`）：執行器依賴的 `Sandbox` 接縫、每次執行回傳的 `SandboxRun`，以及 Node 執行環境的選擇與版本偵測（`NodeRuntime`，第 9.5 節） |
 | `vibeharness/core/identity.py` | `finding_key`、`sarif_finding_fingerprint`、`threat_identity`、`is_unknown_location` | 發現、威脅與靜態命中的身分識別：模型文字的正規化、位置規則、嚴重度順序，以及並排定義的 `--baseline` 鍵與 SARIF 指紋（兩者的雜湊都已存在使用者的報告與 Code Scanning 裡，必須逐位元組不變） |
+| `vibeharness/core/threat_symbols.py` | `named_symbols`、`target_symbol` | 威脅文字指向哪些擷取的符號：攻擊腳本依據的程式碼（`ThreatScenarioBuilder`）與資安突破在 SARIF 的位置（`ReportGenerator`）共用同一套比對規則 |
 | `vibeharness/core/baseline.py` | `load_baseline`、`compare_with_baseline` | `--baseline`：載入、比對（只由證據計數 `core/tally.py` 呼叫）與替 JSON 報告加上 fingerprint，已知問題不計入判定；鍵本身在 `core/identity.py` |
 | `vibeharness/core/estimate.py` | `estimate_run` | `--estimate`：加總各代理的呼叫計畫，不呼叫模型即估算呼叫數、token 與花費 |
 | `vibeharness/core/mutation.py` | `run_mutation_testing` | 選用的 Phase 3.5 突變測試（只支援 Python）：變異點、token 切換、在複本上跑變異體（第 3 章） |
@@ -316,7 +317,7 @@ flowchart TD
 - reviewer：`_simulated_review`（`vibeharness/agents/whitebox/multi_reviewer.py:307-322`）依 `model_alias` 取 `_SIMULATED_REVIEWS`（`:254-304`）的一筆固定 finding，找不到再用 agent id 的字尾（`whitebox_reviewer_claude` → `claude`）；兩者都不認得時沒有 finding（`:321-322`）。
 - verifier：`{"verdicts": []}`，debater 不會把模擬票算成票。
 - threat_modeler：`_simulated_threat_model`（`vibeharness/agents/blackbox/threat_modeler.py:421-483`），固定的 THREAT-01～03。
-- test_generator：`{"tests": []}`，白箱改用離線探針；synthesizer：`_simulated_attack_test`（`vibeharness/agents/blackbox/scenario_builder.py:432-436`）回傳空的 `code`，黑箱威脅記為 untested。每個模擬輸出都符合各自代理的 schema（`tests/test_model_output.py` 檢查）。
+- test_generator：`{"tests": []}`，白箱改用離線探針；synthesizer：`_simulated_attack_test`（`vibeharness/agents/blackbox/scenario_builder.py:366-370`）回傳空的 `code`，黑箱威脅記為 untested。每個模擬輸出都符合各自代理的 schema（`tests/test_model_output.py` 檢查）。
 
 ### 5.8 代理呼叫（`vibeharness/core/agent_call.py`）
 
@@ -355,7 +356,7 @@ flowchart TD
 | verifier 的程式碼上下文 | 8000 tokens | `vibeharness/agents/whitebox/debater.py:40` |
 | verifier 的 finding 列表 | 6000 tokens，每欄位 `max(40, 6000 // (n*4))` | `vibeharness/agents/whitebox/debater.py:45`、`:277` |
 | 測試生成的程式碼上下文 | 4000 tokens | `vibeharness/agents/whitebox/test_generator.py:46` |
-| 攻擊合成的程式碼上下文 | 4000 tokens | `vibeharness/agents/blackbox/scenario_builder.py:27` |
+| 攻擊合成的程式碼上下文 | 4000 tokens | `vibeharness/agents/blackbox/scenario_builder.py:28` |
 
 `import_instructions`（`vibeharness/core/codecontext.py:210-235`）告訴模型生成的測試要怎麼 import 目標：Python 檔用 `module_import_name`（`:85-105`）算出可 import 的模組名，目標目錄本身是套件（有 `__init__.py`）時以上層目錄為基準（`import_root`，`:63-82`，例如 `from shop.app import f`），否則給 importlib 的載入方式；JS/TS 檔改走 `js_import_instructions`（`:238-266`，第 9.5 節）給 `file://` URL 與對應模組系統的匯入寫法；其他副檔名會明確說「不可 import、不要寫可執行的測試」，避免模型寫出一定 ImportError 的測試。
 
@@ -468,10 +469,10 @@ flowchart TD
 
 ### 8.2 攻擊測試合成（`vibeharness/agents/blackbox/scenario_builder.py`）
 
-- **兩種模式**（`:256-274`）：`--base-url` 先經 `validate_base_url`（`:33-52`；CLI 在 `vibeharness/cli.py:571-575` 也呼叫）確認是帶主機名的 http(s) URL，否則用法錯誤（exit 5）：`urllib` 也能開 `file:`／`ftp:`／`data:`，過去 `file:///etc/hostname` 會被當成「伺服器存活」。只有使用者明確給 `--base-url` 才會 `check_server_live`（`vibeharness/agents/blackbox/scenario_builder.py:74-87`）探測（3 次、間隔 0.5 秒；任何 HTTP 狀態碼都算活著）。探測成功走 **Live HTTP**（只能對 base URL 發請求），否則走 **In-Process Contract**（import 目標直接呼叫，不開伺服器、不用網路）。預設不探測任何位址，避免攻擊腳本打到本機無關的服務。
-- 每個威脅經 `fan_out` 平行合成一個測試（live 失敗或 Ctrl-C 時尚未開始的合成不會開始；合成崩潰時記成一筆 `invalid` 的 `blackbox_test_synthesizer` 呼叫，該威脅維持 untested，`:283-291`），形狀是 `CODE_SCHEMA`（`code` 必須是字串，空字串合格；`ATTACK_CALL`，`:443-447`，整個回答就是那一個 item）。威脅模型的欄位（標題、OWASP／ATLAS 對應、攻擊向量、情境、驗證目標）是模型寫的，可能轉述目標裡的注入文字，所以以 `THREAT_ITEM` 片段（`:374`）走 `<untrusted_model_output>` 通道交給合成器；`ATTACK_CALL` 宣告兩種通道，所以 system prompt 依序附 `UNTRUSTED_CODE_POLICY` 與 `UNTRUSTED_MODEL_POLICY`。目標是 JS/TS 時 in-process 模式改要 `node:test` 模組（`:316-328`），Live HTTP 攻擊不論目標語言一律 Python（`:309-310`）。以下情況該威脅變 untested（都在 `ask` 之後檢查）：code 為空（`_attack_test`，`:407-429`；`:382-387`）；Live 模式下 `_hosts_outside_base_url`（`:181-224`）找到指向非目標主機的 URL 字面值（用 `urlsplit().hostname`，IPv6 與帶帳密的 URL 都正確解析；解析失敗一律視為違規，fail closed；loopback 主機彼此視為同一台），或同一台機器但不同連接埠的 URL（`_effective_port`，`:226-233`：有寫連接埠就用它，否則 http 是 80、https 是 443；不同連接埠就是另一個服務，例如 6379 的 redis）。
-- code 沒通過 `check_test_code_for` 時仍保留（`:398-403`），讓執行器報 ERROR 而不是默默丟掉。
-- `_code_context`（`:90-108`）以完整識別字或完整路由比對 attack_vector 與 attack_scenario 中出現的符號名稱（`_named_symbols`，`:147-174`，每個鍵的正規表達式來自 `_key_pattern`，`:123-144`：`_` 與 `$` 都算識別字字元，`GET /api/x` 這種路由也能用路徑本身比對，最長的比對勝出，所以 `/api/users/:id` 不會連帶拉進 `/api/users`；只由符號組成的路徑，也就是根路由 `/` 或萬用路由 `*`，只有被引號或反引號包住（`'/'`），或是後面沒有緊接路徑字元的完整 `GET /` 形式才算，所以文字裡的「and/or」「1 * 10」或「GET /admin」絕不會指名根路由）；沒有命中時給全部符號（route 優先）；同時回傳第一個相關符號所在檔案的語言，決定測試語言。
+- **兩種模式**（`:190-208`）：`--base-url` 先經 `validate_base_url`（`:34-53`；CLI 在 `vibeharness/cli.py:571-575` 也呼叫）確認是帶主機名的 http(s) URL，否則用法錯誤（exit 5）：`urllib` 也能開 `file:`／`ftp:`／`data:`，過去 `file:///etc/hostname` 會被當成「伺服器存活」。只有使用者明確給 `--base-url` 才會 `check_server_live`（`vibeharness/agents/blackbox/scenario_builder.py:75-88`）探測（3 次、間隔 0.5 秒；任何 HTTP 狀態碼都算活著）。探測成功走 **Live HTTP**（只能對 base URL 發請求），否則走 **In-Process Contract**（import 目標直接呼叫，不開伺服器、不用網路）。預設不探測任何位址，避免攻擊腳本打到本機無關的服務。
+- 每個威脅經 `fan_out` 平行合成一個測試（live 失敗或 Ctrl-C 時尚未開始的合成不會開始；合成崩潰時記成一筆 `invalid` 的 `blackbox_test_synthesizer` 呼叫，該威脅維持 untested，`:217-225`），形狀是 `CODE_SCHEMA`（`code` 必須是字串，空字串合格；`ATTACK_CALL`，`:377-381`，整個回答就是那一個 item）。威脅模型的欄位（標題、OWASP／ATLAS 對應、攻擊向量、情境、驗證目標）是模型寫的，可能轉述目標裡的注入文字，所以以 `THREAT_ITEM` 片段（`:308`）走 `<untrusted_model_output>` 通道交給合成器；`ATTACK_CALL` 宣告兩種通道，所以 system prompt 依序附 `UNTRUSTED_CODE_POLICY` 與 `UNTRUSTED_MODEL_POLICY`。目標是 JS/TS 時 in-process 模式改要 `node:test` 模組（`:250-262`），Live HTTP 攻擊不論目標語言一律 Python（`:243-244`）。以下情況該威脅變 untested（都在 `ask` 之後檢查）：code 為空（`_attack_test`，`:341-363`；`:316-321`）；Live 模式下 `_hosts_outside_base_url`（`:115-158`）找到指向非目標主機的 URL 字面值（用 `urlsplit().hostname`，IPv6 與帶帳密的 URL 都正確解析；解析失敗一律視為違規，fail closed；loopback 主機彼此視為同一台），或同一台機器但不同連接埠的 URL（`_effective_port`，`:160-167`：有寫連接埠就用它，否則 http 是 80、https 是 443；不同連接埠就是另一個服務，例如 6379 的 redis）。
+- code 沒通過 `check_test_code_for` 時仍保留（`:332-337`），讓執行器報 ERROR 而不是默默丟掉。
+- `_code_context`（`:91-108`）以完整識別字或完整路由比對 attack_vector 與 attack_scenario 中出現的符號名稱（`named_symbols`，`vibeharness/core/threat_symbols.py:16-32`，與 SARIF 的突破位置共用同一套規則；每個鍵的正規表達式來自 `_key_pattern`，`:85-116`：`_` 與 `$` 都算識別字字元，`GET /api/x` 這種路由也能用路徑本身比對，每一種路由（含路徑本身）後面都不能接 `/` 或 `-`，只寫路徑時前面也不能（完整 URL 的 `scheme://主機:連接埠` 不算路徑），所以只有 `GET /users` 時「GET /users/admin」與「/v2/users」都不會指名它，最長的比對勝出，所以 `/api/users/:id` 不會連帶拉進 `/api/users`；只由符號組成的路徑，也就是根路由 `/` 或萬用路由 `*`，只有被引號或反引號包住（`'/'`），或是後面沒有緊接路徑字元的完整 `GET /` 形式才算，所以文字裡的「and/or」「1 * 10」或「GET /admin」絕不會指名根路由）；沒有命中時給全部符號（route 優先）；同時回傳第一個相關符號所在檔案的語言，決定測試語言。
 - test id：`BB-TEST-{threat_id}`，`source_ref = threat_id`，harness 用它判斷哪些威脅有測試。
 
 ---
@@ -666,8 +667,8 @@ CI 的閘門要能「只對新問題失敗」，就需要不隨每次執行重�
 - 標頭帶 `RunMetadata`（`:161-172`）：產生時間、harness 版本、模式、沙盒、目標的 git 修訂（有未提交變更時註明）、設定檔路徑、套用的檔案篩選。
 - 只要有模擬呼叫就在最上方顯示 SIMULATED 警示，依比例標 ALL 或 SOME（`:175-187`）。
 - §1 判定、`--baseline` 時的「基準中的已知問題（不計入） ／ Known from baseline (not counted)」清單（`:199-207`）、evidence gap（每條經 `_inline`，`:208-212`）、指標表（含「確定性 AI 資安規則命中 ／ Deterministic AI-Security Rule Hits」；「程式碼行涵蓋率 ／ Code Line Coverage」一列在有 JS/TS 白箱測試或 `js_line_coverage_pct` 時寫成 `Python X% / JS/TS Y%`，兩者分母不同所以不合併，純 Python 的報告維持單一數字，`:220-227`）、reviewer models、AI components、確定性規則表、「執行來源 ／ Execution Provenance」表（依 agent／model／mode／reason 分組計數，mode 另分出「真實（回應快取） ／ live (response cache)」與「無法使用，已重問 ／ unusable, re-asked」，各列依 agent、model、mode 排序，`:275-293`）。未套用驗證時，共識率顯示「N/A（未套用驗證） ／ N/A (verification not applied)」（`:218`，`agreement_display` 在 `:75`），「已確認的白箱邏輯缺陷」一列顯示 `N/A` 與未經驗證的假設數（`:235-244`；`confirmed_whitebox_bugs` 為 `None` 時也一樣）。
-- §2 confirmed 與 disputed findings（含各票）、白箱結果表；未套用驗證時，發現清單的標題改用 `HEADING_UNVERIFIED_FINDINGS`（「未經驗證的缺陷假設（未套用跨模型驗證） ／ Unverified Defect Hypotheses (cross-model verification not applied)」，`:102-103`、`:314-317`），而不是「已確認的邏輯與防禦盲點」。§3 威脅表（含 MITRE ATLAS 欄）。§4 黑箱結果、PoC、未測試威脅（id 經 `_code_span`，`:405-406`）。§5 建議。PoC 與測試程式碼的圍欄依 `language` 標 `python`／`javascript`／`typescript`（`_fence_lang`，`:901-902`）。
-- §6「產生的測試程式碼（稽核軌跡） ／ Generated Test Code (audit trail)」（`HEADING_GENERATED_TESTS`，`:97`；`_generated_tests_section`，`:911-959`）：每個測試一個 `<details>`，程式碼與執行結果並列。live 實測發現有「通過」的測試其實在斷言缺陷本身，沒有程式碼就無法稽核。fence 依內容中最長的反引號自動加長（`_fence`，`:905-909`）。
+- §2 confirmed 與 disputed findings（含各票）、白箱結果表；未套用驗證時，發現清單的標題改用 `HEADING_UNVERIFIED_FINDINGS`（「未經驗證的缺陷假設（未套用跨模型驗證） ／ Unverified Defect Hypotheses (cross-model verification not applied)」，`:102-103`、`:314-317`），而不是「已確認的邏輯與防禦盲點」。§3 威脅表（含 MITRE ATLAS 欄）。§4 黑箱結果、PoC、未測試威脅（id 經 `_code_span`，`:405-406`）。§5 建議。PoC 與測試程式碼的圍欄依 `language` 標 `python`／`javascript`／`typescript`（`_fence_lang`，`:877-878`）。
+- §6「產生的測試程式碼（稽核軌跡） ／ Generated Test Code (audit trail)」（`HEADING_GENERATED_TESTS`，`:97`；`_generated_tests_section`，`:887-935`）：每個測試一個 `<details>`，程式碼與執行結果並列。live 實測發現有「通過」的測試其實在斷言缺陷本身，沒有程式碼就無法稽核。fence 依內容中最長的反引號自動加長（`_fence`，`:881-885`）。
 
 ### 11.2 JSON（`generate_json_report`，`:423-454`）
 
@@ -677,16 +678,16 @@ CI 的閘門要能「只對新問題失敗」，就需要不隨每次執行重�
 
 - 三類固定 ruleId（`:45-49`）：`vibeharness/VH-AI-00x`（level 依 severity，tags 帶 OWASP／ATLAS／CWE）、`vibeharness/whitebox-finding`（warning）、`vibeharness/blackbox-breach`（error）。GitHub Code Scanning 以 ruleId 加 fingerprint 追蹤 alert，用每次執行的 `WB-CLA-01` 當 ruleId 會讓重新編號關掉又重開 alert。本次執行的 id 放在 `properties.findingId`／`testId`／`threatId`。
 - 每條規則帶 `help.text`／`help.markdown`（`add_rule`，`:488-501`）：確定性規則附修復建議與 OWASP／ATLAS／CWE 對應（`:508-512`），白箱規則說明要用報告中的測試驗證假設（`:530-542`），黑箱規則說明用 PoC 重現並補上缺的授權／驗證（`:602-613`）；GitHub Code Scanning 的 alert 頁只顯示 `help`，沒有它就沒有修復指引。
-- level 對照（`_sarif_level`，`:737-745`）：CRITICAL／HIGH → error，MEDIUM → warning，LOW／INFO → note。`runs[0].properties` 另帶 `overall_status`、`target`、`simulated_whitebox_findings_omitted`、`simulated_breaches_omitted`、`generated_at`、`execution_mode`、`target_git_commit`（`:647-656`）。
-- URI 相對於 `%SRCROOT%`（`_location`，`:661-674`）。`_sarif_root`（`:701-726`）往上找含 `.git` 的目錄，**家目錄本身除外**（dotfiles repo 不會被當成根），找不到就用目標目錄。比較用 `os.path.samefile`，Windows 8.3 短檔名與大小寫差異都能處理（`_same_path`，`:728-735`）。
-- `_sarif_uri`（`:747-791`）絕不輸出 `..`：擷取器相對於工作目錄記下的路徑，若解析後落在 `%SRCROOT%` 內就先轉成絕對路徑；`%SRCROOT%` 之外的絕對路徑改成絕對 `file://` URI，`_location` 寫入時不帶 `uriBaseId`；模型回報的相對路徑若 `..` 片段會跳出 `%SRCROOT%`，就完全不給位置；Windows 磁碟機路徑在任何主機上都依 `ntpath` 規則處理（`_sarif_uri_windows`，`:793-816`）。
+- level 對照（`_sarif_level`，`:713-721`）：CRITICAL／HIGH → error，MEDIUM → warning，LOW／INFO → note。`runs[0].properties` 另帶 `overall_status`、`target`、`simulated_whitebox_findings_omitted`、`simulated_breaches_omitted`、`generated_at`、`execution_mode`、`target_git_commit`（`:647-656`）。
+- URI 相對於 `%SRCROOT%`（`_location`，`:661-674`）。`_sarif_root`（`:677-702`）往上找含 `.git` 的目錄，**家目錄本身除外**（dotfiles repo 不會被當成根），找不到就用目標目錄。比較用 `os.path.samefile`，Windows 8.3 短檔名與大小寫差異都能處理（`_same_path`，`:704-711`）。
+- `_sarif_uri`（`:723-767`）絕不輸出 `..`：擷取器相對於工作目錄記下的路徑，若解析後落在 `%SRCROOT%` 內就先轉成絕對路徑；`%SRCROOT%` 之外的絕對路徑改成絕對 `file://` URI，`_location` 寫入時不帶 `uriBaseId`；模型回報的相對路徑若 `..` 片段會跳出 `%SRCROOT%`，就完全不給位置；Windows 磁碟機路徑在任何主機上都依 `ntpath` 規則處理（`_sarif_uri_windows`，`:769-792`）。
 - 位置未知時（`is_unknown_location`，見第 10.5 節）省略 `locations`，不輸出 `null`，也不產生 URI（`:581-582`）。
-- fingerprint：白箱用（uri、symbol、正規化 title），黑箱用（STRIDE、正規化 title、正規化 attack_vector），黑箱突破盡量定位到攻擊向量提到的符號（`_threat_symbol`，`:677-699`：只比對完整識別字或完整路由，所以 `get` 不會命中 `get_user`，`GET /users` 也不會命中 `GET /users/admin`；路由優先，其次是最長的比對，平手取先出現的符號）。
-- `confirmed_findings` 包含平手保留與驗證未生效時原樣保留的發現。模擬引擎產生的白箱發現（`is_simulated`），以及衍生自模擬威脅（找不到威脅時看威脅模型是否為模擬）的突破都是範本而非證據：它們不會成為 SARIF 結果（在 Code Scanning 裡看起來會和真的一樣），只計入 run properties 的 `simulated_whitebox_findings_omitted`／`simulated_breaches_omitted`（`:545-549`、`:590-600`、`:652-653`）。每個白箱結果在 `properties.simulated` 旁另帶 `properties.verified`（是否套用了跨模型驗證），沒有驗證時 message 以「未經驗證的假設（未套用跨模型驗證） ／ Unverified hypothesis (cross-model verification not applied)」開頭（`:558-578`）。
+- fingerprint：白箱用（uri、symbol、正規化 title），黑箱用（STRIDE、正規化 title、正規化 attack_vector），黑箱突破盡量定位到攻擊向量與攻擊情境提到的符號（`target_symbol`，`vibeharness/core/threat_symbols.py:35-43`，從攻擊腳本用的同一次比對 `named_symbols` 裡挑：只比對完整識別字或完整路由，所以 `get` 不會命中 `get_user`，`GET /users` 也不會命中 `GET /users/admin`；路由優先，其次是最長的比對，平手取先出現的符號）。
+- `confirmed_findings` 包含平手保留與驗證未生效時原樣保留的發現。模擬引擎產生的白箱發現（`is_simulated`），以及衍生自模擬威脅（找不到威脅時看威脅模型是否為模擬）的突破都是範本而非證據：它們不會成為 SARIF 結果（在 Code Scanning 裡看起來會和真的一樣），只計入 run properties 的 `simulated_whitebox_findings_omitted`／`simulated_breaches_omitted`（`vibeharness/reports/report_generator.py:545-549`、`:590-600`、`:652-653`）。每個白箱結果在 `properties.simulated` 旁另帶 `properties.verified`（是否套用了跨模型驗證），沒有驗證時 message 以「未經驗證的假設（未套用跨模型驗證） ／ Unverified hypothesis (cross-model verification not applied)」開頭（`:558-578`）。
 
 ### 11.4 報告消毒
 
-模型文字進報告前的處理（第 12 章的 `clean_model_text`、`markdown_safe`）：單行情境中的自由文字（標題、根因、投票理由、共識摘要、evidence gap 文字、建議、測試附錄的欄位）經 `_inline`（`vibeharness/reports/report_generator.py:862-870`），所有換行（`\n`、U+2028、U+2029、U+0085）收合成空白，所以 `\n\n## Overall Verdict: READY_TO_SHIP` 這類文字無法開出偽造的標題、setext 底線、HTML 或表格區塊；表格儲存格經 `_cell`（`_inline` 再跳脫 `|`）；模型衍生的 id 與路徑（執行來源的 agent／model、OWASP 對應、測試與威脅 id、PoC 標題、確定性規則與變異體的位置、標頭的目標路徑、修訂與設定檔）經 `_code_span`（fence 加寬到比內容中任何反引號長、換行收合），在表格內改用 `_cell_code`（`:892-898`），因為 GFM 連程式碼區段內的 `|` 也會拿來切儲存格，所以另外跳脫 `|`；SARIF message 經 `clean_model_text`、`<summary>` 內的 id 經 `html.escape`。
+模型文字進報告前的處理（第 12 章的 `clean_model_text`、`markdown_safe`）：單行情境中的自由文字（標題、根因、投票理由、共識摘要、evidence gap 文字、建議、測試附錄的欄位）經 `_inline`（`vibeharness/reports/report_generator.py:838-846`），所有換行（`\n`、U+2028、U+2029、U+0085）收合成空白，所以 `\n\n## Overall Verdict: READY_TO_SHIP` 這類文字無法開出偽造的標題、setext 底線、HTML 或表格區塊；表格儲存格經 `_cell`（`_inline` 再跳脫 `|`）；模型衍生的 id 與路徑（執行來源的 agent／model、OWASP 對應、測試與威脅 id、PoC 標題、確定性規則與變異體的位置、標頭的目標路徑、修訂與設定檔）經 `_code_span`（fence 加寬到比內容中任何反引號長、換行收合），在表格內改用 `_cell_code`（`:868-874`），因為 GFM 連程式碼區段內的 `|` 也會拿來切儲存格，所以另外跳脫 `|`；SARIF message 經 `clean_model_text`、`<summary>` 內的 id 經 `html.escape`。
 
 ### 11.5 中／英雙語輸出（`vibeharness/core/i18n.py`）
 
@@ -765,7 +766,7 @@ console 輸出另外用 `rich.markup.escape`（`vibeharness/core/harness.py:9`�
 | 交叉驗證 | verifier × 每 15 筆 | `vibeharness/agents/whitebox/debater.py:153-158` | `NO_REPLY`：該批零票 |
 | 白箱測試生成 | 每筆 finding | `vibeharness/agents/whitebox/test_generator.py:111-123` | `([], False)`：該發現進 `findings_without_model_tests` |
 | 威脅建模 | 每批符號 | `vibeharness/agents/blackbox/threat_modeler.py:282-291` | `NO_REPLY`：略過該批，報告層級欄位取自下一個可用的批次 |
-| 攻擊合成 | 每個威脅 | `vibeharness/agents/blackbox/scenario_builder.py:283-291` | `None`：該威脅 untested |
+| 攻擊合成 | 每個威脅 | `vibeharness/agents/blackbox/scenario_builder.py:217-225` | `None`：該威脅 untested |
 
 其他確定性措施：偵測語言排序、`ai_components` 排序、靜態 finding 排序、去重結果排序、跨批威脅合併，以及摘要與部分報告中經 `sorted_call_log` 排序的 `agent_calls`（`call_log` 本身仍是完成順序）。
 
@@ -980,7 +981,7 @@ DAST／fuzzing、以 hypothesis 為測試策略（Docker 沙盒映像已附 `hyp
 
 ## 18. 附錄
 
-行號對應 commit `151ca3e` 的程式碼（發布時改為 release tag）；`python scripts/recite_design_refs.py --check` 核對每個引用（`tests/test_design_refs.py` 在 CI 跑同一套檢查），不帶參數執行則把引用重新對應到目前的程式碼。
+行號對應 commit `c0e0fe0` 的程式碼（發布時改為 release tag）；`python scripts/recite_design_refs.py --check` 核對每個引用（`tests/test_design_refs.py` 在 CI 跑同一套檢查），不帶參數執行則把引用重新對應到目前的程式碼。
 
 ### 18.1 關鍵常數
 
@@ -1009,7 +1010,7 @@ DAST／fuzzing、以 hypothesis 為測試策略（Docker 沙盒映像已附 `hyp
 | `MAX_PROBES` | 10 | `vibeharness/agents/whitebox/test_generator.py:74` |
 | `HEAL_ATTEMPTS`（修復次數上限） | 2 | `vibeharness/agents/whitebox/test_generator.py:53` |
 | `HEAL_CODE_TOKENS`（修復提示帶的測試估計大小，不是上限） | 1200 | `vibeharness/agents/whitebox/test_generator.py:57` |
-| `PROBE_ATTEMPTS`／`PROBE_RETRY_DELAY_SEC` | 3／0.5 | `vibeharness/agents/blackbox/scenario_builder.py:71-72` |
+| `PROBE_ATTEMPTS`／`PROBE_RETRY_DELAY_SEC` | 3／0.5 | `vibeharness/agents/blackbox/scenario_builder.py:72-73` |
 | `TIMEOUT_EXIT_CODE`／`EXECUTION_FAILURE_EXIT_CODE` | 124／125 | `vibeharness/core/sandbox.py:28-31` |
 | `_POST_KILL_DRAIN_SECONDS` | 5.0 | `vibeharness/core/sandbox.py:38` |
 | `MIN_NODE_VERSION`／`MIN_NODE_VERSION_TS` | 20.0.0／22.6.0 | `vibeharness/core/sandbox.py:1038-1039` |
@@ -1068,6 +1069,7 @@ DAST／fuzzing、以 hypothesis 為測試策略（Docker 沙盒映像已附 `hyp
 - `vibeharness/core/jscoverage.py`：`strip_coverage_glob_warning` 79、`node_coverage_problem` 94、`node_coverage_args` 110、`parse_lcov` 140、`resolve_source_path` 177、`target_relative_path` 195、`JsLineCoverage` 222、`read_untrusted_file` 279、`read_lcov_file` 355、`_glob_include_root` 365、`_glob_include_roots` 409
 - `vibeharness/core/baseline.py`：`_keys_from_report` 58、`load_baseline` 138、`annotate_report_payload` 161、`compare_with_baseline` 200
 - `vibeharness/core/identity.py`：`is_unknown_location` 30、`severity_rank` 44、`normalize` 50、`key_text` 58、`fingerprint` 66、`target_relative` 71、`static_key` 98、`finding_key` 106、`probe_key` 111、`whitebox_failure_key` 117、`threat_identity` 127、`breach_key` 136、`sarif_static_fingerprint` 149、`sarif_finding_fingerprint` 155、`sarif_breach_fingerprint` 161
+- `vibeharness/core/threat_symbols.py`：`named_symbols` 16、`target_symbol` 35、`_threat_text` 46、`_matches` 52、`_symbol_keys` 73、`_key_pattern` 85
 - `vibeharness/core/estimate.py`：`_typical_calls` 85、`_row` 92、`_one_agent` 113、`_of_kind` 121、`estimate_run` 128、`estimate_lines` 268
 - `vibeharness/agents/whitebox/ast_extractor.py`：`_RegexCloser` 194、`ScopeResult` 256、`parse_directory` 354、`scan_directory` 447、`_file_kind` 474、`_collect_other` 493、`_selected` 511、`_too_large` 523、`_parse_python_file` 529、`_py_definitions` 558、`_registered_python_views` 583、`_nested_python_routes` 638、`_routes_within` 646、`_parse_js_ts_file` 657、`_mask_source` 703、`_mask_code` 724、`_mask_jsx` 825、`_mask_template` 952、`_snippet` 1151、`_extract_js_functions` 1190、`_skip_heritage_type_literals` 1304、`_extract_js_routes` 1368、`_js_router_bindings` 1420、`_route_path` 1463、`_js_route_method_calls` 1516、`_object_route_name` 1591、`_nextjs_handlers` 1602、`_annotation_colon_back` 1784、`_extract_python_function` 1943、`_without_nested_routes` 1986、`_is_route_decorator` 2022
 - `vibeharness/agents/whitebox/ai_static_scanner.py`：`_ScopeIndex` 467、`ScanResult` 584、`scan_files` 638、`scan` 666、`scan_config_files` 678、`_config_chunks` 708、`_scan_text_rules` 746、`_scan_python` 754、`_find_str_consts` 956、`_is_llm_call` 1046、`_is_llm_source` 1076、`_call_rules` 1104、`_has_output_cap` 1138、`_taint_rule` 1192、`_resolve_sink` 1257、`_find_sink_aliases` 1284、`_sink_verdict` 1301、`_shell_mode` 1384、`_stdin_tainted` 1403、`_spawn_verdict` 1417、`_argv_verdict` 1465、`_unknown_program_verdict` 1533、`_classify_option` 1548、`_wrapper_verdict` 1584、`_runner_verdict` 1679、`_git_verdict` 1711、`_find_verdict` 1739、`_interpreter_verdict` 1755、`_sink_first_arg` 1826、`_tick` 1884、`_dedupe` 1936
@@ -1076,7 +1078,7 @@ DAST／fuzzing、以 hypothesis 為測試策略（Docker 沙盒映像已附 `hyp
 - `vibeharness/agents/whitebox/debater.py`：`plan` 71、`_assigned_findings` 87、`_rules_on` 96、`_chunks` 103、`_call_count` 109、`arbitrate` 117、`_verify` 223、`_parse_index` 257、`_build_listing` 270、`_code_context` 293、`is_usable_verdict` 311、`verdicts_schema` 321、`_verdict_votes` 334、`_verify_call` 356
 - `vibeharness/agents/whitebox/test_generator.py`：`plan` 82、`generate_tests_for_findings` 98、`_tests_for_finding` 138、`_validate_and_heal` 218、`_has_required_params` 290、`build_offline_probes` 314、`is_usable_test` 28、`_test_drafts` 403、`TESTS_CALL` 429
 - `vibeharness/agents/blackbox/threat_modeler.py`：`_batches` 43、`_listing` 51、`_stride_category` 68、`_rules_guidance` 129、`_llm_rules_guidance` 163、`plan` 217、`model_system` 228、`_merge_duplicate_threats` 321、`_threat_drafts` 347、`_assign_threat_ids` 396、`THREAT_MODEL_CALL` 489、`_simulated_threat_model` 421
-- `vibeharness/agents/blackbox/scenario_builder.py`：`validate_base_url` 33、`check_server_live` 74、`_code_context` 90、`_key_pattern` 123、`_named_symbols` 147、`_hosts_outside_base_url` 181、`_effective_port` 227、`plan` 235、`build_test_cases_from_threats` 243、`_test_for_threat` 293、`_attack_test` 407、`_simulated_attack_test` 432、`ATTACK_CALL` 443
+- `vibeharness/agents/blackbox/scenario_builder.py`：`validate_base_url` 34、`check_server_live` 75、`_code_context` 91、`_hosts_outside_base_url` 115、`_effective_port` 161、`plan` 169、`build_test_cases_from_threats` 177、`_test_for_threat` 227、`_attack_test` 341、`_simulated_attack_test` 366、`ATTACK_CALL` 377
 - `vibeharness/runners/test_executor.py`：`SuiteResult` 55、`_js_sandbox_or_none` 101、`execute_test_suite` 122、`run_mutant_batch` 163、`_run_group` 220、`_run_individually` 361、`_js_coverage_or_none` 414、`_per_test_budget` 424、`_run_js_modules` 435、`_split_future_imports` 536
 - `vibeharness/runners/attribution.py`：`parse_junit` 127、`attribute` 215、`not_run` 305、`mutant_outcome` 315、`_is_harness_failure` 331、`_target_failed_to_load` 370、`_raised_in_target_code` 424、`_js_is_harness_failure` 441、`_js_raised_in_target_code` 464、`_js_exception_summary` 473、`_js_raw_exception_summary` 479、`_js_is_assertion` 509、`_is_assertion` 518
-- `vibeharness/reports/report_generator.py`：`generate_markdown_report` 142、`generate_json_report` 423、`generate_sarif_report` 456、`add_rule` 488、`_threat_symbol` 678、`_sarif_root` 702、`_sarif_uri` 748、`_sarif_uri_windows` 794、`_inline` 863、`_cell_code` 893、`_generated_tests_section` 911
+- `vibeharness/reports/report_generator.py`：`generate_markdown_report` 142、`generate_json_report` 423、`generate_sarif_report` 456、`add_rule` 488、`_sarif_root` 678、`_sarif_uri` 724、`_sarif_uri_windows` 770、`_inline` 839、`_cell_code` 869、`_generated_tests_section` 887
