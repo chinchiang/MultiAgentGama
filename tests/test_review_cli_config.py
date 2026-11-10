@@ -320,9 +320,6 @@ def test_reask_after_a_fallback_answer_tries_the_primary_again(tmp_path, monkeyp
     assert fake.models == ["primary-model", "fallback-model", "primary-model", "fallback-model"]
 
 
-# --- 回應快取的鍵包含端點身分 -----------------------------------------------------------------------
-# --- The response-cache key includes the endpoint identity -----------------------------------------
-
 # --- 確定性的呼叫紀錄順序 ----------------------------------------------------------------------------
 # --- Deterministic call-log order ---------------------------------------------------------------------
 

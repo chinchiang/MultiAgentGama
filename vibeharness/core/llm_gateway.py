@@ -133,10 +133,6 @@ _RETRY_SUFFIX = (
 )
 
 
-
-
-
-
 class LLMGatewayError(RuntimeError):
     """在嚴格的 'live' 模式下，當真實模型呼叫不可能或失敗時拋出。
     Raised in strict 'live' mode when a real model invocation is impossible or fails."""

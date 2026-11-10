@@ -26,8 +26,8 @@ _ENDPOINT_IDENTITY_KEYS = ("api_base", "aws_region_name", "aws_profile_name", "a
 
 def key(model_alias: str, model_info: Mapping[str, Any], temperature: float, max_output_tokens: int,
         system_prompt: str, user_prompt: str) -> str:
-    """一個請求的快取鍵：模型別名、模型設定（模型、fallback 模型、額外參數、端點身分）、溫度、閘道決定的輸出
-    token 上限，以及兩段提示的 sha256。
+    """一個請求的快取鍵：把模型別名、模型設定（模型、fallback 模型、額外參數、端點身分）、溫度、閘道決定的
+    輸出 token 上限，以及兩段提示接在一起，整串算一次 sha256。
     The cache key of a request: the sha256 of the model alias, the model settings (model, fallback model, extra
     parameters, endpoint identity), the temperature, the output-token limit the gateway resolves, and both
     prompts."""
@@ -63,12 +63,12 @@ def lookup(cache_dir: Optional[str], cache_key: str) -> Optional[Dict[str, Any]]
 def store(cache_dir: Optional[str], cache_key: str, *, agent_id: str, model: str, raw_text: str,
           finish_reason: Optional[str], prompt_sha256: str, reask_key: Optional[str] = None) -> None:
     """把一個可用的回答寫進快取；沒有快取目錄時什麼都不做，寫不進去時只記警告。重新詢問後拿到的回答
-    （`reask_key`）也存到原始提示的鍵下：否則重新執行（尤其是 --cache-only）對第一次嘗試永遠未命中，
-    因為重新詢問的提示取決於第一次那個無法使用的回答。
+    存在重新詢問那次提示的鍵（`reask_key`）下，也存在原始提示的鍵（`cache_key`）下：否則重新執行
+    （尤其是 --cache-only）對第一次嘗試永遠未命中，因為重新詢問的提示取決於第一次那個無法使用的回答。
     Stores one usable answer; does nothing without a cache directory and only warns when it cannot write. An
-    answer obtained after a re-ask (`reask_key`) is also stored under the original prompt's key: otherwise a re-run
-    (especially --cache-only) always misses the first attempt, because the re-ask prompt depends on the unusable
-    first answer."""
+    answer obtained after a re-ask is stored under the re-ask prompt's key (`reask_key`) and also under the
+    original prompt's key (`cache_key`): otherwise a re-run (especially --cache-only) always misses the first
+    attempt, because the re-ask prompt depends on the unusable first answer."""
     if not cache_dir:
         return
     entry = {
