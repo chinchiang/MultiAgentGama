@@ -4,14 +4,15 @@
 `tests/` 裡，相對於與 `--against` 的 merge-base 新增或 AST 不同的測試函式，把 merge-base 掛成暫時的 detached
 worktree、換上工作目錄的 `tests/`，跑這些測試所在的檔案，只讀它們的結果，逐一列出它們在基準上是紅、綠還是
 skipped。紅的附上失敗原因，看得出是不是因為錯的理由紅（例如 `ImportError`）；參數化的測試算一筆，有任何 case
-通過就是綠的，並列出那些 case；在基準上被 skip 的列成 skipped（它沒在基準上失敗）；標了 xfail 而在基準上失敗的
-是紅的。只用在 `fix:` 的分支：`refactor:` 的測試本來就該兩邊都綠。
+通過就是綠的，並列出那些 case；在基準上被 skip 的（包括整個檔案被 skip）列成 skipped（它沒在基準上失敗）；
+標了 xfail 而在基準上失敗的是紅的。只用在 `fix:` 的分支：`refactor:` 的測試本來就該兩邊都綠。
 
 挑選的範圍：只看 `tests/` 底下的 `test_*.py`，其中最上層的 `test*` 函式，以及最上層 `Test*` 類別裡的 `test*`
 方法；「改了」是指函式本身的 AST 不同。只改 fixture、helper 或 `conftest.py` 時，用到它們的測試不會被選到。
 
-結束碼：0 全部是紅的（或沒有新增、改動的測試），1 有綠的或 skipped 的（列出來），2 無法比對（git 失敗、測試檔
-解析不了或不是 UTF-8、pytest 在基準上無法啟動、選到的測試在基準上收集不到）。
+結束碼：0 全部是紅的（或沒有新增、改動的測試），1 有綠的或 skipped 的（列出來），2 無法比對（找不到 merge-base 或
+無法建 worktree、測試檔解析不了或不是 UTF-8、pytest 在基準上沒寫出報告（附上它最後幾行輸出）、選到的測試在
+基準上收集不到）。
 
 用法：
     python scripts/check_new_tests_red_on_base.py --against master
@@ -23,17 +24,17 @@ finds the test functions in the working tree's `tests/` that are new or whose AS
 `--against`, adds that merge-base as a temporary detached worktree with the working tree's `tests/` in place of its
 own, runs the files those tests are in, reads only their results, and lists each one as red, green or skipped on the
 base. A red one shows its failure reason, so a test that is red for the wrong reason (an `ImportError`, say) is
-visible; a parametrized test is one entry, green when any case passes, naming those cases; one skipped on the base is
-listed as skipped (it did not fail there), and one marked xfail that fails on the base is red. For `fix:` branches
-only: a `refactor:` keeps its tests green on both sides on purpose.
+visible; a parametrized test is one entry, green when any case passes, naming those cases; one skipped on the base
+(the whole file included) is listed as skipped (it did not fail there), and one marked xfail that fails on the base is
+red. For `fix:` branches only: a `refactor:` keeps its tests green on both sides on purpose.
 
 What it selects: only `test_*.py` under `tests/`, and in them the top-level `test*` functions and the `test*` methods
 of top-level `Test*` classes; "changed" means the function's own AST differs. A change only to a fixture, a helper or
 `conftest.py` does not select the tests that use it.
 
 Exit code: 0 every test is red (or no test is new or changed), 1 some are green or skipped (they are listed), 2 could
-not compare (git failed, a test file does not parse or is not UTF-8, pytest could not start on the base, a selected
-test was not collected on the base).
+not compare (no merge-base or the worktree could not be added, a test file does not parse or is not UTF-8, pytest
+wrote no report on the base (its last output lines are shown), a selected test was not collected on the base).
 
 Usage:
     python scripts/check_new_tests_red_on_base.py --against master
@@ -52,6 +53,12 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+class NoReport(Exception):
+    """pytest 在基準上沒寫出報告（無法啟動、或被中途結束），帶著它輸出的最後幾行。
+    pytest wrote no report on the base (it could not start, or was ended midway), carrying the last lines of its
+    output."""
 
 
 def _git(repo: str, *args: str) -> str:
@@ -92,11 +99,19 @@ def new_and_changed(repo: str, base: str) -> list[str]:
     return selected
 
 
+def _file_of(node_id: str) -> str:
+    """node id 所在的測試檔（`tests/a/test_x.py::TestY::test_z` 是 `tests/a/test_x.py`）。
+    The test file a node id is in (`tests/a/test_x.py::TestY::test_z` is `tests/a/test_x.py`)."""
+    return node_id.split("::", 1)[0]
+
+
 def junit_key(node_id: str) -> tuple[str, str]:
     """一個 node id 在 JUnit 報告裡的 (classname, name)：`tests/a/test_x.py::TestY::test_z` 是
-    (`tests.a.test_x.TestY`, `test_z`)。選測試與讀報告共用這條規則，兩邊才不會對不上。
+    (`tests.a.test_x.TestY`, `test_z`)。讀報告時用它把結果對回選到的 node id；classname 從 pytest 的 rootdir 算起，
+    所以 `run_on_base` 把 rootdir 固定在 worktree。
     A node id's (classname, name) in the JUnit report: `tests/a/test_x.py::TestY::test_z` is (`tests.a.test_x.TestY`,
-    `test_z`). Selecting tests and reading the report share this rule, so the two always match."""
+    `test_z`). Reading the report uses it to map results back to the selected node ids; the classname counts from
+    pytest's rootdir, so `run_on_base` pins the rootdir to the worktree."""
     path, *parts = node_id.split("::")
     return ".".join([path.removesuffix(".py").replace("/", "."), *parts[:-1]]), parts[-1]
 
@@ -115,19 +130,34 @@ def _reason(problem: ET.Element) -> str:
     return errors[-1] if errors else (lines[0] if lines else message)
 
 
+def _module_skip_reason(skip: ET.Element) -> str:
+    """整個檔案被 skip 的原因：JUnit 的 message 只寫「collection skipped」，原因在內容裡，形如
+    `('tests/test_x.py', 3, "Skipped: could not import 'y'")`；讀不出來就用內容本身。
+    Why a whole file was skipped: JUnit's message says only "collection skipped", and the reason is in the text, shaped
+    `('tests/test_x.py', 3, "Skipped: could not import 'y'")`; when that does not parse, the text itself is used."""
+    text = (skip.text or "").strip()
+    try:
+        value = ast.literal_eval(text)
+    except (ValueError, SyntaxError):
+        value = None
+    if isinstance(value, tuple) and value and isinstance(value[-1], str):
+        return value[-1]
+    return text.splitlines()[0] if text else skip.get("message") or "skipped"
+
+
 def run_on_base(worktree: Path, node_ids: list[str], report: Path) -> dict[str, tuple[str, str]]:
-    """在 worktree 裡只跑 node_ids，回傳每個 node id 在基準上的 (狀態, 說明)。狀態是 `red`、`green` 或
-    `skipped`：參數化的測試算一筆，有任何 case 通過就是綠的，說明列出那些 case；沒有通過但有 case 被 skip 是 skipped，
-    說明是 skip 的原因（它沒在基準上失敗，結束碼和綠的一樣算）；全部失敗是紅的，說明是第一個 case 的失敗原因。
-    收集不到的測試檔，裡面每個選到的測試是紅的、帶那個收集錯誤；檔案收集得到、報告裡卻沒有的測試是
-    `not collected`，`main` 把它當成無法比對，絕不算紅或綠。
-    Runs only node_ids in the worktree and returns each node id's (status, detail) on the base. The status is `red`,
-    `green` or `skipped`: a parametrized test is one entry, green when any case passes, with those cases as the
-    detail; skipped when none passes and a case was skipped, with the skip reason as the detail (it did not fail on
-    the base, so the exit code counts it like green); red when all fail, with the first case's failure as the
-    detail. Each selected test in a file that failed to collect
-    is red with that collection error; a test missing from the report of a file that did collect is `not collected`,
-    which `main` takes as could not compare, never as red or green."""
+    """在 worktree 裡跑 node_ids 所在的整個檔案，只讀它們的結果，回傳每個 node id 在基準上的 (狀態, 說明)。狀態是
+    `red`、`green` 或 `skipped`：參數化的測試算一筆，有任何 case 通過就是綠的，說明列出那些 case；沒有通過但有 case
+    被 skip（或整個檔案被 skip）是 skipped，說明是 skip 的原因（它沒在基準上失敗，結束碼和綠的一樣算）；全部失敗是
+    紅的，說明是第一個 case 的失敗原因。收集不到的測試檔，裡面每個選到的測試是紅的、帶那個收集錯誤；檔案收集得到、
+    報告裡卻沒有的測試是 `not collected`，`main` 把它當成無法比對，絕不算紅或綠。pytest 沒寫出報告時丟出 `NoReport`。
+    Runs the whole files node_ids are in on the worktree, reads only their results, and returns each node id's (status,
+    detail) on the base. The status is `red`, `green` or `skipped`: a parametrized test is one entry, green when any
+    case passes, with those cases as the detail; skipped when none passes and a case (or the whole file) was skipped,
+    with the skip reason as the detail (it did not fail on the base, so the exit code counts it like green); red when
+    all fail, with the first case's failure as the detail. Each selected test in a file that failed to collect is red
+    with that collection error; a test missing from the report of a file that did collect is `not collected`, which
+    `main` takes as could not compare, never as red or green. When pytest writes no report it raises `NoReport`."""
     # pytest 的結束碼分不出「無法啟動」與「選到的檔案收集失敗」（兩者都可能是 4），所以只讀報告
     # pytest's exit code cannot tell "could not start" from "a selected file failed to collect" (both can be 4), so
     # only the report is read
@@ -137,24 +167,38 @@ def run_on_base(worktree: Path, node_ids: list[str], report: Path) -> dict[str, 
     # --rootdir 固定在 worktree：JUnit 的 classname 從 rootdir 算起，`tests/` 底下的 pytest.ini 不能讓它少了 `tests.`
     # --rootdir is pinned to the worktree: the JUnit classname counts from the rootdir, so a pytest.ini under `tests/`
     # cannot drop its `tests.`
-    files = sorted({node_id.split("::")[0] for node_id in node_ids})
-    subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", f"--rootdir={worktree}",
-                    f"--junitxml={report}", *files], cwd=worktree, capture_output=True, encoding="utf-8",
-                   errors="replace")
+    # --maxfail=0（不設上限）排在基準設定的 addopts 之後，蓋掉 -x／--maxfail：同一個檔案裡先失敗的測試不能讓 pytest
+    # 停下，使選到的測試沒有結果
+    # --maxfail=0 (no limit) comes after the base config's addopts and overrides -x / --maxfail: a test that fails
+    # earlier in the same file must not stop pytest and leave the selected tests without a result
+    files = sorted({_file_of(node_id) for node_id in node_ids})
+    run = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", f"--rootdir={worktree}",
+                          "--maxfail=0", f"--junitxml={report}", *files],
+                         cwd=worktree, capture_output=True, encoding="utf-8", errors="replace")
+    if not report.is_file():
+        tail = [line for line in (run.stdout + run.stderr).splitlines() if line.strip()][-5:]
+        raise NoReport("pytest wrote no report on the base:\n" + "\n".join(tail))
     passed: dict[str, list[str]] = {}
     skipped: dict[str, str] = {}
     failed: dict[str, str] = {}
     broken_files: dict[str, str] = {}
+    skipped_files: dict[str, str] = {}
     by_key = {junit_key(node_id): node_id for node_id in node_ids}
     for case in ET.parse(report).getroot().iter("testcase"):
         problem = case.find("failure")
         if problem is None:
             problem = case.find("error")
         if not case.get("classname"):
-            # 模組層級的收集錯誤：name 是模組路徑（tests.test_x）
-            # A module-level collection error: name is the module path (tests.test_x)
-            reason = _reason(problem) if problem is not None else ""
-            broken_files[case.get("name", "").replace(".", "/") + ".py"] = reason or "collection failure"
+            # 模組層級的結果：name 是模組路徑（tests.test_x）。整個檔案被 skip（例如 importorskip）不是收集錯誤
+            # A module-level result: name is the module path (tests.test_x). A whole file skipped (importorskip, say)
+            # is not a collection error
+            module_file = case.get("name", "").replace(".", "/") + ".py"
+            module_skip = case.find("skipped")
+            if problem is None and module_skip is not None:
+                skipped_files[module_file] = _module_skip_reason(module_skip)
+            else:
+                reason = _reason(problem) if problem is not None else ""
+                broken_files[module_file] = reason or "collection failure"
             continue
         # `test_x[a-b]` 拆成函式名稱與 case id；沒參數化時 case id 是空的
         # `test_x[a-b]` splits into the function name and the case id; the case id is empty when not parametrized
@@ -183,8 +227,10 @@ def run_on_base(worktree: Path, node_ids: list[str], report: Path) -> dict[str, 
             results[node_id] = ("skipped", skipped[node_id])
         elif node_id in failed:
             results[node_id] = ("red", failed[node_id])
-        elif node_id.split("::")[0] in broken_files:
-            results[node_id] = ("red", broken_files[node_id.split("::")[0]])
+        elif _file_of(node_id) in skipped_files:
+            results[node_id] = ("skipped", skipped_files[_file_of(node_id)])
+        elif _file_of(node_id) in broken_files:
+            results[node_id] = ("red", broken_files[_file_of(node_id)])
         else:
             results[node_id] = ("not collected", "")
     return results
@@ -208,11 +254,12 @@ def main(argv: list[str] | None = None, repo: str = _REPO) -> int:
         shutil.rmtree(worktree / "tests", ignore_errors=True)
         shutil.copytree(Path(repo, "tests"), worktree / "tests")
         results = run_on_base(worktree, node_ids, scratch / "report.xml")
-    except (subprocess.CalledProcessError, OSError, ET.ParseError, SyntaxError, UnicodeDecodeError) as exc:
-        # git 的錯誤在它的 stderr；pytest 沒寫出報告（無法啟動）時讀報告會丟 OSError 或 ParseError；測試檔解析不了是
-        # SyntaxError，不是 UTF-8 是 UnicodeDecodeError
-        # git's error is in its stderr; when pytest wrote no report (it could not start), reading it raises OSError or
-        # ParseError; a test file that does not parse raises SyntaxError, and one that is not UTF-8 UnicodeDecodeError
+    except (subprocess.CalledProcessError, OSError, ET.ParseError, SyntaxError, UnicodeDecodeError, NoReport) as exc:
+        # git 的錯誤在它的 stderr；pytest 沒寫出報告是 NoReport（帶著 pytest 的最後幾行），報告讀不了是 ParseError；
+        # 測試檔解析不了是 SyntaxError，不是 UTF-8 是 UnicodeDecodeError
+        # git's error is in its stderr; pytest writing no report is NoReport (carrying pytest's last lines), a report
+        # that does not read is ParseError; a test file that does not parse raises SyntaxError, and one that is not
+        # UTF-8 UnicodeDecodeError
         if isinstance(exc, subprocess.CalledProcessError):
             detail = exc.stderr
         elif isinstance(exc, SyntaxError):

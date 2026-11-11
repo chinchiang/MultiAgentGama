@@ -248,10 +248,11 @@ def test_a_branch_without_new_or_changed_tests_says_so(tmp_path, capsys):
 
 def test_pytest_that_cannot_start_on_the_base_cannot_compare(tmp_path, capsys):
     """基準的 `pytest.ini` 帶著不存在的選項：pytest 在基準上無法啟動、沒寫出報告，結束碼是 2（無法比對），
-    不能把沒跑的測試當成任何結果；這時 worktree 已經建好了，失敗之後照樣移除。
+    不能把沒跑的測試當成任何結果，並附上 pytest 輸出的最後幾行說明原因；這時 worktree 已經建好了，失敗之後照樣移除。
     The base's `pytest.ini` carries an option that does not exist: pytest cannot start on the base and writes no
-    report, so the exit code is 2 (could not compare); tests that never ran count as no result at all. The worktree
-    was already added by then, and it is still removed after the failure."""
+    report, so the exit code is 2 (could not compare); tests that never ran count as no result at all, and the last
+    lines of pytest's output say why. The worktree was already added by then, and it is still removed after the
+    failure."""
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "pytest.ini").write_text("[pytest]\naddopts = --no-such-option\n", encoding="utf-8")
@@ -262,7 +263,10 @@ def test_adding_two_numbers_gives_their_sum():
     assert add(1, 2) == 3
 ''', encoding="utf-8")
     assert tool.main(["--against", "HEAD"], repo=str(repo)) == 2
-    assert "could not compare" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    # 沒有報告時附上 pytest 輸出的最後幾行，看得出它為什麼沒跑（這裡是不認得的選項）
+    # Without a report, the last lines of pytest's output show why it did not run (here an unknown option)
+    assert "could not compare" in err and "--no-such-option" in err, err
     # 這條路徑已經建了 worktree：失敗之後也要移除
     # This path has already added the worktree: it is removed after the failure too
     worktrees = subprocess.run(["git", "worktree", "list"], cwd=repo, check=True, capture_output=True, text=True)
@@ -353,3 +357,57 @@ def test_a_test_file_that_is_not_utf8_cannot_compare(tmp_path, capsys):
     assert tool.main(["--against", "HEAD"], repo=str(repo)) == 2
     err = capsys.readouterr().err
     assert "could not compare" in err and "utf-8" in err, err
+
+
+def test_a_test_file_skipped_as_a_whole_on_the_base_lists_its_tests_as_skipped(tmp_path, capsys):
+    """新測試檔在模組層級 `pytest.importorskip` 一個基準上沒有的模組：整個檔案在基準上被 skip，裡面選到的測試列成
+    skipped 並附上原因，結束碼 1。JUnit 把模組層級的 skip 記成 classname 是空的 testcase，原本被當成收集錯誤，
+    列成「collection failure」的紅、結束碼 0，放過了一個在基準上根本沒跑的測試。
+    A new test file calls `pytest.importorskip` at module level for a module the base lacks: the whole file is skipped
+    on the base, so its selected tests are listed as skipped with the reason, exit code 1. JUnit records a module-level
+    skip as a testcase with an empty classname, which used to be taken as a collection error: red with "collection
+    failure", exit code 0, letting through a test that never ran on the base."""
+    repo = _repo(tmp_path / "repo")
+    (repo / "tests" / "test_extra.py").write_text('''\
+import pytest
+
+pytest.importorskip("no_such_module_on_the_base")
+
+
+def test_the_extra_module_is_importable():
+    assert True
+''', encoding="utf-8")
+    code = tool.main(["--against", "HEAD"], repo=str(repo))
+    out = capsys.readouterr().out
+    assert code == 1, out
+    line = next(line for line in out.splitlines() if "test_the_extra_module_is_importable" in line)
+    assert line.startswith("skipped ") and "no_such_module_on_the_base" in line, out
+
+
+def test_a_fail_fast_option_on_the_base_does_not_stop_the_selected_tests(tmp_path, capsys):
+    """基準的 `pytest.ini` 帶 `-x`，同一個檔案裡排在前面、沒被選到的測試在基準上失敗：選到的測試照樣跑完，
+    在基準上通過就列成綠的，結束碼 1。原本 pytest 在第一個失敗就停下，選到的測試被說成「收集不到」、結束碼 2。
+    The base's `pytest.ini` carries `-x`, and an unselected test earlier in the same file fails on the base: the
+    selected test still runs, is listed as green because it passes there, and the exit code is 1. Before, pytest
+    stopped at the first failure and the selected test was reported as "not collected", exit code 2."""
+    repo = tmp_path / "repo"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "pytest.ini").write_text("[pytest]\naddopts = -x\n", encoding="utf-8")
+    _repo(repo, tests=BASE_TESTS + '''
+
+def test_adding_one_and_one():
+    assert add(1, 1) == 2
+''')
+    (repo / "tests" / "test_calc.py").write_text(BASE_TESTS + '''
+
+def test_adding_one_and_one():
+    assert add(1, 1) == 2
+
+
+def test_adding_zero_to_zero_gives_zero():
+    assert add(0, 0) == 0
+''', encoding="utf-8")
+    code = tool.main(["--against", "HEAD"], repo=str(repo))
+    captured = capsys.readouterr()
+    assert code == 1, captured.out + captured.err
+    assert captured.out.splitlines() == ["green  tests/test_calc.py::test_adding_zero_to_zero_gives_zero"]
