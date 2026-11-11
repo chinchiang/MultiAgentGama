@@ -260,6 +260,7 @@ MultiAgentGama/
 │       └── triage-labels.md     # triage 角色對應的標籤名稱
 ├── scripts/
 │   ├── check_bi_english.py      # bi-english 的判斷：與基準 commit 比對每個 bi() 的英文半，改了或移除的要寫進兩份 CHANGELOG
+│   ├── check_new_tests_red_on_base.py # fix 分支用：新增或改動的測試換到 merge-base 的程式碼上跑，列出已經綠或被 skip 的
 │   ├── check_pr_issue_link.py   # pr-issue-link 的判斷：哪些 PR 需要 issue、描述與 commit 是否連到存在的 issue
 │   ├── check_required_checks.py # 必要檢查的三方比對：workflow 的 job 與 matrix、CONTRIBUTING、ruleset
 │   ├── golden/                  # golden diff（只供開發用、不進 sdist）：run.py --against <rev> 比對 revision 與工作目錄的輸出
@@ -274,6 +275,7 @@ MultiAgentGama/
 │   ├── test_bi_english.py              # bi() 英文半的比對：f-string 欄位、搬進 helper 的字串、[Unreleased] 區段、workflow 權限
 │   ├── test_call_kinds.py              # 每筆呼叫紀錄、送出的請求與報告都帶著呼叫的種類（含修復與當掉的呼叫）
 │   ├── test_call_plans.py              # 每個代理的呼叫計畫（plan）等於它實際發出的呼叫
+│   ├── test_check_new_tests_red_on_base.py # 新測試在基準上要紅：挑哪些測試（含類別、子目錄）、紅綠、skip（含整個檔案）與 xfail、參數化、收集不到與語法、編碼錯誤、rootdir 與 -x、結束碼與清除
 │   ├── test_cross_verification.py      # 交叉驗證：模型不評審自己的發現、依票數判定
 │   ├── test_dedup_and_budget.py        # 重複發現合併與 token 預算內的提示上下文
 │   ├── test_design_refs.py             # 設計文件的 path:line 引用落在它指向的名稱上、中英逐行一致；重新對應的邏輯
