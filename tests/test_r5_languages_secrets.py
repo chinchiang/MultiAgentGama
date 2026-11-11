@@ -5,6 +5,7 @@ gap, so the verdict cannot be READY_TO_SHIP), and configuration-like files (.env
 Terraform ...) get a local, deterministic secret scan (VH-AI-007) and are never sent to a model."""
 import json
 import os
+import subprocess
 
 import pytest
 
@@ -240,18 +241,24 @@ def test_docs_and_example_like_yaml_does_not_false_positive(tmp_path):
 
 def _tracked_files(root):
     """root 是一個 git checkout 的頂層時，git 追蹤中的檔案（絕對路徑）；否則 None。解開的 sdist 沒有 .git，
-    放在別的 repo 底下時頂層也不是它，兩種都回 None，免得拿到外層 repo 的檔案。
+    放在別的 repo 底下時頂層也不是它，沒有 git 可執行檔時也無從得知，三種都回 None，免得拿到外層 repo 的檔案。
     The files git tracks (absolute paths) when root is the top of a git checkout, else None. An extracted sdist has no
-    .git, and under another repo its top is not root either; both give None, so the outer repo's files never count."""
-    import subprocess
+    .git, under another repo its top is not root either, and without a git executable there is no way to tell; all
+    three give None, so the outer repo's files never count."""
 
     def git(*args):
         return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, encoding="utf-8")
 
-    top = git("rev-parse", "--show-toplevel")
-    if top.returncode != 0 or os.path.realpath(top.stdout.strip()) != os.path.realpath(root):
+    def same_path(a, b):
+        return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+    try:
+        top = git("rev-parse", "--show-toplevel")
+        if top.returncode != 0 or not same_path(top.stdout.strip(), root):
+            return None
+        listed = git("ls-files", "-z")
+    except OSError:  # 沒有 git 可執行檔 ／ no git executable
         return None
-    listed = git("ls-files", "-z")
     return [os.path.join(str(root), rel) for rel in listed.stdout.split("\0") if rel] if listed.returncode == 0 else None
 
 
@@ -266,20 +273,24 @@ def _repository_config_files(root):
     return ex
 
 
+def _commit_all(root):
+    """在 root 建一個 git repo，把裡面的檔案全部 commit（會被 `.gitignore` 忽略的除外）。
+    Makes root a git repo and commits every file in it (except those `.gitignore` ignores)."""
+    for args in (["init", "-q"], ["add", "."], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"]):
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+
+
 def _git_checkout_with_ignored_files(root, ignored):
     """在 root 建一個 git checkout：追蹤 `vibeharness/config/agents_config.yaml`，`.gitignore` 忽略 `aaa_scratch/`
     （排在 `vibeharness/` 前面），ignored 是 {檔名: 內容}，放進 `aaa_scratch/`。
     Creates a git checkout in root: it tracks `vibeharness/config/agents_config.yaml`, `.gitignore` ignores
     `aaa_scratch/` (which sorts before `vibeharness/`), and ignored, a {file name: content} map, goes into
     `aaa_scratch/`."""
-    import subprocess
-
     _write(root, "vibeharness/config/agents_config.yaml", "models:\n  claude:\n    model: anthropic/claude-x\n")
     _write(root, ".gitignore", "aaa_scratch/\n")
     for name, text in ignored.items():
         _write(root, f"aaa_scratch/{name}", text)
-    for args in (["init", "-q"], ["add", "."], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"]):
-        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+    _commit_all(root)
     return root
 
 
@@ -290,9 +301,15 @@ def test_ignored_files_take_no_slot_from_the_repository_own_config_files(tmp_pat
     scan still collects the tracked `agents_config.yaml`, and ignored files take none of the 200 config-file slots
     (#151)."""
     root = _git_checkout_with_ignored_files(tmp_path / "repo", {f"report{i:03}.json": "{}" for i in range(250)})
+    target = os.path.join("vibeharness", "config", "agents_config.yaml")
+    # 守衛：不篩選時，被忽略的檔案確實把它擠出名額，否則這個測試什麼都沒測到
+    # Guard: unfiltered, the ignored files really do push it out of the slots, else this test proves nothing
+    unfiltered = ASTExtractor()
+    unfiltered.parse_directory(str(root), max_files=1)
+    assert target in [os.path.relpath(p, root) for p in unfiltered.skipped_config_files], len(unfiltered.config_files)
     ex = _repository_config_files(root)
     collected = [os.path.relpath(p, root) for p in ex.config_files]
-    assert os.path.join("vibeharness", "config", "agents_config.yaml") in collected, (
+    assert target in collected, (
         len(collected), [os.path.relpath(p, root) for p in ex.skipped_config_files][:3])
 
 
@@ -312,12 +329,9 @@ def test_without_its_own_git_checkout_the_scan_walks_the_whole_directory(tmp_pat
     Without its own git checkout (like an extracted sdist) the scan walks the whole directory: a directory under another
     git repo, not tracked there, still has its `agents_config.yaml` collected, instead of using the outer repo's
     `git ls-files` (which does not list it) (#151)."""
-    import subprocess
-
     outer = tmp_path / "outer"
     _write(outer, "README", "x\n")
-    for args in (["init", "-q"], ["add", "."], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"]):
-        subprocess.run(["git", *args], cwd=outer, check=True, capture_output=True)
+    _commit_all(outer)
     sdist = outer / "extracted"
     _write(sdist, "vibeharness/config/agents_config.yaml", "models: {}\n")
     ex = _repository_config_files(sdist)
