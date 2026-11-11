@@ -241,10 +241,10 @@ def test_docs_and_example_like_yaml_does_not_false_positive(tmp_path):
 
 def _tracked_files(root):
     """root 是一個 git checkout 的頂層時，git 追蹤中的檔案（絕對路徑）；否則 None。解開的 sdist 沒有 .git，
-    放在別的 repo 底下時頂層也不是它，沒有 git 可執行檔時也無從得知，三種都回 None，免得拿到外層 repo 的檔案。
+    放在別的 repo 底下時頂層也不是它，沒有 git 可執行檔時也無從得知，`git ls-files` 失敗時也拿不到清單，這些都回 None，免得拿到外層 repo 的檔案。
     The files git tracks (absolute paths) when root is the top of a git checkout, else None. An extracted sdist has no
-    .git, under another repo its top is not root either, and without a git executable there is no way to tell; all
-    three give None, so the outer repo's files never count."""
+    .git, under another repo its top is not root either, without a git executable there is no way to tell, and a failing
+    `git ls-files` gives no list; each gives None, so the outer repo's files never count."""
 
     def git(*args):
         return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, encoding="utf-8")
@@ -273,6 +273,17 @@ def _repository_config_files(root):
     return ex
 
 
+# 自家試用測試認的那個設定檔，相對於 checkout 的頂層
+# The config file the dogfooding tests look for, relative to the top of the checkout
+AGENTS_CONFIG_REL = os.path.join("vibeharness", "config", "agents_config.yaml")
+
+
+def _rel(paths, root):
+    """paths 換成相對於 root 的路徑，斷言和失敗訊息才讀得懂。
+    paths made relative to root, so assertions and failure messages read plainly."""
+    return [os.path.relpath(p, root) for p in paths]
+
+
 def _commit_all(root):
     """在 root 建一個 git repo，把裡面的檔案全部 commit（會被 `.gitignore` 忽略的除外）。
     Makes root a git repo and commits every file in it (except those `.gitignore` ignores)."""
@@ -286,7 +297,7 @@ def _git_checkout_with_ignored_files(root, ignored):
     Creates a git checkout in root: it tracks `vibeharness/config/agents_config.yaml`, `.gitignore` ignores
     `aaa_scratch/` (which sorts before `vibeharness/`), and ignored, a {file name: content} map, goes into
     `aaa_scratch/`."""
-    _write(root, "vibeharness/config/agents_config.yaml", "models:\n  claude:\n    model: anthropic/claude-x\n")
+    _write(root, AGENTS_CONFIG_REL, "models:\n  claude:\n    model: anthropic/claude-x\n")
     _write(root, ".gitignore", "aaa_scratch/\n")
     for name, text in ignored.items():
         _write(root, f"aaa_scratch/{name}", text)
@@ -301,16 +312,14 @@ def test_ignored_files_take_no_slot_from_the_repository_own_config_files(tmp_pat
     scan still collects the tracked `agents_config.yaml`, and ignored files take none of the 200 config-file slots
     (#151)."""
     root = _git_checkout_with_ignored_files(tmp_path / "repo", {f"report{i:03}.json": "{}" for i in range(250)})
-    target = os.path.join("vibeharness", "config", "agents_config.yaml")
     # 守衛：不篩選時，被忽略的檔案確實把它擠出名額，否則這個測試什麼都沒測到
     # Guard: unfiltered, the ignored files really do push it out of the slots, else this test proves nothing
     unfiltered = ASTExtractor()
     unfiltered.parse_directory(str(root), max_files=1)
-    assert target in [os.path.relpath(p, root) for p in unfiltered.skipped_config_files], len(unfiltered.config_files)
+    assert AGENTS_CONFIG_REL in _rel(unfiltered.skipped_config_files, root), len(unfiltered.config_files)
     ex = _repository_config_files(root)
-    collected = [os.path.relpath(p, root) for p in ex.config_files]
-    assert target in collected, (
-        len(collected), [os.path.relpath(p, root) for p in ex.skipped_config_files][:3])
+    collected = _rel(ex.config_files, root)
+    assert AGENTS_CONFIG_REL in collected, (len(collected), _rel(ex.skipped_config_files, root)[:3])
 
 
 def test_a_credential_in_an_ignored_local_file_is_not_the_repository_own(tmp_path):
@@ -318,6 +327,13 @@ def test_a_credential_in_an_ignored_local_file_is_not_the_repository_own(tmp_pat
     An ignored local file holds an AWS-key-shaped string: it is not this repository's configuration, so the
     dogfooding scan never reads it and does not fail on it (#151)."""
     root = _git_checkout_with_ignored_files(tmp_path / "repo", {"local.yaml": f"key: {AWS_KEY}\n"})
+    local = os.path.join("aaa_scratch", "local.yaml")
+    # 守衛：不篩選時掃描器確實抓到這把金鑰，否則下面的 `== []` 什麼都沒測到
+    # Guard: unfiltered, the scanner really does flag this key, else the `== []` below proves nothing
+    unfiltered = ASTExtractor()
+    unfiltered.parse_directory(str(root), max_files=1)
+    flagged = AISecurityStaticScanner().scan_config_files(unfiltered.config_files)
+    assert local in _rel([f.file_path for f in flagged], root), _rel(unfiltered.config_files, root)
     ex = _repository_config_files(root)
     assert AISecurityStaticScanner().scan_config_files(ex.config_files) == []
     assert not any(p.endswith("local.yaml") for p in ex.config_files)
@@ -333,10 +349,10 @@ def test_without_its_own_git_checkout_the_scan_walks_the_whole_directory(tmp_pat
     _write(outer, "README", "x\n")
     _commit_all(outer)
     sdist = outer / "extracted"
-    _write(sdist, "vibeharness/config/agents_config.yaml", "models: {}\n")
+    _write(sdist, AGENTS_CONFIG_REL, "models: {}\n")
     ex = _repository_config_files(sdist)
-    collected = [os.path.relpath(p, sdist) for p in ex.config_files]
-    assert os.path.join("vibeharness", "config", "agents_config.yaml") in collected, f"collected {collected}"
+    collected = _rel(ex.config_files, sdist)
+    assert AGENTS_CONFIG_REL in collected, f"collected {collected}"
 
 
 def test_the_repository_own_config_files_are_clean():
