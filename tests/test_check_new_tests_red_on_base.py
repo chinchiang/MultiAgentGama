@@ -460,3 +460,35 @@ def test_the_extra_module_is_importable():
     assert code == 1, out
     assert out.splitlines() == [
         "skipped tests/test_extra.py::test_the_extra_module_is_importable  Skipped: waits for the extra module"], out
+
+
+def test_a_temporary_directory_behind_a_symlink_still_matches_the_results(tmp_path, capsys, monkeypatch):
+    """暫存目錄經過符號連結（macOS 的 `/var/folders` 指向 `/private/var/folders`）：綠的新測試照樣認得出來，結束碼 1。
+    原本 `--rootdir` 拿到沒解開連結的路徑，pytest 卻用解開後的路徑算 node id，classname 對不上，每個測試都成了
+    「收集不到」、結束碼 2（PR #152 的 macOS CI）。
+    The temporary directory sits behind a symlink (macOS's `/var/folders` points at `/private/var/folders`): a new
+    green test is still recognized, exit code 1. Before, `--rootdir` got the unresolved path while pytest computed
+    node ids from the resolved one, so no classname matched and every test came out "not collected", exit code 2
+    (macOS CI on PR #152)."""
+    import tempfile
+
+    import pytest
+
+    (tmp_path / "real").mkdir()
+    try:
+        (tmp_path / "link").symlink_to(tmp_path / "real", target_is_directory=True)
+    except OSError:
+        # Windows 沒有開發者模式或系統管理員權限時不能建符號連結
+        # Windows cannot create a symlink without developer mode or administrator rights
+        pytest.skip("this platform cannot create a symlink")
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "link"))
+    repo = _repo(tmp_path / "repo")
+    (repo / "tests" / "test_calc.py").write_text(BASE_TESTS + '''
+
+def test_adding_zero_to_zero_gives_zero():
+    assert add(0, 0) == 0
+''', encoding="utf-8")
+    code = tool.main(["--against", "HEAD"], repo=str(repo))
+    captured = capsys.readouterr()
+    assert code == 1, captured.out + captured.err
+    assert captured.out.splitlines() == ["green  tests/test_calc.py::test_adding_zero_to_zero_gives_zero"]

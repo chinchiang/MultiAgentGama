@@ -244,7 +244,11 @@ def main(argv: list[str] | None = None, repo: str = _REPO) -> int:
     parser = argparse.ArgumentParser(description="List the new and changed tests that already pass on the base.")
     parser.add_argument("--against", required=True, metavar="REV", help="the revision whose merge-base is the base")
     args = parser.parse_args(argv)
-    scratch = Path(tempfile.mkdtemp(prefix="vh_red_on_base_"))
+    # 解開符號連結（macOS 的 /var/folders 指向 /private/var/folders）：--rootdir 與 pytest 算 node id 用的路徑要相同，
+    # classname 才對得上
+    # Resolve symlinks (macOS's /var/folders points at /private/var/folders): --rootdir and the path pytest computes
+    # node ids from must be the same, or no classname matches
+    scratch = Path(tempfile.mkdtemp(prefix="vh_red_on_base_")).resolve()
     worktree = scratch / "base"
     try:
         base = _git(repo, "merge-base", args.against, "HEAD").strip()
