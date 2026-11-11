@@ -238,12 +238,98 @@ def test_docs_and_example_like_yaml_does_not_false_positive(tmp_path):
     assert scanner.incomplete_config_files == []
 
 
+def _tracked_files(root):
+    """root 是一個 git checkout 的頂層時，git 追蹤中的檔案（絕對路徑）；否則 None。解開的 sdist 沒有 .git，
+    放在別的 repo 底下時頂層也不是它，兩種都回 None，免得拿到外層 repo 的檔案。
+    The files git tracks (absolute paths) when root is the top of a git checkout, else None. An extracted sdist has no
+    .git, and under another repo its top is not root either; both give None, so the outer repo's files never count."""
+    import subprocess
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, encoding="utf-8")
+
+    top = git("rev-parse", "--show-toplevel")
+    if top.returncode != 0 or os.path.realpath(top.stdout.strip()) != os.path.realpath(root):
+        return None
+    listed = git("ls-files", "-z")
+    return [os.path.join(str(root), rel) for rel in listed.stdout.split("\0") if rel] if listed.returncode == 0 else None
+
+
+def _repository_config_files(root):
+    """自家試用要掃的設定檔：git 追蹤中的那些（被忽略、未追蹤的本機檔案不佔名額，也不會被當成憑證）；沒有 git
+    checkout 時是 root 底下走訪到的全部。回傳走訪過的 extractor（`config_files`、`skipped_config_files`）（#151）。
+    The config files the dogfooding test scans: the tracked ones (ignored or untracked local files take no slot and are
+    never read as credentials); without a git checkout, all the walk under root collects. Returns the extractor that
+    walked (`config_files`, `skipped_config_files`) (#151)."""
+    ex = ASTExtractor()
+    ex.parse_directory(str(root), max_files=1, only_files=_tracked_files(root))
+    return ex
+
+
+def _git_checkout_with_ignored_files(root, ignored):
+    """在 root 建一個 git checkout：追蹤 `vibeharness/config/agents_config.yaml`，`.gitignore` 忽略 `aaa_scratch/`
+    （排在 `vibeharness/` 前面），ignored 是 {檔名: 內容}，放進 `aaa_scratch/`。
+    Creates a git checkout in root: it tracks `vibeharness/config/agents_config.yaml`, `.gitignore` ignores
+    `aaa_scratch/` (which sorts before `vibeharness/`), and ignored, a {file name: content} map, goes into
+    `aaa_scratch/`."""
+    import subprocess
+
+    _write(root, "vibeharness/config/agents_config.yaml", "models:\n  claude:\n    model: anthropic/claude-x\n")
+    _write(root, ".gitignore", "aaa_scratch/\n")
+    for name, text in ignored.items():
+        _write(root, f"aaa_scratch/{name}", text)
+    for args in (["init", "-q"], ["add", "."], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"]):
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+    return root
+
+
+def test_ignored_files_take_no_slot_from_the_repository_own_config_files(tmp_path):
+    """被 git 忽略、排在前面的目錄裡有 250 個 JSON（像本機累積的 golden 輸出）：自家試用照樣收到追蹤中的
+    `agents_config.yaml`，被忽略的檔案不佔設定檔的 200 個名額（#151）。
+    An ignored directory that sorts first holds 250 JSON files (like golden outputs piling up locally): the dogfooding
+    scan still collects the tracked `agents_config.yaml`, and ignored files take none of the 200 config-file slots
+    (#151)."""
+    root = _git_checkout_with_ignored_files(tmp_path / "repo", {f"report{i:03}.json": "{}" for i in range(250)})
+    ex = _repository_config_files(root)
+    collected = [os.path.relpath(p, root) for p in ex.config_files]
+    assert os.path.join("vibeharness", "config", "agents_config.yaml") in collected, (
+        len(collected), [os.path.relpath(p, root) for p in ex.skipped_config_files][:3])
+
+
+def test_a_credential_in_an_ignored_local_file_is_not_the_repository_own(tmp_path):
+    """被 git 忽略的本機檔案裡有一串長得像 AWS 金鑰的字：那不是本儲存庫的設定，自家試用不掃它，不會因此失敗（#151）。
+    An ignored local file holds an AWS-key-shaped string: it is not this repository's configuration, so the
+    dogfooding scan never reads it and does not fail on it (#151)."""
+    root = _git_checkout_with_ignored_files(tmp_path / "repo", {"local.yaml": f"key: {AWS_KEY}\n"})
+    ex = _repository_config_files(root)
+    assert AISecurityStaticScanner().scan_config_files(ex.config_files) == []
+    assert not any(p.endswith("local.yaml") for p in ex.config_files)
+
+
+def test_without_its_own_git_checkout_the_scan_walks_the_whole_directory(tmp_path):
+    """沒有自己的 git checkout（像解開的 sdist）時整個走訪：放在別的 git repo 底下、沒被追蹤的目錄，也照樣收到
+    裡面的 `agents_config.yaml`，不會改用外層 repo 的 `git ls-files`（那裡沒有這個檔案）（#151）。
+    Without its own git checkout (like an extracted sdist) the scan walks the whole directory: a directory under another
+    git repo, not tracked there, still has its `agents_config.yaml` collected, instead of using the outer repo's
+    `git ls-files` (which does not list it) (#151)."""
+    import subprocess
+
+    outer = tmp_path / "outer"
+    _write(outer, "README", "x\n")
+    for args in (["init", "-q"], ["add", "."], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"]):
+        subprocess.run(["git", *args], cwd=outer, check=True, capture_output=True)
+    sdist = outer / "extracted"
+    _write(sdist, "vibeharness/config/agents_config.yaml", "models: {}\n")
+    ex = _repository_config_files(sdist)
+    collected = [os.path.relpath(p, sdist) for p in ex.config_files]
+    assert os.path.join("vibeharness", "config", "agents_config.yaml") in collected, f"collected {collected}"
+
+
 def test_the_repository_own_config_files_are_clean():
     """自家試用：本儲存庫自己的 YAML/TOML 設定檔（含範例設定）不得被讀成寫死的憑證。
     Dogfooding: this repository's own YAML/TOML configuration (example configs included) must not read as
     hard-coded credentials."""
-    ex = ASTExtractor()
-    ex.parse_directory(REPO_ROOT, max_files=1)
+    ex = _repository_config_files(REPO_ROOT)
     assert any(p.endswith("agents_config.yaml") for p in ex.config_files)
     found = AISecurityStaticScanner().scan_config_files(ex.config_files)
     assert found == [], [(os.path.relpath(f.file_path, REPO_ROOT), f.line_number) for f in found]
