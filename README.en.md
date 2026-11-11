@@ -275,7 +275,7 @@ MultiAgentGama/
 │   ├── test_bi_english.py              # bi() English-half comparison: f-string fields, strings moved into helpers, the [Unreleased] section, workflow permissions
 │   ├── test_call_kinds.py              # Every call record, request sent and report carries its call's kind (heals and crashed calls included)
 │   ├── test_call_plans.py              # Each agent's call plan (plan) equals the calls it actually makes
-│   ├── test_check_new_tests_red_on_base.py # New tests red on the base: which tests (classes, subdirectories), red / green / skipped, parametrized, collection and syntax errors, exit codes, cleanup
+│   ├── test_check_new_tests_red_on_base.py # New tests red on the base: which tests (classes, subdirectories), red / green / skipped / xfail, parametrized, uncollected tests, syntax and encoding errors, rootdir, exit codes, cleanup
 │   ├── test_cross_verification.py      # Cross-verification: models never judge their own findings, vote tallies
 │   ├── test_dedup_and_budget.py        # Duplicate-finding merge and prompt context within the token budget
 │   ├── test_design_refs.py             # The design documents' path:line references land on the names they point at, match zh/en line for line; the remapping logic

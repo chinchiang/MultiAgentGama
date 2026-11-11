@@ -248,9 +248,10 @@ def test_a_branch_without_new_or_changed_tests_says_so(tmp_path, capsys):
 
 def test_pytest_that_cannot_start_on_the_base_cannot_compare(tmp_path, capsys):
     """基準的 `pytest.ini` 帶著不存在的選項：pytest 在基準上無法啟動、沒寫出報告，結束碼是 2（無法比對），
-    不能把沒跑的測試當成任何結果。
+    不能把沒跑的測試當成任何結果；這時 worktree 已經建好了，失敗之後照樣移除。
     The base's `pytest.ini` carries an option that does not exist: pytest cannot start on the base and writes no
-    report, so the exit code is 2 (could not compare); tests that never ran count as no result at all."""
+    report, so the exit code is 2 (could not compare); tests that never ran count as no result at all. The worktree
+    was already added by then, and it is still removed after the failure."""
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "pytest.ini").write_text("[pytest]\naddopts = --no-such-option\n", encoding="utf-8")
@@ -262,3 +263,93 @@ def test_adding_two_numbers_gives_their_sum():
 ''', encoding="utf-8")
     assert tool.main(["--against", "HEAD"], repo=str(repo)) == 2
     assert "could not compare" in capsys.readouterr().err
+    # 這條路徑已經建了 worktree：失敗之後也要移除
+    # This path has already added the worktree: it is removed after the failure too
+    worktrees = subprocess.run(["git", "worktree", "list"], cwd=repo, check=True, capture_output=True, text=True)
+    assert len(worktrees.stdout.splitlines()) == 1, worktrees.stdout
+
+
+def test_a_selected_test_that_is_not_collected_cannot_compare_and_hides_no_other_result(tmp_path, capsys):
+    """同一批裡一個綠的新測試，加上一個在基準上收集不到的（類別有 `__init__`，pytest 不收）：綠的照樣列出來，
+    收集不到的那個在 stderr 點名，結束碼是 2（無法比對）。原本 pytest 對找不到的 node id 整批不跑，兩個都列成
+    「沒在基準上跑」的紅，結束碼 0，綠的被藏起來。
+    In one batch, a new green test and one that is not collected on the base (its class has `__init__`, which pytest
+    skips): the green one is still listed, the other is named on stderr, and the exit code is 2 (could not compare).
+    Before, pytest ran none of the batch for a node id it could not find, both were listed red as "not run on the
+    base", the exit code was 0, and the green one was hidden."""
+    repo = _repo(tmp_path / "repo")
+    (repo / "tests" / "test_calc.py").write_text(BASE_TESTS + '''
+
+def test_adding_zero_to_zero_gives_zero():
+    assert add(0, 0) == 0
+
+
+class TestHelper:
+    def __init__(self):
+        pass
+
+    def test_never_collected(self):
+        assert True
+''', encoding="utf-8")
+    code = tool.main(["--against", "HEAD"], repo=str(repo))
+    captured = capsys.readouterr()
+    assert code == 2, captured.out + captured.err
+    assert "green  tests/test_calc.py::test_adding_zero_to_zero_gives_zero" in captured.out.splitlines()
+    assert "not collected on the base: tests/test_calc.py::TestHelper::test_never_collected" in captured.err
+
+
+def test_a_pytest_ini_under_tests_does_not_change_how_results_are_matched(tmp_path, capsys):
+    """基準在 `tests/` 底下有 `pytest.ini`，pytest 的 rootdir 會落在 `tests/`，JUnit 的 classname 就少了 `tests.`：
+    綠的新測試照樣認得出來，列成綠的、結束碼 1，而不是對不上報告。
+    The base has a `pytest.ini` under `tests/`, so pytest's rootdir would be `tests/` and the JUnit classname would lack
+    `tests.`: a new green test is still recognized, listed as green with exit code 1, instead of missing the report."""
+    repo = tmp_path / "repo"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "tests" / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    _repo(repo)
+    (repo / "tests" / "test_calc.py").write_text(BASE_TESTS + '''
+
+def test_adding_zero_to_zero_gives_zero():
+    assert add(0, 0) == 0
+''', encoding="utf-8")
+    code = tool.main(["--against", "HEAD"], repo=str(repo))
+    captured = capsys.readouterr()
+    assert code == 1, captured.out + captured.err
+    assert captured.out.splitlines() == ["green  tests/test_calc.py::test_adding_zero_to_zero_gives_zero"]
+
+
+def test_a_new_test_that_xfails_on_the_base_is_red(tmp_path, capsys):
+    """新測試標了 xfail，在基準上確實失敗：它在基準上是紅的，列成紅的並寫明是 xfail，結束碼 0。JUnit 把 xfail 記成
+    `<skipped type="pytest.xfail">`，原本被當成 skipped、結束碼 1。
+    A new test is marked xfail and does fail on the base: it is red there, so it is listed as red, saying xfail, with
+    exit code 0. JUnit records an xfail as `<skipped type="pytest.xfail">`, which used to be taken as skipped, with
+    exit code 1."""
+    repo = _repo(tmp_path / "repo")
+    (repo / "tests" / "test_calc.py").write_text(BASE_TESTS + '''
+
+import pytest
+
+
+@pytest.mark.xfail(reason="add subtracts on the base")
+def test_adding_two_numbers_gives_their_sum():
+    assert add(1, 2) == 3
+''', encoding="utf-8")
+    code = tool.main(["--against", "HEAD"], repo=str(repo))
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert out.splitlines() == [
+        "red    tests/test_calc.py::test_adding_two_numbers_gives_their_sum  xfail on the base: add subtracts on the base"
+    ], out
+
+
+def test_a_test_file_that_is_not_utf8_cannot_compare(tmp_path, capsys):
+    """工作目錄的測試檔不是 UTF-8（這裡是一個 Latin-1 的 é）：讀不了，結束碼是 2（無法比對），而不是丟出
+    `UnicodeDecodeError`、讓結束碼和「有綠的」一樣。Windows 上 git 的輸出原本用系統編碼解，含中文的測試檔也會這樣。
+    A test file in the working tree is not UTF-8 (here a Latin-1 é): it cannot be read, so the exit code is 2 (could
+    not compare), not a `UnicodeDecodeError` whose exit code looks like "some are green". On Windows, git's output used
+    to be decoded with the system code page, so a test file with Chinese text did the same."""
+    repo = _repo(tmp_path / "repo")
+    (repo / "tests" / "test_calc.py").write_bytes(BASE_TESTS.encode() + b"\n\ndef test_caf\xe9():\n    pass\n")
+    assert tool.main(["--against", "HEAD"], repo=str(repo)) == 2
+    err = capsys.readouterr().err
+    assert "could not compare" in err and "utf-8" in err, err
