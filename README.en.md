@@ -260,6 +260,7 @@ MultiAgentGama/
 │       └── triage-labels.md     # Label names for the triage roles
 ├── scripts/
 │   ├── check_bi_english.py      # bi-english's logic: compare every bi() English half with the base commit; changed or removed ones must be in both CHANGELOGs
+│   ├── check_new_tests_red_on_base.py # For fix branches: run the new and changed tests on the merge-base's code and list the green ones
 │   ├── check_pr_issue_link.py   # pr-issue-link's logic: which PRs need an issue, whether the description and commits link an existing one
 │   ├── check_required_checks.py # Three-way comparison of the required checks: workflow jobs and matrices, CONTRIBUTING, the ruleset
 │   ├── golden/                  # Golden diff (development only, not in the sdist): run.py --against <rev> compares a revision's output with the working tree's
@@ -274,6 +275,7 @@ MultiAgentGama/
 │   ├── test_bi_english.py              # bi() English-half comparison: f-string fields, strings moved into helpers, the [Unreleased] section, workflow permissions
 │   ├── test_call_kinds.py              # Every call record, request sent and report carries its call's kind (heals and crashed calls included)
 │   ├── test_call_plans.py              # Each agent's call plan (plan) equals the calls it actually makes
+│   ├── test_check_new_tests_red_on_base.py # New tests red on the base: which tests, red / green and the reason, collection errors, exit codes, cleanup
 │   ├── test_cross_verification.py      # Cross-verification: models never judge their own findings, vote tallies
 │   ├── test_dedup_and_budget.py        # Duplicate-finding merge and prompt context within the token budget
 │   ├── test_design_refs.py             # The design documents' path:line references land on the names they point at, match zh/en line for line; the remapping logic
