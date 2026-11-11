@@ -11,8 +11,8 @@ skipped。紅的附上失敗原因，看得出是不是因為錯的理由紅（�
 方法；「改了」是指函式本身的 AST 不同。只改 fixture、helper 或 `conftest.py` 時，用到它們的測試不會被選到。
 
 結束碼：0 全部是紅的（或沒有新增、改動的測試），1 有綠的或 skipped 的（列出來），2 無法比對（找不到 merge-base 或
-無法建 worktree、測試檔解析不了或不是 UTF-8、pytest 在基準上沒寫出報告（附上它最後幾行輸出）、選到的測試在
-基準上收集不到）。
+無法建 worktree、測試檔解析不了或不是 UTF-8、pytest 在基準上沒寫出報告（附上它最後幾行輸出）或報告讀不了、
+選到的測試在基準上收集不到）。
 
 用法：
     python scripts/check_new_tests_red_on_base.py --against master
@@ -34,7 +34,8 @@ of top-level `Test*` classes; "changed" means the function's own AST differs. A 
 
 Exit code: 0 every test is red (or no test is new or changed), 1 some are green or skipped (they are listed), 2 could
 not compare (no merge-base or the worktree could not be added, a test file does not parse or is not UTF-8, pytest
-wrote no report on the base (its last output lines are shown), a selected test was not collected on the base).
+wrote no report on the base (its last output lines are shown) or one that does not read, a selected test was not
+collected on the base).
 
 Usage:
     python scripts/check_new_tests_red_on_base.py --against master
@@ -141,7 +142,9 @@ def _module_skip_reason(skip: ET.Element) -> str:
     except (ValueError, SyntaxError):
         value = None
     if isinstance(value, tuple) and value and isinstance(value[-1], str):
-        return value[-1]
+        # 只取第一行：和紅的測試只帶失敗的第一行一樣，一筆結果印在一行
+        # The first line only: as a red test carries only its failure's first line, one result prints on one line
+        return next(iter(value[-1].splitlines()), "skipped")
     return text.splitlines()[0] if text else skip.get("message") or "skipped"
 
 
@@ -220,6 +223,7 @@ def run_on_base(worktree: Path, node_ids: list[str], report: Path) -> dict[str, 
             passed.setdefault(node_id, []).append(case_id.removesuffix("]"))
     results: dict[str, tuple[str, str]] = {}
     for node_id in node_ids:
+        test_file = _file_of(node_id)
         if node_id in passed:
             cases = [case for case in passed[node_id] if case]
             results[node_id] = ("green", f"green on the base: {', '.join(cases)}" if cases else "")
@@ -227,10 +231,10 @@ def run_on_base(worktree: Path, node_ids: list[str], report: Path) -> dict[str, 
             results[node_id] = ("skipped", skipped[node_id])
         elif node_id in failed:
             results[node_id] = ("red", failed[node_id])
-        elif _file_of(node_id) in skipped_files:
-            results[node_id] = ("skipped", skipped_files[_file_of(node_id)])
-        elif _file_of(node_id) in broken_files:
-            results[node_id] = ("red", broken_files[_file_of(node_id)])
+        elif test_file in skipped_files:
+            results[node_id] = ("skipped", skipped_files[test_file])
+        elif test_file in broken_files:
+            results[node_id] = ("red", broken_files[test_file])
         else:
             results[node_id] = ("not collected", "")
     return results
@@ -262,6 +266,10 @@ def main(argv: list[str] | None = None, repo: str = _REPO) -> int:
         # UTF-8 UnicodeDecodeError
         if isinstance(exc, subprocess.CalledProcessError):
             detail = exc.stderr
+        elif isinstance(exc, ET.ParseError):
+            # ParseError 是 SyntaxError 的子類別，要先判斷：它沒有檔名與行號
+            # ParseError is a subclass of SyntaxError, so it is checked first: it has no file name or line number
+            detail = "the report pytest wrote on the base does not read"
         elif isinstance(exc, SyntaxError):
             detail = f"in {exc.filename}, line {exc.lineno}"
         else:

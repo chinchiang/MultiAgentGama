@@ -411,3 +411,52 @@ def test_adding_zero_to_zero_gives_zero():
     captured = capsys.readouterr()
     assert code == 1, captured.out + captured.err
     assert captured.out.splitlines() == ["green  tests/test_calc.py::test_adding_zero_to_zero_gives_zero"]
+
+
+def test_a_report_that_does_not_read_cannot_compare_with_a_clean_message(tmp_path, capsys):
+    """基準根目錄的 `conftest.py` 在 pytest 寫完報告之後把它蓋成不是 XML 的內容：報告讀不了，結束碼是 2，訊息只說
+    報告讀不了。`ParseError` 是 `SyntaxError` 的子類別，原本走到語法錯誤那一支，多印一行「in None, line None」。
+    The base's root `conftest.py` overwrites the report with something that is not XML after pytest writes it: the
+    report does not read, so the exit code is 2 and the message says only that. `ParseError` is a subclass of
+    `SyntaxError`, so it used to take the syntax-error branch and print an extra "in None, line None"."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "conftest.py").write_text('''\
+def pytest_unconfigure(config):
+    path = config.getoption("xmlpath", None)
+    if path:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("this is not xml")
+''', encoding="utf-8")
+    _repo(repo)
+    (repo / "tests" / "test_calc.py").write_text(BASE_TESTS + '''
+
+def test_adding_two_numbers_gives_their_sum():
+    assert add(1, 2) == 3
+''', encoding="utf-8")
+    assert tool.main(["--against", "HEAD"], repo=str(repo)) == 2
+    err = capsys.readouterr().err
+    assert "could not compare" in err and "in None" not in err, err
+
+
+def test_a_whole_file_skip_with_a_multi_line_reason_shows_its_first_line(tmp_path, capsys):
+    """整個檔案以多行的自訂原因被 skip：列出的那一行只帶原因的第一行，和紅的測試只帶失敗的第一行一樣；原本整段原樣
+    印出，把一筆結果拆成兩行。
+    A whole file is skipped with a multi-line custom reason: its line carries only the reason's first line, as a red
+    test carries only its failure's first line. Before, the whole reason was printed as is, splitting one result
+    across two lines."""
+    repo = _repo(tmp_path / "repo")
+    (repo / "tests" / "test_extra.py").write_text('''\
+import pytest
+
+pytest.skip("waits for the extra module\\nsee the issue for details", allow_module_level=True)
+
+
+def test_the_extra_module_is_importable():
+    assert True
+''', encoding="utf-8")
+    code = tool.main(["--against", "HEAD"], repo=str(repo))
+    out = capsys.readouterr().out
+    assert code == 1, out
+    assert out.splitlines() == [
+        "skipped tests/test_extra.py::test_the_extra_module_is_importable  Skipped: waits for the extra module"], out
