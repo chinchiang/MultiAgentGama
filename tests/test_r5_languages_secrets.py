@@ -11,7 +11,7 @@ import pytest
 
 from vibeharness.agents.whitebox import ai_static_scanner
 from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
-from vibeharness.agents.whitebox.ast_extractor import UNSUPPORTED_SAMPLE_SIZE, ASTExtractor
+from vibeharness.agents.whitebox.ast_extractor import DEFAULT_MAX_CONFIG_FILES, UNSUPPORTED_SAMPLE_SIZE, ASTExtractor
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
@@ -273,6 +273,15 @@ def _repository_config_files(root):
     return ex
 
 
+def _walk_all(root):
+    """不篩選、整個走訪 root 的 extractor：守衛用它證明，沒有 `only_files=` 時問題真的會出現。
+    The extractor after an unfiltered walk of root: guards use it to show the problem really appears without
+    `only_files=`."""
+    ex = ASTExtractor()
+    ex.parse_directory(str(root), max_files=1)
+    return ex
+
+
 # 自家試用測試認的那個設定檔，相對於 checkout 的頂層
 # The config file the dogfooding tests look for, relative to the top of the checkout
 AGENTS_CONFIG_REL = os.path.join("vibeharness", "config", "agents_config.yaml")
@@ -306,20 +315,21 @@ def _git_checkout_with_ignored_files(root, ignored):
 
 
 def test_ignored_files_take_no_slot_from_the_repository_own_config_files(tmp_path):
-    """被 git 忽略、排在前面的目錄裡有 250 個 JSON（像本機累積的 golden 輸出）：自家試用照樣收到追蹤中的
-    `agents_config.yaml`，被忽略的檔案不佔設定檔的 200 個名額（#151）。
-    An ignored directory that sorts first holds 250 JSON files (like golden outputs piling up locally): the dogfooding
-    scan still collects the tracked `agents_config.yaml`, and ignored files take none of the 200 config-file slots
-    (#151)."""
-    root = _git_checkout_with_ignored_files(tmp_path / "repo", {f"report{i:03}.json": "{}" for i in range(250)})
+    """被 git 忽略、排在前面的目錄裡的 JSON 比設定檔名額多 50 個（像本機累積的 golden 輸出）：自家試用照樣收到
+    追蹤中的 `agents_config.yaml`，被忽略的檔案一個名額也不佔（#151）。
+    An ignored directory that sorts first holds 50 more JSON files than there are config-file slots (like golden
+    outputs piling up locally): the dogfooding scan still collects the tracked `agents_config.yaml`, and ignored files
+    take none of the slots (#151)."""
+    reports = {f"report{i:03}.json": "{}" for i in range(DEFAULT_MAX_CONFIG_FILES + 50)}
+    root = _git_checkout_with_ignored_files(tmp_path / "repo", reports)
     # 守衛：不篩選時，被忽略的檔案確實把它擠出名額，否則這個測試什麼都沒測到
     # Guard: unfiltered, the ignored files really do push it out of the slots, else this test proves nothing
-    unfiltered = ASTExtractor()
-    unfiltered.parse_directory(str(root), max_files=1)
+    unfiltered = _walk_all(root)
     assert AGENTS_CONFIG_REL in _rel(unfiltered.skipped_config_files, root), len(unfiltered.config_files)
     ex = _repository_config_files(root)
     collected = _rel(ex.config_files, root)
     assert AGENTS_CONFIG_REL in collected, (len(collected), _rel(ex.skipped_config_files, root)[:3])
+    assert not [p for p in collected if p.startswith("aaa_scratch")], collected[:3]
 
 
 def test_a_credential_in_an_ignored_local_file_is_not_the_repository_own(tmp_path):
@@ -330,8 +340,7 @@ def test_a_credential_in_an_ignored_local_file_is_not_the_repository_own(tmp_pat
     local = os.path.join("aaa_scratch", "local.yaml")
     # 守衛：不篩選時掃描器確實抓到這把金鑰，否則下面的 `== []` 什麼都沒測到
     # Guard: unfiltered, the scanner really does flag this key, else the `== []` below proves nothing
-    unfiltered = ASTExtractor()
-    unfiltered.parse_directory(str(root), max_files=1)
+    unfiltered = _walk_all(root)
     flagged = AISecurityStaticScanner().scan_config_files(unfiltered.config_files)
     assert local in _rel([f.file_path for f in flagged], root), _rel(unfiltered.config_files, root)
     ex = _repository_config_files(root)
