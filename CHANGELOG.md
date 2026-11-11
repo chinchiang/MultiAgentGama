@@ -57,6 +57,7 @@
 - 新增 `scripts/test_sdist.py`：在本機重現 CI 的 package job，建 sdist、解到暫存目錄、在裡面跑測試套件並設定 `VIBEHARNESS_SDIST`。sdist 不帶 `.github/` 與 `AGENTS.md`，在 repo 裡跑會漏掉讀這些檔案卻沒略過的測試，以及 sdist 漏打包的檔案；`CONTRIBUTING.md` 的「提交前請跑」新增這一行。
 - 新增 `.github/workflows/required-checks.yml` 與 `scripts/check_required_checks.py`：push 到 `master` 與每週比對 workflow 產生的必要檢查名稱、`CONTRIBUTING.md` 寫的數量，以及 ruleset 的實際設定，不一致就失敗（例如 ruleset 少了一項、改名後的檢查永遠等不到、文件數量過時）。不在 PR 上執行，免得新增必要檢查的 PR 卡住自己。
 - `scripts/check_bi_english.py` 的訊息不再把基準截成前 12 個字元：commit 印成短 SHA，ref 印成「ref（短 SHA）」，例如 `origin/master (53b1c6f73dfa)`（原本印成 `origin/maste`）；解析不到 commit 的基準在讀任何檔案前就以結束碼 2 失敗（#126）。
+- golden diff 的 `--keep` 接受相對路徑：`python scripts/golden/run.py --against master --keep scratch/golden-x` 會把兩邊的輸出留在目前目錄底下的 `scratch/golden-x/`。原本路徑照原樣傳給在另一個工作目錄執行的情境步驟，第一個情境第 1 步的子行程在相對路徑寫不進自己的標記檔，印出看起來像程式當掉的「mock_md step 1 crashed」，結束碼 2，只有給絕對路徑才能比對（#147）。
 
 ## [0.15.0] - 2026-10-31
 

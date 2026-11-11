@@ -270,6 +270,19 @@ def test_a_crashing_scenario_run_fails_and_still_removes_the_worktree(tmp_path, 
     assert list(scratch.iterdir()) == []
 
 
+def test_a_relative_keep_path_keeps_the_outputs_under_the_current_directory(tmp_path, scratch, monkeypatch, capsys):
+    """--keep 給相對路徑：照樣比對得出結果，兩邊的輸出留在呼叫 main 時的目前目錄底下。情境步驟在另一個工作目錄執行，
+    原本相對路徑在那裡指錯地方，mock_md 第 1 步就當掉、結束碼 2（#147）。
+    A relative --keep path still compares, and both sides' outputs stay under the directory main was called from. The
+    scenario steps run in another working directory, where the relative path used to point elsewhere, so mock_md
+    crashed at step 1 with exit code 2 (#147)."""
+    monkeypatch.chdir(tmp_path)
+    code = main(["--against", "HEAD", "--keep", "kept", "mock_md"], repo=REPO_ROOT)
+    assert code == 0, capsys.readouterr().err
+    for side in ("base", "head"):
+        assert (tmp_path / "kept" / side / "mock_md" / "step1.exit_code").is_file(), side
+
+
 def test_both_sides_crashing_the_same_way_is_a_failure_to_compare_not_zero_differences(tmp_path, scratch):
     """兩邊的 CLI 子行程以同樣的方式當掉（這裡是 vibeharness.cli 不存在，像內部改名讓匯入失敗）：輸出一模一樣，
     但那不是「行為不變」，所以結束碼是 2，不是 0；worktree 照樣移除。抓得到 traceback 或沒寫出報告被當成 0 行差異。

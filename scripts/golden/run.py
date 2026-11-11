@@ -246,7 +246,10 @@ def main(argv: Optional[list[str]] = None, repo: str = _REPO) -> int:
     names = args.scenarios or None
     scratch = Path(tempfile.mkdtemp(prefix="vh_golden_"))
     worktree = scratch / "base"
-    out = Path(args.keep) if args.keep else scratch / "out"
+    # 情境步驟在另一個工作目錄執行：相對的 --keep 要先轉成絕對路徑，才會落在呼叫時的目前目錄底下（#147）
+    # Scenario steps run in another working directory: a relative --keep is made absolute first, so it lands under
+    # the directory the tool was called from (#147)
+    out = Path(args.keep).resolve() if args.keep else scratch / "out"
     # --keep 指到先前用過的目錄時，舊的輸出不能混進這次的比對
     # When --keep points at a directory used before, its old outputs must not mix into this comparison
     for side in ("base", "head"):
