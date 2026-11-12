@@ -23,9 +23,9 @@ def _hostile_home(home):
 def test_a_hostile_global_git_config_does_not_reach_the_test_repo(git_repo, tmp_path, monkeypatch):
     """開發者的全域 git 設定要求簽章、掛了會失敗的 hook、用別人的名字：`git_repo` 照樣建好 repo 並提交，之後用它回傳的
     runner 再提交一次也一樣，兩次提交的作者都是夾具自己的身分（#154）。
-    The developer's global git config requires signing, installs failing hooks and names someone else: `git_repo` still builds
-    the repo and commits, a second commit through the runner it returns works too, and both commits carry the
-    fixture's own identity (#154)."""
+    The developer's global git config requires signing, installs failing hooks and names someone else: `git_repo`
+    still builds the repo and commits, a second commit through the runner it returns works too, and both commits carry
+    the fixture's own identity (#154)."""
     monkeypatch.setenv("HOME", str(_hostile_home(tmp_path / "home")))
     root = tmp_path / "repo"
     root.mkdir()

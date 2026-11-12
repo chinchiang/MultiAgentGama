@@ -98,7 +98,8 @@ def scripted(monkeypatch):
 
 
 # 夾具自己的 git 身分 ／ The fixture's own git identity
-_GIT_IDENTITY = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+_GIT_IDENTITY = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                 "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
 
 
 @pytest.fixture
@@ -108,7 +109,8 @@ def git_repo(tmp_path_factory):
     的全域與系統設定（簽章、hook 等都碰不到），外洩的 `GIT_*` 環境變數（例如在 hook 裡跑測試時的 `GIT_DIR`）也
     先清掉，身分由夾具自己給（#154）。
     `git_repo(root)` makes root a git repo and commits everything in it as `base`, then returns `git(*args)`, which
-    runs git in root: output is captured as UTF-8 text, and a failure raises AssertionError carrying git's stderr and stdout.
+    runs git in root: output is captured as UTF-8 text, and a failure raises AssertionError carrying git's stderr and
+    stdout.
     These git commands read neither the developer's global nor system config (signing, hooks and the like never
     reach them), leaked `GIT_*` variables (such as `GIT_DIR` when tests run inside a hook) are cleared first, and the
     fixture supplies its own identity (#154)."""
