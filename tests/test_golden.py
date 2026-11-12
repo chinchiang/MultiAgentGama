@@ -270,7 +270,8 @@ def test_a_crashing_scenario_run_fails_and_still_removes_the_worktree(git_repo, 
     assert list(scratch.iterdir()) == []
 
 
-def test_a_relative_keep_path_keeps_the_outputs_under_the_current_directory(tmp_path, scratch, monkeypatch, capsys):
+def test_a_relative_keep_path_keeps_the_outputs_under_the_current_directory(needs_git, tmp_path, scratch, monkeypatch,
+                                                                           capsys):
     """--keep 給相對路徑：照樣比對得出結果，兩邊的輸出留在呼叫 main 時的目前目錄底下。情境步驟在另一個工作目錄執行，
     原本相對路徑在那裡指錯地方，mock_md 第 1 步就當掉、結束碼 2（#147）。
     A relative --keep path still compares, and both sides' outputs stay under the directory main was called from. The
