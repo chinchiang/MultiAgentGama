@@ -293,35 +293,28 @@ def _rel(paths, root):
     return [os.path.relpath(p, root) for p in paths]
 
 
-def _commit_all(root):
-    """在 root 建一個 git repo，把裡面的檔案全部 commit（會被 `.gitignore` 忽略的除外）。
-    Makes root a git repo and commits every file in it (except those `.gitignore` ignores)."""
-    for args in (["init", "-q"], ["add", "."], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"]):
-        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
-
-
-def _git_checkout_with_ignored_files(root, ignored):
-    """在 root 建一個 git checkout：追蹤 `vibeharness/config/agents_config.yaml`，`.gitignore` 忽略 `aaa_scratch/`
-    （排在 `vibeharness/` 前面），ignored 是 {檔名: 內容}，放進 `aaa_scratch/`。
-    Creates a git checkout in root: it tracks `vibeharness/config/agents_config.yaml`, `.gitignore` ignores
-    `aaa_scratch/` (which sorts before `vibeharness/`), and ignored, a {file name: content} map, goes into
-    `aaa_scratch/`."""
+def _git_checkout_with_ignored_files(git_repo, root, ignored):
+    """用 `git_repo` 夾具在 root 建一個 git checkout：追蹤 `vibeharness/config/agents_config.yaml`，`.gitignore`
+    忽略 `aaa_scratch/`（排在 `vibeharness/` 前面），ignored 是 {檔名: 內容}，放進 `aaa_scratch/`。
+    Creates a git checkout in root with the `git_repo` fixture: it tracks `vibeharness/config/agents_config.yaml`,
+    `.gitignore` ignores `aaa_scratch/` (which sorts before `vibeharness/`), and ignored, a {file name: content} map,
+    goes into `aaa_scratch/`."""
     _write(root, AGENTS_CONFIG_REL, "models:\n  claude:\n    model: anthropic/claude-x\n")
     _write(root, ".gitignore", "aaa_scratch/\n")
     for name, text in ignored.items():
         _write(root, f"aaa_scratch/{name}", text)
-    _commit_all(root)
+    git_repo(root)
     return root
 
 
-def test_ignored_files_take_no_slot_from_the_repository_own_config_files(tmp_path):
+def test_ignored_files_take_no_slot_from_the_repository_own_config_files(git_repo, tmp_path):
     """被 git 忽略、排在前面的目錄裡的 JSON 比設定檔名額多 50 個（像本機累積的 golden 輸出）：自家試用照樣收到
     追蹤中的 `agents_config.yaml`，被忽略的檔案一個名額也不佔（#151）。
     An ignored directory that sorts first holds 50 more JSON files than there are config-file slots (like golden
     outputs piling up locally): the dogfooding scan still collects the tracked `agents_config.yaml`, and ignored files
     take none of the slots (#151)."""
     reports = {f"report{i:03}.json": "{}" for i in range(DEFAULT_MAX_CONFIG_FILES + 50)}
-    root = _git_checkout_with_ignored_files(tmp_path / "repo", reports)
+    root = _git_checkout_with_ignored_files(git_repo, tmp_path / "repo", reports)
     # 守衛：不篩選時，被忽略的檔案確實把它擠出名額，否則這個測試什麼都沒測到
     # Guard: unfiltered, the ignored files really do push it out of the slots, else this test proves nothing
     unfiltered = _walk_all(root)
@@ -332,11 +325,11 @@ def test_ignored_files_take_no_slot_from_the_repository_own_config_files(tmp_pat
     assert not [p for p in collected if p.startswith("aaa_scratch")], collected[:3]
 
 
-def test_a_credential_in_an_ignored_local_file_is_not_the_repository_own(tmp_path):
+def test_a_credential_in_an_ignored_local_file_is_not_the_repository_own(git_repo, tmp_path):
     """被 git 忽略的本機檔案裡有一串長得像 AWS 金鑰的字：那不是本儲存庫的設定，自家試用不掃它，不會因此失敗（#151）。
     An ignored local file holds an AWS-key-shaped string: it is not this repository's configuration, so the
     dogfooding scan never reads it and does not fail on it (#151)."""
-    root = _git_checkout_with_ignored_files(tmp_path / "repo", {"local.yaml": f"key: {AWS_KEY}\n"})
+    root = _git_checkout_with_ignored_files(git_repo, tmp_path / "repo", {"local.yaml": f"key: {AWS_KEY}\n"})
     local = os.path.join("aaa_scratch", "local.yaml")
     # 守衛：不篩選時掃描器確實抓到這把金鑰，否則下面的 `== []` 什麼都沒測到
     # Guard: unfiltered, the scanner really does flag this key, else the `== []` below proves nothing
@@ -348,7 +341,7 @@ def test_a_credential_in_an_ignored_local_file_is_not_the_repository_own(tmp_pat
     assert not any(p.endswith("local.yaml") for p in ex.config_files)
 
 
-def test_without_its_own_git_checkout_the_scan_walks_the_whole_directory(tmp_path):
+def test_without_its_own_git_checkout_the_scan_walks_the_whole_directory(git_repo, tmp_path):
     """沒有自己的 git checkout（像解開的 sdist）時整個走訪：放在別的 git repo 底下、沒被追蹤的目錄，也照樣收到
     裡面的 `agents_config.yaml`，不會改用外層 repo 的 `git ls-files`（那裡沒有這個檔案）（#151）。
     Without its own git checkout (like an extracted sdist) the scan walks the whole directory: a directory under another
@@ -356,7 +349,7 @@ def test_without_its_own_git_checkout_the_scan_walks_the_whole_directory(tmp_pat
     `git ls-files` (which does not list it) (#151)."""
     outer = tmp_path / "outer"
     _write(outer, "README", "x\n")
-    _commit_all(outer)
+    git_repo(outer)
     sdist = outer / "extracted"
     _write(sdist, AGENTS_CONFIG_REL, "models: {}\n")
     ex = _repository_config_files(sdist)
