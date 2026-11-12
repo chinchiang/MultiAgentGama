@@ -2,6 +2,9 @@
 The shared `git_repo` fixture: the git repos tests build are not affected by the developer's global git config
 (#154)."""
 
+import os
+import subprocess
+
 
 def _hostile_home(home):
     """在 home 寫一份會擋下 commit 的 `~/.gitconfig`：要求簽章但簽章程式一定失敗、hook 一定失敗，還有別人的名字；
@@ -20,6 +23,15 @@ def _hostile_home(home):
     return home
 
 
+def _unisolated_git(root, *args):
+    """不經過夾具、照開發者的環境在 root 執行 git（只清掉 `GIT_*` 並固定英文訊息），回傳 CompletedProcess。
+    Runs git in root the way the developer's environment would, without the fixture (only `GIT_*` is cleared and
+    messages are kept in English), and returns the CompletedProcess."""
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+    env.update(LC_ALL="C", GIT_AUTHOR_EMAIL="x@x", GIT_COMMITTER_EMAIL="x@x")
+    return subprocess.run(["git", *args], cwd=root, env=env, capture_output=True, text=True, encoding="utf-8")
+
+
 def test_a_hostile_global_git_config_does_not_reach_the_test_repo(git_repo, tmp_path, monkeypatch):
     """開發者的全域 git 設定要求簽章、掛了會失敗的 hook、用別人的名字：`git_repo` 照樣建好 repo 並提交，之後用它回傳的
     runner 再提交一次也一樣，兩次提交的作者都是夾具自己的身分（#154）。
@@ -27,6 +39,22 @@ def test_a_hostile_global_git_config_does_not_reach_the_test_repo(git_repo, tmp_
     still builds the repo and commits, a second commit through the runner it returns works too, and both commits carry
     the fixture's own identity (#154)."""
     monkeypatch.setenv("HOME", str(_hostile_home(tmp_path / "home")))
+    # Guard：不經過夾具時，git 真的讀到這份敵意設定，而且每一項都會擋下 commit，否則這個測試什麼也沒證明
+    # Guard: without the fixture, git really reads this hostile config and each part blocks a commit, else this test
+    # proves nothing
+    guard = tmp_path / "guard"
+    guard.mkdir()
+    (guard / "g.txt").write_text("g\n", encoding="utf-8")
+    for args in (("init", "-q"), ("add", "-A")):
+        assert _unisolated_git(guard, *args).returncode == 0
+    assert _unisolated_git(guard, "config", "--global", "user.name").stdout.strip() == "someone-else", \
+        "git did not read the hostile ~/.gitconfig"
+    hooked = _unisolated_git(guard, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "g")
+    assert hooked.returncode != 0 and "hostile pre-commit hook" in hooked.stderr, \
+        f"the hostile hook did not block: {hooked}"
+    signed = _unisolated_git(guard, "commit", "-q", "--no-verify", "-m", "g")
+    assert signed.returncode != 0 and "gpg failed to sign" in signed.stderr, \
+        f"the hostile signing did not block: {signed}"
     root = tmp_path / "repo"
     root.mkdir()
     (root / "a.txt").write_text("a\n", encoding="utf-8")
