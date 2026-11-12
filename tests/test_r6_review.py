@@ -2,7 +2,6 @@
 Regression tests of the sixth review round: non-ASCII text and paths, a symlinked target, baseline keys, the
 estimate and the blame of a per-test rerun."""
 import os
-import subprocess
 import sys
 
 import pytest
@@ -43,13 +42,11 @@ def _finding(fid, title, root_cause=""):
     )
 
 
-def _repo(root):
-    git = lambda *a: subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)  # noqa: E731
-    git("init", "-q", ".")
+def _repo(git_repo, root):
+    """在 root 放一個 `base.py`，用 `git_repo` 夾具提交成基準。
+    Puts a `base.py` in root and commits it as the base with the `git_repo` fixture."""
     (root / "base.py").write_text("def base(x):\n    return x\n", encoding="utf-8")
-    git("add", "-A")
-    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "base")
-    return git
+    git_repo(root)
 
 
 # --- 1. 中文威脅不會被合併成一個 ---------------------------------------------------------------
@@ -136,8 +133,8 @@ def test_test_generation_for_an_unknown_location_uses_the_target_file(scripted, 
 # --- 2. --changed-since 不會漏掉非 ASCII 檔名 ---------------------------------------------------
 # --- 2. --changed-since keeps non-ASCII file names --------------------------------------------------------
 
-def test_changed_since_keeps_non_ascii_file_names(tmp_path):
-    _repo(tmp_path)
+def test_changed_since_keeps_non_ascii_file_names(git_repo, tmp_path):
+    _repo(git_repo, tmp_path)
     (tmp_path / "a.py").write_text("def a(x):\n    return x\n", encoding="utf-8")
     (tmp_path / "中文.py").write_text("def b(x):\n    return x\n", encoding="utf-8")
     (tmp_path / "base.py").write_text("def base(x, y):\n    return x\n", encoding="utf-8")
@@ -149,10 +146,10 @@ def test_changed_since_keeps_non_ascii_file_names(tmp_path):
 # --- 3. --changed-since through a symlinked target matches the files ---------------------------------------
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
-def test_changed_since_through_a_symlinked_target_matches_the_walk(tmp_path):
+def test_changed_since_through_a_symlinked_target_matches_the_walk(git_repo, tmp_path):
     real = tmp_path / "real"
     real.mkdir()
-    _repo(real)
+    _repo(git_repo, real)
     (real / "a.py").write_text("def a(x):\n    return x\n", encoding="utf-8")
     link = tmp_path / "link"
     link.symlink_to(real, target_is_directory=True)
