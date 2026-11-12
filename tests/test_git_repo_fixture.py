@@ -35,3 +35,22 @@ def test_a_hostile_global_git_config_does_not_reach_the_test_repo(git_repo, tmp_
     git("add", "b.txt")
     git("commit", "-q", "-m", "second")
     assert git("log", "--format=%an %s").stdout.splitlines() == ["t second", "t base"]
+
+
+def test_a_leaked_git_dir_does_not_send_the_commands_to_another_repo(git_repo, tmp_path, monkeypatch):
+    """環境裡外洩了指向別的 repo 的 `GIT_DIR`（在 git hook 裡跑測試時 git 會設定它）：`git_repo` 照樣在 root 建自己的
+    repo，指令不會跑到那個 repo 去，那個 repo 也沒被動到（#154）。
+    A `GIT_DIR` pointing at another repo leaked into the environment (git sets it when tests run inside a git hook):
+    `git_repo` still builds its own repo in root, its commands never go to that repo, and that repo is left untouched
+    (#154)."""
+    (tmp_path / "other").mkdir()
+    (tmp_path / "other" / "o.txt").write_text("o\n", encoding="utf-8")
+    other = git_repo(tmp_path / "other")
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "other" / ".git"))
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "a.txt").write_text("a\n", encoding="utf-8")
+    git = git_repo(root)
+    assert (root / ".git").is_dir(), "git_repo made no repository in root"
+    assert git("ls-files").stdout.splitlines() == ["a.txt"]
+    assert other("log", "--format=%s").stdout.splitlines() == ["base"], "the other repo got a commit"

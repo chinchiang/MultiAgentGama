@@ -104,11 +104,11 @@ _GIT_IDENTITY = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITT
 @pytest.fixture
 def git_repo(tmp_path_factory):
     """`git_repo(root)` 在 root 建一個 git repo，把裡面的檔案全部提交成 `base`，回傳在 root 執行 git 的
-    `git(*args)`：輸出以 UTF-8 文字擷取，失敗時丟出 AssertionError，訊息附上 git 的 stderr。這些 git 指令不讀開發者
+    `git(*args)`：輸出以 UTF-8 文字擷取，失敗時丟出 AssertionError，訊息附上 git 的 stderr 與 stdout。這些 git 指令不讀開發者
     的全域與系統設定（簽章、hook 等都碰不到），外洩的 `GIT_*` 環境變數（例如在 hook 裡跑測試時的 `GIT_DIR`）也
     先清掉，身分由夾具自己給（#154）。
     `git_repo(root)` makes root a git repo and commits everything in it as `base`, then returns `git(*args)`, which
-    runs git in root: output is captured as UTF-8 text, and a failure raises AssertionError carrying git's stderr.
+    runs git in root: output is captured as UTF-8 text, and a failure raises AssertionError carrying git's stderr and stdout.
     These git commands read neither the developer's global nor system config (signing, hooks and the like never
     reach them), leaked `GIT_*` variables (such as `GIT_DIR` when tests run inside a hook) are cleared first, and the
     fixture supplies its own identity (#154)."""
@@ -124,7 +124,8 @@ def git_repo(tmp_path_factory):
             done = subprocess.run(["git", *args], cwd=root, env=env, capture_output=True, text=True,
                                   encoding="utf-8")
             if done.returncode != 0:
-                raise AssertionError(f"git {' '.join(args)} exited {done.returncode}: {done.stderr.strip()}")
+                output = "\n".join(part.strip() for part in (done.stderr, done.stdout) if part.strip())
+                raise AssertionError(f"git {' '.join(args)} exited {done.returncode}: {output}")
             return done
 
         git("init", "-q")
