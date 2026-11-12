@@ -5,7 +5,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 
@@ -213,7 +212,7 @@ def test_a_new_rule_hit_after_the_baseline_decides_the_verdict(tmp_path):
     assert any(r["ruleId"] == "vibeharness/VH-AI-002" and r.get("partialFingerprints") for r in results)
 
 
-def _git_repo(git_repo, root):
+def _readme_repo(git_repo, root):
     """用 `git_repo` 夾具在 root 建一個只有一次提交（一個 README）的 git repo，回傳它的 git runner。
     Creates, with the `git_repo` fixture, a git repo in root with a single commit (one README), and returns its git
     runner."""
@@ -222,11 +221,11 @@ def _git_repo(git_repo, root):
     return git_repo(root)
 
 
-def _worktrees(repo):
-    """git worktree list 的行數（只有主目錄時是 1）。
-    The number of lines of git worktree list (1 when only the main checkout is left)."""
-    return len(subprocess.run(["git", "worktree", "list"], cwd=repo, check=True, capture_output=True,
-                              text=True).stdout.splitlines())
+def _worktrees(git):
+    """用 repo 的 git runner 數 git worktree list 的行數（只有主目錄時是 1）。
+    The number of lines of git worktree list, counted through the repo's git runner (1 when only the main checkout is
+    left)."""
+    return len(git("worktree", "list").stdout.splitlines())
 
 
 @pytest.fixture
@@ -246,9 +245,9 @@ def test_an_unknown_revision_fails_without_leaving_anything_behind(git_repo, tmp
     and no worktree or temporary directory is left. Catches a git failure taken as no differences, and the failure
     path skipping the cleanup."""
     repo = tmp_path / "repo"
-    _git_repo(git_repo, repo)
+    git = _readme_repo(git_repo, repo)
     assert main(["--against", "no-such-rev"], repo=str(repo)) == 2
-    assert _worktrees(repo) == 1
+    assert _worktrees(git) == 1
     assert list(scratch.iterdir()) == []
 
 
@@ -259,14 +258,14 @@ def test_a_crashing_scenario_run_fails_and_still_removes_the_worktree(git_repo, 
     outputs are removed. Catches an exception skipping the cleanup and leaving a worktree that breaks the next git
     worktree add."""
     repo = tmp_path / "repo"
-    _git_repo(git_repo, repo)
+    git = _readme_repo(git_repo, repo)
 
     def crash(*args, **kwargs):
         raise RuntimeError("scenario crashed")
 
     monkeypatch.setattr(golden_run, "run_scenarios", crash)
     assert main(["--against", "HEAD"], repo=str(repo)) == 2
-    assert _worktrees(repo) == 1
+    assert _worktrees(git) == 1
     assert list(scratch.iterdir()) == []
 
 
@@ -291,7 +290,7 @@ def test_both_sides_crashing_the_same_way_is_a_failure_to_compare_not_zero_diffe
     breaks an import): the outputs are identical, but that is not "behaviour unchanged", so the exit code is 2, not 0,
     and the worktree is still removed. Catches a traceback or a missing report being taken as 0 differing lines."""
     repo = tmp_path / "repo"
-    git = _git_repo(git_repo, repo)
+    git = _readme_repo(git_repo, repo)
     config = repo / "vibeharness" / "config"
     config.mkdir(parents=True)
     (repo / "vibeharness" / "__init__.py").write_text("", encoding="utf-8")
@@ -300,7 +299,7 @@ def test_both_sides_crashing_the_same_way_is_a_failure_to_compare_not_zero_diffe
     git("add", "vibeharness")
     git("commit", "-q", "-m", "broken")
     assert main(["--against", "HEAD", "mock_md"], repo=str(repo)) == 2
-    assert _worktrees(repo) == 1
+    assert _worktrees(git) == 1
     assert list(scratch.iterdir()) == []
 
 

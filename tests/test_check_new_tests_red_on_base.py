@@ -5,7 +5,6 @@
 
 import importlib.util
 import os
-import subprocess
 import sys
 
 import pytest
@@ -29,18 +28,24 @@ def test_adding_zero_keeps_the_number():
 '''
 
 
+def _base_repo(git_repo, root, calc=BUGGY, tests=BASE_TESTS):
+    """用 `git_repo` 夾具在 root 建一個 git repo：一次提交，裡面有 `calc.py` 與 `tests/test_calc.py`；這次提交就是基準。
+    回傳 repo 的 git runner。
+    Creates, with the `git_repo` fixture, a git repo in root with one commit holding `calc.py` and
+    `tests/test_calc.py`; that commit is the base. Returns the repo's git runner."""
+    (root / "tests").mkdir(parents=True, exist_ok=True)
+    (root / "calc.py").write_text(calc, encoding="utf-8")
+    (root / "tests" / "test_calc.py").write_text(tests, encoding="utf-8")
+    return git_repo(root)
+
+
 @pytest.fixture
 def make_repo(git_repo):
-    """`make_repo(root, calc=..., tests=...)` 用 `git_repo` 夾具在 root 建一個 git repo：一次提交，裡面有 `calc.py` 與
-    `tests/test_calc.py`；這次提交就是基準。回傳 root。
-    `make_repo(root, calc=..., tests=...)` creates, with the `git_repo` fixture, a git repo in root with one commit
-    holding `calc.py` and `tests/test_calc.py`; that commit is the base. Returns root."""
+    """`make_repo(root, calc=..., tests=...)` 用 `_base_repo` 建好基準 repo，回傳 root。
+    `make_repo(root, calc=..., tests=...)` builds the base repo with `_base_repo` and returns root."""
 
     def make(root, calc=BUGGY, tests=BASE_TESTS):
-        (root / "tests").mkdir(parents=True, exist_ok=True)
-        (root / "calc.py").write_text(calc, encoding="utf-8")
-        (root / "tests" / "test_calc.py").write_text(tests, encoding="utf-8")
-        git_repo(root)
+        _base_repo(git_repo, root, calc, tests)
         return root
 
     return make
@@ -126,7 +131,7 @@ def test_subtracting_gives_the_difference():
     assert line.startswith("red    ") and "ImportError" in line, out
 
 
-def test_an_unknown_revision_cannot_compare_and_leaves_no_worktree(make_repo, tmp_path, capsys, monkeypatch):
+def test_an_unknown_revision_cannot_compare_and_leaves_no_worktree(git_repo, tmp_path, capsys, monkeypatch):
     """--against 給了不存在的 revision：結束碼是 2（無法比對，不同於有綠的 1），不留下 worktree 或暫存目錄。
     --against names a revision that does not exist: the exit code is 2 (could not compare, unlike 1 for a green test),
     and no worktree or temporary directory is left."""
@@ -135,11 +140,11 @@ def test_an_unknown_revision_cannot_compare_and_leaves_no_worktree(make_repo, tm
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     monkeypatch.setattr(tempfile, "tempdir", str(scratch))
-    repo = make_repo(tmp_path / "repo")
+    repo = tmp_path / "repo"
+    git = _base_repo(git_repo, repo)
     assert tool.main(["--against", "no-such-rev"], repo=str(repo)) == 2
     assert "could not compare" in capsys.readouterr().err
-    worktrees = subprocess.run(["git", "worktree", "list"], cwd=repo, check=True, capture_output=True, text=True)
-    assert len(worktrees.stdout.splitlines()) == 1
+    assert len(git("worktree", "list").stdout.splitlines()) == 1
     assert list(scratch.iterdir()) == []
 
 
@@ -249,7 +254,7 @@ def test_a_branch_without_new_or_changed_tests_says_so(make_repo, tmp_path, caps
     assert capsys.readouterr().out.splitlines() == ["no new or changed tests under tests/"]
 
 
-def test_pytest_that_cannot_start_on_the_base_cannot_compare(make_repo, tmp_path, capsys):
+def test_pytest_that_cannot_start_on_the_base_cannot_compare(git_repo, tmp_path, capsys):
     """基準的 `pytest.ini` 帶著不存在的選項：pytest 在基準上無法啟動、沒寫出報告，結束碼是 2（無法比對），
     不能把沒跑的測試當成任何結果，並附上 pytest 輸出的最後幾行說明原因；這時 worktree 已經建好了，失敗之後照樣移除。
     The base's `pytest.ini` carries an option that does not exist: pytest cannot start on the base and writes no
@@ -259,7 +264,7 @@ def test_pytest_that_cannot_start_on_the_base_cannot_compare(make_repo, tmp_path
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "pytest.ini").write_text("[pytest]\naddopts = --no-such-option\n", encoding="utf-8")
-    make_repo(repo)
+    git = _base_repo(git_repo, repo)
     (repo / "tests" / "test_calc.py").write_text(BASE_TESTS + '''
 
 def test_adding_two_numbers_gives_their_sum():
@@ -272,8 +277,8 @@ def test_adding_two_numbers_gives_their_sum():
     assert "could not compare" in err and "--no-such-option" in err, err
     # 這條路徑已經建了 worktree：失敗之後也要移除
     # This path has already added the worktree: it is removed after the failure too
-    worktrees = subprocess.run(["git", "worktree", "list"], cwd=repo, check=True, capture_output=True, text=True)
-    assert len(worktrees.stdout.splitlines()) == 1, worktrees.stdout
+    worktrees = git("worktree", "list").stdout
+    assert len(worktrees.splitlines()) == 1, worktrees
 
 
 def test_a_selected_test_that_is_not_collected_cannot_compare_and_hides_no_other_result(make_repo, tmp_path, capsys):
