@@ -268,7 +268,7 @@ MultiAgentGama/
 │   └── test_sdist.py            # 在本機重現 CI 的 package job：建 sdist、解開、在裡面跑測試套件
 ├── tests/                       # 工具包本身之測試（離線、不需 API 金鑰）
 │   ├── config_files.py          # 讀出內建設定、寫出修改後的測試用設定檔（load_config／write_config）
-│   ├── conftest.py              # 共用 fixture：以假 litellm 讓 live 路徑離線執行
+│   ├── conftest.py              # 共用 fixture：以假 litellm 讓 live 路徑離線執行；git_repo 建不受全域 git 設定影響的測試 repo
 │   ├── test_agent_call.py       # 透過 ask／ask_text 測試代理呼叫：提示組裝與通道、只有可用的 items 到 mapper、模擬輸出、純文字呼叫
 │   ├── test_ai_security.py      # OWASP LLM Top 10 2026／ATLAS 控制與確定性 AI 安全規則
 │   ├── test_baseline.py                # --baseline：載入與重算、已知問題不計入、action.yml 結構
@@ -283,6 +283,7 @@ MultiAgentGama/
 │   ├── test_estimate.py                # --estimate：精確值與情境值、價格、不呼叫模型
 │   ├── test_evidence_tally.py          # 證據計數：每一種在有、沒有基準時的全部／新的／已知、已知問題的順序、部分計數
 │   ├── test_fanout.py                  # 透過 fan_out 測試扇出：順序、當掉換成 fallback 並記錄、live 失敗與 Ctrl-C 不再開始佇列中的呼叫
+│   ├── test_git_repo_fixture.py        # 共用的 git_repo fixture：建的測試 repo 不受開發者的全域 git 設定影響
 │   ├── test_golden.py                  # golden diff：正規化、比對、情境決定性、--against 的清除路徑（沒有 scripts/golden/ 時略過）
 │   ├── test_harness_components.py      # 各元件於 mock 模式下的整合測試
 │   ├── test_i18n.py                    # 雙語工具、報告／console／CLI 字串、雙語的 docstring 與註解

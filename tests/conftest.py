@@ -4,6 +4,8 @@ without network or real keys."""
 import fnmatch
 import json
 import os
+import shutil
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -94,6 +96,54 @@ def scripted(monkeypatch):
     for var in _FAKE_KEY_VARS:
         monkeypatch.setenv(var, "test-key")
     return ScriptedTransport
+
+
+# 夾具自己的 git 身分 ／ The fixture's own git identity
+_GIT_IDENTITY = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                 "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+
+@pytest.fixture
+def needs_git():
+    """PATH 上沒有 git 時略過這個測試（#154）。
+    Skips the test when git is not on the PATH (#154)."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+
+
+@pytest.fixture
+def git_repo(needs_git, tmp_path_factory):
+    """`git_repo(root)` 在 root 建一個 git repo，把裡面的檔案全部提交成 `base`，回傳在 root 執行 git 的
+    `git(*args)`：輸出以 UTF-8 文字擷取，失敗時丟出 AssertionError，訊息附上 git 的 stderr 與 stdout。
+    這些 git 指令不讀開發者的全域與系統設定（簽章、hook 等都碰不到），外洩的 `GIT_*` 環境變數（例如在 hook 裡跑
+    測試時的 `GIT_DIR`）也先清掉，身分由夾具自己給；沒有 git 時略過測試（`needs_git`）（#154）。
+    `git_repo(root)` makes root a git repo and commits everything in it as `base`, then returns `git(*args)`, which
+    runs git in root: output is captured as UTF-8 text, and a failure raises AssertionError carrying git's stderr and
+    stdout. These git commands read neither the developer's global nor system config (signing, hooks and the like
+    never reach them), leaked `GIT_*` variables (such as `GIT_DIR` when tests run inside a hook) are cleared first,
+    and the fixture supplies its own identity; without git the test is skipped (`needs_git`) (#154)."""
+    empty_config = tmp_path_factory.mktemp("git-config") / "gitconfig"
+    empty_config.write_text("", encoding="utf-8")
+
+    def make(root):
+        root.mkdir(parents=True, exist_ok=True)
+
+        def git(*args):
+            env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+            env.update(_GIT_IDENTITY, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=str(empty_config))
+            done = subprocess.run(["git", *args], cwd=root, env=env, capture_output=True, text=True,
+                                  encoding="utf-8")
+            if done.returncode != 0:
+                output = "\n".join(part.strip() for part in (done.stderr, done.stdout) if part.strip())
+                raise AssertionError(f"git {' '.join(args)} exited {done.returncode}: {output}")
+            return done
+
+        git("init", "-q")
+        git("add", "-A")
+        git("commit", "-q", "-m", "base")
+        return git
+
+    return make
 
 
 def pytest_make_parametrize_id(config, val, argname):

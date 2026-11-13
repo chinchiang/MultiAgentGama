@@ -5,7 +5,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 
@@ -213,22 +212,20 @@ def test_a_new_rule_hit_after_the_baseline_decides_the_verdict(tmp_path):
     assert any(r["ruleId"] == "vibeharness/VH-AI-002" and r.get("partialFingerprints") for r in results)
 
 
-def _git_repo(root):
-    """在 root 建一個只有一次提交的 git repo。
-    Creates a git repo in root with a single commit."""
-    root.mkdir()
+def _readme_repo(git_repo, root):
+    """用 `git_repo` 夾具在 root 建一個只有一次提交（一個 README）的 git repo，回傳它的 git runner。
+    Creates, with the `git_repo` fixture, a git repo in root with a single commit (one README), and returns its git
+    runner."""
+    root.mkdir(parents=True, exist_ok=True)
     (root / "README").write_text("x\n", encoding="utf-8")
-    for args in (["init", "-q"], ["add", "README"],
-                 ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"]):
-        subprocess.run(["git", *args], cwd=root, check=True)
-    return root
+    return git_repo(root)
 
 
-def _worktrees(repo):
-    """git worktree list 的行數（只有主目錄時是 1）。
-    The number of lines of git worktree list (1 when only the main checkout is left)."""
-    return len(subprocess.run(["git", "worktree", "list"], cwd=repo, check=True, capture_output=True,
-                              text=True).stdout.splitlines())
+def _worktrees(git):
+    """用 repo 的 git runner 數 git worktree list 的行數（只有主目錄時是 1）。
+    The number of lines of git worktree list, counted through the repo's git runner (1 when only the main checkout is
+    left)."""
+    return len(git("worktree", "list").stdout.splitlines())
 
 
 @pytest.fixture
@@ -241,36 +238,39 @@ def scratch(tmp_path, monkeypatch):
     return root
 
 
-def test_an_unknown_revision_fails_without_leaving_anything_behind(tmp_path, scratch):
+def test_an_unknown_revision_fails_without_leaving_anything_behind(git_repo, tmp_path, scratch):
     """--against 給了不存在的 revision：結束碼是 2（無法比對，不同於有差異的 1），不留下 worktree 或暫存目錄。
     抓得到 git 失敗時被當成沒有差異，以及失敗路徑漏掉清除。
     --against names a revision that does not exist: the exit code is 2 (could not compare, unlike 1 for differences),
     and no worktree or temporary directory is left. Catches a git failure taken as no differences, and the failure
     path skipping the cleanup."""
-    repo = _git_repo(tmp_path / "repo")
+    repo = tmp_path / "repo"
+    git = _readme_repo(git_repo, repo)
     assert main(["--against", "no-such-rev"], repo=str(repo)) == 2
-    assert _worktrees(repo) == 1
+    assert _worktrees(git) == 1
     assert list(scratch.iterdir()) == []
 
 
-def test_a_crashing_scenario_run_fails_and_still_removes_the_worktree(tmp_path, scratch, monkeypatch):
+def test_a_crashing_scenario_run_fails_and_still_removes_the_worktree(git_repo, tmp_path, scratch, monkeypatch):
     """worktree 建好之後情境執行當掉：結束碼是 2，worktree 和暫存的輸出都被移除。
     抓得到例外跳過清除，留下 worktree 讓下一次 git worktree add 失敗。
     The scenario run crashes after the worktree is added: the exit code is 2, and the worktree and the temporary
     outputs are removed. Catches an exception skipping the cleanup and leaving a worktree that breaks the next git
     worktree add."""
-    repo = _git_repo(tmp_path / "repo")
+    repo = tmp_path / "repo"
+    git = _readme_repo(git_repo, repo)
 
     def crash(*args, **kwargs):
         raise RuntimeError("scenario crashed")
 
     monkeypatch.setattr(golden_run, "run_scenarios", crash)
     assert main(["--against", "HEAD"], repo=str(repo)) == 2
-    assert _worktrees(repo) == 1
+    assert _worktrees(git) == 1
     assert list(scratch.iterdir()) == []
 
 
-def test_a_relative_keep_path_keeps_the_outputs_under_the_current_directory(tmp_path, scratch, monkeypatch, capsys):
+def test_a_relative_keep_path_keeps_the_outputs_under_the_current_directory(needs_git, tmp_path, scratch, monkeypatch,
+                                                                           capsys):
     """--keep 給相對路徑：照樣比對得出結果，兩邊的輸出留在呼叫 main 時的目前目錄底下。情境步驟在另一個工作目錄執行，
     原本相對路徑在那裡指錯地方，mock_md 第 1 步就當掉、結束碼 2（#147）。
     A relative --keep path still compares, and both sides' outputs stay under the directory main was called from. The
@@ -283,23 +283,23 @@ def test_a_relative_keep_path_keeps_the_outputs_under_the_current_directory(tmp_
         assert (tmp_path / "kept" / side / "mock_md" / "step1.exit_code").is_file(), side
 
 
-def test_both_sides_crashing_the_same_way_is_a_failure_to_compare_not_zero_differences(tmp_path, scratch):
+def test_both_sides_crashing_the_same_way_is_a_failure_to_compare_not_zero_differences(git_repo, tmp_path, scratch):
     """兩邊的 CLI 子行程以同樣的方式當掉（這裡是 vibeharness.cli 不存在，像內部改名讓匯入失敗）：輸出一模一樣，
     但那不是「行為不變」，所以結束碼是 2，不是 0；worktree 照樣移除。抓得到 traceback 或沒寫出報告被當成 0 行差異。
     Both sides' CLI child processes crash the same way (here vibeharness.cli does not exist, as when an internal rename
     breaks an import): the outputs are identical, but that is not "behaviour unchanged", so the exit code is 2, not 0,
     and the worktree is still removed. Catches a traceback or a missing report being taken as 0 differing lines."""
-    repo = _git_repo(tmp_path / "repo")
+    repo = tmp_path / "repo"
+    git = _readme_repo(git_repo, repo)
     config = repo / "vibeharness" / "config"
     config.mkdir(parents=True)
     (repo / "vibeharness" / "__init__.py").write_text("", encoding="utf-8")
     with open(os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml"), encoding="utf-8") as f:
         (config / "agents_config.yaml").write_text(f.read(), encoding="utf-8")
-    subprocess.run(["git", "add", "vibeharness"], cwd=repo, check=True)
-    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "broken"], cwd=repo,
-                   check=True)
+    git("add", "vibeharness")
+    git("commit", "-q", "-m", "broken")
     assert main(["--against", "HEAD", "mock_md"], repo=str(repo)) == 2
-    assert _worktrees(repo) == 1
+    assert _worktrees(git) == 1
     assert list(scratch.iterdir()) == []
 
 

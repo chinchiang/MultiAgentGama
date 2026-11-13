@@ -268,7 +268,7 @@ MultiAgentGama/
 │   └── test_sdist.py            # Reproduces CI's package job locally: build the sdist, extract it, run the suite inside
 ├── tests/                       # The toolkit's own tests (offline, no API keys needed)
 │   ├── config_files.py          # Read the bundled config, write an edited copy for a test (load_config / write_config)
-│   ├── conftest.py              # Shared fixtures: a fake litellm so the live paths run offline
+│   ├── conftest.py              # Shared fixtures: a fake litellm so the live paths run offline; git_repo builds test repos that ignore the global git config
 │   ├── test_agent_call.py       # Agent calls through ask / ask_text: prompt assembly and channels, only usable items to the mapper, Simulated output, the plain-text call
 │   ├── test_ai_security.py      # OWASP LLM Top 10 2026 / ATLAS controls and the deterministic AI-security rules
 │   ├── test_baseline.py                # --baseline: loading and recomputing, known problems not counted, action.yml structure
@@ -283,6 +283,7 @@ MultiAgentGama/
 │   ├── test_estimate.py                # --estimate: exact and scenario figures, prices, no model call
 │   ├── test_evidence_tally.py          # Evidence tally: each kind's all / new / known with and without a Baseline, the Known problems' order, partial tallies
 │   ├── test_fanout.py                  # The fan-out through fan_out: order, a crash replaced by the fallback and booked, no queued call after a live failure or Ctrl-C
+│   ├── test_git_repo_fixture.py        # The shared git_repo fixture: the test repos it builds ignore the developer's global git config
 │   ├── test_golden.py                  # Golden diff: normalisation, comparison, scenario determinism, --against's cleanup path (skips without scripts/golden/)
 │   ├── test_harness_components.py      # Component integration tests in mock mode
 │   ├── test_i18n.py                    # Bilingual helpers, report / console / CLI strings, bilingual docstrings and comments

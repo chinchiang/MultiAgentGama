@@ -452,14 +452,10 @@ def test_cli_file_filters_override_config(monkeypatch, tmp_path):
     assert seen == {"include": ["src/*"], "exclude": ["tests/*", "*.min.js"], "since": "HEAD~1"}
 
 
-def test_changed_since_selects_git_changes_and_rejects_bad_refs(tmp_path):
-    import subprocess
+def test_changed_since_selects_git_changes_and_rejects_bad_refs(git_repo, tmp_path):
     from vibeharness.core.harness import VibeHarnessCommander
     root = _tree(tmp_path)
-    git = lambda *a: subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)  # noqa: E731
-    git("init", "-q", ".")
-    git("-c", "user.email=t@t", "-c", "user.name=t", "add", "-A")
-    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "base")
+    git_repo(root)
     (root / "src" / "app.py").write_text("def f_app(x, y):\n    return x + y\n")  # 已修改，未暫存 ／ modified, unstaged
     (root / "src" / "new.py").write_text("def g(x):\n    return x\n")             # 未追蹤 ／ untracked
     (root / "vendor" / "lib.py").write_text("def h(x):\n    return x\n")           # 已修改，在目標之外 ／ modified, outside target
