@@ -64,11 +64,31 @@ def test_adding_two_numbers_gives_their_sum():
     assert add(1, 2) == 3
 ''', encoding="utf-8")
     code = tool.main(["--against", "HEAD"], repo=str(repo))
-    out = capsys.readouterr().out
-    assert code == 0, out
+    out, err = capsys.readouterr()
+    assert code == 0, out + err
     assert "red    tests/test_calc.py::test_adding_two_numbers_gives_their_sum" in out
     assert "assert -1 == 3" in out
     assert "test_adding_zero_keeps_the_number" not in out
+
+
+def test_a_failing_global_post_checkout_hook_does_not_stop_the_comparison(make_repo, failing_post_checkout, tmp_path,
+                                                                         capsys):
+    """開發者的全域 hook 裡有一個一定失敗的 `post-checkout`：建基準 worktree 時不跑它，比對照常進行，新的測試列成紅的，
+    結束碼是 0。原本 `worktree add` 因為這個 hook 結束碼是 1，整次比對以 2 收場（#158）。
+    The developer's global hooks include a `post-checkout` that always fails: adding the base worktree does not run
+    it, the comparison goes on, the new test is listed as red and the exit code is 0. `worktree add` used to exit 1
+    because of that hook, ending the whole comparison with 2 (#158)."""
+    repo = make_repo(tmp_path / "repo")
+    (repo / "calc.py").write_text(FIXED, encoding="utf-8")
+    (repo / "tests" / "test_calc.py").write_text(BASE_TESTS + '''
+
+def test_adding_two_numbers_gives_their_sum():
+    assert add(1, 2) == 3
+''', encoding="utf-8")
+    code = tool.main(["--against", "HEAD"], repo=str(repo))
+    captured = capsys.readouterr()
+    assert code == 0, captured.out + captured.err
+    assert "red    tests/test_calc.py::test_adding_two_numbers_gives_their_sum" in captured.out
 
 
 def test_a_new_test_that_passes_on_the_base_code_is_listed_as_green(make_repo, tmp_path, capsys):
@@ -82,8 +102,8 @@ def test_adding_zero_to_zero_gives_zero():
     assert add(0, 0) == 0
 ''', encoding="utf-8")
     code = tool.main(["--against", "HEAD"], repo=str(repo))
-    out = capsys.readouterr().out
-    assert code == 1, out
+    out, err = capsys.readouterr()
+    assert code == 1, out + err
     assert "green  tests/test_calc.py::test_adding_zero_to_zero_gives_zero" in out
 
 
@@ -106,8 +126,8 @@ def test_adding_one_and_one():
     assert add(1, 1) == 2
 ''', encoding="utf-8")
     code = tool.main(["--against", "HEAD"], repo=str(repo))
-    out = capsys.readouterr().out
-    assert code == 0, out
+    out, err = capsys.readouterr()
+    assert code == 0, out + err
     assert out.splitlines() == ["red    tests/test_calc.py::test_adding_one_and_one  assert 0 == 2"], out
 
 
@@ -125,8 +145,8 @@ def test_subtracting_gives_the_difference():
     assert sub(3, 1) == 2
 ''', encoding="utf-8")
     code = tool.main(["--against", "HEAD"], repo=str(repo))
-    out = capsys.readouterr().out
-    assert code == 0, out
+    out, err = capsys.readouterr()
+    assert code == 0, out + err
     line = next(line for line in out.splitlines() if "test_subtracting_gives_the_difference" in line)
     assert line.startswith("red    ") and "ImportError" in line, out
 
@@ -142,8 +162,10 @@ def test_an_unknown_revision_cannot_compare_and_leaves_no_worktree(git_repo, tmp
     monkeypatch.setattr(tempfile, "tempdir", str(scratch))
     repo = tmp_path / "repo"
     git = _base_repo(git_repo, repo)
-    assert tool.main(["--against", "no-such-rev"], repo=str(repo)) == 2
-    assert "could not compare" in capsys.readouterr().err
+    code = tool.main(["--against", "no-such-rev"], repo=str(repo))
+    out, err = capsys.readouterr()
+    assert code == 2, out + err
+    assert "could not compare" in err
     assert len(git("worktree", "list").stdout.splitlines()) == 1
     assert list(scratch.iterdir()) == []
 
@@ -166,8 +188,8 @@ class TestAdd:
         assert add(0, 0) == 0
 ''', encoding="utf-8")
     code = tool.main(["--against", "HEAD"], repo=str(repo))
-    out = capsys.readouterr().out
-    assert code == 1, out
+    out, err = capsys.readouterr()
+    assert code == 1, out + err
     assert out.splitlines() == ["green  tests/unit/test_more.py::TestAdd::test_adding_zero_to_zero_gives_zero"], out
 
 
@@ -191,8 +213,8 @@ def test_a_parametrized_test_with_a_case_green_on_the_base_is_green_and_names_th
     (repo / "calc.py").write_text(FIXED, encoding="utf-8")
     (repo / "tests" / "test_calc.py").write_text(BASE_TESTS + PARAMETRIZED, encoding="utf-8")
     code = tool.main(["--against", "HEAD"], repo=str(repo))
-    out = capsys.readouterr().out
-    assert code == 1, out
+    out, err = capsys.readouterr()
+    assert code == 1, out + err
     assert out.splitlines() == ["green  tests/test_calc.py::test_adding_gives_the_sum  green on the base: zeros"], out
 
 
@@ -204,8 +226,8 @@ def test_a_parametrized_test_red_in_every_case_shows_its_first_failure(make_repo
     (repo / "tests" / "test_calc.py").write_text(BASE_TESTS + PARAMETRIZED.replace("(0, 0, 0)", "(3, 1, 4)"),
                                                   encoding="utf-8")
     code = tool.main(["--against", "HEAD"], repo=str(repo))
-    out = capsys.readouterr().out
-    assert code == 0, out
+    out, err = capsys.readouterr()
+    assert code == 0, out + err
     assert out.splitlines() == ["red    tests/test_calc.py::test_adding_gives_the_sum  assert -1 == 3"], out
 
 
@@ -228,8 +250,8 @@ def test_subtracting_gives_the_difference():
     assert calc.sub(3, 1) == 2
 ''', encoding="utf-8")
     code = tool.main(["--against", "HEAD"], repo=str(repo))
-    out = capsys.readouterr().out
-    assert code == 1, out
+    out, err = capsys.readouterr()
+    assert code == 1, out + err
     assert out.splitlines() == ["skipped tests/test_calc.py::test_subtracting_gives_the_difference  calc has no sub"], out
 
 
@@ -239,8 +261,9 @@ def test_a_test_file_that_does_not_parse_cannot_compare(make_repo, tmp_path, cap
     compare), not a traceback whose exit code looks like "some are green"."""
     repo = make_repo(tmp_path / "repo")
     (repo / "tests" / "test_calc.py").write_text(BASE_TESTS + "\n\ndef test_broken(:\n    pass\n", encoding="utf-8")
-    assert tool.main(["--against", "HEAD"], repo=str(repo)) == 2
-    err = capsys.readouterr().err
+    code = tool.main(["--against", "HEAD"], repo=str(repo))
+    out, err = capsys.readouterr()
+    assert code == 2, out + err
     assert "could not compare" in err and "tests/test_calc.py" in err, err
 
 
@@ -250,8 +273,10 @@ def test_a_branch_without_new_or_changed_tests_says_so(make_repo, tmp_path, caps
     nothing, which looked the same as "every test is red"."""
     repo = make_repo(tmp_path / "repo")
     (repo / "calc.py").write_text(FIXED, encoding="utf-8")
-    assert tool.main(["--against", "HEAD"], repo=str(repo)) == 0
-    assert capsys.readouterr().out.splitlines() == ["no new or changed tests under tests/"]
+    code = tool.main(["--against", "HEAD"], repo=str(repo))
+    out, err = capsys.readouterr()
+    assert code == 0, out + err
+    assert out.splitlines() == ["no new or changed tests under tests/"]
 
 
 def test_pytest_that_cannot_start_on_the_base_cannot_compare(git_repo, tmp_path, capsys):
@@ -270,8 +295,9 @@ def test_pytest_that_cannot_start_on_the_base_cannot_compare(git_repo, tmp_path,
 def test_adding_two_numbers_gives_their_sum():
     assert add(1, 2) == 3
 ''', encoding="utf-8")
-    assert tool.main(["--against", "HEAD"], repo=str(repo)) == 2
-    err = capsys.readouterr().err
+    code = tool.main(["--against", "HEAD"], repo=str(repo))
+    out, err = capsys.readouterr()
+    assert code == 2, out + err
     # 沒有報告時附上 pytest 輸出的最後幾行，看得出它為什麼沒跑（這裡是不認得的選項）
     # Without a report, the last lines of pytest's output show why it did not run (here an unknown option)
     assert "could not compare" in err and "--no-such-option" in err, err
@@ -347,8 +373,8 @@ def test_adding_two_numbers_gives_their_sum():
     assert add(1, 2) == 3
 ''', encoding="utf-8")
     code = tool.main(["--against", "HEAD"], repo=str(repo))
-    out = capsys.readouterr().out
-    assert code == 0, out
+    out, err = capsys.readouterr()
+    assert code == 0, out + err
     assert out.splitlines() == [
         "red    tests/test_calc.py::test_adding_two_numbers_gives_their_sum  xfail on the base: add subtracts on the base"
     ], out
@@ -362,8 +388,9 @@ def test_a_test_file_that_is_not_utf8_cannot_compare(make_repo, tmp_path, capsys
     to be decoded with the system code page, so a test file with Chinese text did the same."""
     repo = make_repo(tmp_path / "repo")
     (repo / "tests" / "test_calc.py").write_bytes(BASE_TESTS.encode() + b"\n\ndef test_caf\xe9():\n    pass\n")
-    assert tool.main(["--against", "HEAD"], repo=str(repo)) == 2
-    err = capsys.readouterr().err
+    code = tool.main(["--against", "HEAD"], repo=str(repo))
+    out, err = capsys.readouterr()
+    assert code == 2, out + err
     assert "could not compare" in err and "utf-8" in err, err
 
 
@@ -386,8 +413,8 @@ def test_the_extra_module_is_importable():
     assert True
 ''', encoding="utf-8")
     code = tool.main(["--against", "HEAD"], repo=str(repo))
-    out = capsys.readouterr().out
-    assert code == 1, out
+    out, err = capsys.readouterr()
+    assert code == 1, out + err
     line = next(line for line in out.splitlines() if "test_the_extra_module_is_importable" in line)
     assert line.startswith("skipped ") and "no_such_module_on_the_base" in line, out
 
@@ -442,8 +469,9 @@ def pytest_unconfigure(config):
 def test_adding_two_numbers_gives_their_sum():
     assert add(1, 2) == 3
 ''', encoding="utf-8")
-    assert tool.main(["--against", "HEAD"], repo=str(repo)) == 2
-    err = capsys.readouterr().err
+    code = tool.main(["--against", "HEAD"], repo=str(repo))
+    out, err = capsys.readouterr()
+    assert code == 2, out + err
     assert "could not compare" in err and "in None" not in err, err
 
 
@@ -464,8 +492,8 @@ def test_the_extra_module_is_importable():
     assert True
 ''', encoding="utf-8")
     code = tool.main(["--against", "HEAD"], repo=str(repo))
-    out = capsys.readouterr().out
-    assert code == 1, out
+    out, err = capsys.readouterr()
+    assert code == 1, out + err
     assert out.splitlines() == [
         "skipped tests/test_extra.py::test_the_extra_module_is_importable  Skipped: waits for the extra module"], out
 
