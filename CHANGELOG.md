@@ -59,6 +59,7 @@
 - `scripts/check_bi_english.py` 的訊息不再把基準截成前 12 個字元：commit 印成短 SHA，ref 印成「ref（短 SHA）」，例如 `origin/master (53b1c6f73dfa)`（原本印成 `origin/maste`）；解析不到 commit 的基準在讀任何檔案前就以結束碼 2 失敗（#126）。
 - golden diff 的 `--keep` 接受相對路徑：`python scripts/golden/run.py --against master --keep scratch/golden-x` 會把兩邊的輸出留在目前目錄底下的 `scratch/golden-x/`。原本路徑照原樣傳給在另一個工作目錄執行的情境步驟，第一個情境第 1 步的子行程在相對路徑寫不進自己的標記檔，印出看起來像程式當掉的「mock_md step 1 crashed」，結束碼 2，只有給絕對路徑才能比對（#147）。
 - 新增 `scripts/check_new_tests_red_on_base.py`：`python scripts/check_new_tests_red_on_base.py --against master` 把 merge-base 掛成暫時的 worktree、換上工作目錄的 `tests/`，跑分支新增或 AST 不同的測試函式所在的檔案，只讀它們的結果，逐一列出它們在基準的程式碼上是紅、綠還是 skipped。紅的附上失敗原因，測試檔在基準上收集不到時附上 `ImportError` 之類的錯誤，看得出是不是因為錯的理由紅；參數化的測試算一筆，有任何 case 通過就是綠的，並列出那些 case；在基準上被 skip 的（包括整個檔案被 skip，例如模組層級的 `importorskip`）列成 skipped；標了 xfail 而在基準上失敗的是紅的；基準設定裡的 `-x`／`--maxfail` 不會讓同一個檔案裡先失敗的測試擋住選到的測試。只看 `tests/` 底下 `test_*.py` 的最上層 `test*` 函式與最上層 `Test*` 類別的方法，以函式本身的 AST 判斷有沒有改；只改 fixture、helper 或 `conftest.py` 不會選到用到它們的測試。結束碼 0 全部是紅的（或沒有新增、改動的測試）、1 有綠的或 skipped 的、2 無法比對（找不到 merge-base 或無法建 worktree、測試檔解析不了或不是 UTF-8、pytest 在基準上沒寫出報告（附上它最後幾行輸出）或報告讀不了、選到的測試在基準上收集不到）。只用在 `fix:` 的分支（`CODING_STANDARDS.md` 第 1 條「在 `master` 上也通過的新測試」），CI 不跑；`CONTRIBUTING.md` 列在提交前的本機檢查裡（#150）。
+- red-on-base 檢查與 golden diff 建暫時的 worktree 時不跑開發者的 git hook：`git worktree add` 會跑 `post-checkout`，全域 `core.hooksPath` 裡的 `post-checkout` 失敗時，即使 worktree 已經建好，它的結束碼也是 1，兩支腳本因此印出「could not compare」並以結束碼 2 收場，什麼也沒比對。現在只有這一次呼叫把 `core.hooksPath` 指到一個空的暫存目錄，開發者的其他設定照常套用；其他 git 呼叫不會跑 hook（#158）。
 
 ## [0.15.0] - 2026-10-31
 
