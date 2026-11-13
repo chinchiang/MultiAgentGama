@@ -286,7 +286,8 @@ def test_a_failing_global_post_checkout_hook_does_not_stop_the_comparison(git_re
 
     monkeypatch.setattr(golden_run, "run_scenarios", record)
     code = main(["--against", "HEAD"], repo=str(repo))
-    assert code == 0, capsys.readouterr().err
+    out, err = capsys.readouterr()
+    assert code == 0, out + err
     assert ran == ["base", "repo"]
     assert _worktrees(git) == 1
 
