@@ -269,6 +269,29 @@ def test_a_crashing_scenario_run_fails_and_still_removes_the_worktree(git_repo, 
     assert list(scratch.iterdir()) == []
 
 
+def test_a_failing_global_post_checkout_hook_does_not_stop_the_comparison(git_repo, failing_post_checkout, tmp_path,
+                                                                         scratch, monkeypatch, capsys):
+    """開發者的全域 hook 裡有一個一定失敗的 `post-checkout`：建 worktree 時不跑它，兩邊的情境都在各自的目錄執行，
+    結束碼是 0。原本 `worktree add` 因為這個 hook 結束碼是 1，整次比對以 2 收場（#158）。
+    The developer's global hooks include a `post-checkout` that always fails: adding the worktree does not run it,
+    both sides' scenarios run in their own directories, and the exit code is 0. `worktree add` used to exit 1 because
+    of that hook, ending the whole comparison with 2 (#158)."""
+    repo = tmp_path / "repo"
+    git = _readme_repo(git_repo, repo)
+    ran = []
+
+    def record(root, out, work, names):
+        ran.append(os.path.basename(root))
+        out.mkdir(parents=True)
+
+    monkeypatch.setattr(golden_run, "run_scenarios", record)
+    code = main(["--against", "HEAD"], repo=str(repo))
+    out, err = capsys.readouterr()
+    assert code == 0, out + err
+    assert ran == ["base", "repo"]
+    assert _worktrees(git) == 1
+
+
 def test_a_relative_keep_path_keeps_the_outputs_under_the_current_directory(needs_git, tmp_path, scratch, monkeypatch,
                                                                            capsys):
     """--keep 給相對路徑：照樣比對得出結果，兩邊的輸出留在呼叫 main 時的目前目錄底下。情境步驟在另一個工作目錄執行，

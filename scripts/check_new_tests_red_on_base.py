@@ -256,7 +256,12 @@ def main(argv: list[str] | None = None, repo: str = _REPO) -> int:
         if not node_ids:
             print("no new or changed tests under tests/")
             return 0
-        _git(repo, "worktree", "add", "--detach", str(worktree), base)
+        # worktree add 會跑 post-checkout：hook 指到一個空目錄，開發者的 hook 失敗也不會讓比對失敗（#158）
+        # worktree add runs post-checkout: hooks point at an empty directory, so a failing hook of the developer's
+        # cannot fail the comparison (#158)
+        no_hooks = scratch / "no-hooks"
+        no_hooks.mkdir()
+        _git(repo, "-c", f"core.hooksPath={no_hooks.as_posix()}", "worktree", "add", "--detach", str(worktree), base)
         # 換上工作目錄的 tests/：要跑的是分支的測試，程式碼是基準的
         # Swap in the working tree's tests/: the branch's tests run against the base's code
         shutil.rmtree(worktree / "tests", ignore_errors=True)

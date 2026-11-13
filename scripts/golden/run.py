@@ -255,8 +255,13 @@ def main(argv: Optional[list[str]] = None, repo: str = _REPO) -> int:
     for side in ("base", "head"):
         shutil.rmtree(out / side, ignore_errors=True)
     try:
-        subprocess.run(["git", "worktree", "add", "--detach", str(worktree), args.against], cwd=repo, check=True,
-                       capture_output=True, text=True)
+        # worktree add 會跑 post-checkout：hook 指到一個空目錄，開發者的 hook 失敗也不會讓比對失敗（#158）
+        # worktree add runs post-checkout: hooks point at an empty directory, so a failing hook of the developer's
+        # cannot fail the comparison (#158)
+        no_hooks = scratch / "no-hooks"
+        no_hooks.mkdir()
+        subprocess.run(["git", "-c", f"core.hooksPath={no_hooks.as_posix()}", "worktree", "add", "--detach",
+                        str(worktree), args.against], cwd=repo, check=True, capture_output=True, text=True)
         # 兩邊用同一個工作目錄：報告裡的目標與設定路徑才相同
         # Both sides use the same working directory, so the target and config paths in the reports are the same
         run_scenarios(worktree, out / "base", scratch / "work", names)
