@@ -285,6 +285,7 @@ MultiAgentGama/
 │   ├── test_fanout.py                  # 透過 fan_out 測試扇出：順序、當掉換成 fallback 並記錄、live 失敗與 Ctrl-C 不再開始佇列中的呼叫
 │   ├── test_git_repo_fixture.py        # 共用的 git_repo fixture：建的測試 repo 不受開發者的全域 git 設定影響
 │   ├── test_golden.py                  # golden diff：正規化、比對、情境決定性、--against 的清除路徑（沒有 scripts/golden/ 時略過）
+│   ├── test_guard_discard.py           # .claude/ 的 guard_discard hook：擋下會丟掉未 commit 改動的 git 指令（沒有 .claude/ 時略過）
 │   ├── test_harness_components.py      # 各元件於 mock 模式下的整合測試
 │   ├── test_i18n.py                    # 雙語工具、報告／console／CLI 字串、雙語的 docstring 與註解
 │   ├── test_i18n_output.py             # 提示詞維持英文、雙語的規則標題、執行器原因與 PoC

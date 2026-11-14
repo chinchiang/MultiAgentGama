@@ -285,6 +285,7 @@ MultiAgentGama/
 │   ├── test_fanout.py                  # The fan-out through fan_out: order, a crash replaced by the fallback and booked, no queued call after a live failure or Ctrl-C
 │   ├── test_git_repo_fixture.py        # The shared git_repo fixture: the test repos it builds ignore the developer's global git config
 │   ├── test_golden.py                  # Golden diff: normalisation, comparison, scenario determinism, --against's cleanup path (skips without scripts/golden/)
+│   ├── test_guard_discard.py           # The .claude/ guard_discard hook: denies git commands that would discard uncommitted changes (skips without .claude/)
 │   ├── test_harness_components.py      # Component integration tests in mock mode
 │   ├── test_i18n.py                    # Bilingual helpers, report / console / CLI strings, bilingual docstrings and comments
 │   ├── test_i18n_output.py             # Prompts stay English, bilingual rule titles, executor reasons and PoCs
