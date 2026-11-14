@@ -422,7 +422,7 @@ def test_a_non_ascii_command_is_quoted_as_typed_when_python_does_not_default_to_
     "git clean -fd --q", "git clean -fd --qui", "git clean -f --exc -n", "git clean -fd --excl -n",
     "git clean -fd --inter", "git clean -fd --dry",
     # 白名單外的短選項字母，與最後缺值的 `-e` ／ A short-option letter off the list, and a trailing `-e` without a value
-    "git clean -fdZ", "git clean -fde",
+    "git clean -fdZ", "git clean -fde", "git clean -f --exclude=-n",
 ])
 def test_git_clean_args_the_hook_cannot_read_are_denied_and_nothing_is_removed(repo, tmp_path, command):
     """hook 看不懂的 `git clean` 參數（`--end-of-options`、以 `-` 開頭的 `-e` 值、縮寫的長選項）被擋下並說無法檢查，
@@ -464,13 +464,63 @@ def test_git_c_options_reach_the_hooks_own_git(repo, tmp_path):
     assert reason is None, f"`{command}` was denied although git would keep new.txt: {reason}"
 
 
-def test_the_hooks_own_git_settings_override_the_commands(repo, tmp_path):
-    """指令自己的 `-c core.quotePath=true` 蓋不過 hook 的設定：非 ASCII 的檔名在原因裡照原樣列出。
-    The command's own `-c core.quotePath=true` does not override the hook's setting: a non-ASCII file name is named
-    in the reason as it is spelt."""
+def test_a_fsmonitor_in_the_repo_config_does_not_run_while_the_hook_checks(repo, tmp_path):
+    """repo 自己的設定裡有 `core.fsmonitor` 時，hook 跑的 git 用自己的 `-c core.fsmonitor=false` 蓋過它：
+    檢查時那個指令沒有被執行，檢查照常進行並列出檔案。
+    With a `core.fsmonitor` in the repo's own config, the git the hook runs overrides it with its own
+    `-c core.fsmonitor=false`: the command does not run while the hook checks, and the check goes on and names the
+    file."""
+    root, git = repo
+    _modify(root)
+    git("config", "core.fsmonitor", "mkdir fsmonitor-ran")
+    command = "git checkout -- scripts"
+    reason = _decide(root, command, tmp_path)
+    assert not (root / "fsmonitor-ran").exists(), "the hook ran the repo's fsmonitor command while checking"
+    assert reason is not None, f"`{command}` was allowed"
+    assert "would discard uncommitted changes in: scripts/a.py" in reason, reason
+
+
+@pytest.mark.parametrize("command", [
+    "git -c 'core.fsmonitor=mkdir fsmonitor-ran' checkout -- scripts",
+    "git -c 'core.fsmonitor=mkdir fsmonitor-ran' clean -n",
+    "git -c 'core.fsmonitor=mkdir fsmonitor-ran' reset --hard",
+])
+def test_a_git_c_setting_off_the_allow_list_is_denied_without_running_git(repo, tmp_path, command):
+    """白名單外的 `git -c` 設定（這裡是會執行指令的 `core.fsmonitor`）不轉給 hook 的 git：指令以無法檢查擋下，
+    hook 也沒有跑 git，所以那個設定的指令沒有被執行（hook 在使用者同意之前就跑）。
+    A `git -c` setting off the allow list (here `core.fsmonitor`, which runs a command) is not passed on to the
+    hook's git: the command is denied as unchecked, and the hook ran no git, so the setting's command did not run
+    (the hook runs before the user has agreed to anything)."""
     root, _ = repo
-    _untracked(root, "新檔.txt")
-    command = "git -c core.quotePath=true clean -fd"
+    _modify(root)
+    _untracked(root, "new.txt")
+    reason = _decide(root, command, tmp_path)
+    assert not (root / "fsmonitor-ran").exists(), f"the hook ran the fsmonitor command while checking `{command}`"
+    assert reason is not None, f"`{command}` was allowed"
+    assert "could not check: it does not pass on the git setting `core.fsmonitor`" in reason, reason
+
+
+def test_a_dry_run_printing_an_unexpected_line_is_denied(repo, tmp_path):
+    """dry run 印出 `Would remove`／`Would skip repository` 以外的行時（這裡是 cwd 本身整個未追蹤，git 拒絕刪掉它），
+    hook 以無法檢查擋下，並附上那一行。
+    When the dry run prints a line other than `Would remove`/`Would skip repository` (here the cwd itself is wholly
+    untracked, and git refuses to remove it), the hook denies as unchecked and quotes that line."""
+    root, _ = repo
+    _untracked(root, "sub/inner/f.txt")
+    command = "git -C sub clean -fd"
+    reason = _decide(root, command, tmp_path)
+    assert (root / "sub" / "inner" / "f.txt").exists(), "the hook removed sub/inner/f.txt while checking"
+    assert reason is not None, f"`{command}` was allowed"
+    assert "could not check: git's dry run printed an unexpected line: Would refuse to remove" in reason, reason
+
+
+def test_git_config_env_is_denied_as_unchecked(repo, tmp_path):
+    """`git --config-env=…` 的設定從環境變數讀，hook 看不到它的值：指令以無法檢查擋下，不跑 git。
+    `git --config-env=…` reads a setting from an environment variable whose value the hook cannot see: the command is
+    denied as unchecked, and no git is run."""
+    root, _ = repo
+    _modify(root)
+    command = "git --config-env=core.excludesFile=EXCLUDES checkout -- scripts"
     reason = _decide(root, command, tmp_path)
     assert reason is not None, f"`{command}` was allowed"
-    assert "would remove untracked or ignored files: 新檔.txt" in reason, reason
+    assert "could not check: it does not pass on `--config-env`" in reason, reason

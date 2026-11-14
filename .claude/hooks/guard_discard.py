@@ -6,15 +6,18 @@
 只看工作目錄跟 index 的差異（暫存的改動留得住）；`restore` 與有來源的 `checkout` 也算暫存的改動；`reset` 與強制切換
 看跟 HEAD 的差異。它不看指令指定的來源是哪個 commit。這些指令不會動到未追蹤的檔案，所以那些不算；`git clean`
 例外：它的參數只接受 hook 看得懂的白名單寫法（看不懂就以「無法檢查」擋下），照原樣接上
-`--no-quiet --no-interactive -n` 交給 git 自己的 dry run，列出會刪掉的未追蹤或被忽略的檔案；dry run 印出別的行時
-也擋下。本來就是 dry run 的 `git clean -n` 也一樣檢查。git 答不出來時也擋下，附上 git 的錯誤；hook 自己出錯時
-（含讀不懂的輸入）也擋下。子指令前的 `-c`、`--git-dir`、`--work-tree` 會轉給 hook 自己跑的 git。
+`--no-quiet --no-interactive -n` 交給 git 自己的 dry run，列出會刪掉的未追蹤或被忽略的檔案；dry run 印出空行、
+`Would remove`、`Would skip repository` 以外的行時也擋下。本來就是 dry run 的 `git clean -n` 也一樣檢查。
+git 答不出來時也擋下，附上 git 的錯誤；hook 自己出錯時（含讀不懂的輸入）也擋下。
+子指令前的 `--git-dir`、`--work-tree` 與白名單內的 `-c` 設定（`core.excludesFile`、`core.worktree`）會轉給 hook
+自己跑的 git；其他 `-c` 設定與 `--config-env` 不轉，hook 不跑 git，直接以「無法檢查」擋下（例如 `core.fsmonitor`
+會執行指令，而 hook 在使用者同意之前就跑）。hook 跑的 git 一律加上 `-c core.fsmonitor=false`。
 真的要丟掉時，讓指令裡任何地方出現 `# discard-ok`（對整條指令比對字串，多行指令的任一行都算，不必是真的註解）。
 它跟著 `cd`（含 `{`、`then`、`time [-p]`、`command [-p]`、`builtin`、`VAR=value` 之後的，以及 `cd ~`、`cd`、`cd -`）、
 `git -C`、`env -C`／`sudo -D`（也在一組短選項裡，例如 `env -iC`）換目錄，`env -S` 的字串拆成指令再看。
 hook 跑的每個 git 都用 C 語系（輸出是英文）、不加引號的檔名，並以 UTF-8 解碼。
 已知限制：
-- 引號裡的 `(`、`)` 會被當成真的括號。
+- 引號裡的 `(`、`)` 會被當成真的括號，引號裡的 `<`、`>` 會被當成真的重導向（連同後面的字一起剝掉）。
 - `cd` 到它不知道的目錄（`cd $VAR`、`cd "$(…)"`）之後，git 答不出來，後面會丟掉改動的指令被擋下而不是被檢查；
   除非之後的 `cd`、`git -C`、`env -C` 或 `sudo -D` 指向絕對路徑。
 - 指令裡第一個 `cd -` 回到 hook 收到的 cwd，不一定是 shell 真正的 `OLDPWD`。
@@ -32,10 +35,13 @@ look at the difference from HEAD. Which commit a command restores from is not co
 untracked files alone, so those do not count. `git clean` is the exception: only the arg forms on the hook's allow
 list are read (anything else is denied as unchecked); those args, kept as they are and followed by
 `--no-quiet --no-interactive -n`, go to git's own dry run, which lists the untracked or ignored files it would
-remove, and a dry run that prints any other line is denied too. A `git clean -n` that already is a dry run is
-checked all the same. It also denies, with git's error, when git cannot answer, and denies when the hook itself fails
-(unreadable input included). `-c`, `--git-dir` and `--work-tree` before the subcommand are passed on to the git the
-hook runs. A command that
+remove, and a dry run that prints a line other than a blank one, `Would remove` or `Would skip repository` is
+denied too. A `git clean -n` that already is a dry run is checked all the same. It also denies, with git's error,
+when git cannot answer, and denies when the hook itself fails (unreadable input included). `--git-dir`,
+`--work-tree` and the allowed `-c` settings (`core.excludesFile`, `core.worktree`) before the subcommand are passed
+on to the git the hook runs; any other `-c` setting, and `--config-env`, is not, no git is run, and the command is
+denied as unchecked (`core.fsmonitor`, for one, runs a command, and the hook runs before the user has agreed to
+anything). Every git the hook runs carries `-c core.fsmonitor=false`. A command that
 really means to discard them contains `# discard-ok` anywhere (a substring match on the whole command, so any line
 of a multi-line command counts, and it need not be a real comment).
 It follows `cd` (also after `{`, `then`, `time [-p]`, `command [-p]`, `builtin` or a `VAR=value`, and `cd ~`, a bare
@@ -43,7 +49,8 @@ It follows `cd` (also after `{`, `then`, `time [-p]`, `command [-p]`, `builtin` 
 directories, and checks the string of `env -S` as the command. Every git the hook runs uses the C locale (English
 output) and unquoted file names, and is decoded as UTF-8.
 Known limits:
-- A quoted `(` or `)` is taken for a real one.
+- A quoted `(` or `)` is taken for a real one, and a quoted `<` or `>` for a real redirection (stripped with what
+  follows it).
 - After a `cd` to a directory it cannot know (`cd $VAR`, `cd "$(…)"`) git cannot answer, so a following discarding
   command is denied rather than checked, unless a later `cd`, `git -C`, `env -C` or `sudo -D` names an absolute
   directory.
@@ -82,7 +89,13 @@ WRAPPER_VALUE_OPTS = {
 GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}
 # 子指令前、要原樣轉給 hook 自己的 git 的選項 ／ git options before the subcommand passed on, as they are, to the
 # hook's own git
-PASSED_GIT_OPTS = {"-c", "--git-dir", "--work-tree"}
+PASSED_GIT_OPTS = {"-c", "--git-dir", "--work-tree", "--config-env"}
+# `-c` 裡 hook 會轉給自己的 git 的設定（小寫比對）：會改變結果、又不會執行任何東西的。其他設定（例如會執行指令的
+# `core.fsmonitor`）hook 不轉，也不跑 git，直接以無法檢查擋下：hook 在使用者同意之前就執行
+# The `-c` settings the hook passes on to its own git (compared lower-case): ones that change the result and run
+# nothing. Any other setting (such as `core.fsmonitor`, which runs a command) is not passed on, and no git is run:
+# the command is denied as unchecked, as the hook runs before the user has agreed to anything
+PASSED_GIT_SETTINGS = {"core.excludesfile", "core.worktree"}
 # 含有重導向的 token：前面可以黏著參數（`x>out`）或檔案描述元數字（`2>`），目標接在後面或是下一個 token
 # A token holding a redirection: an argument (`x>out`) or a file-descriptor number (`2>`) may be attached in front,
 # and the target follows it or is the next token
@@ -195,10 +208,12 @@ def wrapper_option(tokens, value_opts):
 
 def git_call(tokens, cwd):
     """一個 git 呼叫的 (執行目錄, 子指令, 參數, 要轉給 hook 的 git 的選項)；不是 git 呼叫時回傳 None。
-    轉過去的是子指令前的 `-c`、`--git-dir`、`--work-tree`，hook 才會照同樣的設定檢查同一個 repo。
+    收集的是子指令前的 `-c`、`--git-dir`、`--work-tree`、`--config-env`，hook 才會照同樣的設定檢查同一個 repo；
+    其中白名單外的 `-c` 設定與 `--config-env` 在跑 git 之前由 `refuse_unsafe_settings` 擋下，不會真的轉過去。
     The (directory, subcommand, args, options to pass on to the hook's git) of a git invocation, else None. The
-    options passed on are `-c`, `--git-dir` and `--work-tree` before the subcommand, so that the hook checks the same
-    repo with the same settings."""
+    options collected are `-c`, `--git-dir`, `--work-tree` and `--config-env` before the subcommand, so that the hook
+    checks the same repo with the same settings; a `-c` setting off the allow list, and `--config-env`, are refused by
+    `refuse_unsafe_settings` before any git runs, so they never actually reach it."""
     # 先跳過 shell 關鍵字、VAR=value 指派與包裝指令
     # Skip shell keywords, VAR=value assignments and wrapper commands first
     while tokens and (tokens[0] in SHELL_PREFIXES or assignment(tokens[0])):
@@ -265,13 +280,26 @@ def os_arg(text):
     return text if os.name == "nt" else text.encode("utf-8", errors="surrogateescape")
 
 
+def refuse_unsafe_settings(git_opts):
+    """git_opts 裡有白名單外的 `-c` 設定（或任何 `--config-env`）時丟出 Unchecked，hook 就不會帶著它跑 git。
+    Raises Unchecked when git_opts carry a `-c` setting off the allow list (or any `--config-env`), so the hook never
+    runs git with it."""
+    for at, opt in enumerate(git_opts):
+        if opt == "--config-env" or opt.startswith("--config-env="):
+            raise Unchecked("it does not pass on `--config-env`")
+        if opt == "-c" and at + 1 < len(git_opts):
+            key = git_opts[at + 1].split("=", 1)[0]
+            if key.lower() not in PASSED_GIT_SETTINGS:
+                raise Unchecked(f"it does not pass on the git setting `{key}`")
+
+
 def run(cwd, *args, git_opts=()):
     """在 cwd 執行 git，回傳 stdout；git 失敗時丟出 GitFailed，訊息是 stderr 的第一行；git 或 cwd 找不到時，
     訊息是找不到的那一個。git_opts（指令自己的 `-c`、`--git-dir`、`--work-tree`）放在 hook 的
-    `-c core.quotePath=false` 之前，hook 的設定蓋過它們。
+    `-c core.quotePath=false -c core.fsmonitor=false` 之前，hook 的設定蓋過它們。
     Runs git in cwd and returns its stdout; raises GitFailed carrying the first line of stderr when git fails, or
     naming whichever of git and cwd cannot be found. git_opts (the command's own `-c`, `--git-dir`, `--work-tree`)
-    come before the hook's `-c core.quotePath=false`, so the hook's setting wins."""
+    come before the hook's `-c core.quotePath=false -c core.fsmonitor=false`, so the hook's settings win."""
     try:
         # 固定 C 語系：hook 解析 git 的英文輸出（`Would remove`），開發者的語系會讓 git 改說別的語言
         # Pin the C locale: the hook parses git's English output (`Would remove`), and the developer's locale would
@@ -280,7 +308,7 @@ def run(cwd, *args, git_opts=()):
         env["LC_ALL"] = "C"
         # 檔名不加引號（`core.quotePath=false`）並以 UTF-8 解碼，不靠 Python 的預設編碼
         # File names unquoted (`core.quotePath=false`) and decoded as UTF-8, not with Python's default encoding
-        command = ("git", *git_opts, "-c", "core.quotePath=false", *args)
+        command = ("git", *git_opts, "-c", "core.quotePath=false", "-c", "core.fsmonitor=false", *args)
         done = subprocess.run([os_arg(a) for a in command], cwd=os_arg(cwd), env=env, capture_output=True, text=True,
                               encoding="utf-8", errors="replace")
     except (NotADirectoryError, FileNotFoundError) as error:
@@ -297,9 +325,11 @@ def run(cwd, *args, git_opts=()):
 
 
 def dirty(cwd, mode, paths, git_opts=()):
-    """指令會丟掉的路徑；git 失敗時丟出 GitFailed。clean 以外的模式：`paths` 裡（空的時候是全部）有還沒 commit 的
+    """指令會丟掉的路徑；git 失敗時丟出 GitFailed，看不懂 `git clean` 的參數或 dry run 印出意外的行時丟出 Unchecked。
+    clean 以外的模式：`paths` 裡（空的時候是全部）有還沒 commit 的
     改動的已追蹤路徑。clean 模式：`paths` 是 `git clean` 的參數，回傳 git 的 dry run 列出的未追蹤或被忽略的檔案。
-    The paths the command would lose; raises GitFailed when git fails. Outside clean mode: the tracked paths among
+    The paths the command would lose; raises GitFailed when git fails, and Unchecked when the `git clean` args are
+    unreadable or the dry run prints an unexpected line. Outside clean mode: the tracked paths among
     `paths` (all of them when empty) with uncommitted changes. In clean mode `paths` are the `git clean` args, and the
     untracked or ignored files git's dry run lists are returned."""
     spec = ["--", *paths] if paths else []
@@ -313,8 +343,8 @@ def dirty(cwd, mode, paths, git_opts=()):
         out = run(cwd, "clean", *as_dry_run(paths), git_opts=git_opts)
         removed = []
         for line in out.splitlines():
-            if line.startswith("Would remove "):
-                removed.append(line[len("Would remove "):])
+            if line.startswith(WOULD_REMOVE):
+                removed.append(line[len(WOULD_REMOVE):])
             elif line and not line.startswith("Would skip repository "):
                 # dry run 不該印出別的東西（例如 `Removing`）；印了就表示 hook 讀錯了參數
                 # A dry run prints nothing else (such as `Removing`); if it does, the hook misread the args
@@ -360,6 +390,9 @@ def forced(args, *longs):
     return False
 
 
+# dry run 列出會刪掉的檔案時，每行的開頭（hook 的 git 固定用 C 語系） ／ How each line of the dry run naming a file
+# it would remove starts (the hook's git always runs in the C locale)
+WOULD_REMOVE = "Would remove "
 # git clean 的短選項裡 hook 看得懂的字母（`e` 另外處理，它帶值） ／ The git clean short-option letters the hook reads
 # (`e` is handled apart, as it takes a value)
 CLEAN_LETTERS = set("fdxXnqi")
@@ -387,15 +420,19 @@ def unreadable_clean_arg(args):
             value_next = False
         elif a == "--":
             return None
-        elif a in CLEAN_LONG or (a.startswith("--exclude=") and len(a) > len("--exclude=")):
+        elif a in CLEAN_LONG:
             continue
+        elif a.startswith("--exclude="):
+            value = a[len("--exclude="):]
+            if not value or value.startswith("-"):
+                return a
         elif a == "--exclude":
             value_next = True
         elif a.startswith("--"):
             return a
         elif a.startswith("-"):
             letters, e, value = a[1:].partition("e")
-            if not letters and not e or not set(letters) <= CLEAN_LETTERS:
+            if (not letters and not e) or not set(letters) <= CLEAN_LETTERS:
                 return a
             if e and value.startswith("-"):
                 return a
@@ -405,12 +442,12 @@ def unreadable_clean_arg(args):
 
 def as_dry_run(args):
     """`git clean` 的參數照原樣保留，在 `--`（沒有時是最後）之前接上 `--no-quiet --no-interactive -n`：git 的選項
-    後面的蓋過前面的，所以不論原本怎麼寫（`-q`、縮寫的 `--qui`、`-i`），git 都只做 dry run 並列出會刪掉的檔案。
-    `-e` 的值、`-f` 的次數與 pathspec 都由 git 自己解讀。
+    後面的蓋過前面的，所以 `-q`、`-i` 不影響，git 只做 dry run 並列出會刪掉的檔案。只用在 `unreadable_clean_arg`
+    看得懂的參數上，所以第一個 `--` 一定是真的分隔符。
     Keeps the `git clean` args as they are and puts `--no-quiet --no-interactive -n` before `--` (or at the end when
-    there is none): a later git option overrides an earlier one, so however the original is spelt (`-q`, an
-    abbreviated `--qui`, `-i`), git only does a dry run and lists what it would remove. The values of `-e`, how many
-    times `-f` is given and the pathspecs are left for git to read."""
+    there is none): a later git option overrides an earlier one, so `-q` and `-i` do not matter and git only does a
+    dry run, listing what it would remove. It is used only on args `unreadable_clean_arg` reads, so the first `--` is
+    always the real separator."""
     at = args.index("--") if "--" in args else len(args)
     return [*args[:at], "--no-quiet", "--no-interactive", "-n", *args[at:]]
 
@@ -496,6 +533,7 @@ def main():
         hit = affected(where, sub, args)
         if hit:
             try:
+                refuse_unsafe_settings(git_opts)
                 files = dirty(where, *hit, git_opts=git_opts)
             except Unchecked as error:
                 unknown.append((" ".join(tokens), str(error)))
