@@ -421,6 +421,8 @@ def test_a_non_ascii_command_is_quoted_as_typed_when_python_does_not_default_to_
     "git clean -f -e -n", "git clean -f --exclude -n", "git clean -fd -e -q",
     "git clean -fd --q", "git clean -fd --qui", "git clean -f --exc -n", "git clean -fd --excl -n",
     "git clean -fd --inter", "git clean -fd --dry",
+    # 白名單外的短選項字母，與最後缺值的 `-e` ／ A short-option letter off the list, and a trailing `-e` without a value
+    "git clean -fdZ", "git clean -fde",
 ])
 def test_git_clean_args_the_hook_cannot_read_are_denied_and_nothing_is_removed(repo, tmp_path, command):
     """hook 看不懂的 `git clean` 參數（`--end-of-options`、以 `-` 開頭的 `-e` 值、縮寫的長選項）被擋下並說無法檢查，
@@ -432,7 +434,7 @@ def test_git_clean_args_the_hook_cannot_read_are_denied_and_nothing_is_removed(r
     reason = _decide(root, command, tmp_path)
     assert (root / "new.txt").exists(), f"the hook removed new.txt while checking `{command}`"
     assert reason is not None, f"`{command}` was allowed"
-    assert "could not check" in reason, reason
+    assert "could not check: it does not read the `git clean` argument" in reason, reason
 
 
 def test_git_dir_and_work_tree_point_the_check_at_that_repo(repo, tmp_path):
@@ -460,3 +462,15 @@ def test_git_c_options_reach_the_hooks_own_git(repo, tmp_path):
     command = f"git -c core.excludesFile={excludes.as_posix()} clean -fd"
     reason = _decide(root, command, tmp_path)
     assert reason is None, f"`{command}` was denied although git would keep new.txt: {reason}"
+
+
+def test_the_hooks_own_git_settings_override_the_commands(repo, tmp_path):
+    """指令自己的 `-c core.quotePath=true` 蓋不過 hook 的設定：非 ASCII 的檔名在原因裡照原樣列出。
+    The command's own `-c core.quotePath=true` does not override the hook's setting: a non-ASCII file name is named
+    in the reason as it is spelt."""
+    root, _ = repo
+    _untracked(root, "新檔.txt")
+    command = "git -c core.quotePath=true clean -fd"
+    reason = _decide(root, command, tmp_path)
+    assert reason is not None, f"`{command}` was allowed"
+    assert "would remove untracked or ignored files: 新檔.txt" in reason, reason
