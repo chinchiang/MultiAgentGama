@@ -22,25 +22,32 @@ if not os.path.isfile(HOOK):
 
 @pytest.fixture
 def repo(git_repo, tmp_path):
-    """已提交 `scripts/a.py`、`tests/t.py`、`README` 的 repo，回傳它的根目錄與夾具的 git runner。
-    A repo with `scripts/a.py`, `tests/t.py` and `README` committed; returns its root and the fixture's git runner."""
+    """已提交 `scripts/a.py`、`tests/t.py`、`README` 與忽略 `*.log` 的 `.gitignore` 的 repo，回傳它的根目錄與夾具的
+    git runner。
+    A repo with `scripts/a.py`, `tests/t.py`, `README` and a `.gitignore` ignoring `*.log` committed; returns its root
+    and the fixture's git runner."""
     root = tmp_path / "repo"
     (root / "scripts").mkdir(parents=True)
     (root / "tests").mkdir()
     (root / "scripts" / "a.py").write_text("a = 1\n", encoding="utf-8")
     (root / "tests" / "t.py").write_text("t = 1\n", encoding="utf-8")
     (root / "README").write_text("r\n", encoding="utf-8")
+    (root / ".gitignore").write_text("*.log\n", encoding="utf-8")
     return root, git_repo(root)
 
 
-def _decide(root, command, tmp_path):
+def _decide(root, command, tmp_path, home=None):
     """在 root 對 command 執行 hook，拒絕時回傳原因、放行時回傳 None。hook 自己跑的 git 也不讀開發者的設定。
+    給了 home 時，它是 hook 看到的家目錄（`HOME` 與 Windows 的 `USERPROFILE`）。
     Runs the hook on command in root and returns the deny reason, or None when it allows. The git the hook runs
-    reads no developer config either."""
+    reads no developer config either. When home is given, it is the home directory the hook sees (`HOME`, and
+    `USERPROFILE` on Windows)."""
     empty_config = tmp_path / "empty-gitconfig"
     empty_config.write_text("", encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
     env.update(LC_ALL="C", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=str(empty_config))
+    if home is not None:
+        env.update(HOME=str(home), USERPROFILE=str(home))
     payload = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": command},
                "cwd": str(root)}
     done = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), cwd=root, env=env,
@@ -96,6 +103,19 @@ DISCARDING = [
     "env -i git reset --hard",
     "env -u HOME FOO=1 git reset --hard",
     "sudo -u someone git reset --hard",
+    "env -C scripts git checkout -- a.py",
+    "env --chdir=scripts git checkout -- a.py",
+    "env -Cscripts git checkout -- a.py",
+    "sudo -D scripts git checkout -- a.py",
+    "sudo --chdir=scripts git checkout -- a.py",
+    'env -S "git reset --hard"',
+    "env --split-string='git checkout -- scripts'",
+    'env -S "git checkout --" scripts',
+    "{ cd scripts; git checkout -- a.py; }",
+    "if true; then cd scripts; git checkout -- a.py; fi",
+    "for d in x; do cd scripts; git checkout -- a.py; done",
+    "{ cd scripts; }; git checkout -- a.py",
+    "cd scripts && cd - && git checkout -- scripts/a.py",
 ]
 
 
@@ -202,3 +222,72 @@ def test_outside_a_repo_a_discarding_command_is_denied(needs_git, tmp_path):
     reason = _decide(plain, "git checkout -- f", tmp_path)
     assert reason is not None, "allowed although git could not answer"
     assert re.search(r"could not check: git said: \S", reason), reason
+
+
+def _untracked(root, *names):
+    """在 root 底下建立這些未追蹤（或被忽略）的檔案。
+    Creates these untracked (or ignored) files under root."""
+    for name in names:
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("u\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize(("files", "command", "named"), [
+    (["new.txt"], "git clean -fd", "new.txt"),
+    (["new.txt", "scripts/new.py"], "git clean -f scripts", "scripts/new.py"),
+    (["notes.log"], "git clean -fdx", "notes.log"),
+    (["notes.log"], "git clean -f -x -d", "notes.log"),
+    (["new.txt"], "git clean -i", "new.txt"),
+    (["new.txt"], "git clean --force --interactive", "new.txt"),
+])
+def test_git_clean_is_denied_when_its_dry_run_lists_a_file(repo, tmp_path, files, command, named):
+    """`git clean` 會刪掉的檔案（由 git 的 dry run 列出）在原因裡被列出，指令被擋下。
+    A `git clean` that would remove files (as git's dry run lists them) is denied, and the reason names them."""
+    root, _ = repo
+    _untracked(root, *files)
+    reason = _decide(root, command, tmp_path)
+    assert reason is not None, f"`{command}` was allowed"
+    assert named in reason, reason
+
+
+@pytest.mark.parametrize(("files", "command"), [
+    ([], "git clean -fd"),
+    (["new.txt"], "git clean -n"),
+    (["new.txt"], "git clean --dry-run -fd"),
+    (["new.txt"], "git clean -f tests"),
+    (["notes.log"], "git clean -fd"),
+])
+def test_git_clean_is_allowed_when_nothing_would_be_removed(repo, tmp_path, files, command):
+    """dry run 什麼都不列（沒有未追蹤檔、pathspec 碰不到它們），或指令本身就是 dry run 時，`git clean` 被放行。
+    `git clean` is allowed when the dry run lists nothing (no untracked file, or none the pathspec reaches), or when
+    the command is a dry run itself."""
+    root, _ = repo
+    _untracked(root, *files)
+    assert _decide(root, command, tmp_path) is None
+
+
+@pytest.mark.parametrize("command", ["cd ~ && git reset --hard", "cd && git reset --hard",
+                                     "cd ~/scripts && git checkout -- a.py"])
+def test_cd_to_home_checks_the_repo_at_home(repo, tmp_path, command):
+    """從 repo 外 `cd ~`、`cd ~/…` 或不帶參數的 `cd` 時，hook 檢查家目錄的 repo：乾淨時放行，有改動時擋下並列出檔案。
+    After `cd ~`, `cd ~/…` or a bare `cd` from outside a repo, the hook checks the repo at home: allowed while it is
+    clean, denied and naming the file once it has a change."""
+    root, _ = repo
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    assert _decide(elsewhere, command, tmp_path, home=root) is None
+    _modify(root)
+    reason = _decide(elsewhere, command, tmp_path, home=root)
+    assert reason is not None, f"`{command}` was allowed"
+    assert "would discard uncommitted changes in: scripts/a.py" in reason, reason
+
+
+def test_a_cd_to_an_unknown_directory_still_denies(repo, tmp_path):
+    """`cd` 到 hook 不知道的目錄（變數）之後，git 答不出來，會丟掉改動的指令照樣被擋下。
+    After a `cd` to a directory the hook cannot know (a variable), git cannot answer, and a discarding command is
+    denied all the same."""
+    root, _ = repo
+    reason = _decide(root, 'cd "$UNKNOWN" && git checkout -- scripts', tmp_path)
+    assert reason is not None, "allowed although the directory is unknown"
+    assert "could not check" in reason, reason

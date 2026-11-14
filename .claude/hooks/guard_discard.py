@@ -1,23 +1,32 @@
 #!/usr/bin/env python3
 """Claude Code 的 PreToolUse hook（Bash）：擋下會清掉還沒 commit 的改動的 git 指令。
 涵蓋 `git checkout ... -- <路徑>`（以及 `git checkout <存在的路徑>`）、`git restore <路徑>`（只有 `--staged` 的除外）、
-`git checkout -f`、`git switch -f`／`--discard-changes`、`git reset --hard` 與 `git reset --merge`。
+`git checkout -f`、`git switch -f`／`--discard-changes`、`git reset --hard`、`git reset --merge` 與 `git clean`。
 它問 git 受影響的已追蹤路徑裡，哪些有指令會蓋掉的還沒 commit 的改動，有就擋下並列出它們：沒有來源的 `checkout`
 只看工作目錄跟 index 的差異（暫存的改動留得住）；`restore` 與有來源的 `checkout` 也算暫存的改動；`reset` 與強制切換
-看跟 HEAD 的差異。它不看指令指定的來源是哪個 commit。git 答不出來時也擋下，附上 git 的錯誤。未追蹤的檔案不算，這些
-指令不會動到它們。真的要丟掉時，讓指令裡任何地方出現 `# discard-ok`（對整條指令比對字串，多行指令的任一行都算，
+看跟 HEAD 的差異。它不看指令指定的來源是哪個 commit。這些指令不會動到未追蹤的檔案，所以那些不算；`git clean`
+例外，它交給 git 自己的 dry run 列出會刪掉的未追蹤或被忽略的檔案。git 答不出來時也擋下，附上 git 的錯誤。真的要丟掉時，讓指令裡任何地方出現 `# discard-ok`（對整條指令比對字串，多行指令的任一行都算，
 不必是真的註解）。
+它跟著 `cd`（含 `{`、`then` 之後的、`cd ~`、`cd`、`cd -`）、`git -C`、`env -C`／`sudo -D` 換目錄，`env -S` 的字串
+拆成指令再看。已知限制：引號裡的 `(`、`)` 會被當成真的括號；`cd` 到它不知道的目錄（`cd $VAR`、`cd "$(…)"`）時
+git 答不出來，後面會丟掉改動的指令一律被擋下，不是被檢查。
 緣由：#158（2026-11-13）的 `git checkout -q -- scripts tests` 清掉了還沒 commit 的修正與測試。
 Claude Code PreToolUse hook (Bash): denies git commands that would discard uncommitted changes.
 Covers `git checkout ... -- <paths>` (and `git checkout <existing path>`), `git restore <paths>` (unless only
-`--staged`), `git checkout -f`, `git switch -f`/`--discard-changes`, `git reset --hard` and `git reset --merge`.
+`--staged`), `git checkout -f`, `git switch -f`/`--discard-changes`, `git reset --hard`, `git reset --merge` and
+`git clean`.
 It asks git which of the affected tracked paths have uncommitted changes the command would overwrite, and denies
 when any do, listing them: a `checkout` without a source looks only at the working tree against the index (a staged
 change survives it); `restore` and a `checkout` with a source count staged changes too; `reset` and forced switches
-look at the difference from HEAD. Which commit a command restores from is not consulted. It also denies, with git's
-error, when git cannot answer. Untracked files are not counted, as these commands leave them alone. A command that
+look at the difference from HEAD. Which commit a command restores from is not consulted. These commands leave
+untracked files alone, so those do not count; `git clean` is the exception, and git's own dry run lists the
+untracked or ignored files it would remove. It also denies, with git's error, when git cannot answer. A command that
 really means to discard them contains `# discard-ok` anywhere (a substring match on the whole command, so any line
 of a multi-line command counts, and it need not be a real comment).
+It follows `cd` (also after `{` or `then`, and `cd ~`, a bare `cd`, `cd -`), `git -C` and `env -C`/`sudo -D` into
+their directories, and checks the string of `env -S` as the command. Known limits: a quoted `(` or `)` is taken for a
+real one; after a `cd` to a directory it cannot know (`cd $VAR`, `cd "$(…)"`) git cannot answer, so a following
+discarding command is always denied rather than checked.
 Background: on #158 (2026-11-13) `git checkout -q -- scripts tests` wiped an uncommitted fix and its tests."""
 
 import json
@@ -36,9 +45,15 @@ PUNCTUATION = ";&|()\n"
 # Shell keywords and wrapper commands in front of git, skipped first
 SHELL_PREFIXES = {"{", "}", "then", "do", "else", "elif", "if", "while", "until", "!", "time", "env", "command",
                   "exec", "nohup", "sudo"}
-# 包裝指令自己的選項裡，後面帶一個值的那些（其他以 - 開頭的選項單獨跳過）
-# The options of wrapper commands that take a value (other options starting with - are skipped on their own)
-WRAPPER_VALUE_OPTS = {"env": {"-u", "--unset"}, "sudo": {"-u", "--user", "-g", "--group"}}
+# 包裝指令自己的選項裡帶一個值的那些，以及這個值的作用：value 只是跳過，chdir 是換目錄，split 是把值拆成指令
+# （其他以 - 開頭的選項單獨跳過）
+# The options of wrapper commands that take a value, and what the value does: value is only skipped, chdir changes
+# the directory, split turns the value into the command (other options starting with - are skipped on their own)
+WRAPPER_VALUE_OPTS = {
+    "env": {"-u": "value", "--unset": "value", "-C": "chdir", "--chdir": "chdir", "-S": "split",
+            "--split-string": "split"},
+    "sudo": {"-u": "value", "--user": "value", "-g": "value", "--group": "value", "-D": "chdir", "--chdir": "chdir"},
+}
 # 子指令之前、後面帶一個值的 git 選項
 # git options before the subcommand that take a value
 GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}
@@ -87,18 +102,72 @@ def segments(command):
         yield current
 
 
+# 出現在 cd 前面、要先跳過的 shell 關鍵字 ／ Shell keywords in front of a cd, skipped first
+CD_KEYWORDS = {"{", "}", "then", "do", "else", "elif", "if", "while", "until", "!"}
+
+
+def cd_to(tokens, cwd, previous):
+    """tokens 是一個 `cd`（前面可以有 `{`、`then` 這類關鍵字）時，回傳它換到的目錄，否則回傳 None。
+    `~` 展開成家目錄，不帶參數時是家目錄，`cd -` 回到 previous。
+    The directory a `cd` moves to when tokens are one (possibly after keywords such as `{` or `then`), else None.
+    `~` expands to the home directory, a bare `cd` goes home, and `cd -` goes back to previous."""
+    while tokens and tokens[0] in CD_KEYWORDS:
+        tokens = tokens[1:]
+    if not tokens or tokens[0] != "cd":
+        return None
+    # cd 自己的選項（-L、-P、-e、-@）不是目標 ／ cd's own options (-L, -P, -e, -@) are not the target
+    targets = [t for t in tokens[1:] if not (t.startswith("-") and t != "-")]
+    if not targets:
+        return os.path.expanduser("~")
+    if targets[0] == "-":
+        return previous
+    return os.path.join(cwd, os.path.expanduser(targets[0]))
+
+
+def wrapper_option(tokens, value_opts):
+    """tokens[0] 是 value_opts 裡帶值的選項時，回傳 ((作用, 值), 剩下的 token)；值可以是下一個 token、
+    `--選項=值` 或黏在短選項後面（`-C目錄`）。不是時回傳 (None, tokens)。
+    When tokens[0] is a value-taking option from value_opts, returns ((action, value), remaining tokens); the value
+    is the next token, follows `--option=` or is attached to a short option (`-Cdir`). Otherwise returns
+    (None, tokens)."""
+    token = tokens[0]
+    if token.startswith("--") and "=" in token:
+        name, value = token.split("=", 1)
+        if name in value_opts:
+            return (value_opts[name], value), tokens[1:]
+    elif token in value_opts and len(tokens) > 1:
+        return (value_opts[token], tokens[1]), tokens[2:]
+    elif not token.startswith("--") and token[:2] in value_opts and len(token) > 2:
+        return (value_opts[token[:2]], token[2:]), tokens[1:]
+    return None, tokens
+
+
 def git_call(tokens, cwd):
     """一個 git 呼叫的 (執行目錄, 子指令, 參數)；不是 git 呼叫時回傳 None。
     The (directory, subcommand, args) of a git invocation, else None."""
     # 先跳過 shell 關鍵字、VAR=value 指派與包裝指令
     # Skip shell keywords, VAR=value assignments and wrapper commands first
     while tokens and (tokens[0] in SHELL_PREFIXES or ("=" in tokens[0] and not tokens[0].startswith("-"))):
-        value_opts = WRAPPER_VALUE_OPTS.get(tokens[0], set())
+        value_opts = WRAPPER_VALUE_OPTS.get(tokens[0], {})
         tokens = tokens[1:]
-        # env、sudo 這類包裝指令的選項（例如 `env -i`、`sudo -u 某人`）也跳過
-        # Skip the options of wrappers such as env and sudo too (for example `env -i`, `sudo -u someone`)
+        # env、sudo 這類包裝指令的選項（例如 `env -i`、`sudo -u 某人`）也跳過；換目錄的跟著換，`env -S` 的值拆成指令
+        # Skip the options of wrappers such as env and sudo too (for example `env -i`, `sudo -u someone`); follow
+        # the ones that change directory, and split the value of `env -S` into the command
         while value_opts and tokens and tokens[0].startswith("-"):
-            tokens = tokens[2:] if tokens[0] in value_opts else tokens[1:]
+            option, rest = wrapper_option(tokens, value_opts)
+            if option is None:
+                tokens = tokens[1:]
+                continue
+            action, value = option
+            tokens = rest
+            if action == "chdir":
+                cwd = os.path.join(cwd, os.path.expanduser(value))
+            elif action == "split":
+                try:
+                    tokens = shlex.split(value) + tokens
+                except ValueError:
+                    return None
+                break
     if not tokens or os.path.basename(tokens[0]) != "git":
         return None
     i = 1
@@ -142,6 +211,13 @@ def dirty(cwd, mode, paths):
     The tracked paths among `paths` (all of them when empty) with uncommitted changes; raises GitFailed when git
     fails."""
     spec = ["--", *paths] if paths else []
+    if mode == "clean":
+        # git clean：git 的 dry run 列出的就是會被刪掉的（未追蹤或被忽略的）檔案，paths 是它的參數
+        # git clean: what git's dry run lists is what would be removed (untracked or ignored files); paths are its
+        # args
+        out = run(cwd, "clean", *as_dry_run(paths))
+        prefix = "Would remove "
+        return sorted(line[len(prefix):] for line in out.splitlines() if line.startswith(prefix))
     if mode == "worktree":
         # 沒有來源的 checkout：工作目錄跟 index 不同的路徑；只有暫存的改動留得住
         # A checkout without a source: paths where the working tree differs from the index; a staged-only change
@@ -181,6 +257,48 @@ def forced(args, *longs):
     return False
 
 
+def clean_short_options(option):
+    """`git clean` 的一組短選項（例如 `-fdx`）拆成選項字元與黏在 `-e` 後面的值（沒有時是 None）。
+    Splits a cluster of `git clean` short options (such as `-fdx`) into its option letters and the value attached
+    to `-e` (None when there is none)."""
+    letters = option[1:]
+    if "e" in letters:
+        at = letters.index("e")
+        return letters[:at + 1], letters[at + 1:] or None
+    return letters, None
+
+
+def dry_run(args):
+    """`git clean` 的參數裡有 `-n`／`--dry-run`（`--` 之前、`-e` 的值以外）時為真。
+    True when the `git clean` args carry `-n`/`--dry-run` (before `--`, outside the value of `-e`)."""
+    for a in args:
+        if a == "--":
+            return False
+        if a == "--dry-run" or (a.startswith("-") and not a.startswith("--") and "n" in clean_short_options(a)[0]):
+            return True
+    return False
+
+
+def as_dry_run(args):
+    """把 `git clean` 的參數改成 dry run：拿掉 `-f`／`--force` 與 `-i`／`--interactive`，加上 `-n`；其餘照舊。
+    Turns `git clean` args into a dry run: drops `-f`/`--force` and `-i`/`--interactive`, adds `-n`, and keeps the
+    rest."""
+    out, after_dashes = ["-n"], False
+    for a in args:
+        if after_dashes or a == "--" or not a.startswith("-"):
+            after_dashes = after_dashes or a == "--"
+            out.append(a)
+        elif a.startswith("--"):
+            if a not in ("--force", "--interactive"):
+                out.append(a)
+        else:
+            letters, value = clean_short_options(a)
+            letters = letters.replace("f", "").replace("i", "")
+            if letters or value:
+                out.append("-" + letters + (value or ""))
+    return out
+
+
 def affected(cwd, sub, args):
     """這個 git 呼叫可能丟掉改動時回傳 (模式, 路徑)，否則回傳 None。
     (mode, paths) when the git call can discard changes, else None."""
@@ -216,6 +334,10 @@ def affected(cwd, sub, args):
             else:
                 paths.append(a)
         return ("index", paths) if paths else None
+    if sub == "clean":
+        # 已經是 dry run 的不檢查；其餘交給 git 自己的 dry run 列出會刪掉什麼
+        # A dry run is not checked; for the rest git's own dry run lists what would be removed
+        return None if dry_run(args) else ("clean", args)
     if sub == "reset" and ("--hard" in args or "--merge" in args):
         return ("head", [])
     return None
@@ -234,6 +356,8 @@ def main():
     # Remember the directory on entering a subshell and restore it on leaving: a cd inside one does not reach later
     # commands
     outer = []
+    # 上一個 cd 之前的目錄，給 `cd -` 用 ／ The directory before the last cd, for `cd -`
+    previous = cwd
     for tokens in segments(command):
         if isinstance(tokens, str):
             for ch in tokens:
@@ -242,8 +366,9 @@ def main():
                 elif ch == ")" and outer:
                     cwd = outer.pop()
             continue
-        if tokens[0] == "cd" and len(tokens) > 1:
-            cwd = os.path.join(cwd, tokens[1])
+        moved = cd_to(tokens, cwd, previous)
+        if moved is not None:
+            previous, cwd = cwd, moved
             continue
         call = git_call(tokens, cwd)
         if not call:
