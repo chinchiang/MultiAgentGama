@@ -258,10 +258,19 @@ _SEPARATOR_COMMENT_RE = re.compile(r"^#\s*[-=#*~_]{3,}\s*$")
 
 def _repo_python_files():
     import glob
-    patterns = ("vibeharness/**/*.py", "tests/*.py", "examples/*.py", "scripts/**/*.py", "main.py")
+    patterns = ("vibeharness/**/*.py", "tests/*.py", "examples/*.py", "scripts/**/*.py", "main.py", ".claude/**/*.py")
     files = sorted({p for pattern in patterns for p in glob.glob(os.path.join(REPO_ROOT, pattern), recursive=True)})
     assert files
     return files
+
+
+@pytest.mark.skipif(not os.path.isdir(os.path.join(REPO_ROOT, ".claude")), reason=".claude/ is not shipped in the sdist")
+def test_the_bilingual_scan_covers_the_claude_code_hooks():
+    """雙語文件字串與註解的檢查也掃描 `.claude/` 底下的 Python（例如 `guard_discard.py` 這個 hook）。
+    The bilingual docstring and comment checks also scan the Python under `.claude/` (such as the
+    `guard_discard.py` hook)."""
+    scanned = {os.path.relpath(path, REPO_ROOT).replace(os.sep, "/") for path in _repo_python_files()}
+    assert ".claude/hooks/guard_discard.py" in scanned
 
 
 def _skippable_comment(text: str) -> bool:
