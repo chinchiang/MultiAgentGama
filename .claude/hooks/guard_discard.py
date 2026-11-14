@@ -233,6 +233,14 @@ class GitFailed(Exception):
     git failed when the hook asked it something; the message is git's stderr."""
 
 
+def os_arg(text):
+    """要交給作業系統的參數或路徑：POSIX 上自己以 UTF-8 編成位元組（Python 的檔案系統編碼可能是 ASCII），
+    Windows 上照原樣（程序參數本來就是 Unicode）。
+    An argument or path for the operating system: on POSIX it is encoded as UTF-8 bytes here (Python's file-system
+    encoding may be ASCII), on Windows it stays as it is (process arguments are Unicode there)."""
+    return text if os.name == "nt" else text.encode("utf-8", errors="surrogateescape")
+
+
 def run(cwd, *args):
     """在 cwd 執行 git，回傳 stdout；git 失敗時丟出 GitFailed，訊息是 stderr 的第一行；git 或 cwd 找不到時，
     訊息是找不到的那一個。
@@ -246,12 +254,15 @@ def run(cwd, *args):
         env["LC_ALL"] = "C"
         # 檔名不加引號（`core.quotePath=false`）並以 UTF-8 解碼，不靠 Python 的預設編碼
         # File names unquoted (`core.quotePath=false`) and decoded as UTF-8, not with Python's default encoding
-        done = subprocess.run(["git", "-c", "core.quotePath=false", *args], cwd=cwd, env=env, capture_output=True,
-                              text=True, encoding="utf-8", errors="replace")
-    except NotADirectoryError as error:
-        raise GitFailed(str(error)) from error
-    except FileNotFoundError as error:
-        raise GitFailed(f"{error.filename or cwd}: {error.strerror}") from error
+        done = subprocess.run([os_arg(a) for a in ("git", "-c", "core.quotePath=false", *args)], cwd=os_arg(cwd),
+                              env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    except (NotADirectoryError, FileNotFoundError) as error:
+        # 找不到的是 git 或 cwd；路徑以文字寫出，不是 os_arg 編成的位元組
+        # What cannot be found is git or cwd; the path is spelt as text, not as the bytes os_arg made
+        name = error.filename or cwd
+        if isinstance(name, bytes):
+            name = name.decode("utf-8", errors="replace")
+        raise GitFailed(f"{name}: {error.strerror}") from error
     if done.returncode != 0:
         first = next((line for line in done.stderr.splitlines() if line.strip()), "")
         raise GitFailed(first.strip() or f"git {' '.join(args)} exited {done.returncode}")

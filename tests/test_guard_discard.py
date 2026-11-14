@@ -336,6 +336,10 @@ def test_a_cd_to_an_unknown_directory_still_denies(repo, tmp_path, command):
     reason = _decide(root, command, tmp_path)
     assert reason is not None, f"`{command}` was allowed although the directory is unknown"
     assert "could not check" in reason, reason
+    # 原因裡的目錄照原樣寫出，不是 Python 的位元組表示 ／ The reason spells the directory as typed, not as Python bytes
+    error = reason.split("git said:", 1)[1].splitlines()[0]
+    assert "x" in error or "UNKNOWN" in error, reason
+    assert "b'" not in error, reason
 
 
 def test_git_clean_is_checked_whatever_language_git_speaks(repo, tmp_path):
@@ -402,3 +406,18 @@ def test_when_the_hook_itself_fails_the_command_is_denied(repo, tmp_path):
     reason = _decide(root, "", tmp_path, payload_text='{"tool_input": {"command": "git reset --hard"')
     assert reason is not None, "allowed although the hook failed"
     assert "guard_discard failed" in reason, reason
+
+
+def test_a_non_ascii_command_is_quoted_as_typed_when_python_does_not_default_to_utf8(git_repo, tmp_path):
+    """hook 的 Python 預設編碼不是 UTF-8 時，帶非 ASCII 路徑的指令在原因裡照原樣列出（stdin 以 UTF-8 讀）。
+    When the hook's Python does not default to UTF-8, a command with a non-ASCII path is quoted in the reason as
+    typed (stdin is read as UTF-8)."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "檔案.txt").write_text("a\n", encoding="utf-8")
+    git_repo(root)
+    (root / "檔案.txt").write_text("a\nb\n", encoding="utf-8")
+    command = "git checkout -- 檔案.txt"
+    reason = _decide(root, command, tmp_path, extra_env=_ASCII_PYTHON)
+    assert reason is not None, f"`{command}` was allowed"
+    assert f"`{command}` would discard uncommitted changes in: 檔案.txt" in reason, reason
