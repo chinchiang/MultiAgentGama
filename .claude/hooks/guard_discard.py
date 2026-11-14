@@ -5,14 +5,16 @@
 它問 git 受影響的已追蹤路徑裡，哪些有指令會蓋掉的還沒 commit 的改動，有就擋下並列出它們：沒有來源的 `checkout`
 只看工作目錄跟 index 的差異（暫存的改動留得住）；`restore` 與有來源的 `checkout` 也算暫存的改動；`reset` 與強制切換
 看跟 HEAD 的差異。它不看指令指定的來源是哪個 commit。這些指令不會動到未追蹤的檔案，所以那些不算；`git clean`
-例外，它交給 git 自己的 dry run 列出會刪掉的未追蹤或被忽略的檔案。git 答不出來時也擋下，附上 git 的錯誤。真的要丟掉時，讓指令裡任何地方出現 `# discard-ok`（對整條指令比對字串，多行指令的任一行都算，
-不必是真的註解）。
-它跟著 `cd`（含 `{`、`then`、`time`、`command`、`builtin`、`VAR=value` 之後的，以及 `cd ~`、`cd`、`cd -`）、`git -C`、
-`env -C`／`sudo -D` 換目錄，`env -S` 的字串拆成指令再看。`git clean` 的 dry run 以 C 語系執行，git 的輸出才是英文。
+例外：參數照原樣接上 `--no-quiet --no-interactive -n` 交給 git 自己的 dry run，列出會刪掉的未追蹤或被忽略的檔案；
+本來就是 dry run 的 `git clean -n` 也一樣檢查。git 答不出來時也擋下，附上 git 的錯誤；hook 自己出錯時也擋下。
+真的要丟掉時，讓指令裡任何地方出現 `# discard-ok`（對整條指令比對字串，多行指令的任一行都算，不必是真的註解）。
+它跟著 `cd`（含 `{`、`then`、`time [-p]`、`command [-p]`、`builtin`、`VAR=value` 之後的，以及 `cd ~`、`cd`、`cd -`）、
+`git -C`、`env -C`／`sudo -D`（也在一組短選項裡，例如 `env -iC`）換目錄，`env -S` 的字串拆成指令再看。
+hook 跑的每個 git 都用 C 語系（輸出是英文）、不加引號的檔名，並以 UTF-8 解碼。
 已知限制：
 - 引號裡的 `(`、`)` 會被當成真的括號。
 - `cd` 到它不知道的目錄（`cd $VAR`、`cd "$(…)"`）之後，git 答不出來，後面會丟掉改動的指令被擋下而不是被檢查；
-  除非之後的 `git -C`、`env -C` 指向絕對路徑。
+  除非之後的 `cd`、`git -C`、`env -C` 或 `sudo -D` 指向絕對路徑。
 - 指令裡第一個 `cd -` 回到 hook 收到的 cwd，不一定是 shell 真正的 `OLDPWD`。
 - `~` 一律展開，包括 bash 不展開的 `--chdir=~/x`、`-C~` 與引號裡的 `"~"`；展開用的是 Python 的家目錄，
   在 Windows 上是 `USERPROFILE`，Git Bash 的 `cd` 用的卻是 `HOME`。
@@ -25,17 +27,21 @@ It asks git which of the affected tracked paths have uncommitted changes the com
 when any do, listing them: a `checkout` without a source looks only at the working tree against the index (a staged
 change survives it); `restore` and a `checkout` with a source count staged changes too; `reset` and forced switches
 look at the difference from HEAD. Which commit a command restores from is not consulted. These commands leave
-untracked files alone, so those do not count; `git clean` is the exception, and git's own dry run lists the
-untracked or ignored files it would remove. It also denies, with git's error, when git cannot answer. A command that
+untracked files alone, so those do not count. `git clean` is the exception: its args, kept as they are and followed
+by `--no-quiet --no-interactive -n`, go to git's own dry run, which lists the untracked or ignored files it would
+remove; a `git clean -n` that already is a dry run is checked all the same. It also denies, with git's error, when
+git cannot answer, and denies when the hook itself fails. A command that
 really means to discard them contains `# discard-ok` anywhere (a substring match on the whole command, so any line
 of a multi-line command counts, and it need not be a real comment).
-It follows `cd` (also after `{`, `then`, `time`, `command`, `builtin` or a `VAR=value`, and `cd ~`, a bare `cd`,
-`cd -`), `git -C` and `env -C`/`sudo -D` into their directories, and checks the string of `env -S` as the command.
-The dry run of `git clean` runs in the C locale, so git's output is in English.
+It follows `cd` (also after `{`, `then`, `time [-p]`, `command [-p]`, `builtin` or a `VAR=value`, and `cd ~`, a bare
+`cd`, `cd -`), `git -C` and `env -C`/`sudo -D` (also inside a short-option cluster such as `env -iC`) into their
+directories, and checks the string of `env -S` as the command. Every git the hook runs uses the C locale (English
+output) and unquoted file names, and is decoded as UTF-8.
 Known limits:
 - A quoted `(` or `)` is taken for a real one.
 - After a `cd` to a directory it cannot know (`cd $VAR`, `cd "$(…)"`) git cannot answer, so a following discarding
-  command is denied rather than checked, unless a later `git -C` or `env -C` names an absolute directory.
+  command is denied rather than checked, unless a later `cd`, `git -C`, `env -C` or `sudo -D` names an absolute
+  directory.
 - The first `cd -` in a command goes back to the cwd the hook received, which need not be the shell's `OLDPWD`.
 - `~` is always expanded, also where bash would not (`--chdir=~/x`, `-C~`, a quoted `"~"`), and with Python's home
   directory: on Windows that is `USERPROFILE`, while Git Bash's `cd` uses `HOME`.
@@ -114,9 +120,18 @@ def segments(command):
         yield current
 
 
-# 出現在 cd 前面、要先跳過的 shell 關鍵字與前綴（cd 在它們之後仍在目前的 shell 裡生效）
-# Shell keywords and prefixes in front of a cd, skipped first (the cd after them still acts in the current shell)
-CD_KEYWORDS = {"{", "}", "then", "do", "else", "elif", "if", "while", "until", "!", "time", "command", "builtin"}
+# 出現在 cd 前面、要先跳過的 shell 關鍵字與前綴（cd 在它們之後仍在目前的 shell 裡生效）；
+# 帶選項的前綴（`time -p`、`command -p`），選項也一起跳過
+# Shell keywords and prefixes in front of a cd, skipped first (the cd after them still acts in the current shell);
+# for the prefixes that take options (`time -p`, `command -p`) the options are skipped too
+CD_PREFIXES = {"{", "}", "then", "do", "else", "elif", "if", "while", "until", "!", "time", "command", "builtin"}
+CD_PREFIXES_WITH_OPTIONS = {"time", "command"}
+
+
+def assignment(token):
+    """token 是 shell 的 `VAR=value` 指派時為真（不是以 `-` 開頭的選項）。
+    True when token is a shell `VAR=value` assignment (not an option starting with `-`)."""
+    return "=" in token and not token.startswith("-")
 
 
 def cd_to(tokens, cwd, previous):
@@ -127,8 +142,10 @@ def cd_to(tokens, cwd, previous):
     `VAR=value`), else None.
     `~` expands to the home directory, a bare `cd` goes home, and `cd -` goes back to previous (the directory before
     the last cd, at first the cwd the hook received)."""
-    while tokens and (tokens[0] in CD_KEYWORDS or ("=" in tokens[0] and not tokens[0].startswith("-"))):
-        tokens = tokens[1:]
+    while tokens and (tokens[0] in CD_PREFIXES or assignment(tokens[0])):
+        prefix, tokens = tokens[0], tokens[1:]
+        while prefix in CD_PREFIXES_WITH_OPTIONS and tokens and tokens[0].startswith("-"):
+            tokens = tokens[1:]
     if not tokens or tokens[0] != "cd":
         return None
     # cd 自己的選項（-L、-P、-e、-@）不是目標 ／ cd's own options (-L, -P, -e, -@) are not the target
@@ -142,10 +159,10 @@ def cd_to(tokens, cwd, previous):
 
 def wrapper_option(tokens, value_opts):
     """tokens[0] 是 value_opts 裡帶值的選項時，回傳 ((作用, 值), 剩下的 token)；值可以是下一個 token、
-    `--選項=值` 或黏在短選項後面（`-C目錄`）。不是時回傳 (None, tokens)。
+    `--選項=值` 或黏在短選項後面，也可以在一組短選項裡（`-C目錄`、`-iC 目錄`）。不是時回傳 (None, tokens)。
     When tokens[0] is a value-taking option from value_opts, returns ((action, value), remaining tokens); the value
-    is the next token, follows `--option=` or is attached to a short option (`-Cdir`). Otherwise returns
-    (None, tokens)."""
+    is the next token, follows `--option=` or is attached to a short option, also inside a cluster (`-Cdir`,
+    `-iC dir`). Otherwise returns (None, tokens)."""
     token = tokens[0]
     if token.startswith("--") and "=" in token:
         name, value = token.split("=", 1)
@@ -153,8 +170,18 @@ def wrapper_option(tokens, value_opts):
             return (value_opts[name], value), tokens[1:]
     elif token in value_opts and len(tokens) > 1:
         return (value_opts[token], tokens[1]), tokens[2:]
-    elif not token.startswith("--") and token[:2] in value_opts and len(token) > 2:
-        return (value_opts[token[:2]], token[2:]), tokens[1:]
+    elif not token.startswith("--"):
+        # 一組短選項（`-iC dir`、`-iCdir`）：第一個帶值的選項之後的字元是它的值，沒有時值是下一個 token
+        # A short-option cluster (`-iC dir`, `-iCdir`): the characters after its first value-taking option are the
+        # value, or the next token when there are none
+        for at, letter in enumerate(token[1:], start=1):
+            if "-" + letter in value_opts:
+                value = token[at + 1:]
+                if value:
+                    return (value_opts["-" + letter], value), tokens[1:]
+                if len(tokens) > 1:
+                    return (value_opts["-" + letter], tokens[1]), tokens[2:]
+                break
     return None, tokens
 
 
@@ -163,7 +190,7 @@ def git_call(tokens, cwd):
     The (directory, subcommand, args) of a git invocation, else None."""
     # 先跳過 shell 關鍵字、VAR=value 指派與包裝指令
     # Skip shell keywords, VAR=value assignments and wrapper commands first
-    while tokens and (tokens[0] in SHELL_PREFIXES or ("=" in tokens[0] and not tokens[0].startswith("-"))):
+    while tokens and (tokens[0] in SHELL_PREFIXES or assignment(tokens[0])):
         value_opts = WRAPPER_VALUE_OPTS.get(tokens[0], {})
         tokens = tokens[1:]
         # env、sudo 這類包裝指令的選項（例如 `env -i`、`sudo -u 某人`）也跳過；換目錄的跟著換，`env -S` 的值拆成指令
@@ -192,7 +219,7 @@ def git_call(tokens, cwd):
         opt = tokens[i]
         if opt in GIT_VALUE_OPTS and i + 1 < len(tokens):
             if opt == "-C":
-                cwd = os.path.join(cwd, tokens[i + 1])
+                cwd = os.path.join(cwd, os.path.expanduser(tokens[i + 1]))
             i += 2
         else:
             i += 1
@@ -217,7 +244,10 @@ def run(cwd, *args):
         # make git speak another language
         env = {k: v for k, v in os.environ.items() if k != "LANGUAGE"}
         env["LC_ALL"] = "C"
-        done = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True, text=True)
+        # 檔名不加引號（`core.quotePath=false`）並以 UTF-8 解碼，不靠 Python 的預設編碼
+        # File names unquoted (`core.quotePath=false`) and decoded as UTF-8, not with Python's default encoding
+        done = subprocess.run(["git", "-c", "core.quotePath=false", *args], cwd=cwd, env=env, capture_output=True,
+                              text=True, encoding="utf-8", errors="replace")
     except NotADirectoryError as error:
         raise GitFailed(str(error)) from error
     except FileNotFoundError as error:
@@ -281,72 +311,16 @@ def forced(args, *longs):
     return False
 
 
-def clean_short_options(option):
-    """`git clean` 的一組短選項（例如 `-fdx`）拆成選項字元與黏在 `-e` 後面的值（沒有時是 None）。
-    Splits a cluster of `git clean` short options (such as `-fdx`) into its option letters and the value attached
-    to `-e` (None when there is none)."""
-    letters = option[1:]
-    if "e" in letters:
-        at = letters.index("e")
-        return letters[:at + 1], letters[at + 1:] or None
-    return letters, None
-
-
-def clean_args(args):
-    """把 `git clean` 的參數逐一標成 short（一組短選項）、long（長選項）、value（`-e`／`--exclude` 的值，
-    即使它以 `-` 開頭）或 path（pathspec，含 `--` 本身與它之後的一切）。
-    Labels each `git clean` arg as short (a short-option cluster), long (a long option), value (the value of
-    `-e`/`--exclude`, even when it starts with `-`) or path (a pathspec, `--` itself and everything after it)."""
-    labelled, value_next, after_dashes = [], False, False
-    for a in args:
-        if after_dashes or a == "--":
-            after_dashes = True
-            labelled.append((a, "path"))
-        elif value_next:
-            value_next = False
-            labelled.append((a, "value"))
-        elif a.startswith("--"):
-            labelled.append((a, "long"))
-            value_next = a == "--exclude"
-        elif a.startswith("-") and a != "-":
-            labelled.append((a, "short"))
-            letters, value = clean_short_options(a)
-            value_next = letters.endswith("e") and value is None
-        else:
-            labelled.append((a, "path"))
-    return labelled
-
-
-def dry_run(args):
-    """`git clean` 的參數裡有 `-n`／`--dry-run` 這個選項時為真；`--` 之後的 pathspec 與 `-e` 的值不算。
-    True when the `git clean` args carry the option `-n`/`--dry-run`; pathspecs after `--` and values of `-e` do
-    not count."""
-    for a, role in clean_args(args):
-        if (role == "long" and a == "--dry-run") or (role == "short" and "n" in clean_short_options(a)[0]):
-            return True
-    return False
-
-
 def as_dry_run(args):
-    """把 `git clean` 的參數改成 dry run：加上 `-n`，拿掉 `-i`／`--interactive`（互動）與 `-q`／`--quiet`（dry run
-    會什麼都不印）；`-f` 留著，有 `-n` 時 git 不會刪檔，而兩個 `-f` 會讓巢狀 repo 也列出來。`-e` 的值與
-    pathspec 照原樣留著。
-    Turns `git clean` args into a dry run: adds `-n` and drops `-i`/`--interactive` (interactive) and `-q`/`--quiet`
-    (the dry run would print nothing); `-f` stays, as git removes nothing alongside `-n`, and a double `-f` makes
-    nested repos listed too. Values of `-e` and pathspecs are kept as they are."""
-    out = ["-n"]
-    for a, role in clean_args(args):
-        if role == "long":
-            if a not in ("--interactive", "--quiet"):
-                out.append(a)
-        elif role == "short":
-            letters, value = clean_short_options(a)
-            letters = letters.replace("i", "").replace("q", "")
-            if letters or value:
-                out.append("-" + letters + (value or ""))
-        else:
-            out.append(a)
-    return out
+    """`git clean` 的參數照原樣保留，在 `--`（沒有時是最後）之前接上 `--no-quiet --no-interactive -n`：git 的選項
+    後面的蓋過前面的，所以不論原本怎麼寫（`-q`、縮寫的 `--qui`、`-i`），git 都只做 dry run 並列出會刪掉的檔案。
+    `-e` 的值、`-f` 的次數與 pathspec 都由 git 自己解讀。
+    Keeps the `git clean` args as they are and puts `--no-quiet --no-interactive -n` before `--` (or at the end when
+    there is none): a later git option overrides an earlier one, so however the original is spelt (`-q`, an
+    abbreviated `--qui`, `-i`), git only does a dry run and lists what it would remove. The values of `-e`, how many
+    times `-f` is given and the pathspecs are left for git to read."""
+    at = args.index("--") if "--" in args else len(args)
+    return [*args[:at], "--no-quiet", "--no-interactive", "-n", *args[at:]]
 
 
 def affected(cwd, sub, args):
@@ -386,9 +360,10 @@ def affected(cwd, sub, args):
                 paths.append(a)
         return ("index", paths) if paths else None
     if sub == "clean":
-        # 已經是 dry run 的不檢查；其餘交給 git 自己的 dry run 列出會刪掉什麼
-        # A dry run is not checked; for the rest git's own dry run lists what would be removed
-        return None if dry_run(args) else ("clean", args)
+        # 一律交給 git 自己的 dry run 列出會刪掉什麼，連本來就是 dry run 的也一樣（判斷它要重寫 git 的選項解析）
+        # Always let git's own dry run list what would be removed, even for a call that already is one (telling it
+        # apart would mean reimplementing git's option parsing)
+        return ("clean", args)
     if sub == "reset" and ("--hard" in args or "--merge" in args):
         return ("head", [])
     return None
@@ -397,7 +372,8 @@ def affected(cwd, sub, args):
 def main():
     """讀 hook 的 JSON 輸入；有指令會丟掉改動時，印出拒絕的決定與原因。
     Reads the hook's JSON input and, when a command would discard changes, prints a deny decision with its reason."""
-    payload = json.load(sys.stdin)
+    # stdin 以 UTF-8 讀，不靠 Python 的預設編碼 ／ stdin is read as UTF-8, not with Python's default encoding
+    payload = json.loads(sys.stdin.buffer.read().decode("utf-8", errors="replace"))
     command = payload.get("tool_input", {}).get("command", "")
     if "git" not in command or OVERRIDE in command:
         return 0
@@ -445,10 +421,28 @@ def main():
         lines.append(f"`{cmd}` may discard uncommitted changes, and the hook could not check: git said: {error}")
     reason = ("\n".join(lines) + "\nCommit first (or save a copy and write it back), then retry. "
               f"If discarding these is really intended, add the comment `{OVERRIDE}` to the command.")
-    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                             "permissionDecisionReason": reason}}))
+    deny(reason)
     return 0
 
 
+def deny(reason):
+    """印出拒絕的決定與原因（ASCII 跳脫的 JSON，不受 stdout 編碼影響）。
+    Prints a deny decision with its reason (ASCII-escaped JSON, whatever stdout's encoding)."""
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                             "permissionDecisionReason": reason}}))
+
+
+def guarded_main():
+    """執行 main()；hook 自己出錯時擋下指令並附上錯誤，而不是以非 0 結束（Claude Code 會把那當成放行）。
+    Runs main(); when the hook itself fails it denies the command with the error, rather than exiting non-zero
+    (which Claude Code treats as letting the command run)."""
+    try:
+        return main()
+    except Exception as error:  # noqa: BLE001  任何錯誤都要擋下 ／ any error must deny
+        deny(f"guard_discard failed, so the command was not checked: {type(error).__name__}: {error}\n"
+             f"If the command is safe, add the comment `{OVERRIDE}` to it.")
+        return 0
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(guarded_main())
