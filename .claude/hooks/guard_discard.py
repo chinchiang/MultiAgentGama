@@ -5,8 +5,10 @@
 它問 git 受影響的已追蹤路徑裡，哪些有指令會蓋掉的還沒 commit 的改動，有就擋下並列出它們：沒有來源的 `checkout`
 只看工作目錄跟 index 的差異（暫存的改動留得住）；`restore` 與有來源的 `checkout` 也算暫存的改動；`reset` 與強制切換
 看跟 HEAD 的差異。它不看指令指定的來源是哪個 commit。這些指令不會動到未追蹤的檔案，所以那些不算；`git clean`
-例外：參數照原樣接上 `--no-quiet --no-interactive -n` 交給 git 自己的 dry run，列出會刪掉的未追蹤或被忽略的檔案；
-本來就是 dry run 的 `git clean -n` 也一樣檢查。git 答不出來時也擋下，附上 git 的錯誤；hook 自己出錯時也擋下。
+例外：它的參數只接受 hook 看得懂的白名單寫法（看不懂就以「無法檢查」擋下），照原樣接上
+`--no-quiet --no-interactive -n` 交給 git 自己的 dry run，列出會刪掉的未追蹤或被忽略的檔案；dry run 印出別的行時
+也擋下。本來就是 dry run 的 `git clean -n` 也一樣檢查。git 答不出來時也擋下，附上 git 的錯誤；hook 自己出錯時
+（含讀不懂的輸入）也擋下。子指令前的 `-c`、`--git-dir`、`--work-tree` 會轉給 hook 自己跑的 git。
 真的要丟掉時，讓指令裡任何地方出現 `# discard-ok`（對整條指令比對字串，多行指令的任一行都算，不必是真的註解）。
 它跟著 `cd`（含 `{`、`then`、`time [-p]`、`command [-p]`、`builtin`、`VAR=value` 之後的，以及 `cd ~`、`cd`、`cd -`）、
 `git -C`、`env -C`／`sudo -D`（也在一組短選項裡，例如 `env -iC`）換目錄，`env -S` 的字串拆成指令再看。
@@ -27,10 +29,13 @@ It asks git which of the affected tracked paths have uncommitted changes the com
 when any do, listing them: a `checkout` without a source looks only at the working tree against the index (a staged
 change survives it); `restore` and a `checkout` with a source count staged changes too; `reset` and forced switches
 look at the difference from HEAD. Which commit a command restores from is not consulted. These commands leave
-untracked files alone, so those do not count. `git clean` is the exception: its args, kept as they are and followed
-by `--no-quiet --no-interactive -n`, go to git's own dry run, which lists the untracked or ignored files it would
-remove; a `git clean -n` that already is a dry run is checked all the same. It also denies, with git's error, when
-git cannot answer, and denies when the hook itself fails. A command that
+untracked files alone, so those do not count. `git clean` is the exception: only the arg forms on the hook's allow
+list are read (anything else is denied as unchecked); those args, kept as they are and followed by
+`--no-quiet --no-interactive -n`, go to git's own dry run, which lists the untracked or ignored files it would
+remove, and a dry run that prints any other line is denied too. A `git clean -n` that already is a dry run is
+checked all the same. It also denies, with git's error, when git cannot answer, and denies when the hook itself fails
+(unreadable input included). `-c`, `--git-dir` and `--work-tree` before the subcommand are passed on to the git the
+hook runs. A command that
 really means to discard them contains `# discard-ok` anywhere (a substring match on the whole command, so any line
 of a multi-line command counts, and it need not be a real comment).
 It follows `cd` (also after `{`, `then`, `time [-p]`, `command [-p]`, `builtin` or a `VAR=value`, and `cd ~`, a bare
@@ -75,6 +80,9 @@ WRAPPER_VALUE_OPTS = {
 # 子指令之前、後面帶一個值的 git 選項
 # git options before the subcommand that take a value
 GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}
+# 子指令前、要原樣轉給 hook 自己的 git 的選項 ／ git options before the subcommand passed on, as they are, to the
+# hook's own git
+PASSED_GIT_OPTS = {"-c", "--git-dir", "--work-tree"}
 # 含有重導向的 token：前面可以黏著參數（`x>out`）或檔案描述元數字（`2>`），目標接在後面或是下一個 token
 # A token holding a redirection: an argument (`x>out`) or a file-descriptor number (`2>`) may be attached in front,
 # and the target follows it or is the next token
@@ -186,8 +194,11 @@ def wrapper_option(tokens, value_opts):
 
 
 def git_call(tokens, cwd):
-    """一個 git 呼叫的 (執行目錄, 子指令, 參數)；不是 git 呼叫時回傳 None。
-    The (directory, subcommand, args) of a git invocation, else None."""
+    """一個 git 呼叫的 (執行目錄, 子指令, 參數, 要轉給 hook 的 git 的選項)；不是 git 呼叫時回傳 None。
+    轉過去的是子指令前的 `-c`、`--git-dir`、`--work-tree`，hook 才會照同樣的設定檢查同一個 repo。
+    The (directory, subcommand, args, options to pass on to the hook's git) of a git invocation, else None. The
+    options passed on are `-c`, `--git-dir` and `--work-tree` before the subcommand, so that the hook checks the same
+    repo with the same settings."""
     # 先跳過 shell 關鍵字、VAR=value 指派與包裝指令
     # Skip shell keywords, VAR=value assignments and wrapper commands first
     while tokens and (tokens[0] in SHELL_PREFIXES or assignment(tokens[0])):
@@ -214,23 +225,36 @@ def git_call(tokens, cwd):
                     return None
     if not tokens or os.path.basename(tokens[0]) != "git":
         return None
-    i = 1
+    i, passed = 1, []
     while i < len(tokens) and tokens[i].startswith("-"):
         opt = tokens[i]
         if opt in GIT_VALUE_OPTS and i + 1 < len(tokens):
             if opt == "-C":
                 cwd = os.path.join(cwd, os.path.expanduser(tokens[i + 1]))
+            elif opt in PASSED_GIT_OPTS:
+                passed += [opt, tokens[i + 1]]
             i += 2
         else:
+            if opt.split("=", 1)[0] in PASSED_GIT_OPTS:
+                passed.append(opt)
             i += 1
     if i >= len(tokens):
         return None
-    return cwd, tokens[i], tokens[i + 1:]
+    return cwd, tokens[i], tokens[i + 1:], tuple(passed)
 
 
-class GitFailed(Exception):
+class Unchecked(Exception):
+    """hook 沒辦法確認指令會丟掉什麼；訊息說明原因。
+    The hook cannot tell what the command would lose; the message says why."""
+
+
+class GitFailed(Unchecked):
     """hook 問 git 時 git 失敗；訊息是 git 的 stderr。
     git failed when the hook asked it something; the message is git's stderr."""
+
+    def __str__(self):
+        """訊息前面加上 `git said:`。 ／ The message, prefixed with `git said:`."""
+        return f"git said: {super().__str__()}"
 
 
 def os_arg(text):
@@ -241,11 +265,13 @@ def os_arg(text):
     return text if os.name == "nt" else text.encode("utf-8", errors="surrogateescape")
 
 
-def run(cwd, *args):
+def run(cwd, *args, git_opts=()):
     """在 cwd 執行 git，回傳 stdout；git 失敗時丟出 GitFailed，訊息是 stderr 的第一行；git 或 cwd 找不到時，
-    訊息是找不到的那一個。
+    訊息是找不到的那一個。git_opts（指令自己的 `-c`、`--git-dir`、`--work-tree`）放在 hook 的
+    `-c core.quotePath=false` 之前，hook 的設定蓋過它們。
     Runs git in cwd and returns its stdout; raises GitFailed carrying the first line of stderr when git fails, or
-    naming whichever of git and cwd cannot be found."""
+    naming whichever of git and cwd cannot be found. git_opts (the command's own `-c`, `--git-dir`, `--work-tree`)
+    come before the hook's `-c core.quotePath=false`, so the hook's setting wins."""
     try:
         # 固定 C 語系：hook 解析 git 的英文輸出（`Would remove`），開發者的語系會讓 git 改說別的語言
         # Pin the C locale: the hook parses git's English output (`Would remove`), and the developer's locale would
@@ -254,8 +280,9 @@ def run(cwd, *args):
         env["LC_ALL"] = "C"
         # 檔名不加引號（`core.quotePath=false`）並以 UTF-8 解碼，不靠 Python 的預設編碼
         # File names unquoted (`core.quotePath=false`) and decoded as UTF-8, not with Python's default encoding
-        done = subprocess.run([os_arg(a) for a in ("git", "-c", "core.quotePath=false", *args)], cwd=os_arg(cwd),
-                              env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        command = ("git", *git_opts, "-c", "core.quotePath=false", *args)
+        done = subprocess.run([os_arg(a) for a in command], cwd=os_arg(cwd), env=env, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace")
     except (NotADirectoryError, FileNotFoundError) as error:
         # 找不到的是 git 或 cwd；路徑以文字寫出，不是 os_arg 編成的位元組
         # What cannot be found is git or cwd; the path is spelt as text, not as the bytes os_arg made
@@ -269,7 +296,7 @@ def run(cwd, *args):
     return done.stdout
 
 
-def dirty(cwd, mode, paths):
+def dirty(cwd, mode, paths, git_opts=()):
     """指令會丟掉的路徑；git 失敗時丟出 GitFailed。clean 以外的模式：`paths` 裡（空的時候是全部）有還沒 commit 的
     改動的已追蹤路徑。clean 模式：`paths` 是 `git clean` 的參數，回傳 git 的 dry run 列出的未追蹤或被忽略的檔案。
     The paths the command would lose; raises GitFailed when git fails. Outside clean mode: the tracked paths among
@@ -280,25 +307,36 @@ def dirty(cwd, mode, paths):
         # git clean：git 的 dry run 列出的就是會被刪掉的（未追蹤或被忽略的）檔案，paths 是它的參數
         # git clean: what git's dry run lists is what would be removed (untracked or ignored files); paths are its
         # args
-        out = run(cwd, "clean", *as_dry_run(paths))
-        prefix = "Would remove "
-        return sorted(line[len(prefix):] for line in out.splitlines() if line.startswith(prefix))
+        unreadable = unreadable_clean_arg(paths)
+        if unreadable is not None:
+            raise Unchecked(f"it does not read the `git clean` argument `{unreadable}`")
+        out = run(cwd, "clean", *as_dry_run(paths), git_opts=git_opts)
+        removed = []
+        for line in out.splitlines():
+            if line.startswith("Would remove "):
+                removed.append(line[len("Would remove "):])
+            elif line and not line.startswith("Would skip repository "):
+                # dry run 不該印出別的東西（例如 `Removing`）；印了就表示 hook 讀錯了參數
+                # A dry run prints nothing else (such as `Removing`); if it does, the hook misread the args
+                raise Unchecked(f"git's dry run printed an unexpected line: {line}")
+        return sorted(removed)
     if mode == "worktree":
         # 沒有來源的 checkout：工作目錄跟 index 不同的路徑；只有暫存的改動留得住
         # A checkout without a source: paths where the working tree differs from the index; a staged-only change
         # survives it
-        out = run(cwd, "diff", "--name-only", *spec)
+        out = run(cwd, "diff", "--name-only", *spec, git_opts=git_opts)
     elif mode == "index":
         # restore 與有來源的 checkout：工作目錄跟 index 不同、或 index 跟 HEAD 不同的路徑；不看指令指定的來源，
         # 所以只有暫存的改動時 `git restore <路徑>` 也會被擋（它其實不會丟掉那些改動）
         # restore and a checkout with a source: paths where the working tree differs from the index or the index
         # from HEAD; the source the command names is not consulted, so with only staged changes `git restore <path>`
         # is denied too (it would not actually lose them)
-        out = run(cwd, "diff", "--name-only", *spec) + run(cwd, "diff", "--cached", "--name-only", *spec)
+        out = (run(cwd, "diff", "--name-only", *spec, git_opts=git_opts)
+               + run(cwd, "diff", "--cached", "--name-only", *spec, git_opts=git_opts))
     else:
         # reset --hard／--merge 與強制切換：工作目錄或 index 跟 HEAD 不同的路徑
         # reset --hard/--merge and forced switches: paths where the working tree or the index differs from HEAD
-        out = run(cwd, "diff", "HEAD", "--name-only", *spec)
+        out = run(cwd, "diff", "HEAD", "--name-only", *spec, git_opts=git_opts)
     return sorted(set(line for line in out.splitlines() if line))
 
 
@@ -320,6 +358,49 @@ def forced(args, *longs):
                 if ch in "bBcC":
                     break
     return False
+
+
+# git clean 的短選項裡 hook 看得懂的字母（`e` 另外處理，它帶值） ／ The git clean short-option letters the hook reads
+# (`e` is handled apart, as it takes a value)
+CLEAN_LETTERS = set("fdxXnqi")
+# git clean 的長選項裡 hook 看得懂的完整拼法（縮寫一律看不懂） ／ The git clean long options the hook reads, spelt in
+# full (any abbreviation is unreadable)
+CLEAN_LONG = {"--force", "--dry-run", "--quiet", "--interactive"}
+
+
+def unreadable_clean_arg(args):
+    """`git clean` 的參數裡第一個 hook 看不懂的；全部看得懂時回傳 None。
+    看得懂的只有：`fdxXnqi` 組成的短選項、完整拼法的 `--force`、`--dry-run`、`--quiet`、`--interactive`、
+    `-e`／`--exclude` 加上不以 `-` 開頭的值（黏著、`=` 或下一個 token）、不以 `-` 開頭的 pathspec，以及一個 `--`
+    之後的任何 pathspec。其他（縮寫、`--end-of-options`、以 `-` 開頭的值、不認得的選項）都看不懂，所以 git 會怎麼
+    解讀它們，hook 不去猜。
+    The first `git clean` arg the hook cannot read, or None when it reads them all. It reads only: short options
+    made of `fdxXnqi`, `--force`, `--dry-run`, `--quiet` and `--interactive` spelt in full, `-e`/`--exclude` with a
+    value that does not start with `-` (attached, after `=` or as the next token), pathspecs that do not start with
+    `-`, and any pathspec after one `--`. Anything else (an abbreviation, `--end-of-options`, a value starting with
+    `-`, an unknown option) is unreadable, so the hook does not guess how git would take it."""
+    value_next = False
+    for a in args:
+        if value_next:
+            if a.startswith("-"):
+                return a
+            value_next = False
+        elif a == "--":
+            return None
+        elif a in CLEAN_LONG or (a.startswith("--exclude=") and len(a) > len("--exclude=")):
+            continue
+        elif a == "--exclude":
+            value_next = True
+        elif a.startswith("--"):
+            return a
+        elif a.startswith("-"):
+            letters, e, value = a[1:].partition("e")
+            if not letters and not e or not set(letters) <= CLEAN_LETTERS:
+                return a
+            if e and value.startswith("-"):
+                return a
+            value_next = bool(e) and not value
+    return args[-1] if value_next else None
 
 
 def as_dry_run(args):
@@ -411,12 +492,12 @@ def main():
         call = git_call(tokens, cwd)
         if not call:
             continue
-        where, sub, args = call
+        where, sub, args, git_opts = call
         hit = affected(where, sub, args)
         if hit:
             try:
-                files = dirty(where, *hit)
-            except GitFailed as error:
+                files = dirty(where, *hit, git_opts=git_opts)
+            except Unchecked as error:
                 unknown.append((" ".join(tokens), str(error)))
                 continue
             if files:
@@ -429,7 +510,7 @@ def main():
         lines.append(f"`{cmd}` {what}: {', '.join(files[:20])}"
                      + (f" (+{len(files) - 20} more)" if len(files) > 20 else ""))
     for cmd, error in unknown:
-        lines.append(f"`{cmd}` may discard uncommitted changes, and the hook could not check: git said: {error}")
+        lines.append(f"`{cmd}` may discard uncommitted changes, and the hook could not check: {error}")
     reason = ("\n".join(lines) + "\nCommit first (or save a copy and write it back), then retry. "
               f"If discarding these is really intended, add the comment `{OVERRIDE}` to the command.")
     deny(reason)
@@ -444,12 +525,14 @@ def deny(reason):
 
 
 def guarded_main():
-    """執行 main()；hook 自己出錯時擋下指令並附上錯誤，而不是以非 0 結束（Claude Code 會把那當成放行）。
-    Runs main(); when the hook itself fails it denies the command with the error, rather than exiting non-zero
-    (which Claude Code treats as letting the command run)."""
+    """執行 main()；main() 裡出錯時擋下指令並附上錯誤，而不是以非 0 結束（Claude Code 會把那當成放行）。
+    讀不懂的輸入（不是 JSON、欄位型別不對）也算出錯，所以就算指令跟 git 無關也會被擋下。
+    Runs main(); when main() fails it denies the command with the error, rather than exiting non-zero (which Claude
+    Code treats as letting the command run). Unreadable input (not JSON, fields of the wrong type) counts as a
+    failure, so it is denied even when the command has nothing to do with git."""
     try:
         return main()
-    except Exception as error:  # noqa: BLE001  任何錯誤都要擋下 ／ any error must deny
+    except Exception as error:  # 任何錯誤都要擋下 ／ any error must deny
         deny(f"guard_discard failed, so the command was not checked: {type(error).__name__}: {error}\n"
              f"If the command is safe, add the comment `{OVERRIDE}` to it.")
         return 0

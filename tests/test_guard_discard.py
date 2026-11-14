@@ -262,20 +262,11 @@ def _untracked(root, *names):
     (["new.txt"], "git clean --force --interactive", "new.txt"),
     (["new.txt"], "git clean -fdq", "new.txt"),
     (["new.txt"], "git clean -f --quiet", "new.txt"),
-    (["new.txt"], "git clean -f -e -n", "new.txt"),
-    (["new.txt"], "git clean -f --exclude -n", "new.txt"),
-    (["new.txt"], "git clean -fd -e -q", "new.txt"),
     (["new.txt", "scripts/new.py"], "git clean -f -e new.txt -- scripts", "scripts/new.py"),
-    (["new.txt"], "git clean -fd --q", "new.txt"),
-    (["new.txt"], "git clean -fd --qui", "new.txt"),
-    (["new.txt"], "git clean -f --exc -n", "new.txt"),
-    (["new.txt"], "git clean -fd --excl -n", "new.txt"),
-    (["new.txt"], "git clean -fd --inter", "new.txt"),
     # 本來就是 dry run 的也一律檢查（它不刪檔，要放行時加 `# discard-ok`）
     # A dry run is checked all the same (it removes nothing; `# discard-ok` lets it through)
     (["new.txt"], "git clean -n", "new.txt"),
     (["new.txt"], "git clean --dry-run -fd", "new.txt"),
-    (["new.txt"], "git clean -fd --dry", "new.txt"),
 ])
 def test_git_clean_is_denied_when_its_dry_run_lists_a_file(repo, tmp_path, files, command, named):
     """`git clean` 會刪掉的檔案（由 git 的 dry run 列出）在原因裡被列出，指令被擋下。
@@ -326,9 +317,9 @@ def test_cd_to_home_checks_the_repo_at_home(repo, tmp_path, command):
     assert "would discard uncommitted changes in: scripts/a.py" in reason, reason
 
 
-@pytest.mark.parametrize("command", ['cd "$UNKNOWN" && git checkout -- scripts',
-                                     'cd "$(pwd)/x" && git checkout -- scripts'])
-def test_a_cd_to_an_unknown_directory_still_denies(repo, tmp_path, command):
+@pytest.mark.parametrize(("command", "target"), [('cd "$UNKNOWN" && git checkout -- scripts', "$UNKNOWN"),
+                                                 ('cd "$(pwd)/x" && git checkout -- scripts', "$(pwd)/x")])
+def test_a_cd_to_an_unknown_directory_still_denies(repo, tmp_path, command, target):
     """`cd` 到 hook 不知道的目錄（變數、命令替換）之後，git 答不出來，會丟掉改動的指令照樣被擋下。
     After a `cd` to a directory the hook cannot know (a variable, a command substitution), git cannot answer, and a
     discarding command is denied all the same."""
@@ -338,7 +329,7 @@ def test_a_cd_to_an_unknown_directory_still_denies(repo, tmp_path, command):
     assert "could not check" in reason, reason
     # 原因裡的目錄照原樣寫出，不是 Python 的位元組表示 ／ The reason spells the directory as typed, not as Python bytes
     error = reason.split("git said:", 1)[1].splitlines()[0]
-    assert "x" in error or "UNKNOWN" in error, reason
+    assert os.path.join(str(root), target) in error, reason
     assert "b'" not in error, reason
 
 
@@ -421,3 +412,51 @@ def test_a_non_ascii_command_is_quoted_as_typed_when_python_does_not_default_to_
     reason = _decide(root, command, tmp_path, extra_env=_ASCII_PYTHON)
     assert reason is not None, f"`{command}` was allowed"
     assert f"`{command}` would discard uncommitted changes in: 檔案.txt" in reason, reason
+
+
+@pytest.mark.parametrize("command", [
+    "git clean -f --end-of-options new.txt", "git clean -f --end-of-options",
+    "git clean -fq -e -- .", "git clean -f -q --exclude -- .",
+    # 以 `-` 開頭的 `-e` 值與縮寫的長選項 ／ A `-e` value starting with `-`, and abbreviated long options
+    "git clean -f -e -n", "git clean -f --exclude -n", "git clean -fd -e -q",
+    "git clean -fd --q", "git clean -fd --qui", "git clean -f --exc -n", "git clean -fd --excl -n",
+    "git clean -fd --inter", "git clean -fd --dry",
+])
+def test_git_clean_args_the_hook_cannot_read_are_denied_and_nothing_is_removed(repo, tmp_path, command):
+    """hook 看不懂的 `git clean` 參數（`--end-of-options`、以 `-` 開頭的 `-e` 值、縮寫的長選項）被擋下並說無法檢查，
+    而且 hook 自己的 dry run 沒有刪掉任何檔案。
+    `git clean` args the hook cannot read (`--end-of-options`, a `-e` value starting with `-`, an abbreviated long
+    option) are denied as unchecked, and the hook's own dry run removes nothing."""
+    root, _ = repo
+    _untracked(root, "new.txt")
+    reason = _decide(root, command, tmp_path)
+    assert (root / "new.txt").exists(), f"the hook removed new.txt while checking `{command}`"
+    assert reason is not None, f"`{command}` was allowed"
+    assert "could not check" in reason, reason
+
+
+def test_git_dir_and_work_tree_point_the_check_at_that_repo(repo, tmp_path):
+    """`git --git-dir=… --work-tree=…` 從別的目錄指向 repo 時，hook 檢查的是那個 repo。
+    With `git --git-dir=… --work-tree=…` from another directory, the hook checks that repo."""
+    root, _ = repo
+    _modify(root)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    command = f"git --git-dir={(root / '.git').as_posix()} --work-tree={root.as_posix()} checkout -- scripts"
+    reason = _decide(elsewhere, command, tmp_path)
+    assert reason is not None, f"`{command}` was allowed"
+    assert "would discard uncommitted changes in: scripts/a.py" in reason, reason
+
+
+def test_git_c_options_reach_the_hooks_own_git(repo, tmp_path):
+    """子指令前的 `git -c` 設定也交給 hook 自己跑的 git：讓 `new.txt` 被忽略的 `core.excludesFile` 下，
+    `git clean -fd` 不會刪它，所以放行。
+    `git -c` settings before the subcommand reach the git the hook runs too: with a `core.excludesFile` that ignores
+    `new.txt`, `git clean -fd` would not remove it, so it is allowed."""
+    root, _ = repo
+    _untracked(root, "new.txt")
+    excludes = tmp_path / "excludes"
+    excludes.write_text("new.txt\n", encoding="utf-8")
+    command = f"git -c core.excludesFile={excludes.as_posix()} clean -fd"
+    reason = _decide(root, command, tmp_path)
+    assert reason is None, f"`{command}` was denied although git would keep new.txt: {reason}"
