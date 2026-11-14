@@ -524,3 +524,17 @@ def test_git_config_env_is_denied_as_unchecked(repo, tmp_path):
     reason = _decide(root, command, tmp_path)
     assert reason is not None, f"`{command}` was allowed"
     assert "could not check: it does not pass on `--config-env`" in reason, reason
+
+
+def test_a_skipped_nested_repo_does_not_hide_the_files_git_clean_removes(git_repo, repo, tmp_path):
+    """未追蹤的 `outer/` 裡有巢狀 repo 時，dry run 先印 `Would skip repository outer/nest`：那一行不算意外，
+    hook 照常擋下並列出會刪掉的 `outer/o.txt`。
+    With a nested repo inside the untracked `outer/`, the dry run first prints `Would skip repository outer/nest`:
+    that line is not unexpected, and the hook denies as usual, naming `outer/o.txt`, which would be removed."""
+    root, _ = repo
+    _untracked(root, "outer/o.txt", "outer/nest/x.txt")
+    git_repo(root / "outer" / "nest")
+    command = "git clean -fd"
+    reason = _decide(root, command, tmp_path)
+    assert reason is not None, f"`{command}` was allowed"
+    assert "would remove untracked or ignored files: outer/o.txt" in reason, reason
