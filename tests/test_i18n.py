@@ -264,7 +264,8 @@ def _repo_python_files():
     return files
 
 
-@pytest.mark.skipif(not os.path.isdir(os.path.join(REPO_ROOT, ".claude")), reason=".claude/ is not shipped in the sdist")
+@pytest.mark.skipif(not os.path.isfile(os.path.join(REPO_ROOT, ".claude", "hooks", "guard_discard.py")),
+                    reason=".claude/ is not shipped in the sdist")
 def test_the_bilingual_scan_covers_the_claude_code_hooks():
     """雙語文件字串與註解的檢查也掃描 `.claude/` 底下的 Python（例如 `guard_discard.py` 這個 hook）。
     The bilingual docstring and comment checks also scan the Python under `.claude/` (such as the

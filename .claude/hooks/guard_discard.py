@@ -2,18 +2,22 @@
 """Claude Code 的 PreToolUse hook（Bash）：擋下會清掉還沒 commit 的改動的 git 指令。
 涵蓋 `git checkout ... -- <路徑>`（以及 `git checkout <存在的路徑>`）、`git restore <路徑>`（只有 `--staged` 的除外）、
 `git checkout -f`、`git switch -f`／`--discard-changes`、`git reset --hard` 與 `git reset --merge`。
-它問 git 受影響的已追蹤路徑裡，哪些有還沒 commit 的改動（工作目錄或 index 跟 index 或 HEAD 不同；不管指令要還原成
-哪個來源），有就擋下並列出它們；git 答不出來時也擋下，附上 git 的錯誤。未追蹤的檔案不算，這些指令不會動到它們。
-真的要丟掉時，讓指令裡出現 `# discard-ok`（整行比對字串，不必是真的註解）。
+它問 git 受影響的已追蹤路徑裡，哪些有指令會蓋掉的還沒 commit 的改動，有就擋下並列出它們：沒有來源的 `checkout`
+只看工作目錄跟 index 的差異（暫存的改動留得住）；`restore` 與有來源的 `checkout` 也算暫存的改動；`reset` 與強制切換
+看跟 HEAD 的差異。它不看指令指定的來源是哪個 commit。git 答不出來時也擋下，附上 git 的錯誤。未追蹤的檔案不算，這些
+指令不會動到它們。真的要丟掉時，讓指令裡任何地方出現 `# discard-ok`（對整條指令比對字串，多行指令的任一行都算，
+不必是真的註解）。
 緣由：#158（2026-11-13）的 `git checkout -q -- scripts tests` 清掉了還沒 commit 的修正與測試。
 Claude Code PreToolUse hook (Bash): denies git commands that would discard uncommitted changes.
 Covers `git checkout ... -- <paths>` (and `git checkout <existing path>`), `git restore <paths>` (unless only
 `--staged`), `git checkout -f`, `git switch -f`/`--discard-changes`, `git reset --hard` and `git reset --merge`.
-It asks git which of the affected tracked paths have uncommitted changes (the working tree or the index differs from
-the index or HEAD, whatever source the command restores from), and denies when any do, listing them; it also denies,
-with git's error, when git cannot answer. Untracked files are not counted, as these commands leave them alone.
-A command that really means to discard them contains `# discard-ok` (a match on the whole line, not only a real
-comment).
+It asks git which of the affected tracked paths have uncommitted changes the command would overwrite, and denies
+when any do, listing them: a `checkout` without a source looks only at the working tree against the index (a staged
+change survives it); `restore` and a `checkout` with a source count staged changes too; `reset` and forced switches
+look at the difference from HEAD. Which commit a command restores from is not consulted. It also denies, with git's
+error, when git cannot answer. Untracked files are not counted, as these commands leave them alone. A command that
+really means to discard them contains `# discard-ok` anywhere (a substring match on the whole command, so any line
+of a multi-line command counts, and it need not be a real comment).
 Background: on #158 (2026-11-13) `git checkout -q -- scripts tests` wiped an uncommitted fix and its tests."""
 
 import json
@@ -24,8 +28,9 @@ import subprocess
 import sys
 
 OVERRIDE = "# discard-ok"
-# 只由這些字元組成的 token 會切開指令：; && || | & ( ) () 與換行
-# A token made only of these characters splits commands: ; && || | & ( ) () and newlines
+# 只由這些字元組成的 token 會切開指令：; && || | & ( ) () 與換行（`2>&1` 裡的 `&` 也會，切出的 `1` 不是 git 呼叫）
+# A token made only of these characters splits commands: ; && || | & ( ) () and newlines (so does the `&` in `2>&1`;
+# the `1` it splits off is not a git call)
 PUNCTUATION = ";&|()\n"
 # 出現在 git 前面、要先跳過的 shell 關鍵字與包裝指令
 # Shell keywords and wrapper commands in front of git, skipped first
@@ -37,9 +42,10 @@ WRAPPER_VALUE_OPTS = {"env": {"-u", "--unset"}, "sudo": {"-u", "--user", "-g", "
 # 子指令之前、後面帶一個值的 git 選項
 # git options before the subcommand that take a value
 GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}
-# 重導向：可選的檔案描述元數字加上 < 或 >，目標接在後面或是下一個 token
-# A redirection: an optional file-descriptor number and < or >, with its target attached or in the next token
-REDIRECT = re.compile(r"\d*[<>]+(.*)")
+# 含有重導向的 token：前面可以黏著參數（`x>out`）或檔案描述元數字（`2>`），目標接在後面或是下一個 token
+# A token holding a redirection: an argument (`x>out`) or a file-descriptor number (`2>`) may be attached in front,
+# and the target follows it or is the next token
+REDIRECT = re.compile(r"([^<>]*?)[<>]+(.*)")
 
 
 def segments(command):
@@ -66,8 +72,13 @@ def segments(command):
             elif target_next:
                 target_next = False
             elif redirect := REDIRECT.fullmatch(token):
-                # 重導向和它的目標不是指令的參數 ／ A redirection and its target are not arguments of the command
-                target_next = not redirect.group(1)
+                # 重導向和它的目標不是指令的參數，黏在前面的參數才是（只有數字時是檔案描述元）
+                # A redirection and its target are not arguments of the command; an argument attached in front is
+                # (unless it is only digits, a file descriptor)
+                before, target = redirect.groups()
+                if before and not before.isdigit():
+                    current.append(before)
+                target_next = not target
             else:
                 current.append(token)
     except ValueError:
@@ -110,15 +121,16 @@ class GitFailed(Exception):
 
 
 def run(cwd, *args):
-    """在 cwd 執行 git，回傳 stdout；git 失敗（或 cwd 不存在）時丟出 GitFailed，訊息是 stderr 的第一行。
-    Runs git in cwd and returns its stdout; raises GitFailed, carrying the first line of stderr, when git fails (or
-    cwd does not exist)."""
+    """在 cwd 執行 git，回傳 stdout；git 失敗時丟出 GitFailed，訊息是 stderr 的第一行；git 或 cwd 找不到時，
+    訊息是找不到的那一個。
+    Runs git in cwd and returns its stdout; raises GitFailed carrying the first line of stderr when git fails, or
+    naming whichever of git and cwd cannot be found."""
     try:
         done = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
     except NotADirectoryError as error:
         raise GitFailed(str(error)) from error
     except FileNotFoundError as error:
-        raise GitFailed(f"{cwd}: {error.strerror}") from error
+        raise GitFailed(f"{error.filename or cwd}: {error.strerror}") from error
     if done.returncode != 0:
         first = next((line for line in done.stderr.splitlines() if line.strip()), "")
         raise GitFailed(first.strip() or f"git {' '.join(args)} exited {done.returncode}")
@@ -130,12 +142,17 @@ def dirty(cwd, mode, paths):
     The tracked paths among `paths` (all of them when empty) with uncommitted changes; raises GitFailed when git
     fails."""
     spec = ["--", *paths] if paths else []
-    if mode == "index":
-        # checkout -- 與 restore：工作目錄跟 index 不同、或 index 跟 HEAD 不同的路徑；不看指令指定的來源，
+    if mode == "worktree":
+        # 沒有來源的 checkout：工作目錄跟 index 不同的路徑；只有暫存的改動留得住
+        # A checkout without a source: paths where the working tree differs from the index; a staged-only change
+        # survives it
+        out = run(cwd, "diff", "--name-only", *spec)
+    elif mode == "index":
+        # restore 與有來源的 checkout：工作目錄跟 index 不同、或 index 跟 HEAD 不同的路徑；不看指令指定的來源，
         # 所以只有暫存的改動時 `git restore <路徑>` 也會被擋（它其實不會丟掉那些改動）
-        # checkout -- and restore: paths where the working tree differs from the index or the index from HEAD; the
-        # source the command names is not consulted, so with only staged changes `git restore <path>` is denied too
-        # (it would not actually lose them)
+        # restore and a checkout with a source: paths where the working tree differs from the index or the index
+        # from HEAD; the source the command names is not consulted, so with only staged changes `git restore <path>`
+        # is denied too (it would not actually lose them)
         out = run(cwd, "diff", "--name-only", *spec) + run(cwd, "diff", "--cached", "--name-only", *spec)
     else:
         # reset --hard／--merge 與強制切換：工作目錄或 index 跟 HEAD 不同的路徑
@@ -145,14 +162,22 @@ def dirty(cwd, mode, paths):
 
 
 def forced(args, *longs):
-    """參數裡有 `-f`（含 `-qf` 這種合併的短選項）或 longs 其中一個時為真；`--` 之後的不算。
+    """參數裡有 `-f`（含 `-qf` 這種合併的短選項）或 longs 其中一個時為真；`--` 之後的不算，
+    帶值的短選項（`-b`、`-B`、`-c`、`-C`）後面黏著的是分支名，也不算（`-bfix` 不是 `-f`）。
     True when the args carry `-f` (also inside a short-option cluster such as `-qf`) or one of longs; nothing after
-    `--` counts."""
+    `--` counts, nor does a branch name attached to a short option that takes a value (`-b`, `-B`, `-c`, `-C`), so
+    `-bfix` is not `-f`."""
     for a in args:
         if a == "--":
             return False
-        if a in longs or (a.startswith("-") and not a.startswith("--") and "f" in a[1:]):
+        if a in longs:
             return True
+        if a.startswith("-") and not a.startswith("--"):
+            for ch in a[1:]:
+                if ch == "f":
+                    return True
+                if ch in "bBcC":
+                    break
     return False
 
 
@@ -165,12 +190,17 @@ def affected(cwd, sub, args):
         # is left to the branch below, which looks at those paths only)
         return ("head", [])
     if sub == "checkout":
+        # 指定了來源（例如 `checkout HEAD -- <路徑>`）時 index 也會被蓋掉；沒有時只把 index 複製回工作目錄
+        # With a source (such as `checkout HEAD -- <paths>`) the index is overwritten too; without one only the
+        # index is copied back to the working tree
         if "--" in args:
             paths = args[args.index("--") + 1:]
-            return ("index", paths) if paths else None
-        candidates = [a for a in args if not a.startswith("-")]
-        paths = [a for a in candidates if os.path.exists(os.path.join(cwd, a))]
-        return ("index", paths) if paths else None
+            source = [a for a in args[:args.index("--")] if not a.startswith("-")]
+        else:
+            candidates = [a for a in args if not a.startswith("-")]
+            paths = [a for a in candidates if os.path.exists(os.path.join(cwd, a))]
+            source = [a for a in candidates if a not in paths]
+        return ("index" if source else "worktree", paths) if paths else None
     if sub == "restore":
         staged_only = ("--staged" in args or "-S" in args) and not ("--worktree" in args or "-W" in args)
         if staged_only:
