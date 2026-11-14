@@ -131,6 +131,7 @@ DISCARDING = [
     "builtin cd scripts; git checkout -- a.py",
     "FOO=1 cd scripts; git checkout -- a.py",
     "time -p cd scripts; git checkout -- a.py",
+    "git --attr-source HEAD checkout -- scripts",
     "command -p cd scripts; git checkout -- a.py",
 ]
 
@@ -437,17 +438,22 @@ def test_git_clean_args_the_hook_cannot_read_are_denied_and_nothing_is_removed(r
     assert "could not check: it does not read the `git clean` argument" in reason, reason
 
 
-def test_git_dir_and_work_tree_point_the_check_at_that_repo(repo, tmp_path):
-    """`git --git-dir=… --work-tree=…` 從別的目錄指向 repo 時，hook 檢查的是那個 repo。
-    With `git --git-dir=… --work-tree=…` from another directory, the hook checks that repo."""
+@pytest.mark.parametrize("spelling", ["--git-dir={git} --work-tree={work}", "--git-dir {git} --work-tree {work}",
+                                      "--work-tree={work}"])
+def test_git_dir_and_work_tree_are_denied_as_unchecked(repo, tmp_path, spelling):
+    """`git --git-dir`／`--work-tree` 指向的 repo 可能有自己的設定（例如檢查時就會執行的 filter），hook 不跟著用：
+    以無法檢查擋下並說出那個選項，`=` 與空格兩種寫法都一樣。
+    The repo `git --git-dir`/`--work-tree` points at may carry its own config (such as a filter that would run during
+    the check), so the hook does not follow it: it denies as unchecked, naming the option, in both spellings."""
     root, _ = repo
     _modify(root)
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    command = f"git --git-dir={(root / '.git').as_posix()} --work-tree={root.as_posix()} checkout -- scripts"
+    options = spelling.format(git=(root / ".git").as_posix(), work=root.as_posix())
+    command = f"git {options} checkout -- scripts"
     reason = _decide(elsewhere, command, tmp_path)
     assert reason is not None, f"`{command}` was allowed"
-    assert "would discard uncommitted changes in: scripts/a.py" in reason, reason
+    assert "could not check: it does not follow `--" in reason, reason
 
 
 def test_git_c_options_reach_the_hooks_own_git(repo, tmp_path):
@@ -514,13 +520,14 @@ def test_a_dry_run_printing_an_unexpected_line_is_denied(repo, tmp_path):
     assert "could not check: git's dry run printed an unexpected line: Would refuse to remove" in reason, reason
 
 
-def test_git_config_env_is_denied_as_unchecked(repo, tmp_path):
-    """`git --config-env=…` 的設定從環境變數讀，hook 看不到它的值：指令以無法檢查擋下，不跑 git。
+@pytest.mark.parametrize("command", ["git --config-env=core.excludesFile=EXCLUDES checkout -- scripts",
+                                     "git --config-env core.excludesFile=EXCLUDES checkout -- scripts"])
+def test_git_config_env_is_denied_as_unchecked(repo, tmp_path, command):
+    """`git --config-env=…` 的設定從環境變數讀，hook 看不到它的值：指令以無法檢查擋下，不跑 git。`=` 與空格兩種寫法都一樣。
     `git --config-env=…` reads a setting from an environment variable whose value the hook cannot see: the command is
-    denied as unchecked, and no git is run."""
+    denied as unchecked, and no git is run. Both spellings, with `=` and with a space."""
     root, _ = repo
     _modify(root)
-    command = "git --config-env=core.excludesFile=EXCLUDES checkout -- scripts"
     reason = _decide(root, command, tmp_path)
     assert reason is not None, f"`{command}` was allowed"
     assert "could not check: it does not pass on `--config-env`" in reason, reason
@@ -538,3 +545,18 @@ def test_a_skipped_nested_repo_does_not_hide_the_files_git_clean_removes(git_rep
     reason = _decide(root, command, tmp_path)
     assert reason is not None, f"`{command}` was allowed"
     assert "would remove untracked or ignored files: outer/o.txt" in reason, reason
+
+
+@pytest.mark.parametrize("command", ["GIT_DIR=elsewhere/.git git checkout -- scripts",
+                                     "env GIT_WORK_TREE=elsewhere git reset --hard",
+                                     "GIT_INDEX_FILE=x FOO=1 git checkout -- scripts"])
+def test_a_git_variable_set_before_git_is_denied_as_unchecked(repo, tmp_path, command):
+    """指令在 git 前面設了 `GIT_*` 環境變數時（它可能讓 git 用別的 repo、工作目錄或 index），hook 不照它跑 git，
+    就算 cwd 的 repo 是乾淨的，也以無法檢查擋下並說出那個變數。
+    When the command sets a `GIT_*` variable in front of git (which may point git at another repo, work tree or
+    index), the hook does not run git with it, and denies as unchecked, naming the variable, even though the repo at
+    cwd is clean."""
+    root, _ = repo
+    reason = _decide(root, command, tmp_path)
+    assert reason is not None, f"`{command}` was allowed"
+    assert "could not check: it does not follow the git environment variable `GIT_" in reason, reason

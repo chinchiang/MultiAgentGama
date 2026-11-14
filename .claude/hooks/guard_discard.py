@@ -9,9 +9,10 @@
 `--no-quiet --no-interactive -n` 交給 git 自己的 dry run，列出會刪掉的未追蹤或被忽略的檔案；dry run 印出空行、
 `Would remove`、`Would skip repository` 以外的行時也擋下。本來就是 dry run 的 `git clean -n` 也一樣檢查。
 git 答不出來時也擋下，附上 git 的錯誤；hook 自己出錯時（含讀不懂的輸入）也擋下。
-子指令前的 `--git-dir`、`--work-tree` 與白名單內的 `-c` 設定（`core.excludesFile`、`core.worktree`）會轉給 hook
-自己跑的 git；其他 `-c` 設定與 `--config-env` 不轉，hook 不跑 git，直接以「無法檢查」擋下（例如 `core.fsmonitor`
-會執行指令，而 hook 在使用者同意之前就跑）。hook 跑的 git 一律加上 `-c core.fsmonitor=false`。
+子指令前只有白名單內的 `-c` 設定（`core.excludesFile`、`core.worktree`）會轉給 hook 自己跑的 git；其他 `-c` 設定、
+`--config-env`（`=` 或空格寫法）、`--git-dir`、`--work-tree`，以及 git 前面的 `GIT_*=…` 指派，hook 都不跟著用，
+也不跑 git，直接以「無法檢查」擋下（例如 `core.fsmonitor` 會執行指令，`--git-dir` 指向的 repo 可能有自己的
+filter，而 hook 在使用者同意之前就跑）。hook 跑的 git 一律加上 `-c core.fsmonitor=false`。
 真的要丟掉時，讓指令裡任何地方出現 `# discard-ok`（對整條指令比對字串，多行指令的任一行都算，不必是真的註解）。
 它跟著 `cd`（含 `{`、`then`、`time [-p]`、`command [-p]`、`builtin`、`VAR=value` 之後的，以及 `cd ~`、`cd`、`cd -`）、
 `git -C`、`env -C`／`sudo -D`（也在一組短選項裡，例如 `env -iC`）換目錄，`env -S` 的字串拆成指令再看。
@@ -21,6 +22,9 @@ hook 跑的每個 git 都用 C 語系（輸出是英文）、不加引號的檔�
 - `cd` 到它不知道的目錄（`cd $VAR`、`cd "$(…)"`）之後，git 答不出來，後面會丟掉改動的指令被擋下而不是被檢查；
   除非之後的 `cd`、`git -C`、`env -C` 或 `sudo -D` 指向絕對路徑。
 - 指令裡第一個 `cd -` 回到 hook 收到的 cwd，不一定是 shell 真正的 `OLDPWD`。
+- hook 跑的 git 照 repo 自己的設定執行：repo 的 `.git/config` 設了 `filter.<driver>.clean`／`process`（例如
+  git-lfs）時，檢查時就會執行那個 filter；`git diff` 也可能刷新 `.git/index` 的 stat 資訊。這些是開發者自己的設定，
+  指令真的執行時一樣會跑；關掉它們反而會把 LFS 這類檔案誤判成有改動。
 - `~` 一律展開，包括 bash 不展開的 `--chdir=~/x`、`-C~` 與引號裡的 `"~"`；展開用的是 Python 的家目錄，
   在 Windows 上是 `USERPROFILE`，Git Bash 的 `cd` 用的卻是 `HOME`。
 緣由：#158（2026-11-13）的 `git checkout -q -- scripts tests` 清掉了還沒 commit 的修正與測試。
@@ -37,11 +41,13 @@ list are read (anything else is denied as unchecked); those args, kept as they a
 `--no-quiet --no-interactive -n`, go to git's own dry run, which lists the untracked or ignored files it would
 remove, and a dry run that prints a line other than a blank one, `Would remove` or `Would skip repository` is
 denied too. A `git clean -n` that already is a dry run is checked all the same. It also denies, with git's error,
-when git cannot answer, and denies when the hook itself fails (unreadable input included). `--git-dir`,
-`--work-tree` and the allowed `-c` settings (`core.excludesFile`, `core.worktree`) before the subcommand are passed
-on to the git the hook runs; any other `-c` setting, and `--config-env`, is not, no git is run, and the command is
-denied as unchecked (`core.fsmonitor`, for one, runs a command, and the hook runs before the user has agreed to
-anything). Every git the hook runs carries `-c core.fsmonitor=false`. A command that
+when git cannot answer, and denies when the hook itself fails (unreadable input included). Only the allowed `-c`
+settings before the subcommand (`core.excludesFile`, `core.worktree`) are passed on to the git the hook runs; any
+other `-c` setting, `--config-env` (spelt with `=` or a space), `--git-dir`, `--work-tree` and `GIT_*=…`
+assignments in front of git are not followed, no git is run, and the command is denied as unchecked
+(`core.fsmonitor`, for one, runs a command, the repo `--git-dir` points at may carry its own filters, and the hook
+runs before the user has agreed to anything). Every git the hook runs carries `-c core.fsmonitor=false`. A command
+that
 really means to discard them contains `# discard-ok` anywhere (a substring match on the whole command, so any line
 of a multi-line command counts, and it need not be a real comment).
 It follows `cd` (also after `{`, `then`, `time [-p]`, `command [-p]`, `builtin` or a `VAR=value`, and `cd ~`, a bare
@@ -55,6 +61,9 @@ Known limits:
   command is denied rather than checked, unless a later `cd`, `git -C`, `env -C` or `sudo -D` names an absolute
   directory.
 - The first `cd -` in a command goes back to the cwd the hook received, which need not be the shell's `OLDPWD`.
+- The hook's git runs with the repo's own config: a `filter.<driver>.clean`/`process` in its `.git/config` (git-lfs,
+  for one) runs during the check, and `git diff` may refresh the stat data in `.git/index`. That config is the
+  developer's own and runs when the command itself does; turning it off would make LFS-style files look changed.
 - `~` is always expanded, also where bash would not (`--chdir=~/x`, `-C~`, a quoted `"~"`), and with Python's home
   directory: on Windows that is `USERPROFILE`, while Git Bash's `cd` uses `HOME`.
 Background: on #158 (2026-11-13) `git checkout -q -- scripts tests` wiped an uncommitted fix and its tests."""
@@ -86,10 +95,13 @@ WRAPPER_VALUE_OPTS = {
 }
 # 子指令之前、後面帶一個值的 git 選項
 # git options before the subcommand that take a value
-GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}
-# 子指令前、要原樣轉給 hook 自己的 git 的選項 ／ git options before the subcommand passed on, as they are, to the
-# hook's own git
-PASSED_GIT_OPTS = {"-c", "--git-dir", "--work-tree", "--config-env"}
+GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--attr-source"}
+# 子指令前、hook 會收集起來的選項：`refuse_unsafe_settings` 由它們決定擋不擋，真的轉給 hook 的 git 的只有白名單內的
+# `-c` 設定（其他的都在跑 git 之前以無法檢查擋下）
+# git options before the subcommand that the hook collects: `refuse_unsafe_settings` decides from them whether to
+# deny, and only the allowed `-c` settings ever reach the hook's git (anything else is denied as unchecked before any
+# git runs)
+COLLECTED_GIT_OPTS = {"-c", "--git-dir", "--work-tree", "--config-env"}
 # `-c` 裡 hook 會轉給自己的 git 的設定（小寫比對）：會改變結果、又不會執行任何東西的。其他設定（例如會執行指令的
 # `core.fsmonitor`）hook 不轉，也不跑 git，直接以無法檢查擋下：hook 在使用者同意之前就執行
 # The `-c` settings the hook passes on to its own git (compared lower-case): ones that change the result and run
@@ -207,16 +219,19 @@ def wrapper_option(tokens, value_opts):
 
 
 def git_call(tokens, cwd):
-    """一個 git 呼叫的 (執行目錄, 子指令, 參數, 要轉給 hook 的 git 的選項)；不是 git 呼叫時回傳 None。
-    收集的是子指令前的 `-c`、`--git-dir`、`--work-tree`、`--config-env`，hook 才會照同樣的設定檢查同一個 repo；
-    其中白名單外的 `-c` 設定與 `--config-env` 在跑 git 之前由 `refuse_unsafe_settings` 擋下，不會真的轉過去。
-    The (directory, subcommand, args, options to pass on to the hook's git) of a git invocation, else None. The
-    options collected are `-c`, `--git-dir`, `--work-tree` and `--config-env` before the subcommand, so that the hook
-    checks the same repo with the same settings; a `-c` setting off the allow list, and `--config-env`, are refused by
-    `refuse_unsafe_settings` before any git runs, so they never actually reach it."""
+    """一個 git 呼叫的 (執行目錄, 子指令, 參數, 收集到的 git 選項)；不是 git 呼叫時回傳 None。
+    收集的是子指令前的 `-c`、`--git-dir`、`--work-tree`、`--config-env`，以及 git 前面的 `GIT_*=…` 指派；
+    `run` 先把它們交給 `refuse_unsafe_settings`，只有白名單內的 `-c` 設定會真的轉給 hook 的 git。
+    The (directory, subcommand, args, collected git options) of a git invocation, else None. What is collected is
+    `-c`, `--git-dir`, `--work-tree` and `--config-env` before the subcommand, and any `GIT_*=…` assignment in front
+    of git; `run` hands them to `refuse_unsafe_settings` first, and only the allowed `-c` settings ever reach the
+    hook's git."""
     # 先跳過 shell 關鍵字、VAR=value 指派與包裝指令
     # Skip shell keywords, VAR=value assignments and wrapper commands first
+    git_vars = []
     while tokens and (tokens[0] in SHELL_PREFIXES or assignment(tokens[0])):
+        if assignment(tokens[0]) and tokens[0].upper().startswith("GIT_"):
+            git_vars.append(tokens[0])
         value_opts = WRAPPER_VALUE_OPTS.get(tokens[0], {})
         tokens = tokens[1:]
         # env、sudo 這類包裝指令的選項（例如 `env -i`、`sudo -u 某人`）也跳過；換目錄的跟著換，`env -S` 的值拆成指令
@@ -240,17 +255,17 @@ def git_call(tokens, cwd):
                     return None
     if not tokens or os.path.basename(tokens[0]) != "git":
         return None
-    i, passed = 1, []
+    i, passed = 1, list(git_vars)
     while i < len(tokens) and tokens[i].startswith("-"):
         opt = tokens[i]
         if opt in GIT_VALUE_OPTS and i + 1 < len(tokens):
             if opt == "-C":
                 cwd = os.path.join(cwd, os.path.expanduser(tokens[i + 1]))
-            elif opt in PASSED_GIT_OPTS:
+            elif opt in COLLECTED_GIT_OPTS:
                 passed += [opt, tokens[i + 1]]
             i += 2
         else:
-            if opt.split("=", 1)[0] in PASSED_GIT_OPTS:
+            if opt.split("=", 1)[0] in COLLECTED_GIT_OPTS:
                 passed.append(opt)
             i += 1
     if i >= len(tokens):
@@ -281,12 +296,23 @@ def os_arg(text):
 
 
 def refuse_unsafe_settings(git_opts):
-    """git_opts 裡有白名單外的 `-c` 設定（或任何 `--config-env`）時丟出 Unchecked，hook 就不會帶著它跑 git。
-    Raises Unchecked when git_opts carry a `-c` setting off the allow list (or any `--config-env`), so the hook never
-    runs git with it."""
+    """git_opts 裡有 hook 不跟著用的東西時丟出 Unchecked，hook 就不會帶著它跑 git：白名單外的 `-c` 設定、
+    `--config-env`、`--git-dir`、`--work-tree`（它們指向的 repo 可能有自己的設定，例如會在檢查時執行的 filter），
+    以及 `GIT_*=…` 指派。
+    Raises Unchecked when git_opts carry something the hook does not follow, so it never runs git with it: a `-c`
+    setting off the allow list, `--config-env`, `--git-dir`, `--work-tree` (the repo they point at may carry its own
+    config, such as a filter that would run during the check) and `GIT_*=…` assignments."""
+    values = {at + 1 for at, opt in enumerate(git_opts) if opt in GIT_VALUE_OPTS}
     for at, opt in enumerate(git_opts):
-        if opt == "--config-env" or opt.startswith("--config-env="):
+        if at in values:
+            continue
+        name = opt.split("=", 1)[0]
+        if not opt.startswith("-"):
+            raise Unchecked(f"it does not follow the git environment variable `{name}`")
+        if name == "--config-env":
             raise Unchecked("it does not pass on `--config-env`")
+        if name in ("--git-dir", "--work-tree"):
+            raise Unchecked(f"it does not follow `{name}`")
         if opt == "-c" and at + 1 < len(git_opts):
             key = git_opts[at + 1].split("=", 1)[0]
             if key.lower() not in PASSED_GIT_SETTINGS:
@@ -295,11 +321,16 @@ def refuse_unsafe_settings(git_opts):
 
 def run(cwd, *args, git_opts=()):
     """在 cwd 執行 git，回傳 stdout；git 失敗時丟出 GitFailed，訊息是 stderr 的第一行；git 或 cwd 找不到時，
-    訊息是找不到的那一個。git_opts（指令自己的 `-c`、`--git-dir`、`--work-tree`）放在 hook 的
-    `-c core.quotePath=false -c core.fsmonitor=false` 之前，hook 的設定蓋過它們。
+    訊息是找不到的那一個。git_opts 先交給 `refuse_unsafe_settings`（hook 不跟著用的就丟出 Unchecked），所以只剩
+    白名單內的 `-c` 設定；它們放在 hook 的 `-c core.quotePath=false -c core.fsmonitor=false` 之前，hook 的設定蓋過
+    它們。
     Runs git in cwd and returns its stdout; raises GitFailed carrying the first line of stderr when git fails, or
-    naming whichever of git and cwd cannot be found. git_opts (the command's own `-c`, `--git-dir`, `--work-tree`)
-    come before the hook's `-c core.quotePath=false -c core.fsmonitor=false`, so the hook's settings win."""
+    naming whichever of git and cwd cannot be found. git_opts are first checked by `refuse_unsafe_settings` (which
+    raises Unchecked for anything the hook does not follow), so only allowed `-c` settings remain; they come before
+    the hook's `-c core.quotePath=false -c core.fsmonitor=false`, so the hook's settings win."""
+    # 每次跑 git 之前都先擋下 hook 不跟著用的選項，不靠呼叫端記得
+    # Refuse the options the hook does not follow before every git it runs, rather than relying on callers to remember
+    refuse_unsafe_settings(git_opts)
     try:
         # 固定 C 語系：hook 解析 git 的英文輸出（`Would remove`），開發者的語系會讓 git 改說別的語言
         # Pin the C locale: the hook parses git's English output (`Would remove`), and the developer's locale would
@@ -345,7 +376,7 @@ def dirty(cwd, mode, paths, git_opts=()):
         for line in out.splitlines():
             if line.startswith(WOULD_REMOVE):
                 removed.append(line[len(WOULD_REMOVE):])
-            elif line and not line.startswith("Would skip repository "):
+            elif line and not line.startswith(WOULD_SKIP):
                 # dry run 不該印出別的東西（例如 `Removing`）；印了就表示 hook 讀錯了參數
                 # A dry run prints nothing else (such as `Removing`); if it does, the hook misread the args
                 raise Unchecked(f"git's dry run printed an unexpected line: {line}")
@@ -393,6 +424,8 @@ def forced(args, *longs):
 # dry run 列出會刪掉的檔案時，每行的開頭（hook 的 git 固定用 C 語系） ／ How each line of the dry run naming a file
 # it would remove starts (the hook's git always runs in the C locale)
 WOULD_REMOVE = "Would remove "
+# dry run 略過巢狀 repo 時的那一行，不算意外 ／ The dry-run line for a nested repo it skips, which is not unexpected
+WOULD_SKIP = "Would skip repository "
 # git clean 的短選項裡 hook 看得懂的字母（`e` 另外處理，它帶值） ／ The git clean short-option letters the hook reads
 # (`e` is handled apart, as it takes a value)
 CLEAN_LETTERS = set("fdxXnqi")
@@ -533,7 +566,6 @@ def main():
         hit = affected(where, sub, args)
         if hit:
             try:
-                refuse_unsafe_settings(git_opts)
                 files = dirty(where, *hit, git_opts=git_opts)
             except Unchecked as error:
                 unknown.append((" ".join(tokens), str(error)))
