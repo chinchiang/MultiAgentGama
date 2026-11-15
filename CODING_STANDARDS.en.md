@@ -50,6 +50,12 @@ Apply every rule below to a diff under review. Only rules that need judgement li
 - Every claim in docs, CHANGELOGs, docstrings and comments about which code reads, writes or produces what is checked against the diff, and is no broader than the code ("all" when it is some, "always" when it is only under a flag).
 - A violation looks like: a new config key or CLI flag the docs do not mention; only one CHANGELOG updated, or the two in different sections; zh and en documents that disagree; "the gate, the console and the summary all read one tally" when the console reads per-phase partial tallies.
 
+## 8. A guard reads its input from an allow list and denies what it cannot read
+
+- A check that decides from another program's input (a Claude Code hook, a pre-run check) accepts only the forms it fully reads and denies the rest with a reason ("could not check"), so a misread can only deny; an error inside the check denies too.
+- It runs nothing the checked input controls before the user agrees: the command's own options, settings and environment stay out of what the guard runs, and the guard pins what it runs itself (locale, settings).
+- A violation looks like: matching known-bad spellings of another tool's syntax, so each new spelling slips through; an error or an unknown form that allows; passing the command's own options or settings on to the guard's own probe.
+
 ## Checked by tests and CI (no re-check in review)
 
 | Rule | Checked by |
