@@ -260,9 +260,10 @@ MultiAgentGama/
 │       └── triage-labels.md     # Label names for the triage roles
 ├── scripts/
 │   ├── check_bi_english.py      # bi-english's logic: compare every bi() English half with the base commit; changed or removed ones must be in both CHANGELOGs
-│   ├── check_new_tests_red_on_base.py # For fix branches: run the new and changed tests on the merge-base's code and list the green or skipped ones
+│   ├── check_new_tests_red_on_base.py # For branches that add regression tests: run the new and changed tests on the merge-base's code and list the green or skipped ones
 │   ├── check_pr_issue_link.py   # pr-issue-link's logic: which PRs need an issue, whether the description and commits link an existing one
 │   ├── check_required_checks.py # Three-way comparison of the required checks: workflow jobs and matrices, CONTRIBUTING, the ruleset
+│   ├── check_reversions.py      # Sensitivity check: revert a fix one item at a time, run the tests, list what each turns red, write the file back from memory (needs a clean tree)
 │   ├── golden/                  # Golden diff (development only, not in the sdist): run.py --against <rev> compares a revision's output with the working tree's
 │   ├── recite_design_refs.py    # Checks the design documents' path:line references and remaps them to the current code via git diff
 │   └── test_sdist.py            # Reproduces CI's package job locally: build the sdist, extract it, run the suite inside
@@ -276,6 +277,7 @@ MultiAgentGama/
 │   ├── test_call_kinds.py              # Every call record, request sent and report carries its call's kind (heals and crashed calls included)
 │   ├── test_call_plans.py              # Each agent's call plan (plan) equals the calls it actually makes
 │   ├── test_check_new_tests_red_on_base.py # New tests red on the base: which tests (classes, subdirectories), red / green / skipped (whole files too) / xfail, parametrized, uncollected tests, syntax and encoding errors, rootdir and -x, exit codes, cleanup
+│   ├── test_check_reversions.py        # A reversion lists the tests it turns red, exit 1 when none, collection errors count, a dirty tree or a non-unique old text is refused, written back when pytest cannot run
 │   ├── test_cross_verification.py      # Cross-verification: models never judge their own findings, vote tallies
 │   ├── test_dedup_and_budget.py        # Duplicate-finding merge and prompt context within the token budget
 │   ├── test_design_refs.py             # The design documents' path:line references land on the names they point at, match zh/en line for line; the remapping logic

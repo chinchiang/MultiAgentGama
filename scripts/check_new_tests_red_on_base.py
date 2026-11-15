@@ -5,7 +5,8 @@
 worktree、換上工作目錄的 `tests/`，跑這些測試所在的檔案，只讀它們的結果，逐一列出它們在基準上是紅、綠還是
 skipped。紅的附上失敗原因，看得出是不是因為錯的理由紅（例如 `ImportError`）；參數化的測試算一筆，有任何 case
 通過就是綠的，並列出那些 case；在基準上被 skip 的（包括整個檔案被 skip）列成 skipped（它沒在基準上失敗）；
-標了 xfail 而在基準上失敗的是紅的。只用在 `fix:` 的分支：`refactor:` 的測試本來就該兩邊都綠。
+標了 xfail 而在基準上失敗的是紅的。用在新增回歸測試的分支（`fix:`，或關掉繞過漏洞的 `chore:`、`test:`）：
+`refactor:` 的測試本來就該兩邊都綠。
 
 挑選的範圍：只看 `tests/` 底下的 `test_*.py`，其中最上層的 `test*` 函式，以及最上層 `Test*` 類別裡的 `test*`
 方法；「改了」是指函式本身的 AST 不同。只改 fixture、helper 或 `conftest.py` 時，用到它們的測試不會被選到。
@@ -26,7 +27,8 @@ own, runs the files those tests are in, reads only their results, and lists each
 base. A red one shows its failure reason, so a test that is red for the wrong reason (an `ImportError`, say) is
 visible; a parametrized test is one entry, green when any case passes, naming those cases; one skipped on the base
 (the whole file included) is listed as skipped (it did not fail there), and one marked xfail that fails on the base is
-red. For `fix:` branches only: a `refactor:` keeps its tests green on both sides on purpose.
+red. For branches that add regression tests (a `fix:`, or a `chore:` or `test:` closing a bypass): a `refactor:`
+keeps its tests green on both sides on purpose.
 
 What it selects: only `test_*.py` under `tests/`, and in them the top-level `test*` functions and the `test*` methods
 of top-level `Test*` classes; "changed" means the function's own AST differs. A change only to a fixture, a helper or
