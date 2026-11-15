@@ -71,6 +71,10 @@ def _modify(root):
         f.write("b = 2\n")
 
 
+# POSIX 上 git 只讀大寫的 `GIT_*`；Windows 的環境變數不分大小寫 ／ On POSIX git reads only upper-case `GIT_*`;
+# Windows environment variables ignore case
+POSIX_ONLY = pytest.mark.skipif(os.name == "nt", reason="Windows environment variables ignore case")
+
 # 這些指令在 `scripts/a.py` 有改動時會丟掉它 ／ These commands discard the change in `scripts/a.py`
 DISCARDING = [
     "git checkout -q -- scripts tests",
@@ -132,6 +136,16 @@ DISCARDING = [
     "FOO=1 cd scripts; git checkout -- a.py",
     "time -p cd scripts; git checkout -- a.py",
     "git --attr-source HEAD checkout -- scripts",
+    # 匯出非 git 的變數，或是 POSIX 上小寫的 `git_*`，都不影響檢查 ／ Exporting a non-git variable, or a lower-case
+    # `git_*` on POSIX, does not stop the check
+    "export FOO=1; git checkout -- scripts",
+    pytest.param("git_dir=x git checkout -- scripts", marks=POSIX_ONLY),
+    pytest.param("Git_Dir=x git checkout -- scripts", marks=POSIX_ONLY),
+    pytest.param("git_dir_backup=x; git checkout -- scripts", marks=POSIX_ONLY),
+    # `--icase-pathspecs` 轉給 hook 的 git，它才看到同一批路徑 ／ `--icase-pathspecs` reaches the hook's git, so it
+    # sees the same paths
+    "git --icase-pathspecs checkout -- SCRIPTS/A.PY",
+    "git --icase-pathspecs restore Scripts/A.py",
     "command -p cd scripts; git checkout -- a.py",
 ]
 
@@ -176,6 +190,12 @@ HARMLESS = [
     'echo "git checkout -- scripts"',
     "ls",
     "git checkout -q -- scripts tests # discard-ok",
+    # 這些 pathspec 選項讓路徑的意思變窄，git 碰不到 `scripts/a.py`；hook 把它們轉給自己的 git，所以也放行
+    # These pathspec options narrow what a path means, so git cannot reach `scripts/a.py`; the hook passes them on to
+    # its own git, so it allows too
+    "git --literal-pathspecs checkout -- 'scripts/*'",
+    "git --noglob-pathspecs checkout -- 'scripts/*'",
+    "git --glob-pathspecs checkout -- '*.py'",
     "env -S 'git reset --hard \"'",
 ]
 
@@ -442,10 +462,10 @@ def test_git_clean_args_the_hook_cannot_read_are_denied_and_nothing_is_removed(r
                                                 ("--git-dir {git} --work-tree {work}", "--git-dir"),
                                                 ("--work-tree={work}", "--work-tree")])
 def test_git_dir_and_work_tree_are_denied_as_unchecked(repo, tmp_path, spelling, option):
-    """`git --git-dir`／`--work-tree` 指向的 repo 可能有自己的設定（例如檢查時就會執行的 filter），hook 不跟著用：
+    """`git --git-dir`／`--work-tree` 讓 git 用的 repo 跟 hook 檢查的目錄分開，hook 不模擬這種情況：
     以無法檢查擋下並說出那個選項，`=` 與空格兩種寫法都一樣。
-    The repo `git --git-dir`/`--work-tree` points at may carry its own config (such as a filter that would run during
-    the check), so the hook does not follow it: it denies as unchecked, naming the option, in both spellings."""
+    `git --git-dir`/`--work-tree` split the repo git uses from the directory the hook checks, which the hook does not
+    model: it denies as unchecked, naming the option, in both spellings."""
     root, _ = repo
     _modify(root)
     elsewhere = tmp_path / "elsewhere"
@@ -568,6 +588,13 @@ def test_a_git_variable_set_before_git_is_denied_as_unchecked(repo, tmp_path, co
     ("export GIT_DIR GIT_WORK_TREE && git reset --hard", "GIT_DIR"),
     ("declare -x GIT_INDEX_FILE=x; git checkout -- scripts", "GIT_INDEX_FILE"),
     ("typeset -x GIT_WORK_TREE=x; git reset --hard", "GIT_WORK_TREE"),
+    ("set -a; GIT_DIR=elsewhere/.git; git reset --hard", "GIT_DIR"),
+    ("f(){ local -x GIT_DIR=elsewhere/.git; git reset --hard; }; f", "GIT_DIR"),
+    ("X=1 export GIT_DIR=elsewhere/.git; git reset --hard", "GIT_DIR"),
+    # 沒有匯出的指派也算：粗規則，不分析 shell 怎麼匯出 ／ An unexported assignment counts too: the rule is coarse
+    # and does not model how the shell exports
+    ("GIT_DIR=elsewhere/.git; git checkout -- scripts", "GIT_DIR"),
+    ("GIT_DIR=x git status; git checkout -- scripts", "GIT_DIR"),
 ])
 def test_a_git_variable_exported_earlier_in_the_command_is_denied_as_unchecked(repo, tmp_path, command, variable):
     """同一條指令前面匯出了 `GIT_*` 變數（`export`、`declare -x`、`typeset -x`，帶不帶 `=` 都算）時，後面的 git
@@ -581,45 +608,6 @@ def test_a_git_variable_exported_earlier_in_the_command_is_denied_as_unchecked(r
     assert f"could not check: it does not follow the git environment variable `{variable}`" in reason, reason
 
 
-@pytest.mark.parametrize("command", ["GIT_DIR=elsewhere/.git; git checkout -- scripts",
-                                     "export FOO=1; git checkout -- scripts"])
-def test_an_unexported_or_non_git_variable_does_not_stop_the_check(repo, tmp_path, command):
-    """沒有匯出的 `GIT_DIR=…;`（git 看不到它）與匯出的非 git 變數不影響檢查：照常擋下並列出檔案。
-    An unexported `GIT_DIR=…;` (git does not see it) and an exported non-git variable do not stop the check: the
-    command is denied as usual, naming the file."""
-    root, _ = repo
-    _modify(root)
-    reason = _decide(root, command, tmp_path)
-    assert reason is not None, f"`{command}` was allowed"
-    assert "would discard uncommitted changes in: scripts/a.py" in reason, reason
-
-
-@pytest.mark.parametrize("command", ["git --icase-pathspecs checkout -- SCRIPTS/A.PY",
-                                     "git --icase-pathspecs restore Scripts/A.py"])
-def test_pathspec_options_reach_the_hooks_own_git(repo, tmp_path, command):
-    """`--icase-pathspecs` 讓 git 不分大小寫比對路徑：hook 把它轉給自己的 git，所以看到同一批路徑，擋下並列出檔案。
-    `--icase-pathspecs` makes git match paths ignoring case: the hook passes it on to its own git, so it sees the same
-    paths, and denies naming the file."""
-    root, _ = repo
-    _modify(root)
-    reason = _decide(root, command, tmp_path)
-    assert reason is not None, f"`{command}` was allowed"
-    assert "would discard uncommitted changes in: scripts/a.py" in reason, reason
-
-
-@pytest.mark.skipif(os.name == "nt", reason="Windows environment variables ignore case, so git_dir is GIT_DIR there")
-@pytest.mark.parametrize("command", ["git_dir=x git checkout -- scripts", "Git_Dir=x git checkout -- scripts"])
-def test_a_lower_case_variable_is_not_taken_for_a_git_one(repo, tmp_path, command):
-    """POSIX 上 git 只讀大寫的 `GIT_*`：小寫或混合大小寫的指派不是 git 的變數，hook 照常檢查並列出檔案。
-    On POSIX git reads only upper-case `GIT_*`: a lower- or mixed-case assignment is not a git variable, so the hook
-    checks as usual and names the file."""
-    root, _ = repo
-    _modify(root)
-    reason = _decide(root, command, tmp_path)
-    assert reason is not None, f"`{command}` was allowed"
-    assert "would discard uncommitted changes in: scripts/a.py" in reason, reason
-
-
 def test_core_worktree_is_denied_like_work_tree(repo, tmp_path):
     """`git -c core.worktree=…` 和 `--work-tree` 一樣把 git 的工作目錄和 hook 檢查的目錄分開，hook 不跟著用：
     以無法檢查擋下並說出那個設定。
@@ -631,3 +619,15 @@ def test_core_worktree_is_denied_like_work_tree(repo, tmp_path):
     reason = _decide(root, command, tmp_path)
     assert reason is not None, f"`{command}` was allowed"
     assert "could not check: it does not follow the git setting `core.worktree`" in reason, reason
+
+
+@pytest.mark.skipif(os.name != "nt", reason="only Windows environment variables ignore case")
+@pytest.mark.parametrize("command", ["git_dir=x git checkout -- scripts", "git_dir=x; git checkout -- scripts"])
+def test_on_windows_a_lower_case_git_variable_is_denied(repo, tmp_path, command):
+    """Windows 的環境變數不分大小寫，git 會把 `git_dir` 當成 `GIT_DIR`：hook 以無法檢查擋下並說出那個變數。
+    Windows environment variables ignore case, so git takes `git_dir` for `GIT_DIR`: the hook denies as unchecked,
+    naming the variable."""
+    root, _ = repo
+    reason = _decide(root, command, tmp_path)
+    assert reason is not None, f"`{command}` was allowed"
+    assert "could not check: it does not follow the git environment variable `git_dir`" in reason, reason

@@ -11,11 +11,12 @@
 git 答不出來時也擋下，附上 git 的錯誤；hook 自己出錯時（含讀不懂的輸入）也擋下。
 子指令前的 `-c` 設定只有白名單內的（`core.excludesFile`）會轉給 hook 自己跑的 git，改變 pathspec 意思的
 `--icase-`、`--literal-`、`--glob-`、`--noglob-pathspecs` 也原樣轉過去；其他 `-c` 設定、`--config-env`（`=` 或空格
-寫法）、`--git-dir`、`--work-tree`、git 前面的 `GIT_*=…` 指派，以及同一條指令前面以 `export`、`declare -x`、
-`typeset -x` 匯出的 `GIT_*` 變數，hook 都不跟著用，也不跑 git，直接以「無法檢查」擋下：`core.fsmonitor` 這類設定
-會執行指令，`--git-dir`、`--work-tree`、`core.worktree` 與 `GIT_*` 變數會讓 git 用的 repo 跟 hook 檢查的目錄分開，
-hook 不模擬這種情況，而 hook 在使用者同意之前就跑。`GIT_` 在 POSIX 上只比對大寫（git 只讀大寫），在 Windows 上
-不分大小寫。hook 跑的 git 一律加上 `-c core.fsmonitor=false`。
+寫法）、`--git-dir`、`--work-tree`、git 前面的 `GIT_*=…` 指派，以及同一條指令前面任何地方出現的 `GIT_*` 變數名稱
+（`export`、`local -x`、`set -a` 之後的指派等，hook 不分析它有沒有被匯出，只要出現就算），hook 都不跟著用，也不跑
+git，直接以「無法檢查」擋下：`core.fsmonitor` 這類設定會執行指令；`--git-dir`、`--work-tree`、`core.worktree`
+會讓 git 用的 repo 跟 hook 檢查的目錄分開，hook 不模擬這種情況；`GIT_*` 變數會改變 git 的行為（換 repo、換
+index、執行外部程式等），hook 看不到它們的值；而 hook 在使用者同意之前就跑。`GIT_` 在 POSIX 上只比對大寫（git
+只讀大寫），在 Windows 上不分大小寫。hook 跑的 git 一律加上 `-c core.fsmonitor=false`。
 真的要丟掉時，讓指令裡任何地方出現 `# discard-ok`（對整條指令比對字串，多行指令的任一行都算，不必是真的註解）。
 它跟著 `cd`（含 `{`、`then`、`time [-p]`、`command [-p]`、`builtin`、`VAR=value` 之後的，以及 `cd ~`、`cd`、`cd -`）、
 `git -C`、`env -C`／`sudo -D`（也在一組短選項裡，例如 `env -iC`）換目錄，`env -S` 的字串拆成指令再看。
@@ -30,6 +31,8 @@ hook 跑的每個 git 都用 C 語系（輸出是英文）、不加引號的檔�
   指令真的執行時一樣會跑；關掉它們反而會把 LFS 這類檔案誤判成有改動。`-C`、`cd` 指向的 repo 也一樣，它自己的
   filter 在檢查時就會執行。
 - `--attr-source` 的值不會帶進檢查：hook 用工作目錄的 attributes。
+- 透過 `source`、`.`、`eval` 或其他檔案設定的 `GIT_*` 變數，hook 看不到，不會擋下。
+- 指令前面任何地方出現 `GIT_*` 名稱（例如 `echo GIT_DIR`）都會讓後面會丟改動的 git 呼叫被擋下，即使它沒有被匯出。
 - `~` 一律展開，包括 bash 不展開的 `--chdir=~/x`、`-C~` 與引號裡的 `"~"`；展開用的是 Python 的家目錄，
   在 Windows 上是 `USERPROFILE`，Git Bash 的 `cd` 用的卻是 `HOME`。
 緣由：#158（2026-11-13）的 `git checkout -q -- scripts tests` 清掉了還沒 commit 的修正與測試。
@@ -50,10 +53,12 @@ when git cannot answer, and denies when the hook itself fails (unreadable input 
 before the subcommand only the allowed one (`core.excludesFile`) is passed on to the git the hook runs, and so are
 `--icase-`, `--literal-`, `--glob-` and `--noglob-pathspecs`, which change what a pathspec means; any other `-c`
 setting, `--config-env` (spelt with `=` or a space), `--git-dir`, `--work-tree`, `GIT_*=…` assignments in front of
-git, and `GIT_*` variables exported earlier in the command with `export`, `declare -x` or `typeset -x` are not
-followed, no git is run, and the command is denied as unchecked: a setting such as `core.fsmonitor` runs a command,
-`--git-dir`, `--work-tree`, `core.worktree` and the `GIT_*` variables split the repo git uses from the directory the
-hook checks, which the hook does not model, and the hook runs before the user has agreed to anything. `GIT_` is
+git, and any `GIT_*` variable name earlier in the command (after `export`, `local -x`, `set -a` and so on: the hook
+does not work out whether it was exported, any occurrence counts) are not followed, no git is run, and the command
+is denied as unchecked: a setting such as `core.fsmonitor` runs a command; `--git-dir`, `--work-tree` and
+`core.worktree` split the repo git uses from the directory the hook checks, which the hook does not model; `GIT_*`
+variables change what git does (another repo, another index, an external program) with values the hook cannot see;
+and the hook runs before the user has agreed to anything. `GIT_` is
 matched upper-case only on POSIX (git reads only upper case) and ignoring case on Windows. Every git the hook runs
 carries `-c core.fsmonitor=false`. A command that really means to discard them contains `# discard-ok` anywhere (a
 substring match on the whole command, so any line of a multi-line command counts, and it need not be a real
@@ -74,6 +79,9 @@ Known limits:
   developer's own and runs when the command itself does; turning it off would make LFS-style files look changed.
   The same goes for the repo `-C` or `cd` points at: its own filters run during the check.
 - The value of `--attr-source` is not carried into the check: the hook uses the work tree's attributes.
+- `GIT_*` variables set through `source`, `.`, `eval` or another file are not seen, so they do not deny.
+- Any `GIT_*` name earlier in the command (`echo GIT_DIR`, say) makes a later discarding git call deny, exported or
+  not.
 - `~` is always expanded, also where bash would not (`--chdir=~/x`, `-C~`, a quoted `"~"`), and with Python's home
   directory: on Windows that is `USERPROFILE`, while Git Bash's `cd` uses `HOME`.
 Background: on #158 (2026-11-13) `git checkout -q -- scripts tests` wiped an uncommitted fix and its tests."""
@@ -107,10 +115,11 @@ WRAPPER_VALUE_OPTS = {
 # git options before the subcommand that take a value
 GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--attr-source"}
 # 子指令前、hook 會收集起來的選項：`refuse_unsafe_settings` 由它們決定擋不擋，這幾個裡真的轉給 hook 的 git 的
-# 只有白名單內的 `-c` 設定（其他的都在跑 git 之前以無法檢查擋下）；pathspec 選項另外收集，見 PATHSPEC_GIT_OPTS
+# 只有白名單內的 `-c` 設定（其他的都在跑 git 之前以無法檢查擋下）；pathspec 選項也會被收集並轉過去，它們列在
+# PATHSPEC_GIT_OPTS
 # git options before the subcommand that the hook collects: `refuse_unsafe_settings` decides from them whether to
 # deny, and of these only the allowed `-c` settings ever reach the hook's git (anything else is denied as unchecked
-# before any git runs); pathspec options are collected apart, see PATHSPEC_GIT_OPTS
+# before any git runs); the pathspec options are collected and passed on too, and are listed in PATHSPEC_GIT_OPTS
 COLLECTED_GIT_OPTS = {"-c", "--git-dir", "--work-tree", "--config-env"}
 # 改變 pathspec 意思的 git 選項：原樣轉給 hook 的 git，它才看到同一批路徑（它們不執行任何東西）
 # git options that change what a pathspec means: passed on as they are, so the hook's git sees the same paths (they
@@ -169,6 +178,8 @@ def segments(command):
         yield current
 
 
+# shell 變數名稱 ／ A shell variable name
+VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # 出現在 cd 前面、要先跳過的 shell 關鍵字與前綴（cd 在它們之後仍在目前的 shell 裡生效）；
 # 帶選項的前綴（`time -p`、`command -p`），選項也一起跳過
 # Shell keywords and prefixes in front of a cd, skipped first (the cd after them still acts in the current shell);
@@ -177,22 +188,18 @@ CD_PREFIXES = {"{", "}", "then", "do", "else", "elif", "if", "while", "until", "
 CD_PREFIXES_WITH_OPTIONS = {"time", "command"}
 
 
-def exported_git_vars(tokens):
-    """tokens 是匯出變數的指令（`export`、`declare -x`、`typeset -x`，前面可以有 `{`、`then` 這類前綴）時，
-    回傳其中 `GIT_*` 變數的名稱（帶不帶 `=` 都算），否則回傳空串列。
-    The `GIT_*` variable names (with or without `=`) when tokens export variables (`export`, `declare -x`,
-    `typeset -x`, possibly after prefixes such as `{` or `then`), else an empty list."""
-    while tokens and tokens[0] in CD_PREFIXES:
-        tokens = tokens[1:]
-    if not tokens:
-        return []
-    if tokens[0] == "export":
-        names = tokens[1:]
-    elif tokens[0] in ("declare", "typeset") and any(t.startswith("-") and "x" in t for t in tokens[1:]):
-        names = tokens[1:]
-    else:
-        return []
-    return [n.split("=", 1)[0] for n in names if not n.startswith("-") and git_var(n.split("=", 1)[0])]
+def git_var_names(tokens):
+    """tokens 裡看起來是 git 環境變數的名稱：整個 token 是 `GIT_…`，或是 `GIT_…=值`。不分析 shell 怎麼設定或匯出它
+    （`export`、`local -x`、`set -a`、前綴指派都一樣），只要出現就算。
+    The names in tokens that look like git environment variables: a whole token `GIT_…` or `GIT_…=value`. How the
+    shell sets or exports it (`export`, `local -x`, `set -a`, a prefix assignment) is not modelled: any occurrence
+    counts."""
+    names = []
+    for token in tokens:
+        name = token.split("=", 1)[0]
+        if VARIABLE_NAME.fullmatch(name) and git_var(name):
+            names.append(name)
+    return names
 
 
 def git_var(name):
@@ -338,12 +345,12 @@ def os_arg(text):
 
 def refuse_unsafe_settings(git_opts):
     """git_opts 裡有 hook 不跟著用的東西時丟出 Unchecked，hook 就不會帶著它跑 git：白名單外的 `-c` 設定、
-    `--config-env`、`--git-dir`、`--work-tree`（它們讓 git 用的 repo 跟 hook 檢查的目錄分開），以及 `GIT_*` 指派
-    與匯出的 `GIT_*` 變數（以 `NAME=…` 的形式放進 git_opts）。pathspec 選項照樣留著。
+    `--config-env`（值從環境變數讀，hook 看不到）、`--git-dir` 與 `--work-tree`（它們讓 git 用的 repo 跟 hook
+    檢查的目錄分開），以及 git 前面的 `GIT_*=…` 指派。pathspec 選項照樣留著。
     Raises Unchecked when git_opts carry something the hook does not follow, so it never runs git with it: a `-c`
-    setting off the allow list, `--config-env`, `--git-dir`, `--work-tree` (they split the repo git uses from the
-    directory the hook checks), and `GIT_*` assignments and exported `GIT_*` variables (put in git_opts as
-    `NAME=…`). Pathspec options stay."""
+    setting off the allow list, `--config-env` (its value comes from an environment variable the hook cannot see),
+    `--git-dir` and `--work-tree` (they split the repo git uses from the directory the hook checks), and `GIT_*=…`
+    assignments in front of git. Pathspec options stay."""
     values = {at + 1 for at, opt in enumerate(git_opts) if opt in GIT_VALUE_OPTS}
     for at, opt in enumerate(git_opts):
         if at in values:
@@ -364,13 +371,13 @@ def refuse_unsafe_settings(git_opts):
 def run(cwd, *args, git_opts=()):
     """在 cwd 執行 git，回傳 stdout；git 失敗時丟出 GitFailed，訊息是 stderr 的第一行；git 或 cwd 找不到時，
     訊息是找不到的那一個。git_opts 先交給 `refuse_unsafe_settings`（hook 不跟著用的就丟出 Unchecked），所以只剩
-    白名單內的 `-c` 設定與 pathspec 選項；它們放在 hook 的 `-c core.quotePath=false -c core.fsmonitor=false` 之前，hook 的設定蓋過
-    它們。
+    白名單內的 `-c` 設定與 pathspec 選項；它們放在 hook 的 `-c core.quotePath=false -c core.fsmonitor=false`
+    之前，hook 的設定蓋過它們。
     Runs git in cwd and returns its stdout; raises GitFailed carrying the first line of stderr when git fails, or
     naming whichever of git and cwd cannot be found. git_opts are first checked by `refuse_unsafe_settings` (which
     raises Unchecked for anything the hook does not follow), so only allowed `-c` settings and pathspec options
-    remain; they come before
-    the hook's `-c core.quotePath=false -c core.fsmonitor=false`, so the hook's settings win."""
+    remain; they come before the hook's `-c core.quotePath=false -c core.fsmonitor=false`, so the hook's settings
+    win."""
     # 每次跑 git 之前都先擋下 hook 不跟著用的選項，不靠呼叫端記得
     # Refuse the options the hook does not follow before every git it runs, rather than relying on callers to remember
     refuse_unsafe_settings(git_opts)
@@ -590,9 +597,11 @@ def main():
     outer = []
     # 上一個 cd 之前的目錄，給 `cd -` 用 ／ The directory before the last cd, for `cd -`
     previous = cwd
-    # 前面的段落匯出的 `GIT_*` 變數：後面的 git 都會用到 ／ `GIT_*` variables exported by earlier segments: every
-    # git after them uses them
-    exported = []
+    # 前面的段落裡出現過的 `GIT_*` 變數名稱：它們可能被匯出（`export`、`local -x`、`set -a` 等），hook 不分析是不是，
+    # 後面會丟改動的 git 呼叫一律以無法檢查擋下
+    # `GIT_*` variable names seen in earlier segments: they may have been exported (`export`, `local -x`, `set -a` and
+    # so on), which the hook does not work out, so any later discarding git call is denied as unchecked
+    seen_git_vars = []
     for tokens in segments(command):
         if isinstance(tokens, str):
             for ch in tokens:
@@ -601,7 +610,7 @@ def main():
                 elif ch == ")" and outer:
                     cwd, previous = outer.pop()
             continue
-        exported += exported_git_vars(tokens)
+        earlier, seen_git_vars = list(seen_git_vars), seen_git_vars + git_var_names(tokens)
         moved = cd_to(tokens, cwd, previous)
         if moved is not None:
             previous, cwd = cwd, moved
@@ -610,11 +619,11 @@ def main():
         if not call:
             continue
         where, sub, args, git_opts = call
-        # 匯出的變數跟 `GIT_*=…` 前綴一樣交給 refuse_unsafe_settings ／ Exported variables go to
-        # refuse_unsafe_settings just like a `GIT_*=…` prefix
-        git_opts = (*(f"{name}=" for name in exported), *git_opts)
         hit = affected(where, sub, args)
         if hit:
+            if earlier:
+                unknown.append((" ".join(tokens), f"it does not follow the git environment variable `{earlier[0]}`"))
+                continue
             try:
                 files = dirty(where, *hit, git_opts=git_opts)
             except Unchecked as error:
