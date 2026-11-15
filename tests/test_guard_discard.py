@@ -22,28 +22,39 @@ if not os.path.isfile(HOOK):
 
 @pytest.fixture
 def repo(git_repo, tmp_path):
-    """已提交 `scripts/a.py`、`tests/t.py`、`README` 的 repo，回傳它的根目錄與夾具的 git runner。
-    A repo with `scripts/a.py`, `tests/t.py` and `README` committed; returns its root and the fixture's git runner."""
+    """已提交 `scripts/a.py`、`tests/t.py`、`README` 與忽略 `*.log` 的 `.gitignore` 的 repo，回傳它的根目錄與夾具的
+    git runner。
+    A repo with `scripts/a.py`, `tests/t.py`, `README` and a `.gitignore` ignoring `*.log` committed; returns its root
+    and the fixture's git runner."""
     root = tmp_path / "repo"
     (root / "scripts").mkdir(parents=True)
     (root / "tests").mkdir()
     (root / "scripts" / "a.py").write_text("a = 1\n", encoding="utf-8")
     (root / "tests" / "t.py").write_text("t = 1\n", encoding="utf-8")
     (root / "README").write_text("r\n", encoding="utf-8")
+    (root / ".gitignore").write_text("*.log\n", encoding="utf-8")
     return root, git_repo(root)
 
 
-def _decide(root, command, tmp_path):
+def _decide(root, command, tmp_path, home=None, locale="C", extra_env=None, payload_text=None):
     """在 root 對 command 執行 hook，拒絕時回傳原因、放行時回傳 None。hook 自己跑的 git 也不讀開發者的設定。
+    給了 home 時，它是 hook 看到的家目錄（`HOME` 與 Windows 的 `USERPROFILE`）；locale 是 hook 看到的 `LC_ALL`。
+    extra_env 會加進 hook 的環境；給了 payload_text 時，stdin 送的是它而不是 command 的 JSON。
     Runs the hook on command in root and returns the deny reason, or None when it allows. The git the hook runs
-    reads no developer config either."""
+    reads no developer config either. When home is given, it is the home directory the hook sees (`HOME`, and
+    `USERPROFILE` on Windows); locale is the `LC_ALL` the hook sees. extra_env is added to the hook's environment,
+    and payload_text, when given, is sent on stdin instead of the JSON for command."""
     empty_config = tmp_path / "empty-gitconfig"
     empty_config.write_text("", encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
-    env.update(LC_ALL="C", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=str(empty_config))
+    env.update(LC_ALL=locale, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=str(empty_config))
+    if home is not None:
+        env.update(HOME=str(home), USERPROFILE=str(home))
+    env.update(extra_env or {})
     payload = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": command},
                "cwd": str(root)}
-    done = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), cwd=root, env=env,
+    text = json.dumps(payload, ensure_ascii=False) if payload_text is None else payload_text
+    done = subprocess.run([sys.executable, HOOK], input=text, cwd=root, env=env,
                           capture_output=True, text=True, encoding="utf-8")
     assert done.returncode == 0, f"the hook exited {done.returncode}: {done.stderr}"
     if not done.stdout.strip():
@@ -59,6 +70,10 @@ def _modify(root):
     with open(root / "scripts" / "a.py", "a", encoding="utf-8") as f:
         f.write("b = 2\n")
 
+
+# POSIX 上 git 只讀大寫的 `GIT_*`；Windows 的環境變數不分大小寫 ／ On POSIX git reads only upper-case `GIT_*`;
+# Windows environment variables ignore case
+POSIX_ONLY = pytest.mark.skipif(os.name == "nt", reason="Windows environment variables ignore case")
 
 # 這些指令在 `scripts/a.py` 有改動時會丟掉它 ／ These commands discard the change in `scripts/a.py`
 DISCARDING = [
@@ -96,6 +111,42 @@ DISCARDING = [
     "env -i git reset --hard",
     "env -u HOME FOO=1 git reset --hard",
     "sudo -u someone git reset --hard",
+    "env -C scripts git checkout -- a.py",
+    "env --chdir=scripts git checkout -- a.py",
+    "env -Cscripts git checkout -- a.py",
+    "sudo -D scripts git checkout -- a.py",
+    "sudo --chdir=scripts git checkout -- a.py",
+    "env -iC scripts git checkout -- a.py",
+    "env -iCscripts git checkout -- a.py",
+    "sudo -nD scripts git checkout -- a.py",
+    'env -S "git reset --hard"',
+    "env --split-string='git checkout -- scripts'",
+    'env -S "git checkout --" scripts',
+    'env -S "-i git reset --hard"',
+    'env -S "-u HOME FOO=1 git reset --hard"',
+    "{ cd scripts; git checkout -- a.py; }",
+    "if true; then cd scripts; git checkout -- a.py; fi",
+    "for d in x; do cd scripts; git checkout -- a.py; done",
+    "{ cd scripts; }; git checkout -- a.py",
+    "cd scripts && cd - && git checkout -- scripts/a.py",
+    "cd scripts; cd ../tests; (cd ..); cd -; git checkout -- a.py",
+    "time cd scripts; git checkout -- a.py",
+    "command cd scripts; git checkout -- a.py",
+    "builtin cd scripts; git checkout -- a.py",
+    "FOO=1 cd scripts; git checkout -- a.py",
+    "time -p cd scripts; git checkout -- a.py",
+    "git --attr-source HEAD checkout -- scripts",
+    # 匯出非 git 的變數，或是 POSIX 上小寫的 `git_*`，都不影響檢查 ／ Exporting a non-git variable, or a lower-case
+    # `git_*` on POSIX, does not stop the check
+    "export FOO=1; git checkout -- scripts",
+    pytest.param("git_dir=x git checkout -- scripts", marks=POSIX_ONLY),
+    pytest.param("Git_Dir=x git checkout -- scripts", marks=POSIX_ONLY),
+    pytest.param("git_dir_backup=x; git checkout -- scripts", marks=POSIX_ONLY),
+    # `--icase-pathspecs` 轉給 hook 的 git，它才看到同一批路徑 ／ `--icase-pathspecs` reaches the hook's git, so it
+    # sees the same paths
+    "git --icase-pathspecs checkout -- SCRIPTS/A.PY",
+    "git --icase-pathspecs restore Scripts/A.py",
+    "command -p cd scripts; git checkout -- a.py",
 ]
 
 
@@ -139,6 +190,13 @@ HARMLESS = [
     'echo "git checkout -- scripts"',
     "ls",
     "git checkout -q -- scripts tests # discard-ok",
+    # 這些 pathspec 選項讓路徑的意思變窄，git 碰不到 `scripts/a.py`；hook 把它們轉給自己的 git，所以也放行
+    # These pathspec options narrow what a path means, so git cannot reach `scripts/a.py`; the hook passes them on to
+    # its own git, so it allows too
+    "git --literal-pathspecs checkout -- 'scripts/*'",
+    "git --noglob-pathspecs checkout -- 'scripts/*'",
+    "git --glob-pathspecs checkout -- '*.py'",
+    "env -S 'git reset --hard \"'",
 ]
 
 
@@ -148,7 +206,8 @@ def test_a_command_that_leaves_the_change_alone_is_allowed(repo, tmp_path, comma
     With a change in `scripts/a.py`, a command that cannot touch it (and one carrying `# discard-ok`) is allowed."""
     root, _ = repo
     _modify(root)
-    assert _decide(root, command, tmp_path) is None
+    reason = _decide(root, command, tmp_path)
+    assert reason is None, f"`{command}` was denied: {reason}"
 
 
 @pytest.mark.parametrize("command", ["git checkout -q -- scripts tests", "git reset --hard", "git checkout -- ."])
@@ -157,7 +216,8 @@ def test_on_a_clean_tree_discarding_commands_are_allowed(repo, tmp_path, command
     On a clean tree (only an untracked file), nothing would be lost and the command is allowed."""
     root, _ = repo
     (root / "new.txt").write_text("n\n", encoding="utf-8")
-    assert _decide(root, command, tmp_path) is None
+    reason = _decide(root, command, tmp_path)
+    assert reason is None, f"`{command}` was denied: {reason}"
 
 
 @pytest.mark.parametrize("command", ["git checkout HEAD -- scripts", "git reset --hard"])
@@ -179,7 +239,8 @@ def test_checkout_from_the_index_allows_a_staged_only_change(repo, tmp_path, com
     root, git = repo
     _modify(root)
     git("add", "scripts/a.py")
-    assert _decide(root, command, tmp_path) is None
+    reason = _decide(root, command, tmp_path)
+    assert reason is None, f"`{command}` was denied: {reason}"
 
 
 def test_when_git_cannot_answer_the_command_is_denied_with_gits_error(repo, tmp_path):
@@ -202,3 +263,371 @@ def test_outside_a_repo_a_discarding_command_is_denied(needs_git, tmp_path):
     reason = _decide(plain, "git checkout -- f", tmp_path)
     assert reason is not None, "allowed although git could not answer"
     assert re.search(r"could not check: git said: \S", reason), reason
+
+
+def _untracked(root, *names):
+    """在 root 底下建立這些未追蹤（或被忽略）的檔案。
+    Creates these untracked (or ignored) files under root."""
+    for name in names:
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("u\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize(("files", "command", "named"), [
+    (["new.txt"], "git clean -fd", "new.txt"),
+    (["new.txt", "scripts/new.py"], "git clean -f scripts", "scripts/new.py"),
+    (["notes.log"], "git clean -fdx", "notes.log"),
+    (["notes.log"], "git clean -f -x -d", "notes.log"),
+    (["new.txt"], "git clean -i", "new.txt"),
+    (["new.txt"], "git clean --force --interactive", "new.txt"),
+    (["new.txt"], "git clean -fdq", "new.txt"),
+    (["new.txt"], "git clean -f --quiet", "new.txt"),
+    (["new.txt", "scripts/new.py"], "git clean -f -e new.txt -- scripts", "scripts/new.py"),
+    # 本來就是 dry run 的也一律檢查（它不刪檔，要放行時加 `# discard-ok`）
+    # A dry run is checked all the same (it removes nothing; `# discard-ok` lets it through)
+    (["new.txt"], "git clean -n", "new.txt"),
+    (["new.txt"], "git clean --dry-run -fd", "new.txt"),
+])
+def test_git_clean_is_denied_when_its_dry_run_lists_a_file(repo, tmp_path, files, command, named):
+    """`git clean` 會刪掉的檔案（由 git 的 dry run 列出）在原因裡被列出，指令被擋下。
+    A `git clean` that would remove files (as git's dry run lists them) is denied, and the reason names them."""
+    root, _ = repo
+    _untracked(root, *files)
+    reason = _decide(root, command, tmp_path)
+    assert reason is not None, f"`{command}` was allowed"
+    assert f"would remove untracked or ignored files: {named}" in reason, reason
+
+
+@pytest.mark.parametrize(("files", "command"), [
+    ([], "git clean -fd"),
+    (["new.txt"], "git clean -n # discard-ok"),
+    (["new.txt"], "git clean -f tests"),
+    (["notes.log"], "git clean -fd"),
+    (["new.txt"], "git clean -f -e new.txt"),
+    (["new.txt"], "git clean -f -enew.txt"),
+    (["new.txt"], "git clean -f --exclude=new.txt"),
+    (["new.txt"], "git clean -f --exclude new.txt"),
+])
+def test_git_clean_is_allowed_when_nothing_would_be_removed(repo, tmp_path, files, command):
+    """dry run 什麼都不列（沒有未追蹤檔、pathspec 或 `-e` 碰不到它們），或帶著 `# discard-ok` 時，`git clean` 被放行。
+    `git clean` is allowed when the dry run lists nothing (no untracked file, or none the pathspec or `-e` reaches),
+    or when the command carries `# discard-ok`."""
+    root, _ = repo
+    _untracked(root, *files)
+    reason = _decide(root, command, tmp_path)
+    assert reason is None, f"`{command}` was denied: {reason}"
+
+
+@pytest.mark.parametrize("command", ["cd ~ && git reset --hard", "cd && git reset --hard",
+                                     "cd ~/scripts && git checkout -- a.py", "git -C ~ reset --hard",
+                                     "git -C ~/scripts checkout -- a.py"])
+def test_cd_to_home_checks_the_repo_at_home(repo, tmp_path, command):
+    """從 repo 外 `cd ~`、`cd ~/…`、不帶參數的 `cd` 或 `git -C ~…` 時，hook 檢查家目錄的 repo：乾淨時放行，有改動時
+    擋下並列出檔案。
+    After `cd ~`, `cd ~/…`, a bare `cd` or `git -C ~…` from outside a repo, the hook checks the repo at home: allowed
+    while it is clean, denied and naming the file once it has a change."""
+    root, _ = repo
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    reason = _decide(elsewhere, command, tmp_path, home=root)
+    assert reason is None, f"`{command}` was denied on a clean repo at home: {reason}"
+    _modify(root)
+    reason = _decide(elsewhere, command, tmp_path, home=root)
+    assert reason is not None, f"`{command}` was allowed"
+    assert "would discard uncommitted changes in: scripts/a.py" in reason, reason
+
+
+@pytest.mark.parametrize(("command", "target"), [('cd "$UNKNOWN" && git checkout -- scripts', "$UNKNOWN"),
+                                                 ('cd "$(pwd)/x" && git checkout -- scripts', "$(pwd)/x")])
+def test_a_cd_to_an_unknown_directory_still_denies(repo, tmp_path, command, target):
+    """`cd` 到 hook 不知道的目錄（變數、命令替換）之後，git 答不出來，會丟掉改動的指令照樣被擋下。
+    After a `cd` to a directory the hook cannot know (a variable, a command substitution), git cannot answer, and a
+    discarding command is denied all the same."""
+    root, _ = repo
+    reason = _decide(root, command, tmp_path)
+    assert reason is not None, f"`{command}` was allowed although the directory is unknown"
+    assert "could not check" in reason, reason
+    # 原因裡的目錄照原樣寫出，不是 Python 的位元組表示 ／ The reason spells the directory as typed, not as Python bytes
+    error = reason.split("git said:", 1)[1].splitlines()[0]
+    assert os.path.join(str(root), target) in error, reason
+    assert "b'" not in error, reason
+
+
+def test_git_clean_is_checked_whatever_language_git_speaks(repo, tmp_path):
+    """開發者的語系讓 git 用別的語言輸出時（這裡是 zh_TW），`git clean` 一樣被檢查、被擋下並列出檔案。
+    When the developer's locale makes git speak another language (zh_TW here), `git clean` is still checked, denied
+    and the file named."""
+    root, _ = repo
+    _untracked(root, "new.txt")
+    # Guard：這台機器的 git 在 zh_TW 下真的不說英文，否則這個測試什麼也沒證明
+    # Guard: git on this machine really does not speak English under zh_TW, else this test proves nothing
+    # 探測與 hook 用同一份語系設定 ／ The probe and the hook get the same locale settings
+    language = {"LANGUAGE": "zh_TW"}
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+    env.update(language, LC_ALL="zh_TW.UTF-8")
+    probe = subprocess.run(["git", "clean", "-n"], cwd=root, env=env, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+    assert probe.returncode == 0, f"the probe failed: {probe.stderr}"
+    if "new.txt" not in probe.stdout or "Would remove" in probe.stdout:
+        pytest.skip(f"git does not translate its messages to zh_TW here: {probe.stdout!r}")
+    reason = _decide(root, "git clean -fd", tmp_path, locale="zh_TW.UTF-8", extra_env=language)
+    assert reason is not None, "`git clean -fd` was allowed under zh_TW"
+    assert "would remove untracked or ignored files: new.txt" in reason, reason
+
+
+def test_git_clean_with_a_double_force_names_a_nested_repo(git_repo, repo, tmp_path):
+    """`git clean -ffd` 連未追蹤的巢狀 repo 也會刪掉；hook 的 dry run 保留兩個 `-f`，所以擋下並列出它。
+    `git clean -ffd` also removes an untracked nested repo; the hook's dry run keeps both `-f`, so it is denied and
+    names it."""
+    root, _ = repo
+    nested = root / "sub"
+    nested.mkdir()
+    (nested / "x.txt").write_text("x\n", encoding="utf-8")
+    git_repo(nested)
+    # Guard：只有一個 -f 時 git 不刪巢狀 repo，所以放行 ／ Guard: with a single -f git keeps a nested repo, so it is allowed
+    single = _decide(root, "git clean -fd", tmp_path)
+    assert single is None, f"`git clean -fd` was denied although git keeps the nested repo: {single}"
+    reason = _decide(root, "git clean -ffd", tmp_path)
+    assert reason is not None, "`git clean -ffd` was allowed"
+    assert "would remove untracked or ignored files: sub/" in reason, reason
+
+
+# hook 的 Python 不用 UTF-8 讀寫時（ASCII 語系、不強制轉成 UTF-8） ／ The hook's Python not reading UTF-8 (ASCII locale,
+# no coercion to UTF-8)
+_ASCII_PYTHON = {"PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0", "PYTHONIOENCODING": ""}
+
+
+def test_non_ascii_names_are_still_checked_when_python_does_not_default_to_utf8(repo, tmp_path):
+    """hook 的 Python 預設編碼不是 UTF-8 時，非 ASCII 的檔名與指令照樣被檢查，原因裡的檔名照原樣列出。
+    When the hook's Python does not default to UTF-8, a non-ASCII file name and command are still checked, and the
+    reason names the file as it is spelt."""
+    root, _ = repo
+    _untracked(root, "新檔.txt")
+    command = "git clean -fd; echo 清理完成"
+    reason = _decide(root, command, tmp_path, extra_env=_ASCII_PYTHON)
+    assert reason is not None, f"`{command}` was allowed"
+    assert "would remove untracked or ignored files: 新檔.txt" in reason, reason
+
+
+def test_when_the_hook_itself_fails_the_command_is_denied(repo, tmp_path):
+    """hook 自己出錯時（這裡是讀不懂的輸入）不放行：指令被擋下，原因說是 hook 出錯並附上錯誤。
+    When the hook itself fails (unreadable input here) it does not let the command through: it is denied, and the
+    reason says the hook failed and carries the error."""
+    root, _ = repo
+    reason = _decide(root, "", tmp_path, payload_text='{"tool_input": {"command": "git reset --hard"')
+    assert reason is not None, "allowed although the hook failed"
+    assert "guard_discard failed" in reason, reason
+
+
+def test_a_non_ascii_command_is_quoted_as_typed_when_python_does_not_default_to_utf8(git_repo, tmp_path):
+    """hook 的 Python 預設編碼不是 UTF-8 時，帶非 ASCII 路徑的指令在原因裡照原樣列出（stdin 以 UTF-8 讀）。
+    When the hook's Python does not default to UTF-8, a command with a non-ASCII path is quoted in the reason as
+    typed (stdin is read as UTF-8)."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "檔案.txt").write_text("a\n", encoding="utf-8")
+    git_repo(root)
+    (root / "檔案.txt").write_text("a\nb\n", encoding="utf-8")
+    command = "git checkout -- 檔案.txt"
+    reason = _decide(root, command, tmp_path, extra_env=_ASCII_PYTHON)
+    assert reason is not None, f"`{command}` was allowed"
+    assert f"`{command}` would discard uncommitted changes in: 檔案.txt" in reason, reason
+
+
+@pytest.mark.parametrize("command", [
+    "git clean -f --end-of-options new.txt", "git clean -f --end-of-options",
+    "git clean -fq -e -- .", "git clean -f -q --exclude -- .",
+    # 以 `-` 開頭的 `-e` 值與縮寫的長選項 ／ A `-e` value starting with `-`, and abbreviated long options
+    "git clean -f -e -n", "git clean -f --exclude -n", "git clean -fd -e -q",
+    "git clean -fd --q", "git clean -fd --qui", "git clean -f --exc -n", "git clean -fd --excl -n",
+    "git clean -fd --inter", "git clean -fd --dry",
+    # 白名單外的短選項字母，與最後缺值的 `-e` ／ A short-option letter off the list, and a trailing `-e` without a value
+    "git clean -fdZ", "git clean -fde", "git clean -f --exclude=-n",
+])
+def test_git_clean_args_the_hook_cannot_read_are_denied_and_nothing_is_removed(repo, tmp_path, command):
+    """hook 看不懂的 `git clean` 參數（`--end-of-options`、以 `-` 開頭的 `-e` 值、縮寫的長選項）被擋下並說無法檢查，
+    而且 hook 自己的 dry run 沒有刪掉任何檔案。
+    `git clean` args the hook cannot read (`--end-of-options`, a `-e` value starting with `-`, an abbreviated long
+    option) are denied as unchecked, and the hook's own dry run removes nothing."""
+    root, _ = repo
+    _untracked(root, "new.txt")
+    reason = _decide(root, command, tmp_path)
+    assert (root / "new.txt").exists(), f"the hook removed new.txt while checking `{command}`"
+    assert reason is not None, f"`{command}` was allowed"
+    assert "could not check: it does not read the `git clean` argument" in reason, reason
+
+
+@pytest.mark.parametrize(("spelling", "option"), [("--git-dir={git} --work-tree={work}", "--git-dir"),
+                                                ("--git-dir {git} --work-tree {work}", "--git-dir"),
+                                                ("--work-tree={work}", "--work-tree")])
+def test_git_dir_and_work_tree_are_denied_as_unchecked(repo, tmp_path, spelling, option):
+    """`git --git-dir`／`--work-tree` 讓 git 用的 repo 跟 hook 檢查的目錄分開，hook 不模擬這種情況：
+    以無法檢查擋下並說出那個選項，`=` 與空格兩種寫法都一樣。
+    `git --git-dir`/`--work-tree` split the repo git uses from the directory the hook checks, which the hook does not
+    model: it denies as unchecked, naming the option, in both spellings."""
+    root, _ = repo
+    _modify(root)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    options = spelling.format(git=(root / ".git").as_posix(), work=root.as_posix())
+    command = f"git {options} checkout -- scripts"
+    reason = _decide(elsewhere, command, tmp_path)
+    assert reason is not None, f"`{command}` was allowed"
+    assert f"could not check: it does not follow `{option}`" in reason, reason
+
+
+def test_git_c_options_reach_the_hooks_own_git(repo, tmp_path):
+    """子指令前的 `git -c` 設定也交給 hook 自己跑的 git：讓 `new.txt` 被忽略的 `core.excludesFile` 下，
+    `git clean -fd` 不會刪它，所以放行。
+    `git -c` settings before the subcommand reach the git the hook runs too: with a `core.excludesFile` that ignores
+    `new.txt`, `git clean -fd` would not remove it, so it is allowed."""
+    root, _ = repo
+    _untracked(root, "new.txt")
+    excludes = tmp_path / "excludes"
+    excludes.write_text("new.txt\n", encoding="utf-8")
+    command = f"git -c core.excludesFile={excludes.as_posix()} clean -fd"
+    reason = _decide(root, command, tmp_path)
+    assert reason is None, f"`{command}` was denied although git would keep new.txt: {reason}"
+
+
+def test_a_fsmonitor_in_the_repo_config_does_not_run_while_the_hook_checks(repo, tmp_path):
+    """repo 自己的設定裡有 `core.fsmonitor` 時，hook 跑的 git 用自己的 `-c core.fsmonitor=false` 蓋過它：
+    檢查時那個指令沒有被執行，檢查照常進行並列出檔案。
+    With a `core.fsmonitor` in the repo's own config, the git the hook runs overrides it with its own
+    `-c core.fsmonitor=false`: the command does not run while the hook checks, and the check goes on and names the
+    file."""
+    root, git = repo
+    _modify(root)
+    git("config", "core.fsmonitor", "mkdir fsmonitor-ran")
+    command = "git checkout -- scripts"
+    reason = _decide(root, command, tmp_path)
+    assert not (root / "fsmonitor-ran").exists(), "the hook ran the repo's fsmonitor command while checking"
+    assert reason is not None, f"`{command}` was allowed"
+    assert "would discard uncommitted changes in: scripts/a.py" in reason, reason
+
+
+@pytest.mark.parametrize("command", [
+    "git -c 'core.fsmonitor=mkdir fsmonitor-ran' checkout -- scripts",
+    "git -c 'core.fsmonitor=mkdir fsmonitor-ran' clean -n",
+    "git -c 'core.fsmonitor=mkdir fsmonitor-ran' reset --hard",
+])
+def test_a_git_c_setting_off_the_allow_list_is_denied_without_running_git(repo, tmp_path, command):
+    """白名單外的 `git -c` 設定（這裡是會執行指令的 `core.fsmonitor`）不轉給 hook 的 git：指令以無法檢查擋下，
+    hook 也沒有跑 git，所以那個設定的指令沒有被執行（hook 在使用者同意之前就跑）。
+    A `git -c` setting off the allow list (here `core.fsmonitor`, which runs a command) is not passed on to the
+    hook's git: the command is denied as unchecked, and the hook ran no git, so the setting's command did not run
+    (the hook runs before the user has agreed to anything)."""
+    root, _ = repo
+    _modify(root)
+    _untracked(root, "new.txt")
+    reason = _decide(root, command, tmp_path)
+    assert not (root / "fsmonitor-ran").exists(), f"the hook ran the fsmonitor command while checking `{command}`"
+    assert reason is not None, f"`{command}` was allowed"
+    assert "could not check: it does not follow the git setting `core.fsmonitor`" in reason, reason
+
+
+def test_a_dry_run_printing_an_unexpected_line_is_denied(repo, tmp_path):
+    """dry run 印出 `Would remove`／`Would skip repository` 以外的行時（這裡是 cwd 本身整個未追蹤，git 拒絕刪掉它），
+    hook 以無法檢查擋下，並附上那一行。
+    When the dry run prints a line other than `Would remove`/`Would skip repository` (here the cwd itself is wholly
+    untracked, and git refuses to remove it), the hook denies as unchecked and quotes that line."""
+    root, _ = repo
+    _untracked(root, "sub/inner/f.txt")
+    command = "git -C sub clean -fd"
+    reason = _decide(root, command, tmp_path)
+    assert (root / "sub" / "inner" / "f.txt").exists(), "the hook removed sub/inner/f.txt while checking"
+    assert reason is not None, f"`{command}` was allowed"
+    assert "could not check: git's dry run printed an unexpected line: Would refuse to remove" in reason, reason
+
+
+@pytest.mark.parametrize("command", ["git --config-env=core.excludesFile=EXCLUDES checkout -- scripts",
+                                     "git --config-env core.excludesFile=EXCLUDES checkout -- scripts"])
+def test_git_config_env_is_denied_as_unchecked(repo, tmp_path, command):
+    """`git --config-env=…` 的設定從環境變數讀，hook 看不到它的值：指令以無法檢查擋下，不跑 git。`=` 與空格兩種寫法都一樣。
+    `git --config-env=…` reads a setting from an environment variable whose value the hook cannot see: the command is
+    denied as unchecked, and no git is run. Both spellings, with `=` and with a space."""
+    root, _ = repo
+    _modify(root)
+    reason = _decide(root, command, tmp_path)
+    assert reason is not None, f"`{command}` was allowed"
+    assert "could not check: it does not follow `--config-env`" in reason, reason
+
+
+def test_a_skipped_nested_repo_does_not_hide_the_files_git_clean_removes(git_repo, repo, tmp_path):
+    """未追蹤的 `outer/` 裡有巢狀 repo 時，dry run 先印 `Would skip repository outer/nest`：那一行不算意外，
+    hook 照常擋下並列出會刪掉的 `outer/o.txt`。
+    With a nested repo inside the untracked `outer/`, the dry run first prints `Would skip repository outer/nest`:
+    that line is not unexpected, and the hook denies as usual, naming `outer/o.txt`, which would be removed."""
+    root, _ = repo
+    _untracked(root, "outer/o.txt", "outer/nest/x.txt")
+    git_repo(root / "outer" / "nest")
+    command = "git clean -fd"
+    reason = _decide(root, command, tmp_path)
+    assert reason is not None, f"`{command}` was allowed"
+    assert "would remove untracked or ignored files: outer/o.txt" in reason, reason
+
+
+@pytest.mark.parametrize(("command", "variable"), [("GIT_DIR=elsewhere/.git git checkout -- scripts", "GIT_DIR"),
+                                                 ("env GIT_WORK_TREE=elsewhere git reset --hard", "GIT_WORK_TREE"),
+                                                 ("GIT_INDEX_FILE=x FOO=1 git checkout -- scripts", "GIT_INDEX_FILE")])
+def test_a_git_variable_set_before_git_is_denied_as_unchecked(repo, tmp_path, command, variable):
+    """指令在 git 前面設了 `GIT_*` 環境變數時（它可能讓 git 用別的 repo、工作目錄或 index），hook 不照它跑 git，
+    就算 cwd 的 repo 是乾淨的，也以無法檢查擋下並說出那個變數。
+    When the command sets a `GIT_*` variable in front of git (which may point git at another repo, work tree or
+    index), the hook does not run git with it, and denies as unchecked, naming the variable, even though the repo at
+    cwd is clean."""
+    root, _ = repo
+    reason = _decide(root, command, tmp_path)
+    assert reason is not None, f"`{command}` was allowed"
+    assert f"could not check: it does not follow the git environment variable `{variable}`" in reason, reason
+
+
+@pytest.mark.parametrize(("command", "variable"), [
+    ("export GIT_DIR=elsewhere/.git; git checkout -- scripts", "GIT_DIR"),
+    ("export GIT_DIR GIT_WORK_TREE && git reset --hard", "GIT_DIR"),
+    ("declare -x GIT_INDEX_FILE=x; git checkout -- scripts", "GIT_INDEX_FILE"),
+    ("typeset -x GIT_WORK_TREE=x; git reset --hard", "GIT_WORK_TREE"),
+    ("set -a; GIT_DIR=elsewhere/.git; git reset --hard", "GIT_DIR"),
+    ("f(){ local -x GIT_DIR=elsewhere/.git; git reset --hard; }; f", "GIT_DIR"),
+    ("X=1 export GIT_DIR=elsewhere/.git; git reset --hard", "GIT_DIR"),
+    # 沒有匯出的指派也算：粗規則，不分析 shell 怎麼匯出 ／ An unexported assignment counts too: the rule is coarse
+    # and does not model how the shell exports
+    ("GIT_DIR=elsewhere/.git; git checkout -- scripts", "GIT_DIR"),
+    ("GIT_DIR=x git status; git checkout -- scripts", "GIT_DIR"),
+])
+def test_a_git_variable_exported_earlier_in_the_command_is_denied_as_unchecked(repo, tmp_path, command, variable):
+    """同一條指令前面匯出了 `GIT_*` 變數（`export`、`declare -x`、`typeset -x`，帶不帶 `=` 都算）時，後面的 git
+    會用它，hook 不跟著用：就算 cwd 的 repo 是乾淨的，也以無法檢查擋下並說出那個變數。
+    When the command exports a `GIT_*` variable earlier on (`export`, `declare -x`, `typeset -x`, with or without
+    `=`), the git after it uses it and the hook does not follow it: even with a clean repo at cwd it denies as
+    unchecked, naming the variable."""
+    root, _ = repo
+    reason = _decide(root, command, tmp_path)
+    assert reason is not None, f"`{command}` was allowed"
+    assert f"could not check: it does not follow the git environment variable `{variable}`" in reason, reason
+
+
+def test_core_worktree_is_denied_like_work_tree(repo, tmp_path):
+    """`git -c core.worktree=…` 和 `--work-tree` 一樣把 git 的工作目錄和 hook 檢查的目錄分開，hook 不跟著用：
+    以無法檢查擋下並說出那個設定。
+    `git -c core.worktree=…`, like `--work-tree`, splits git's work tree from the directory the hook checks, so the
+    hook does not follow it: it denies as unchecked, naming the setting."""
+    root, _ = repo
+    _modify(root)
+    command = f"git -c core.worktree={root.as_posix()} checkout -- scripts"
+    reason = _decide(root, command, tmp_path)
+    assert reason is not None, f"`{command}` was allowed"
+    assert "could not check: it does not follow the git setting `core.worktree`" in reason, reason
+
+
+@pytest.mark.skipif(os.name != "nt", reason="only Windows environment variables ignore case")
+@pytest.mark.parametrize("command", ["git_dir=x git checkout -- scripts", "git_dir=x; git checkout -- scripts"])
+def test_on_windows_a_lower_case_git_variable_is_denied(repo, tmp_path, command):
+    """Windows 的環境變數不分大小寫，git 會把 `git_dir` 當成 `GIT_DIR`：hook 以無法檢查擋下並說出那個變數。
+    Windows environment variables ignore case, so git takes `git_dir` for `GIT_DIR`: the hook denies as unchecked,
+    naming the variable."""
+    root, _ = repo
+    reason = _decide(root, command, tmp_path)
+    assert reason is not None, f"`{command}` was allowed"
+    assert "could not check: it does not follow the git environment variable `git_dir`" in reason, reason
