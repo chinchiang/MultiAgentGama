@@ -16,9 +16,8 @@ from vibeharness.core.codecontext import (
 )
 from vibeharness.core.sanitize import prepare_untrusted_code
 from vibeharness.core.agent_call import (
-    AgentCall, CallContext, Channel, Content, ItemSource, Part, Untrusted, ask, ask_text,
+    AgentCall, Call, CallContext, CallKind, Channel, Content, Part, PlannedCalls, Untrusted, ask, ask_text, fan_out,
 )
-from vibeharness.core.fanout import Call, CallKind, PlannedCalls, fan_out
 from vibeharness.core.identity import is_unknown_location
 from vibeharness.core.model_output import LIST_OF_OBJECTS, STRING, OutputSchema
 
@@ -26,10 +25,10 @@ logger = logging.getLogger("VibeHarness.TestGenerator")
 
 
 def is_usable_test(item: Mapping[str, Any]) -> bool:
-    """模型寫的一項測試可以使用：有非空的 `code`。測試生成器略過其他項目，閘道的形狀檢查也用同一個判斷。
-    A test item the model wrote is usable: it has non-empty `code`. The test generator skips the others, and the
-    gateway's shape check uses the same rule."""
-    return bool(text_or(item.get("code"), ""))
+    """模型寫的一項測試可以使用：有去除圍欄後非空的 `code`。測試生成器略過其他項目，閘道的形狀檢查也用同一個判斷。
+    A test item the model wrote is usable: it has non-empty `code` after stripping code fences. The test generator
+    skips the others, and the gateway's shape check uses the same rule."""
+    return bool(strip_code_fences(text_or(item.get("code"), "")))
 
 
 # 測試生成回答的形狀（core/model_output.py）：`tests` 物件清單（至少一項可用）或單一的 `code` 字串，兩者之一合格即可
@@ -208,24 +207,23 @@ class WhiteboxTestGenerator:
         tests: List[GeneratedTest] = []
         has_valid_test = False
         for draft in reply.items:
-            # 自我修復驗證迴圈；仍然無效的程式碼會保留，以便回報為 ERROR
-            # Self-healing validation loop; code that stays invalid is kept so it is reported as ERROR
-            validated_code = self._validate_and_heal(draft.code, f"finding {finding.finding_id}", language=language)
-            has_valid_test = has_valid_test or check_test_code_for(validated_code, language)[0]
+            # 自我修復驗證迴圈；仍然無效的程式碼會保留，以便回報為 ERROR ／ Self-healing loop; invalid code is kept as ERROR
+            ok: List[bool] = []
+            validated_code = self._validate_and_heal(draft.code, f"finding {finding.finding_id}", language, _ok=ok)
+            has_valid_test = has_valid_test or bool(ok and ok[0])
             tests.append(draft.model_copy(update={"code": validated_code}))
         return tests, has_valid_test
 
-    def _validate_and_heal(self, code: str, subject: str, language: str = "python") -> str:
-        """
-        驗證程式碼可以解析並定義模組層級的 test_ 函式。
-        失敗時請模型修復。回傳可取得的最佳程式碼；
-        無法修復的程式碼原樣回傳，讓執行器將其回報為 ERROR
-        （絕不默默換成一個會通過的空測試）。
+    def _validate_and_heal(
+        self, code: str, subject: str, language: str = "python", _ok: Optional[List[bool]] = None
+    ) -> str:
+        """驗證程式碼可以解析並定義模組層級的 test_ 函式；失敗時請模型修復。
+        回傳可取得的最佳程式碼（並將是否有效寫入 _ok）；無法修復的程式碼原樣回傳，
+        讓執行器將其回報為 ERROR（絕不默默換成一個會通過的空測試）。
         Validates that the code parses and defines a module-level test_ function.
-        On failure, asks the model to repair it. Returns the best available code;
+        On failure, asks the model to repair it. Returns the best available code (and records validity in _ok);
         code that could not be repaired is returned unchanged so the executor reports it as ERROR
-        (never silently replaced by a no-op test that would pass).
-        """
+        (never silently replaced by a no-op test that would pass)."""
         code_to_check = strip_code_fences(code)
 
         # 最多 HEAL_ATTEMPTS 次修復；計畫的 max_per_call 也是它
@@ -233,6 +231,8 @@ class WhiteboxTestGenerator:
         for attempt in range(HEAL_ATTEMPTS + 1):
             is_valid, problem = check_test_code_for(code_to_check, language)
             if is_valid:
+                if _ok is not None:
+                    _ok.append(True)
                 return code_to_check
             logger.warning(bi(f"為 {subject} 產生的測試無效（第 {attempt+1} 次嘗試）：{problem}",
                               f"Generated test for {subject} is invalid (attempt {attempt+1}): {problem}"))
@@ -259,7 +259,6 @@ class WhiteboxTestGenerator:
             if not fixed:
                 break  # 沒有可用來修復的內容（例如模擬引擎） ／ Nothing to repair with (e.g. simulation engine)
             code_to_check = fixed
-
         return code_to_check
 
     @staticmethod
@@ -401,9 +400,9 @@ class WhiteboxTestGenerator:
 
 
 def _test_drafts(items: List[Mapping[str, Any]], ctx: CallContext) -> List[GeneratedTest]:
-    """把一次測試生成呼叫的可用項目對應成測試；程式碼是模型寫的原文，修復迴圈之後才換成修好的版本。
-    Maps one test-generation call's usable items to tests; the code is the model's own text, replaced by the healed
-    version after the heal loop."""
+    """把一次測試生成呼叫的可用項目對應成測試；程式碼先去除圍欄，修復迴圈之後才換成修好的版本。
+    Maps one test-generation call's usable items to tests; the code has fences stripped first and is replaced by the
+    healed version after the heal loop."""
     idx, finding, target_file, language = ctx.context
     return [
         GeneratedTest(
@@ -411,7 +410,7 @@ def _test_drafts(items: List[Mapping[str, Any]], ctx: CallContext) -> List[Gener
             test_type="whitebox_unit",
             target_component=finding.symbol_name or target_file,
             title=text_or(item.get("title"), finding.title),
-            code=item["code"],
+            code=strip_code_fences(item["code"]),
             rationale=text_or(item.get("rationale"), finding.suggested_test_scenario),
             expected_outcome=text_or(item.get("expected_outcome"), bi("妥善處理而不當機", "Graceful handling without crash")),
             source_ref=finding.finding_id,
@@ -427,7 +426,7 @@ def _test_drafts(items: List[Mapping[str, Any]], ctx: CallContext) -> List[Gener
 # answer's own `code` is used (matching why TESTS_SCHEMA's any_of accepted the answer); the context is (finding
 # number, finding, default target file, language)
 TESTS_CALL = AgentCall(
-    schema=TESTS_SCHEMA, items=ItemSource.key_or_answer("tests"), mapper=_test_drafts,
+    schema=TESTS_SCHEMA, mapper=_test_drafts,
     channels=(Channel.TARGET_CODE,), kind=CallKind.TEST_GENERATOR,
     # 模擬輸出沒有測試：模擬引擎無法撰寫針對目標的測試，改用由目標推導的確定性探測
     # The Simulated output holds no tests: the simulation engine cannot write target-specific tests, so

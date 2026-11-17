@@ -7,14 +7,15 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 from vibeharness.core.models import ThreatItem, GeneratedTest, CodeSymbol, text_or
-from vibeharness.core.fanout import Call, CallKind, PlannedCalls, fan_out
 from vibeharness.core.model_output import STRING, OutputSchema
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.codecheck import check_test_code_for, strip_code_fences
 from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import render_symbols, import_instructions, language_for_file, target_root
 from vibeharness.core.threat_symbols import named_symbols
-from vibeharness.core.agent_call import AgentCall, CallContext, Channel, Content, ItemSource, Part, Untrusted, ask
+from vibeharness.core.agent_call import (
+    AgentCall, Call, CallContext, CallKind, Channel, Content, Part, PlannedCalls, Untrusted, ask, fan_out,
+)
 
 logger = logging.getLogger("VibeHarness.ScenarioBuilder")
 
@@ -375,7 +376,7 @@ def _simulated_attack_test(model_alias: str) -> Dict[str, Any]:
 # The attack synthesizer's call: one per threat; the whole answer is the one item; the threat model's fields are
 # model-written and travel in the model-output channel; the context is (threat, test language)
 ATTACK_CALL = AgentCall(
-    schema=CODE_SCHEMA, items=ItemSource.answer(), mapper=_attack_test,
+    schema=CODE_SCHEMA, mapper=_attack_test,
     channels=(Channel.TARGET_CODE, Channel.MODEL_OUTPUT), kind=CallKind.SYNTHESIZER,
     simulated=lambda agent_id, alias: _simulated_attack_test(alias),
 )

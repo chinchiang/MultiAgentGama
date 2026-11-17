@@ -12,10 +12,10 @@ import pytest
 
 from vibeharness import cli
 from vibeharness.core.harness import VibeHarnessCommander, sorted_call_log
-from vibeharness.core.llm_gateway import ConfigError, LLMGateway, LLMGatewayError, RESERVED_EXTRA_PARAMS
+from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
 from vibeharness.core.models import AgentCallRecord
 from vibeharness.core.sandbox import SandboxUnavailableError
-from vibeharness.core.settings import freeze, load_settings
+from vibeharness.core.settings import RESERVED_EXTRA_PARAMS, ConfigError, freeze, load_settings
 from vibeharness.core.model_output import ANY, OutputSchema
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

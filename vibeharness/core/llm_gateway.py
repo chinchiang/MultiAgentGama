@@ -1,6 +1,9 @@
+import datetime as _dt
 import hashlib
+import json
 import os
 import logging
+import tempfile
 import threading
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -11,7 +14,6 @@ from typing import Callable, Dict, Any, Mapping, Optional, List
 # recognised as broken inside main()'s guard (exit 5 with reinstall instructions) instead of crashing while reading the config
 import yaml  # noqa: F401
 
-from vibeharness.core import response_cache
 from vibeharness.core.models import AgentCallRecord, CallKind
 # 模型呼叫走 core/transport.py 的接縫；只有那裡知道 litellm ／ model calls go through the seam in core/transport.py; only it knows litellm
 from vibeharness.core.transport import LiteLLMTransport, ModelRequest, ModelTransport
@@ -20,58 +22,113 @@ from vibeharness.core.transport import LiteLLMTransport, ModelRequest, ModelTran
 from vibeharness.core.model_output import (  # noqa: F401
     REASON_NOT_VALID_JSON, OutputSchema, check_output, mark_cached, parse_json_object,
 )
-# 設定檔的預設值、載入與政策都在 core/settings.py；這裡以同名重新匯出 ／ the config defaults, loading and policy live in
-# core/settings.py; re-exported here under the same names
-from vibeharness.core.settings import (
+# 設定檔的預設值、載入與政策都在 core/settings.py ／ the config defaults, loading and policy live in core/settings.py
+from vibeharness.core.settings import (  # noqa: F401
+    ConfigError, DEFAULT_CONFIG_PATH, DEFAULT_MAX_CONCURRENT_CALLS, DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_MAX_RETRIES, DEFAULT_RETRY_INVALID_OUTPUT, DEFAULT_TEMPERATURE, DEFAULT_TIMEOUT_SECONDS,
     GatewaySettings,
-    Overrides,
-    Settings,
+    Overrides, RESERVED_EXTRA_PARAMS,
+    Settings, UNCONFIGURED_ALIAS,
+    is_reserved_extra_param,
     load_settings,
     prepare_cache_dir,
-    DEFAULT_CONFIG_PATH,
-    DEFAULT_MAX_CONCURRENT_CALLS as DEFAULT_MAX_CONCURRENT_CALLS,
-    DEFAULT_MAX_OUTPUT_TOKENS as DEFAULT_MAX_OUTPUT_TOKENS,
-    DEFAULT_TIMEOUT_SECONDS as DEFAULT_TIMEOUT_SECONDS,
-    DEFAULT_MAX_RETRIES as DEFAULT_MAX_RETRIES,
-    DEFAULT_RETRY_INVALID_OUTPUT as DEFAULT_RETRY_INVALID_OUTPUT,
-    DEFAULT_TEMPERATURE,
-    UNCONFIGURED_ALIAS as UNCONFIGURED_ALIAS,
-    _LOOPBACK_HOSTS as _LOOPBACK_HOSTS,
-    is_reserved_extra_param,
-    _TOKEN_CAP_PARAMS as _TOKEN_CAP_PARAMS,
-    ConfigError as ConfigError,
-    load_config_file as load_config_file,
-    RESERVED_EXTRA_PARAMS as RESERVED_EXTRA_PARAMS,
-    _RESERVED_EXTRA_PARAM_RE as _RESERVED_EXTRA_PARAM_RE,
-    _TOKEN_NAME_PART_RE as _TOKEN_NAME_PART_RE,
-    _COST_NAME_PART_RE as _COST_NAME_PART_RE,
-    _KEY_NAME_PART_RE as _KEY_NAME_PART_RE,
-    _CACHE_KEY_NAME_PART_RE as _CACHE_KEY_NAME_PART_RE,
-    _is_reserved_param_name as _is_reserved_param_name,
-    _DISCOVERED_SENSITIVE_GLOBAL_KEYS as _DISCOVERED_SENSITIVE_GLOBAL_KEYS,
-    _DISCOVERED_SENSITIVE_GLOBAL_PREFIXES as _DISCOVERED_SENSITIVE_GLOBAL_PREFIXES,
-    _BUILTIN_GLOBAL_DEFAULTS as _BUILTIN_GLOBAL_DEFAULTS,
-    _DISCOVERED_ALLOWED_GLOBAL_VALUES as _DISCOVERED_ALLOWED_GLOBAL_VALUES,
-    _DISCOVERED_SENSITIVE_MODEL_KEYS as _DISCOVERED_SENSITIVE_MODEL_KEYS,
-    _DISCOVERED_PINNED_MODEL_KEYS as _DISCOVERED_PINNED_MODEL_KEYS,
-    _PREVIOUS_BUNDLED_MODELS as _PREVIOUS_BUNDLED_MODELS,
-    _DISCOVERED_COST_LIMIT_KEYS as _DISCOVERED_COST_LIMIT_KEYS,
-    _ZERO_MEANS_DEFAULT_KEYS as _ZERO_MEANS_DEFAULT_KEYS,
-    _DISCOVERED_REVIEWER_PREFIX as _DISCOVERED_REVIEWER_PREFIX,
-    _builtin_cost_default as _builtin_cost_default,
-    _effective_cost_limit as _effective_cost_limit,
-    _raises_limit as _raises_limit,
-    _is_sensitive_global_key as _is_sensitive_global_key,
-    _is_sensitive_model_key as _is_sensitive_model_key,
-    discovered_config_violations as discovered_config_violations,
-    check_discovered_config as check_discovered_config,
-    relative_executable_warnings as relative_executable_warnings,
 )
 from vibeharness.core.i18n import bi, en_only, zh_only
 from vibeharness.core.sanitize import clean_model_text, redact_secrets
 
 
 logger = logging.getLogger("VibeHarness.LLMGateway")
+
+# 屬於端點身分的模型設定：任一個不同就是不同的服務端點，回應快取不得共用
+# Model settings that identify the endpoint: if any differs it is a different service, so the response cache must not be shared
+_ENDPOINT_IDENTITY_KEYS = ("api_base", "aws_region_name", "aws_profile_name", "api_key_env")
+
+
+class ResponseCache:
+    """回應快取：可用的模型回答以請求為鍵存在快取目錄，重新執行時直接取用，不呼叫供應商、不扣預算。
+    閘道（`LLMGateway.generate`）決定什麼時候讀、什麼時候寫（Execution mode、`--cache-only`、重新詢問）；
+    鍵怎麼算、檔案怎麼讀寫，以及重新詢問的回答要存哪幾把鍵，都在這裡。
+    The response cache: usable model answers stored in the cache directory keyed by the request, served on a re-run
+    without a provider call or budget. The gateway (`LLMGateway.generate`) decides when to read and when to write
+    (the Execution mode, `--cache-only`, re-asks); how the key is computed, how files are read and written, and which
+    keys a re-asked answer is stored under, live here."""
+
+    def __init__(self, cache_dir: Optional[str] = None):
+        self.cache_dir = cache_dir
+
+    @staticmethod
+    def key(model_alias: str, model_info: Mapping[str, Any], temperature: float, max_output_tokens: int,
+            system_prompt: str, user_prompt: str) -> str:
+        """一個請求的快取鍵：把模型別名、模型設定（模型、fallback 模型、額外參數、端點身分）、溫度、閘道決定的
+        輸出 token 上限，以及兩段提示接在一起，整串算一次 sha256。
+        The cache key of a request: the sha256 of the model alias, the model settings (model, fallback model, extra
+        parameters, endpoint identity), the temperature, the output-token limit the gateway resolves, and both
+        prompts."""
+        # 端點身分（api_base、AWS 區域／設定檔、金鑰環境變數）也在鍵內：同一個模型字串
+        # 指向另一個端點或帳號時，不得取用前一個端點的回答
+        # The endpoint identity (api_base, AWS region / profile, key env var) is part of the key: the same
+        # model string pointed at another endpoint or account must not be served the previous endpoint's answer
+        endpoint = json.dumps({k: model_info.get(k) for k in _ENDPOINT_IDENTITY_KEYS}, sort_keys=True, default=str)
+        parts = "\x00".join([
+            model_alias, str(model_info.get("model")), str(model_info.get("fallback_model")), str(temperature),
+            str(max_output_tokens),
+            json.dumps(model_info.get("extra_params") or {}, sort_keys=True, default=str), endpoint,
+            system_prompt, user_prompt,
+        ])
+        return hashlib.sha256(parts.encode("utf-8")).hexdigest()
+
+    def lookup(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        """快取目錄裡這把鍵的項目；沒有快取目錄、沒有檔案、檔案毀損或形狀不對（不是物件、`raw_text` 不是字串）時為 None。
+        The entry stored under the key in the cache directory; None without a cache directory, without a file, or for a
+        corrupt or wrongly shaped file (not an object, `raw_text` not a string)."""
+        if not self.cache_dir:
+            return None
+        path = os.path.join(self.cache_dir, f"{cache_key}.json")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                entry = json.load(f)
+        except (OSError, ValueError):
+            return None
+        return entry if isinstance(entry, dict) and isinstance(entry.get("raw_text"), str) else None
+
+    def store(self, cache_key: str, *, agent_id: str, model: str, raw_text: str,
+              finish_reason: Optional[str], prompt_sha256: str, reask_key: Optional[str] = None) -> None:
+        """把一個可用的回答寫進快取；沒有快取目錄時什麼都不做，寫不進去時只記警告。重新詢問後拿到的回答
+        存在重新詢問那次提示的鍵（`reask_key`）下，也存在原始提示的鍵（`cache_key`）下：否則重新執行
+        （尤其是 --cache-only）對第一次嘗試永遠未命中，因為重新詢問的提示取決於第一次那個無法使用的回答。
+        Stores one usable answer; does nothing without a cache directory and only warns when it cannot write. An
+        answer obtained after a re-ask is stored under the re-ask prompt's key (`reask_key`) and also under the
+        original prompt's key (`cache_key`): otherwise a re-run (especially --cache-only) always misses the first
+        attempt, because the re-ask prompt depends on the unusable first answer."""
+        if not self.cache_dir:
+            return
+        entry = {
+            "agent_id": agent_id, "model": model, "finish_reason": finish_reason, "raw_text": raw_text,
+            "prompt_sha256": prompt_sha256, "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+        }
+        for k in [cache_key] + ([reask_key] if reask_key else []):
+            self._write(k, entry)
+
+    def _write(self, cache_key: str, entry: Dict[str, Any]) -> None:
+        assert self.cache_dir is not None
+        tmp: Optional[str] = None
+        try:
+            # 原子性發佈：並行的代理可能寫入相同的鍵，讀取端絕不能看到寫到一半的檔案
+            # Atomic publish: concurrent agents may write the same key, readers must never see a torn file
+            fd, tmp = tempfile.mkstemp(prefix=".tmp-", suffix=".json", dir=self.cache_dir)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(entry, f, ensure_ascii=False)
+            os.replace(tmp, os.path.join(self.cache_dir, f"{cache_key}.json"))
+        except OSError as e:
+            if tmp is not None:
+                # 刪不掉就留著：下面的警告已經回報這次寫入失敗，`lookup` 也從不讀 `.tmp-*.json`（#145）
+                # Left in place when it cannot be removed: the warning below already reports the failed write, and
+                # `lookup` never reads `.tmp-*.json` (#145)
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+            logger.warning(bi(f"無法寫入回應快取項目：{e}", f"Could not write the response cache entry: {e}"))
 
 
 @dataclass(frozen=True)
@@ -189,9 +246,9 @@ class LLMGateway:
             settings = load_settings(config_path, origin="explicit", overrides=Overrides(execution_mode=execution_mode))
         self.settings: GatewaySettings = settings.gateway
         self.execution_mode = self.settings.execution_mode
-        # 唯讀，形狀與設定檔相同 ／ read-only, the same shape as the config file
-        self.models_config = self.settings.models
-        self.agents_config = self.settings.agents
+        # models_config 與 agents_config 直接透過下方 property 讀取 self.settings（唯讀，形狀與設定檔相同），
+        # 不再於建構子重複拆出副本。
+        # models_config and agents_config read self.settings directly via properties below (read-only, the same shape as the config file).
         self.call_log: List[AgentCallRecord] = []
         # 成本防護：每次執行允許的線上模型呼叫次數（單次呼叫的 litellm 重試／fallback_model
         # 不另外計算）。None 表示不限制。
@@ -208,15 +265,23 @@ class LLMGateway:
         # 不需任何花費，且得到相同的回答。None 表示停用。
         # On-disk cache of usable live answers keyed by model + prompt: a re-run of the same target with
         # the same config costs nothing and gives the same answers. None disables it.
-        self.cache_dir: Optional[str] = self.settings.cache_dir
+        self.cache = ResponseCache(self.settings.cache_dir)
         # --cache-only：每次模型呼叫都只從回應快取取用，未命中時絕不呼叫供應商（見 CACHE_MISS_REASON）
         # --cache-only: every model call is served from the response cache only; a miss never calls a provider (see CACHE_MISS_REASON)
         self.cache_only = self.settings.cache_only
 
+    @property
+    def cache_dir(self) -> Optional[str]:
+        return self.cache.cache_dir
+
+    @cache_dir.setter
+    def cache_dir(self, value: Optional[str]) -> None:
+        self.cache.cache_dir = value
+
     def set_cache_dir(self, path: str) -> None:
         """在 `path` 啟用回應快取（不存在時會建立；見 prepare_cache_dir）。
         Enables the response cache in `path` (created if missing; see prepare_cache_dir)."""
-        self.cache_dir = prepare_cache_dir(path)
+        self.cache.cache_dir = prepare_cache_dir(path)
 
     @staticmethod
     def _safe_reason(text: str) -> str:
@@ -330,9 +395,9 @@ class LLMGateway:
         # Which ask of this logical call is current, booked on every record so sorted_call_log keeps the chronology
         attempt = 0
         if fallback_reason is None:
-            cache_key = response_cache.key(model_alias, model_info, temperature, self._max_output_tokens(model_info),
-                                           system_prompt, user_prompt)
-            cached = response_cache.lookup(self.cache_dir, cache_key)
+            cache_key = self.cache.key(model_alias, model_info, temperature, self._max_output_tokens(model_info),
+                                       system_prompt, user_prompt)
+            cached = self.cache.lookup(cache_key)
             if cached is None and self.cache_only:
                 # 不呼叫網路、不扣預算；之後與預算用盡相同：live 拋出 LLMGatewayError，hybrid 改用模擬
                 # No network call and no budget spent; then the same as an exhausted budget: live raises LLMGatewayError, hybrid simulates
@@ -387,12 +452,12 @@ class LLMGateway:
                 if problem is None and result is not None:
                     from_cache = cached is not None and attempt == 0
                     if not from_cache:
-                        reask_key = None if attempt == 0 else response_cache.key(
+                        reask_key = None if attempt == 0 else self.cache.key(
                             model_alias, model_info, temperature, self._max_output_tokens(model_info),
                             system_prompt, prompt_text)
-                        response_cache.store(self.cache_dir, cache_key, agent_id=agent_id, model=model_name,
-                                             raw_text=raw_text, finish_reason=finish_reason,
-                                             prompt_sha256=prompt_hash, reask_key=reask_key)
+                        self.cache.store(cache_key, agent_id=agent_id, model=model_name,
+                                         raw_text=raw_text, finish_reason=finish_reason,
+                                         prompt_sha256=prompt_hash, reask_key=reask_key)
                     self._record(agent_id, model_alias, model_name, "live", prompt_sha256=prompt_hash,
                                  cached=from_cache, attempt=attempt, kind=kind)
                     if not json_output:
@@ -566,3 +631,15 @@ class LLMGateway:
     @property
     def cached_calls(self) -> List[AgentCallRecord]:
         return [rec for rec in self.call_log if rec.cached]
+
+    @property
+    def models_config(self) -> Mapping[str, Any]:
+        """唯讀的模型設定表，直接取自 self.settings.models。
+        Read-only models configuration mapping, read directly from self.settings.models."""
+        return self.settings.models
+
+    @property
+    def agents_config(self) -> Mapping[str, Any]:
+        """唯讀的代理設定表，直接取自 self.settings.agents。
+        Read-only agents configuration mapping, read directly from self.settings.agents."""
+        return self.settings.agents

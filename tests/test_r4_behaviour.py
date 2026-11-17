@@ -14,9 +14,8 @@ import yaml
 from vibeharness import cli
 from vibeharness.core import mutation
 from vibeharness.core.harness import VibeHarnessCommander
-from vibeharness.core.llm_gateway import (
-    DEFAULT_CONFIG_PATH, DEFAULT_TEMPERATURE, ConfigError, LLMGateway, discovered_config_violations, load_config_file,
-)
+from vibeharness.core.llm_gateway import DEFAULT_CONFIG_PATH, DEFAULT_TEMPERATURE, LLMGateway
+from vibeharness.core.settings import ConfigError, discovered_config_violations, load_config_file
 from vibeharness.core.sandbox import LocalSubprocessSandbox
 from vibeharness.core.model_output import ANY, OutputSchema
 

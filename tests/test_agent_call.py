@@ -7,7 +7,7 @@ import pytest
 
 from config_files import CONFIG
 from vibeharness.core.agent_call import (
-    NO_REPLY, AgentCall, Channel, Content, ItemSource, Untrusted, ask, ask_text,
+    NO_REPLY, AgentCall, CallKind, Channel, Content, Untrusted, ask, ask_batch, ask_text,
 )
 from vibeharness.core.i18n import bi
 from vibeharness.core.llm_gateway import LLMGateway
@@ -24,7 +24,7 @@ def _titles(items, ctx):
     return [(ctx.context, item["title"]) for item in items]
 
 
-FINDINGS_CALL = AgentCall(schema=FINDINGS, items=ItemSource.key("findings"), mapper=_titles)
+FINDINGS_CALL = AgentCall(schema=FINDINGS, mapper=_titles)
 
 
 def _live(transport):
@@ -44,7 +44,7 @@ def test_a_live_answer_reaches_the_mapper_as_items(scripted):
 def test_the_prompt_is_assembled_from_its_parts_with_the_declared_channels_policies(scripted):
     # 通道依宣告的相反順序列出：policy 仍固定先目標程式碼、再模型輸出
     # Channels listed in reverse: the policies still come target code first, then model output
-    call = AgentCall(schema=FINDINGS, items=ItemSource.key("findings"), mapper=_titles,
+    call = AgentCall(schema=FINDINGS, mapper=_titles,
                      channels=(Channel.MODEL_OUTPUT, Channel.TARGET_CODE))
     transport = scripted({REVIEWER: {"findings": []}})
 
@@ -89,7 +89,7 @@ def test_a_declared_skip_message_is_logged_once_per_unusable_object_with_the_age
     # 不是物件的項目靜默略過；沒有宣告 skip 訊息時，不可用的物件也靜默略過
     # Items that are not objects are skipped silently; without a declared skip message so are unusable objects
     agent_logger = logging.getLogger("VibeHarness.AgentUnderTest")
-    call = AgentCall(schema=FINDINGS, items=ItemSource.key("findings"), mapper=_titles, logger=agent_logger,
+    call = AgentCall(schema=FINDINGS, mapper=_titles, logger=agent_logger,
                      skip_message=lambda ctx: f"skipping an unusable finding from {ctx.context}")
     transport = scripted({REVIEWER: MIXED})
 
@@ -105,7 +105,7 @@ def test_a_declared_skip_message_is_logged_once_per_unusable_object_with_the_age
 def test_an_answer_still_misshaped_after_the_re_ask_is_invalid_and_never_reaches_the_mapper(scripted, caplog):
     mapped = []
     agent_logger = logging.getLogger("VibeHarness.AgentUnderTest")
-    call = AgentCall(schema=FINDINGS, items=ItemSource.key("findings"),
+    call = AgentCall(schema=FINDINGS,
                      mapper=lambda items, ctx: mapped.append(items) or [],
                      logger=agent_logger, skip_message=lambda ctx: "skipping")
     transport = scripted({REVIEWER: {"findings": 5}})
@@ -121,7 +121,7 @@ def _provenance_and_titles(items, ctx):
     return [(ctx.simulated, item["title"]) for item in items]
 
 
-SIMULATED_CALL = AgentCall(schema=FINDINGS, items=ItemSource.key("findings"), mapper=_provenance_and_titles,
+SIMULATED_CALL = AgentCall(schema=FINDINGS, mapper=_provenance_and_titles,
                            simulated=lambda agent_id, alias: {"findings": [{"title": f"{agent_id} as {alias}"}]})
 
 
@@ -146,7 +146,7 @@ TESTS = OutputSchema(any_of={
     "tests": LIST_OF_OBJECTS(usable=lambda item: bool(item.get("code")), requirement=bi("要有 code", "needs code")),
     "code": STRING,
 })
-TESTS_CALL = AgentCall(schema=TESTS, items=ItemSource.key_or_answer("tests"),
+TESTS_CALL = AgentCall(schema=TESTS,
                        mapper=lambda items, ctx: [item["code"] for item in items])
 
 
@@ -167,7 +167,7 @@ def test_key_or_answer_falls_back_to_the_whole_answer_when_no_item_of_the_key_is
 
 
 def test_answer_makes_the_whole_answer_the_one_item_even_with_an_empty_field(scripted):
-    call = AgentCall(schema=OutputSchema(required={"code": STRING}), items=ItemSource.answer(),
+    call = AgentCall(schema=OutputSchema(required={"code": STRING}),
                      mapper=lambda items, ctx: [item["code"] for item in items])
     transport = scripted({"blackbox_test_synthesizer": {"code": ""}})
 
@@ -216,7 +216,7 @@ def test_ask_text_without_a_model_is_simulated_with_no_text():
 def test_the_mapper_sees_each_items_position_in_the_answers_list(scripted):
     # MIXED 的第 2 項不可用、第 3 項不是物件：位置仍是原始清單裡的位置（從 1 開始）
     # MIXED's item 2 is unusable and item 3 is not an object: positions are still those in the raw list (from 1)
-    call = AgentCall(schema=FINDINGS, items=ItemSource.key("findings"),
+    call = AgentCall(schema=FINDINGS,
                      mapper=lambda items, ctx: list(zip(ctx.positions, [item["title"] for item in items], strict=True)))
     transport = scripted({REVIEWER: MIXED})
 
@@ -227,7 +227,7 @@ def test_the_mapper_sees_each_items_position_in_the_answers_list(scripted):
 
 def test_a_declared_malformed_message_is_logged_with_the_position_of_each_item_that_is_not_an_object(scripted, caplog):
     agent_logger = logging.getLogger("VibeHarness.AgentUnderTest")
-    call = AgentCall(schema=FINDINGS, items=ItemSource.key("findings"), mapper=_titles, logger=agent_logger,
+    call = AgentCall(schema=FINDINGS, mapper=_titles, logger=agent_logger,
                      malformed_message=lambda ctx, position: f"entry #{position} is not an object")
     transport = scripted({REVIEWER: MIXED})
 
@@ -237,3 +237,22 @@ def test_a_declared_malformed_message_is_logged_with_the_position_of_each_item_t
     assert [(r.name, r.getMessage()) for r in caplog.records] == [
         ("VibeHarness.AgentUnderTest", "entry #3 is not an object"),
     ]
+
+
+def test_ask_batch_fans_out_agent_calls_with_no_reply_fallback_and_call_kind(scripted):
+    call = AgentCall(schema=FINDINGS, mapper=_titles, kind=CallKind.REVIEWER)
+    transport = scripted({REVIEWER: {"findings": [{"title": "ok"}]}})
+    gateway = _live(transport)
+
+    def run_item(name):
+        if name == "boom":
+            raise RuntimeError("boom")
+        return ask(gateway, call, REVIEWER, system=("", ""), prompt=[name], context=name)
+
+    replies = ask_batch(
+        gateway, call, ["b1", "boom", "b2"], run_item,
+        agent_id=REVIEWER, label=lambda name: (f"批次 {name}", f"batch {name}"),
+    )
+    assert [r.items for r in replies] == [(("b1", "ok"),), (), (("b2", "ok"),)]
+    assert replies[1] is NO_REPLY
+    assert len(gateway.invalid_calls) == 1 and gateway.invalid_calls[0].kind is CallKind.REVIEWER

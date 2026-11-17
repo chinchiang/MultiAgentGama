@@ -1,4 +1,3 @@
-import functools
 import logging
 import math
 from typing import Any, Dict, List, Mapping, Optional, Tuple
@@ -7,9 +6,8 @@ from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import render_symbols, truncate_to_tokens, target_root
 from vibeharness.core.agent_call import (
-    NO_REPLY, AgentCall, AgentReply, CallContext, Channel, Content, ItemSource, Part, Untrusted, ask,
+    AgentCall, AgentReply, CallContext, CallKind, Channel, Content, Part, PlannedCalls, Untrusted, ask, ask_batch,
 )
-from vibeharness.core.fanout import Call, CallKind, PlannedCalls, fan_out
 from vibeharness.core.model_output import LIST_OF_OBJECTS, OutputSchema
 
 logger = logging.getLogger("VibeHarness.Debater")
@@ -146,16 +144,16 @@ class MultiModelDebater:
         any_simulated = False
         if jobs:
             # 驗證者是彼此獨立的模型，所以它們的呼叫並行執行。一個當掉的批次不能丟掉其他所有批次（已經付費的）票：
-            # fan_out 把它記成無效呼叫（這些票是缺漏，而不是 "unsure"）；live 模式的失敗仍會往上傳遞，讓執行大聲地失敗。
+            # ask_batch（透過 fan_out）把它記成無效呼叫（這些票是缺漏，而不是 "unsure"）；live 模式的失敗仍會往上傳遞，讓執行大聲地失敗。
             # Verifiers are independent models, so their calls run concurrently. A crashed batch must not discard every
-            # other batch's (already paid-for) votes: fan_out books it as an invalid call (these votes are missing, not
-            # "unsure"); live-mode failures still propagate so the run fails loudly.
-            calls = [
-                Call(job[0], (f"{job[0]} 的驗證批次", f"Verifier batch for {job[0]}"),
-                     functools.partial(self._verify, job[0], findings, job[1], symbols, root_dir), CallKind.VERIFIER)
-                for job in jobs
-            ]
-            replies: List[AgentReply] = fan_out(self.gateway, calls, fallback=NO_REPLY, logger=logger)
+            # other batch's (already paid-for) votes: ask_batch (via fan_out) books it as an invalid call (these votes
+            # are missing, not "unsure"); live-mode failures still propagate so the run fails loudly.
+            replies: List[AgentReply] = ask_batch(
+                self.gateway, _verify_call(1), jobs,
+                lambda job: self._verify(job[0], findings, job[1], symbols, root_dir),
+                agent_id=lambda job: job[0],
+                label=lambda job: (f"{job[0]} 的驗證批次", f"Verifier batch for {job[0]}"),
+            )
             for reply in replies:
                 any_simulated = any_simulated or reply.simulated
                 for idx, vote in reply.items:
@@ -358,8 +356,8 @@ def _verify_call(count: int) -> AgentCall:
     The verifiers' call: the schema's index range depends on how many findings this call lists, so each call builds
     its own; the context is (alias, finding indices)."""
     return AgentCall(
-        schema=verdicts_schema(count), items=ItemSource.key("verdicts"), mapper=_verdict_votes,
-        channels=(Channel.TARGET_CODE,), kind=CallKind.VERIFIER,
+        schema=verdicts_schema(count), mapper=_verdict_votes,
+        channels=(Channel.TARGET_CODE,), logger=logger, kind=CallKind.VERIFIER,
         # 模擬輸出沒有裁決：樣板無法評判針對目標的發現
         # The Simulated output holds no verdicts: a template cannot judge target-specific findings
         simulated=lambda agent_id, alias: {"verdicts": []},

@@ -15,7 +15,7 @@ from vibeharness.agents.whitebox.debater import MultiModelDebater
 from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnsemble
 from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
 from vibeharness.core.codecontext import estimate_tokens
-from vibeharness.core.fanout import CallKind
+from vibeharness.core.agent_call import CallKind
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.models import FindingSeverity, ReviewFinding, STRIDECategory, ThreatItem
 from vibeharness.core.sanitize import UNTRUSTED_CODE_CLOSE, UNTRUSTED_CODE_OPEN

@@ -15,7 +15,8 @@ import pytest
 from vibeharness import cli
 from vibeharness.core.estimate import estimate_run
 from vibeharness.core.harness import VibeHarnessCommander, sorted_call_log
-from vibeharness.core.llm_gateway import DEFAULT_CONFIG_PATH, RESERVED_EXTRA_PARAMS, ConfigError, LLMGateway
+from vibeharness.core.llm_gateway import DEFAULT_CONFIG_PATH, LLMGateway
+from vibeharness.core.settings import RESERVED_EXTRA_PARAMS, ConfigError
 from vibeharness.core.models import AgentCallRecord, MultiModelDebateResult, ThreatModelReport, VibeHarnessSummary
 from vibeharness.reports.report_generator import JSON_SCHEMA_VERSION, ReportGenerator
 from vibeharness.core.model_output import ANY, OutputSchema

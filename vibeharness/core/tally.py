@@ -3,10 +3,12 @@
 The Evidence tally (GLOSSARY): what decides one run's Verdict, counted once by kind, each kind split into all, new and
 Known problems. The Quality Gate and the summary read the run's full tally; the console reads partial tallies of the
 results available in phases 3 and 5."""
+import os
 from dataclasses import dataclass
-from typing import Generic, Optional, Sequence, Tuple, TypeVar
+from typing import Dict, Generic, List, Optional, Sequence, Tuple, TypeVar
 
-from vibeharness.core.baseline import Baseline, compare_with_baseline
+from vibeharness.core.baseline import Baseline
+from vibeharness.core.identity import breach_key, static_key, whitebox_failure_key
 from vibeharness.core.models import (
     BaselineSuppressedItem, FindingSeverity, GeneratedTest, ReviewFinding, StaticFinding, TestExecutionResult, ThreatItem,
 )
@@ -37,20 +39,74 @@ class EvidenceTally:
     blackbox_not_run: Split[TestExecutionResult]
     blocking_rule_hits: Split[StaticFinding]
     untested_threats: Split[str]  # 威脅 id ／ threat ids
-    # 報告列出的已知問題，順序與 compare_with_baseline 相同 ／ The Known problems as the reports list them, in compare_with_baseline's order
+    # 報告列出的已知問題（規則命中、白箱失敗、資安突破） ／ The Known problems as the reports list them (rule hits, white-box failures, Breaches)
     known_problems: Tuple[BaselineSuppressedItem, ...] = ()
 
 
 def _unsplit(items: Sequence[T]) -> Split[T]:
-    # 基準不記錄這一種：全部都是新的 ／ The Baseline does not record this kind: all of it is new
+    # 基準不記錄這一種（或沒有基準）：全部都是新的 ／ The Baseline does not record this kind (or no Baseline): all of it is new
     return Split(all=tuple(items), new=tuple(items), known=())
 
 
-def _split(items: Sequence[T], new: Sequence[T]) -> Split[T]:
-    # 依物件本身比對，保持輸入順序 ／ Compared by identity, keeping input order
-    new_ids = {id(x) for x in new}
-    return Split(all=tuple(items), new=tuple(x for x in items if id(x) in new_ids),
-                 known=tuple(x for x in items if id(x) not in new_ids))
+def _split_blocking(
+    baseline: Baseline,
+    target_dir: str,
+    blocking: Sequence[StaticFinding],
+    wb_failures: Sequence[TestExecutionResult],
+    confirmed_findings: Sequence[ReviewFinding],
+    breaches: Sequence[TestExecutionResult],
+    threats: Sequence[ThreatItem],
+) -> Tuple[Split[StaticFinding], Split[TestExecutionResult], Split[TestExecutionResult], Tuple[BaselineSuppressedItem, ...]]:
+    """依基準線一次分開規則命中、白箱失敗與資安突破的新舊項目，並建出已知問題清單。
+    Splits blocking rule hits, white-box failures and Breaches into new and known against the Baseline in one pass,
+    and builds the Known problems list."""
+    suppressed: List[BaselineSuppressedItem] = []
+    new_static: List[StaticFinding] = []
+    known_static: List[StaticFinding] = []
+    for sf in blocking:
+        key = static_key(sf, target_dir)
+        if key in baseline.static:
+            known_static.append(sf)
+            suppressed.append(BaselineSuppressedItem(
+                kind="static", id=f"{sf.rule_id}@{os.path.basename(sf.file_path)}:{sf.line_number}",
+                title=sf.title, fingerprint=key,
+            ))
+        else:
+            new_static.append(sf)
+
+    findings_by_id: Dict[str, ReviewFinding] = {f.finding_id: f for f in confirmed_findings}
+    new_wb: List[TestExecutionResult] = []
+    known_wb: List[TestExecutionResult] = []
+    for r in wb_failures:
+        finding = findings_by_id.get(r.source_ref or "")
+        wb_key = whitebox_failure_key(r, finding, target_dir)
+        if wb_key is not None and wb_key in baseline.findings:
+            known_wb.append(r)
+            title = finding.title if finding else (r.failure_reason or r.test_id)
+            suppressed.append(BaselineSuppressedItem(kind="whitebox_failure", id=r.test_id, title=title, fingerprint=wb_key))
+        else:
+            new_wb.append(r)
+
+    threats_by_id: Dict[str, ThreatItem] = {t.threat_id: t for t in threats}
+    new_bb: List[TestExecutionResult] = []
+    known_bb: List[TestExecutionResult] = []
+    for r in breaches:
+        threat = threats_by_id.get(r.source_ref or "")
+        bb_key = breach_key(r, threat)
+        if bb_key in baseline.breaches:
+            known_bb.append(r)
+            suppressed.append(BaselineSuppressedItem(
+                kind="breach", id=r.test_id, title=threat.title if threat else r.test_id, fingerprint=bb_key,
+            ))
+        else:
+            new_bb.append(r)
+
+    return (
+        Split(all=tuple(blocking), new=tuple(new_static), known=tuple(known_static)),
+        Split(all=tuple(wb_failures), new=tuple(new_wb), known=tuple(known_wb)),
+        Split(all=tuple(breaches), new=tuple(new_bb), known=tuple(known_bb)),
+        tuple(suppressed),
+    )
 
 
 def tally_evidence(*, wb_results: Sequence[TestExecutionResult] = (),
@@ -68,21 +124,21 @@ def tally_evidence(*, wb_results: Sequence[TestExecutionResult] = (),
     blocking = [f for f in static_findings if f.severity in _BLOCKING_SEVERITIES]
     tested_threat_ids = {t.source_ref for t in bb_tests}
     if baseline is None:
-        new_breaches, new_wb_failures, new_blocking = breaches, wb_failures, blocking
+        blocking_split = _unsplit(blocking)
+        wb_split = _unsplit(wb_failures)
+        breaches_split = _unsplit(breaches)
         known_problems: Tuple[BaselineSuppressedItem, ...] = ()
     else:
-        # 只有這裡呼叫基準比對 ／ The only caller of the baseline comparison
-        comparison = compare_with_baseline(baseline, target_dir, blocking, list(wb_results), list(confirmed_findings),
-                                           list(bb_results), list(threats))
-        new_breaches, new_wb_failures = comparison.new_breaches, comparison.new_whitebox_failures
-        new_blocking, known_problems = comparison.new_static_blocking, tuple(comparison.suppressed)
+        blocking_split, wb_split, breaches_split, known_problems = _split_blocking(
+            baseline, target_dir, blocking, wb_failures, confirmed_findings, breaches, threats,
+        )
     return EvidenceTally(
-        breaches=_split(breaches, new_breaches),
-        whitebox_failures=_split(wb_failures, new_wb_failures),
+        breaches=breaches_split,
+        whitebox_failures=wb_split,
         unclassified_failures=_unsplit([r for r in bb_results if r.is_unclassified_failure]),
         whitebox_not_run=_unsplit([r for r in wb_results if r.is_not_run]),
         blackbox_not_run=_unsplit([r for r in bb_results if r.is_not_run]),
-        blocking_rule_hits=_split(blocking, new_blocking),
+        blocking_rule_hits=blocking_split,
         untested_threats=_unsplit([t.threat_id for t in threats if t.threat_id not in tested_threat_ids]),
         known_problems=known_problems,
     )

@@ -15,11 +15,11 @@ import pytest
 import yaml
 
 from vibeharness import cli
-from vibeharness.core.settings import load_settings
-from vibeharness.core.llm_gateway import (
-    DEFAULT_CONFIG_PATH, ConfigError, LLMGateway, _PREVIOUS_BUNDLED_MODELS, check_discovered_config,
-    discovered_config_violations, is_reserved_extra_param, load_config_file,
+from vibeharness.core.settings import (
+    ConfigError, _PREVIOUS_BUNDLED_MODELS, check_discovered_config, discovered_config_violations,
+    is_reserved_extra_param, load_config_file, load_settings,
 )
+from vibeharness.core.llm_gateway import DEFAULT_CONFIG_PATH, LLMGateway
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

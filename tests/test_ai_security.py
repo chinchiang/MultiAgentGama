@@ -18,7 +18,8 @@ from vibeharness.agents.whitebox.multi_reviewer import HeterogeneousReviewerEnse
 from vibeharness.core.codecheck import check_test_code
 from vibeharness.core.i18n import en_only, has_cjk
 from vibeharness.core.codecontext import render_symbols
-from vibeharness.core.llm_gateway import ConfigError, LLMGateway, LLMGatewayError
+from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
+from vibeharness.core.settings import ConfigError
 from vibeharness.core.models import FindingSeverity, ReviewFinding
 from vibeharness.core.sanitize import (
     UNTRUSTED_CODE_CLOSE, UNTRUSTED_CODE_OPEN, clean_model_text, find_injection_markers, find_invisible,

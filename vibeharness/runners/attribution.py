@@ -7,7 +7,7 @@ import os
 import re
 import xml.etree.ElementTree as ET
 from typing import Any, Dict, List, Optional, Tuple
-
+from dataclasses import dataclass
 from vibeharness.core.i18n import bi
 from vibeharness.core.models import GeneratedTest, TestExecutionResult, TestStatus
 
@@ -590,3 +590,61 @@ def header_field(text: Optional[str]) -> str:
     check_test_code() never validated, so every line separator becomes a space.
     """
     return " ".join(str(text or "").splitlines()) or "-"
+
+
+REASON_NO_TEST_COLLECTED = bi("產生的程式碼中沒有收集到任何測試", "No test was collected from the generated code")
+REASON_REPORT_UNPARSEABLE = bi("沙盒測試報告無法解析；沒有逐一測試的判定結果",
+                               "Sandbox test report could not be parsed; no per-test verdict available")
+REASON_RERUN_BUDGET_EXHAUSTED = bi("批次逾時後重跑預算已用盡；此模組未重新執行",
+                                   "Rerun budget exhausted after the batch timeout; module was not re-run")
+_TIMEOUT_EXIT_CODE = 124
+
+
+@dataclass(frozen=True)
+class ModuleOutcome:
+    """單一測試模組在沙盒執行（或重跑）後的完整狀態，供 attribute_module 歸因成 TestExecutionResult。
+    The complete outcome of one test module after sandbox execution (or a rerun), for attribute_module to turn into a
+    TestExecutionResult."""
+    exit_code: int = 0
+    stdout: str = ""
+    stderr: str = ""
+    has_report: bool = True
+    cases: Optional[List[Dict[str, Any]]] = None
+    timed_out_budget: Optional[int] = None
+    batch_timeout: Optional[int] = None
+    not_rerun: bool = False
+    parse_failed: bool = False
+
+
+def attribute_module(test: GeneratedTest, test_id: str, outcome: ModuleOutcome) -> TestExecutionResult:
+    """把單一測試模組的 ModuleOutcome 歸因成 TestExecutionResult：涵蓋所有「未執行 ／ Not run」分支與 JUnit 案例歸因。
+    Turns one test module's ModuleOutcome into a TestExecutionResult, covering all Not run branches and JUnit case
+    attribution."""
+    if outcome.not_rerun:
+        return not_run(test, test_id, REASON_RERUN_BUDGET_EXHAUSTED)
+    if outcome.parse_failed:
+        return not_run(test, test_id, REASON_REPORT_UNPARSEABLE, stdout=outcome.stdout, stderr=outcome.stderr)
+    if outcome.timed_out_budget is not None:
+        return not_run(
+            test, test_id,
+            bi(f"測試在 {outcome.timed_out_budget} 秒後逾時；未執行完畢",
+               f"Test timed out after {outcome.timed_out_budget}s; not run to completion")
+        )
+    if not outcome.has_report:
+        if outcome.exit_code == _TIMEOUT_EXIT_CODE:
+            return not_run(
+                test, test_id,
+                bi(f"測試批次在 {outcome.batch_timeout or '?'} 秒後逾時，且沒有產生逐一測試的報告",
+                   f"Test batch timed out after {outcome.batch_timeout or '?'}s "
+                   "and no per-test report was produced")
+            )
+        return not_run(
+            test, test_id,
+            f"{bi('沙盒執行沒有產生報告', 'Sandbox run produced no report')}: "
+            f"{outcome.stderr.strip()[:200] or f'exit code {outcome.exit_code}'}",
+            stdout=outcome.stdout, stderr=outcome.stderr
+        )
+    if not outcome.cases:
+        return not_run(test, test_id, REASON_NO_TEST_COLLECTED, stdout=outcome.stdout, stderr=outcome.stderr)
+    return attribute(test, test_id, outcome.cases)
+

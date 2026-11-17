@@ -121,62 +121,6 @@ def test_load_missing_file(tmp_path):
         bl.load_baseline(str(tmp_path / "nope.json"))
 
 
-# --- baseline：annotate_report_payload 與 compare_with_baseline --------------------------------------------
-# --- baseline: annotate_report_payload and compare_with_baseline -------------------------------------------
-
-def test_annotate_whitebox_and_breach():
-    finding, threat = _finding(), _threat()
-    results = [_result("WB-1", ref=finding.finding_id), _result("WB-2", TestStatus.PASSED, ref=finding.finding_id),
-               _result("WB-3", ref="WB-GONE")]
-    breaches = [_result("BB-1", ref=threat.threat_id, ttype="blackbox_security", exploit=True),
-                _result("BB-2", TestStatus.PASSED, ref=threat.threat_id, ttype="blackbox_security")]
-    payload = {
-        "summary": {"static_findings": [{}]},
-        "whitebox": {"debate": {"confirmed_findings": [{}]}, "test_results": [{}, {}, {}]},
-        "blackbox_test_results": [{}, {}],
-    }
-    bl.annotate_report_payload(payload, "/t", [_static()], [finding], results, breaches, [threat])
-    assert payload["summary"]["static_findings"][0]["fingerprint"] == bl.static_key(_static(), "/t")
-    tr = payload["whitebox"]["test_results"]
-    assert tr[0]["fingerprint"] == bl.finding_key(finding, "/t")
-    assert "fingerprint" not in tr[1] and "fingerprint" not in tr[2]  # 通過或無法解析 ／ passed or unresolved
-    bb = payload["blackbox_test_results"]
-    assert bb[0]["fingerprint"] == bl.breach_key(breaches[0], threat) and "fingerprint" not in bb[1]
-
-
-def test_compare_splits_new_and_known():
-    finding, threat = _finding(), _threat()
-    known_static, new_static = _static(1), _static(2, evidence="eval(x)")
-    probe = _result("WB-PROBE-1", ref="transfer", ttype="whitebox_probe")
-    wb_known = _result("WB-1", ref=finding.finding_id)
-    wb_new = _result("WB-2", ref="WB-GONE")
-    wb_passed = _result("WB-3", TestStatus.PASSED, ref=finding.finding_id)
-    bb_known = _result("BB-1", ref=threat.threat_id, ttype="blackbox_security", exploit=True)
-    bb_orphan = _result("BB-9", ref="THREAT-GONE", ttype="blackbox_security", exploit=True)
-    bb_new = _result("BB-2", ref="THREAT-02", ttype="blackbox_security", exploit=True)
-    bb_safe = _result("BB-3", TestStatus.PASSED, ref=threat.threat_id, ttype="blackbox_security")
-    base = bl.Baseline(
-        path="/b.json",
-        static={bl.static_key(known_static, "/t")},
-        findings={bl.finding_key(finding, "/t"), bl.probe_key(probe)},
-        breaches={bl.breach_key(bb_known, threat), bl.breach_key(bb_orphan, None)},
-    )
-    out = bl.compare_with_baseline(base, "/t", [known_static, new_static], [probe, wb_known, wb_new, wb_passed],
-                                   [finding], [bb_known, bb_orphan, bb_new, bb_safe],
-                                   [threat, _threat("THREAT-02", "Other")])
-    assert out.new_static_blocking == [new_static]
-    assert out.new_whitebox_failures == [wb_new]
-    assert out.new_breaches == [bb_new]
-    by_id = {s.id: (s.kind, s.title) for s in out.suppressed}
-    assert by_id == {
-        "VH-AI-003@app.py:1": ("static", "t"),
-        "WB-PROBE-1": ("whitebox_failure", "WB-PROBE-1"),  # 探測沒有發現：標題退回測試 id ／ a probe has no finding: the title falls back to the id
-        "WB-1": ("whitebox_failure", finding.title),
-        "BB-1": ("breach", threat.title),
-        "BB-9": ("breach", "BB-9"),
-    }
-
-
 # --- sandbox：環境變數輔助函式 -------------------------------------------------------------------------
 # --- sandbox: environment helpers --------------------------------------------------------------------
 
@@ -373,9 +317,31 @@ def test_node_version_probe_fails(tmp_path):
     assert sandbox._node_version_for_coverage() is None
     assert sandbox.js_coverage_problem() is not None
     # 收集不到涵蓋率時不讀 lcov ／ no lcov is read when coverage cannot be collected
-    assert sandbox._collect_coverage(str(tmp_path), "", str(tmp_path), None, None) is None
+    assert sandbox._collect_coverage(str(tmp_path), "", str(tmp_path), None) == (None, None)
 
 
 def test_node_no_lcov(tmp_path):
     sandbox = NodeSubprocessSandbox(node_version=(22, 10, 0))
-    assert sandbox._collect_coverage(str(tmp_path), "", str(tmp_path), None, None) is None
+    assert sandbox._collect_coverage(str(tmp_path), "", str(tmp_path), None) == (None, None)
+
+
+def test_prepare_test_code_and_is_usable_test():
+    """prepare_test_code 一次完成驗證與切分 __future__，且 is_usable_test 拒絕僅含空圍欄的草稿。
+    prepare_test_code validates and splits __future__ in one pass, and is_usable_test rejects fence-only drafts."""
+    from vibeharness.agents.whitebox.test_generator import is_usable_test
+    from vibeharness.core.codecheck import prepare_test_code
+
+    src = '"""doc"""\nfrom __future__ import annotations\n\ndef test_ok():\n    assert 1 == 1\n'
+    ok, problem, preamble, body = prepare_test_code(src, "python")
+    assert ok and problem is None
+    assert "from __future__ import annotations" in preamble
+    assert "def test_ok():" in body
+
+    bad_src = "def not_a_test():\n    pass\n"
+    bad_ok, bad_problem, bad_pre, bad_body = prepare_test_code(bad_src, "python")
+    assert not bad_ok and bad_problem is not None and bad_pre == "" and bad_body == bad_src
+
+    assert not is_usable_test({"code": "```python\n```"})
+    assert not is_usable_test({"code": "```\n   \n```"})
+    assert is_usable_test({"code": "```python\ndef test_x():\n    assert True\n```"})
+

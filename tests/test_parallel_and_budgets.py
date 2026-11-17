@@ -11,7 +11,8 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from config_files import load_config, write_config
-from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError, ConfigError, BUDGET_EXHAUSTED_REASON
+from vibeharness.core.llm_gateway import BUDGET_EXHAUSTED_REASON, LLMGateway, LLMGatewayError
+from vibeharness.core.settings import ConfigError
 from vibeharness.core.models import FindingSeverity, ReviewFinding, STRIDECategory, ThreatItem, CodeSymbol
 from vibeharness.core.i18n import has_cjk
 from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
@@ -639,6 +640,6 @@ def test_a_crash_writes_a_partial_report_with_everything_so_far(tmp_path, monkey
 def test_null_retry_invalid_output_keeps_the_default(tmp_path):
     """`retry_invalid_output: null` 與未設定相同，用預設值；只有明確的 0 才關閉重問。
     `retry_invalid_output: null` behaves like an unset key (the default); only an explicit 0 disables re-asking."""
-    from vibeharness.core.llm_gateway import DEFAULT_RETRY_INVALID_OUTPUT
+    from vibeharness.core.settings import DEFAULT_RETRY_INVALID_OUTPUT
     assert LLMGateway(_config(tmp_path, retry_invalid_output=None), execution_mode="hybrid").retry_invalid_output \
         == DEFAULT_RETRY_INVALID_OUTPUT

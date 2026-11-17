@@ -9,7 +9,7 @@ Only executed evidence (tests that actually ran, deterministic rule hits) can ma
 BLOCKED_CRITICAL_RISK; model findings and modeled threats are hypotheses until a test confirms them. Evidence
 gaps forbid READY_TO_SHIP. `evaluate` is pure: no I/O, no printing, no exceptions."""
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Dict, List, Optional, Sequence
 
@@ -19,7 +19,7 @@ from vibeharness.core.models import (
     AgentCallRecord, MutationReport, ReviewFinding, StaticFinding,
     GeneratedTest, TestExecutionResult, ThreatModelReport,
 )
-from vibeharness.core.tally import EvidenceTally
+from vibeharness.core.tally import EvidenceTally, tally_evidence
 from vibeharness.core.verdict import Verdict
 
 
@@ -114,12 +114,12 @@ class ExecutionEvidence:
     ts_problem: Optional[str] = None
     mutation_report: Optional[MutationReport] = None
 
-
+_UNSET_TALLY = tally_evidence()
 @dataclass(frozen=True)
 class GateEvidence:
     threat_report: ThreatModelReport
     # 決定判定結果的計數（新的與已知問題已分好）／ The counts that decide the Verdict (new and Known problems already split)
-    tally: EvidenceTally
+    tally: EvidenceTally = _UNSET_TALLY
     limits: GateLimits = GateLimits()
     call_log: Sequence[AgentCallRecord] = ()
     review: ReviewEvidence = ReviewEvidence()
@@ -140,12 +140,12 @@ class GateResult:
 
 
 def evaluate(evidence: GateEvidence) -> GateResult:
-    gaps = sorted(_evidence_gaps(evidence), key=lambda gap: _GAP_ORDER[gap.code])
-    ex, tally = evidence.execution, evidence.tally
-    # 判定結果只看新的：已知問題（--baseline）仍列在報告中，並列於「Known from baseline」之下
-    # Only new evidence decides the verdict: Known problems (--baseline) stay in the reports, listed under
-    # "Known from baseline"
-    if tally.breaches.new:
+    ex, t = evidence.execution, evidence.threat_report.threats
+    tally = (tally_evidence(wb_results=ex.wb_results, bb_results=ex.bb_results, static_findings=evidence.static_findings,
+                            bb_tests=ex.bb_tests, threats=t, confirmed_findings=evidence.review.confirmed_findings)
+             if evidence.tally is _UNSET_TALLY else evidence.tally)
+    gaps = sorted(_evidence_gaps(replace(evidence, tally=tally)), key=lambda gap: _GAP_ORDER[gap.code])
+    if tally.breaches.new:  # 判定結果只看新的：已知問題仍列在報告中 ／ Only new evidence decides the verdict
         verdict = Verdict.BLOCKED_CRITICAL_RISK
     elif tally.whitebox_failures.new or tally.blocking_rule_hits.new:
         verdict = Verdict.NEEDS_FIXES

@@ -19,7 +19,7 @@ from older reports that lack them.
 """
 import json
 import os
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from pydantic import BaseModel, Field
 
@@ -31,7 +31,7 @@ from vibeharness.core.identity import (  # noqa: F401
     whitebox_failure_key,
 )
 from vibeharness.core.models import (
-    BaselineSuppressedItem, ReviewFinding, StaticFinding, TestExecutionResult, ThreatItem,
+    ReviewFinding, StaticFinding, TestExecutionResult, ThreatItem,
 )
 
 TOOL_NAME = "vibeharness-mas"
@@ -157,90 +157,3 @@ def load_baseline(path: str) -> Baseline:
     baseline.path = os.path.abspath(path)
     return baseline
 
-
-def annotate_report_payload(
-    payload: Dict[str, Any],
-    target_path: str,
-    static_findings: Iterable[StaticFinding],
-    confirmed_findings: Iterable[ReviewFinding],
-    whitebox_results: Iterable[TestExecutionResult],
-    blackbox_results: Iterable[TestExecutionResult],
-    threats: Iterable[ThreatItem],
-) -> None:
-    """為 JSON 報告的靜態發現、已確認發現與已確認突破加入 ``fingerprint`` 欄位
-    （就地修改）。純粹新增：結構描述版本不變。
-    Adds the ``fingerprint`` field to the JSON report's static findings, confirmed findings and
-    confirmed breaches (in place). An addition only: the schema version is unchanged."""
-    for item, sf in zip(_dicts(payload["summary"].get("static_findings")), list(static_findings), strict=True):
-        item["fingerprint"] = static_key(sf, target_path)
-    confirmed = list(confirmed_findings)
-    for item, f in zip(_dicts(payload["whitebox"]["debate"].get("confirmed_findings")), confirmed, strict=True):
-        item["fingerprint"] = finding_key(f, target_path)
-    findings_by_id = {f.finding_id: f for f in confirmed}
-    for item, r in zip(_dicts(payload["whitebox"].get("test_results")), list(whitebox_results), strict=True):
-        if r.is_failure:
-            key = whitebox_failure_key(r, findings_by_id.get(r.source_ref or ""), target_path)
-            if key:
-                item["fingerprint"] = key
-    threats_by_id = {t.threat_id: t for t in threats}
-    for item, r in zip(_dicts(payload.get("blackbox_test_results")), list(blackbox_results), strict=True):
-        if r.is_security_exploit_confirmed:
-            item["fingerprint"] = breach_key(r, threats_by_id.get(r.source_ref or ""))
-
-
-class BaselineComparison(BaseModel):
-    """閘門可計入的（新的）與只能列出的（已知的）。
-    What the gate may count (new) and what it must only report (known)."""
-    new_breaches: List[TestExecutionResult] = Field(default_factory=list)
-    new_whitebox_failures: List[TestExecutionResult] = Field(default_factory=list)
-    new_static_blocking: List[StaticFinding] = Field(default_factory=list)
-    suppressed: List[BaselineSuppressedItem] = Field(default_factory=list)
-
-
-def compare_with_baseline(
-    baseline: Baseline,
-    target_path: str,
-    static_blocking: List[StaticFinding],
-    whitebox_results: List[TestExecutionResult],
-    confirmed_findings: List[ReviewFinding],
-    blackbox_results: List[TestExecutionResult],
-    threats: List[ThreatItem],
-) -> BaselineComparison:
-    """把本次執行的阻擋證據分成新的與已知的。白箱失敗是透過其測試所對應產生的
-    發現而為已知（其自身的 id 是逐次執行的）；探測或發現無法解析的結果
-    一律是新的。
-    Splits this run's blocking evidence into new and already-known. A white-box failure is known
-    through the finding its test was generated for (its own id is per run); a probe or a result whose
-    finding cannot be resolved is always new."""
-    out = BaselineComparison()
-    key: Optional[str]
-    for sf in static_blocking:
-        key = static_key(sf, target_path)
-        if key in baseline.static:
-            out.suppressed.append(BaselineSuppressedItem(
-                kind="static", id=f"{sf.rule_id}@{os.path.basename(sf.file_path)}:{sf.line_number}", title=sf.title, fingerprint=key
-            ))
-        else:
-            out.new_static_blocking.append(sf)
-    findings_by_id = {f.finding_id: f for f in confirmed_findings}
-    for r in whitebox_results:
-        if not r.is_failure:
-            continue
-        finding = findings_by_id.get(r.source_ref or "")
-        key = whitebox_failure_key(r, finding, target_path)
-        if key is not None and key in baseline.findings:
-            title = finding.title if finding else (r.failure_reason or r.test_id)
-            out.suppressed.append(BaselineSuppressedItem(kind="whitebox_failure", id=r.test_id, title=title, fingerprint=key))
-        else:
-            out.new_whitebox_failures.append(r)
-    threats_by_id = {t.threat_id: t for t in threats}
-    for r in blackbox_results:
-        if not r.is_security_exploit_confirmed:
-            continue
-        threat = threats_by_id.get(r.source_ref or "")
-        key = breach_key(r, threat)
-        if key in baseline.breaches:
-            out.suppressed.append(BaselineSuppressedItem(kind="breach", id=r.test_id, title=threat.title if threat else r.test_id, fingerprint=key))
-        else:
-            out.new_breaches.append(r)
-    return out

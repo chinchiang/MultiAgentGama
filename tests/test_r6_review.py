@@ -19,6 +19,7 @@ from vibeharness.core.models import (
     ThreatItem,
 )
 from vibeharness.core.sandbox import TIMEOUT_EXIT_CODE, SandboxRun
+from vibeharness.core.tally import tally_evidence
 from vibeharness.runners.test_executor import REASON_NO_TEST_COLLECTED, TestSuiteExecutor
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -172,8 +173,8 @@ def test_probes_of_same_named_functions_in_different_files_have_distinct_keys(tm
                for p in probes]
     assert len(results) == 2
     known = bl.Baseline(path="", findings={bl.probe_key(results[0])})
-    cmp = bl.compare_with_baseline(known, str(tmp_path), [], results, [], [], [])
-    assert [r.test_id for r in cmp.new_whitebox_failures] == [results[1].test_id]
+    tally = tally_evidence(wb_results=results, target_dir=str(tmp_path), baseline=known)
+    assert [r.test_id for r in tally.whitebox_failures.new] == [results[1].test_id]
 
 
 # --- 5. 去重不會忽略中文詞 ---------------------------------------------------------------------

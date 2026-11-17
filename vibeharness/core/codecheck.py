@@ -78,15 +78,13 @@ def _has_assertion(fn: ast.AST) -> bool:
     return False
 
 
-def check_test_code(code: str) -> Tuple[bool, Optional[str]]:
-    """
-    驗證產生的 pytest 片段。
+def check_test_code(code: str, _tree: Optional[List[ast.Module]] = None) -> Tuple[bool, Optional[str]]:
+    """驗證產生的 pytest 片段。
     回傳 (is_valid, problem_description)。有效代表：能解析、至少定義一個 test_ 函式，
     且每個 test_ 函式都含有斷言（否則空洞的測試會被算成已防禦的邊界）。
     Validates a generated pytest snippet.
     Returns (is_valid, problem_description). Valid means: parses, defines at least one test_ function,
-    and every test_ function contains an assertion (a vacuous test would otherwise count as a defended boundary).
-    """
+    and every test_ function contains an assertion (a vacuous test would otherwise count as a defended boundary)."""
     if not code or not code.strip():
         return False, "empty test code"
     try:
@@ -110,6 +108,8 @@ def check_test_code(code: str) -> Tuple[bool, Optional[str]]:
         return False, "test function(s) without any assertion: analysis too deep"
     if vacuous:
         return False, f"test function(s) without any assertion: {', '.join(vacuous)}"
+    if _tree is not None:
+        _tree.append(tree)
     return True, None
 
 
@@ -272,3 +272,38 @@ def check_test_code_for(code: str, language: str) -> Tuple[bool, Optional[str]]:
     if language in ("javascript", "typescript"):
         return check_js_test_code(code)
     return check_test_code(code)
+
+
+def split_future_imports(code: str, tree: Optional[ast.Module] = None) -> Tuple[str, str]:
+    """拆出必須留在檔案最頂端的開頭 docstring 與 `from __future__` 匯入。
+    Splits off the leading docstring and `from __future__` imports, which must stay at the very top."""
+    if tree is None:
+        tree = ast.parse(code)
+    last_line = 0
+    for i, node in enumerate(tree.body):
+        if isinstance(node, ast.ImportFrom) and node.module == "__future__":
+            last_line = node.end_lineno or node.lineno
+        elif i == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) \
+                and isinstance(node.value.value, str):
+            continue  # 模組 docstring 可以出現在 future 匯入之前 ／ module docstring may precede future imports
+        else:
+            break
+    if not last_line:
+        return "", code
+    lines = code.splitlines(keepends=True)
+    preamble = "".join(lines[:last_line])
+    return (preamble if preamble.endswith("\n") else preamble + "\n"), "".join(lines[last_line:])
+
+
+def prepare_test_code(code: str, language: str = "python") -> Tuple[bool, Optional[str], str, str]:
+    """以單次解析驗證測試程式碼，並拆出 Python 的前導 docstring 與 `from __future__` 匯入。
+    Validates test code in a single parse and splits off Python's leading docstring and `from __future__` imports."""
+    if language in ("javascript", "typescript"):
+        is_valid, problem = check_js_test_code(code)
+        return is_valid, problem, "", code
+    parsed: List[ast.Module] = []
+    is_valid, problem = check_test_code(code, _tree=parsed)
+    if not is_valid or not parsed:
+        return False, problem, "", code
+    preamble, body = split_future_imports(code, tree=parsed[0])
+    return True, None, preamble, body

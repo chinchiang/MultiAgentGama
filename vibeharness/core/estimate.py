@@ -21,7 +21,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, Field
 
-from vibeharness.core.fanout import CallKind, PlannedCalls
+from vibeharness.core.agent_call import CallKind, PlannedCalls
 from vibeharness.core.i18n import bi
 from vibeharness.core.settings import UNCONFIGURED_ALIAS
 
