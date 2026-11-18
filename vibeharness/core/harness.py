@@ -118,18 +118,19 @@ class VibeHarnessCommander:
         # (its settings were validated at load time).
         # 過去在 __init__ 拆出的 11 個純量屬性（node_bin、sandbox_node_provider、mutation_testing、mutation_source、
         # max_files、max_file_bytes、config_path、sandbox_provider、include_patterns、exclude_patterns、changed_since）
-        # 現在都直接以 self.settings 為唯一真實來源（透過下方 property 讀取與更新），避免在建構子重複拆解設定樹。
+        # 現在都直接以 self.settings 為唯一真實來源（透過下方唯讀 property 讀取，突變開關經 set_mutation 更新），避免在建構子重複拆解設定樹。
         # The 11 scalar attributes formerly unpacked in __init__ (node_bin, sandbox_node_provider, mutation_testing,
         # mutation_source, max_files, max_file_bytes, config_path, sandbox_provider, include_patterns, exclude_patterns,
-        # changed_since) now read from and update self.settings directly via properties below as the single source of truth.
+        # changed_since) now read from self.settings directly via read-only properties below (set_mutation updates the
+        # mutation switch), keeping self.settings as the single source of truth.
         self.reporter = ReportGenerator()
         # 突變測試開關優先順序為 CLI（--mutation，經 Overrides）> global.mutation_testing > 預設關閉，來源記進 RunMetadata。
         # Mutation testing switch precedence is CLI (--mutation, through Overrides) > global.mutation_testing > off by default,
         # and the source is recorded in RunMetadata.
         # 檔案選取（CLI 的 --include/--exclude 會覆寫設定檔中的清單；--changed-since 會加入 only_files）
-        # 同樣直接對應到 self.settings.scope，確保 commander.settings 與屬性讀寫永遠同步。
+        # 同樣直接讀取 self.settings.scope。
         # File selection (CLI --include/--exclude override the config lists; --changed-since adds only_files)
-        # likewise maps directly to self.settings.scope so commander.settings and attribute access stay in sync.
+        # likewise reads self.settings.scope directly.
         # 其餘執行期狀態（baseline 與第 1 階段選定的 scope）在下方初始化。
         # Remaining runtime state (baseline and the scope selected in phase 1) is initialized below.
         # 預設為 None，待執行期間或由 CLI 指派 ／ Defaults to None until assigned by the CLI or during the run
@@ -225,8 +226,11 @@ class VibeHarnessCommander:
     def set_mutation(self, enabled: bool, source: str = "cli") -> None:
         """依 CLI 旗標開啟或關閉突變測試（優先於設定檔）。
         Turns mutation testing on or off from a CLI flag (it wins over the config file)."""
-        self.mutation_testing = enabled
-        self.mutation_source = source
+        self.settings = replace(
+            self.settings,
+            mutation=replace(self.settings.mutation, enabled=bool(enabled)),
+            sources=FrozenDict({**self.settings.sources, "mutation_testing": source}),
+        )
 
     @staticmethod
     def _build_sandbox(sandbox: SandboxSettings) -> LocalSubprocessSandbox:
@@ -698,86 +702,42 @@ class VibeHarnessCommander:
     def node_bin(self) -> str:
         return self.settings.node.node_bin
 
-    @node_bin.setter
-    def node_bin(self, value: str) -> None:
-        self.settings = replace(self.settings, node=replace(self.settings.node, node_bin=value))
-
     @property
     def sandbox_node_provider(self) -> str:
         return self.settings.node.provider
-
-    @sandbox_node_provider.setter
-    def sandbox_node_provider(self, value: str) -> None:
-        self.settings = replace(self.settings, node=replace(self.settings.node, provider=value))
 
     @property
     def mutation_testing(self) -> bool:
         return self.settings.mutation.enabled
 
-    @mutation_testing.setter
-    def mutation_testing(self, value: bool) -> None:
-        self.settings = replace(self.settings, mutation=replace(self.settings.mutation, enabled=bool(value)))
-
     @property
     def mutation_source(self) -> str:
         return self.settings.sources["mutation_testing"]
-
-    @mutation_source.setter
-    def mutation_source(self, value: str) -> None:
-        self.settings = replace(self.settings, sources=FrozenDict({**self.settings.sources, "mutation_testing": value}))
 
     @property
     def max_files(self) -> int:
         return self.settings.scope.max_files
 
-    @max_files.setter
-    def max_files(self, value: int) -> None:
-        self.settings = replace(self.settings, scope=replace(self.settings.scope, max_files=value))
-
     @property
     def max_file_bytes(self) -> int:
         return self.settings.scope.max_file_bytes
-
-    @max_file_bytes.setter
-    def max_file_bytes(self, value: int) -> None:
-        self.settings = replace(self.settings, scope=replace(self.settings.scope, max_file_bytes=value))
 
     @property
     def config_path(self) -> str:
         return os.path.abspath(self.settings.path)
 
-    @config_path.setter
-    def config_path(self, value: str) -> None:
-        self.settings = replace(self.settings, path=value)
-
     @property
     def sandbox_provider(self) -> str:
         return self.settings.sandbox.provider
-
-    @sandbox_provider.setter
-    def sandbox_provider(self, value: str) -> None:
-        self.settings = replace(self.settings, sandbox=replace(self.settings.sandbox, provider=value))
 
     @property
     def include_patterns(self) -> List[str]:
         return list(self.settings.scope.include)
 
-    @include_patterns.setter
-    def include_patterns(self, value: List[str]) -> None:
-        self.settings = replace(self.settings, scope=replace(self.settings.scope, include=tuple(value)))
-
     @property
     def exclude_patterns(self) -> List[str]:
         return list(self.settings.scope.exclude)
 
-    @exclude_patterns.setter
-    def exclude_patterns(self, value: List[str]) -> None:
-        self.settings = replace(self.settings, scope=replace(self.settings.scope, exclude=tuple(value)))
-
     @property
     def changed_since(self) -> Optional[str]:
         return self.settings.scope.changed_since
-
-    @changed_since.setter
-    def changed_since(self, value: Optional[str]) -> None:
-        self.settings = replace(self.settings, scope=replace(self.settings.scope, changed_since=value))

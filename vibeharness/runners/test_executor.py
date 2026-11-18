@@ -242,8 +242,8 @@ class TestSuiteExecutor:
 
         for idx in indices:
             t = tests[idx]
-            is_valid, problem, preamble, body = prepare_test_code(t.code, t.language)
-            if not is_valid:
+            _, problem, preamble, body = prepare_test_code(t.code, t.language)
+            if problem is not None:
                 results[idx] = not_run(
                     t, unique_ids[idx],
                     bi(f"產生的測試無法執行（{problem}）；未執行", f"Generated test is not executable ({problem}); not run")

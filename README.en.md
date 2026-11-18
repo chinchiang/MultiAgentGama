@@ -69,7 +69,7 @@ flowchart TD
     SAN -- "threat items in &lt;untrusted_model_output&gt;" --> ATK
 
     GATE["Phase 6 · Quality gate<br/>READY_TO_SHIP / NEEDS_FIXES /<br/>INCONCLUSIVE / BLOCKED_CRITICAL_RISK"]
-    BASE["Baseline comparison baseline.py<br/>compare_with_baseline (--baseline)"]
+    BASE["Baseline loading baseline.py<br/>compared in tally.py (--baseline)"]
     CMD -- "reviewer config: no whitebox_reviewer_* /<br/>fewer than two distinct model aliases" --> GATE
     AST -- "parse failures, skipped / oversized files,<br/>unsupported-language files, config files over the caps" --> GATE
     SAST -- "HIGH+ hits; VH-AI-008/009 integrity hits;<br/>incomplete scans (30 s cap)" --> GATE
@@ -202,22 +202,20 @@ MultiAgentGama/
 │   ├── core/
 │   │   ├── __init__.py
 │   │   ├── harness.py               # Commander: six phases plus optional Phase 3.5; hands the run's evidence to the quality gate
-│   │   ├── llm_gateway.py           # Unified model gateway: routing, fallback, simulation fallback, call budget and call_log (model calls go through transport.py)
-│   │   ├── model_output.py          # Parsing and shape checking of model answers: JSON extraction, the agent's OutputSchema (pure)
-│   │   ├── agent_call.py            # Agent calls: an agent declares a call; ask assembles the prompt (each kind of untrusted content in its channel), calls the gateway, returns typed items and provenance
+│   │   ├── llm_gateway.py           # Unified model gateway: routing, fallback, simulation fallback, response cache (ResponseCache), call budget and call_log (via transport.py)
+│   │   ├── model_output.py          # Parsing, shape checking and usable-item extraction of model answers: JSON extraction, OutputSchema and extract_items (pure)
+│   │   ├── agent_call.py            # Agent calls and fan-out: ask assembles prompts and calls the gateway; ask_batch / fan_out run calls concurrently and book crashes; PlannedCalls
 │   │   ├── models.py                # Pydantic data models
-│   │   ├── baseline.py              # --baseline: loading, comparison and fingerprint annotation, known problems not counted (keys in identity.py)
-│   │   ├── codecheck.py             # Static checks on generated tests (every test_ function / method asserts; refuses package installs)
+│   │   ├── baseline.py              # --baseline: loading baselines and JSON report fingerprint stamping (annotate_report_payload; compared in tally.py, keys in identity.py)
+│   │   ├── codecheck.py             # Static checks and fence stripping on generated tests (prepare_test_code; every test asserts; refuses package installs)
 │   │   ├── codecontext.py           # Source code and import guidance handed to the models (through the untrusted-code channel)
 │   │   ├── estimate.py              # --estimate: adds up the agents' call plans into calls, tokens and cost without calling a model
-│   │   ├── fanout.py                # Fan-out: runs an agent's model calls in parallel, in call order, booking crashed calls as evidence gaps; PlannedCalls (an agent's call plan)
-│   │   ├── gate.py                  # Quality gate: evidence gaps, --baseline new/known split, verdict and recommendations (pure)
+│   │   ├── gate.py                  # Quality gate: evidence gaps, verdict and recommendations (pure)
 │   │   ├── i18n.py                  # bilingual "中文 ／ English" output helpers (bi / en_only)
 │   │   ├── identity.py              # Identity: text normalization, the location rule, severity order, --baseline keys next to SARIF fingerprints (hashes must not change)
 │   │   ├── jscoverage.py            # JS/TS line coverage: Node coverage flags, lcov parsing, union across modules
 │   │   ├── mutation.py              # Optional mutation testing (Python)
 │   │   ├── sanitize.py              # Trust-boundary hygiene: invisible chars, secret redaction, untrusted-code / model-output channels, output sanitizing
-│   │   ├── response_cache.py        # The response cache: usable model answers keyed by the request (key, lookup, atomic store, a re-ask under both keys)
 │   │   ├── sandbox.py               # Sandboxes: local subprocess (not a security boundary) and Docker containers; a Node flavour of each (node --test); choosing and probing the Node runtime
 │   │   ├── settings.py              # Settings: the config file loaded, defaulted and validated once (Discovered config policy, CLI overrides)
 │   │   ├── stdio.py                 # Console-stream guard: stdout / stderr can write the bilingual output (shared by the CLI, the Action and the harness)

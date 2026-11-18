@@ -19,8 +19,9 @@ from vibeharness.core.models import (
     FindingSeverity,
     StaticFinding, unique_test_ids
 )
+from vibeharness.core.baseline import annotate_report_payload
 from vibeharness.core.identity import (
-    breach_key, finding_key, is_unknown_location, sarif_breach_fingerprint, sarif_finding_fingerprint, sarif_static_fingerprint, static_key, whitebox_failure_key,
+    is_unknown_location, sarif_breach_fingerprint, sarif_finding_fingerprint, sarif_static_fingerprint,
 )
 from vibeharness.core.i18n import bi
 from vibeharness.core.sanitize import clean_model_text, markdown_safe
@@ -451,7 +452,11 @@ class ReportGenerator:
             "blackbox_test_results": [r.model_dump() for r in blackbox_results],
             "blackbox_generated_tests": [t.model_dump() for t in blackbox_tests or []],
         }
-        return json.dumps(self._stamp_fingerprints(payload, summary, debate_result, threat_model, whitebox_results, blackbox_results, target_path), indent=2, ensure_ascii=False, default=str)
+        annotate_report_payload(
+            payload, target_path, summary.static_findings, debate_result.confirmed_findings,
+            whitebox_results, blackbox_results, threat_model.threats,
+        )
+        return json.dumps(payload, indent=2, ensure_ascii=False, default=str)
 
     def generate_sarif_report(
         self,
@@ -959,31 +964,3 @@ class ReportGenerator:
             )
         md.append("")
         return md
-
-    @staticmethod
-    def _stamp_fingerprints(
-        payload: dict,
-        summary: VibeHarnessSummary,
-        debate_result: MultiModelDebateResult,
-        threat_model: ThreatModelReport,
-        whitebox_results: List[TestExecutionResult],
-        blackbox_results: List[TestExecutionResult],
-        target_path: str,
-    ) -> dict:
-        """在序列化成 JSON 前替靜態命中、確認發現、失敗的白箱結果與確認突破印上跨執行 fingerprint。
-        Stamp cross-run fingerprints onto static hits, confirmed findings, failed white-box results, and confirmed breaches before JSON serialization."""
-        for item, sf in zip(payload["summary"].get("static_findings", []), summary.static_findings, strict=True):
-            item["fingerprint"] = static_key(sf, target_path)
-        for item, f in zip(payload["whitebox"]["debate"].get("confirmed_findings", []), debate_result.confirmed_findings, strict=True):
-            item["fingerprint"] = finding_key(f, target_path)
-        findings_by_id = {f.finding_id: f for f in debate_result.confirmed_findings}
-        for d, r in zip(payload["whitebox"]["test_results"], whitebox_results, strict=True):
-            if r.is_failure:
-                key = whitebox_failure_key(r, findings_by_id.get(r.source_ref or ""), target_path)
-                if key:
-                    d["fingerprint"] = key
-        threats_by_id = {t.threat_id: t for t in threat_model.threats}
-        for d, r in zip(payload["blackbox_test_results"], blackbox_results, strict=True):
-            if r.is_security_exploit_confirmed:
-                d["fingerprint"] = breach_key(r, threats_by_id.get(r.source_ref or ""))
-        return payload

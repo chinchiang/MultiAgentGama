@@ -19,7 +19,7 @@ from older reports that lack them.
 """
 import json
 import os
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 from pydantic import BaseModel, Field
 
@@ -156,4 +156,35 @@ def load_baseline(path: str) -> Baseline:
     baseline = _keys_from_report(payload)
     baseline.path = os.path.abspath(path)
     return baseline
+
+
+def annotate_report_payload(
+    payload: Dict[str, Any],
+    target_path: str,
+    static_findings: Iterable[StaticFinding],
+    confirmed_findings: Iterable[ReviewFinding],
+    whitebox_results: Iterable[TestExecutionResult],
+    blackbox_results: Iterable[TestExecutionResult],
+    threats: Iterable[ThreatItem],
+) -> Dict[str, Any]:
+    """為 JSON 報告的靜態命中、確認發現、失敗的白箱結果與確認突破就地加上跨執行 ``fingerprint`` 欄位，並回傳 payload。
+    結構描述版本（schema_version）保持不變。
+    Adds cross-run ``fingerprint`` fields in place to the JSON report's static hits, confirmed findings, failed
+    white-box results and confirmed breaches, and returns the payload. The schema version is unchanged."""
+    for item, sf in zip(_dicts(payload["summary"].get("static_findings")), list(static_findings), strict=True):
+        item["fingerprint"] = static_key(sf, target_path)
+    confirmed = list(confirmed_findings)
+    for item, f in zip(_dicts(payload["whitebox"]["debate"].get("confirmed_findings")), confirmed, strict=True):
+        item["fingerprint"] = finding_key(f, target_path)
+    findings_by_id = {f.finding_id: f for f in confirmed}
+    for item, r in zip(_dicts(payload["whitebox"].get("test_results")), list(whitebox_results), strict=True):
+        if r.is_failure:
+            key = whitebox_failure_key(r, findings_by_id.get(r.source_ref or ""), target_path)
+            if key:
+                item["fingerprint"] = key
+    threats_by_id = {t.threat_id: t for t in threats}
+    for item, r in zip(_dicts(payload.get("blackbox_test_results")), list(blackbox_results), strict=True):
+        if r.is_security_exploit_confirmed:
+            item["fingerprint"] = breach_key(r, threats_by_id.get(r.source_ref or ""))
+    return payload
 

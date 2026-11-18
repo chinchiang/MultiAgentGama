@@ -455,15 +455,17 @@ def test_cli_file_filters_override_config(monkeypatch, tmp_path):
 
 def test_changed_since_selects_git_changes_and_rejects_bad_refs(git_repo, tmp_path):
     from vibeharness.core.harness import VibeHarnessCommander
+    from vibeharness.core.settings import Overrides, load_settings
     root = _tree(tmp_path)
     git_repo(root)
     (root / "src" / "app.py").write_text("def f_app(x, y):\n    return x + y\n")  # 已修改，未暫存 ／ modified, unstaged
     (root / "src" / "new.py").write_text("def g(x):\n    return x\n")             # 未追蹤 ／ untracked
     (root / "vendor" / "lib.py").write_text("def h(x):\n    return x\n")           # 已修改，在目標之外 ／ modified, outside target
-    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
+    commander = VibeHarnessCommander(
+        settings=load_settings(CONFIG, origin="explicit", overrides=Overrides(execution_mode="mock", changed_since="HEAD"))
+    )
     changed = commander.changed_files(str(root / "src"), "HEAD")
     assert [os.path.basename(p) for p in changed] == ["app.py", "new.py"]
-    commander.changed_since = "HEAD"
     summary = commander.run_full_pipeline(target_dir=str(root / "src"), output_report_path=str(tmp_path / "r.md"))
     assert summary.run is not None and summary.run.file_filters == ["changed-since=HEAD (2 file(s))"]
     assert summary.run.target_git_commit and summary.run.target_git_dirty is True

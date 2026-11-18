@@ -616,6 +616,32 @@ class ModuleOutcome:
     parse_failed: bool = False
 
 
+def not_run_for_sandbox(
+    test: GeneratedTest,
+    test_id: str,
+    *,
+    exit_code: int,
+    stdout: str = "",
+    stderr: str = "",
+    batch_timeout: Optional[int] = None,
+) -> TestExecutionResult:
+    """沙盒執行沒有寫出逐測報告（批次逾時或沙盒失敗）時的「未執行 ／ Not run」歸因結果。
+    The Not run attribution when a sandbox run produced no per-test report (a batch timeout or a sandbox failure)."""
+    if exit_code == _TIMEOUT_EXIT_CODE:
+        return not_run(
+            test, test_id,
+            bi(f"測試批次在 {batch_timeout or '?'} 秒後逾時，且沒有產生逐一測試的報告",
+               f"Test batch timed out after {batch_timeout or '?'}s "
+               "and no per-test report was produced")
+        )
+    return not_run(
+        test, test_id,
+        f"{bi('沙盒執行沒有產生報告', 'Sandbox run produced no report')}: "
+        f"{stderr.strip()[:200] or f'exit code {exit_code}'}",
+        stdout=stdout, stderr=stderr
+    )
+
+
 def attribute_module(test: GeneratedTest, test_id: str, outcome: ModuleOutcome) -> TestExecutionResult:
     """把單一測試模組的 ModuleOutcome 歸因成 TestExecutionResult：涵蓋所有「未執行 ／ Not run」分支與 JUnit 案例歸因。
     Turns one test module's ModuleOutcome into a TestExecutionResult, covering all Not run branches and JUnit case
@@ -631,18 +657,9 @@ def attribute_module(test: GeneratedTest, test_id: str, outcome: ModuleOutcome) 
                f"Test timed out after {outcome.timed_out_budget}s; not run to completion")
         )
     if not outcome.has_report:
-        if outcome.exit_code == _TIMEOUT_EXIT_CODE:
-            return not_run(
-                test, test_id,
-                bi(f"測試批次在 {outcome.batch_timeout or '?'} 秒後逾時，且沒有產生逐一測試的報告",
-                   f"Test batch timed out after {outcome.batch_timeout or '?'}s "
-                   "and no per-test report was produced")
-            )
-        return not_run(
-            test, test_id,
-            f"{bi('沙盒執行沒有產生報告', 'Sandbox run produced no report')}: "
-            f"{outcome.stderr.strip()[:200] or f'exit code {outcome.exit_code}'}",
-            stdout=outcome.stdout, stderr=outcome.stderr
+        return not_run_for_sandbox(
+            test, test_id, exit_code=outcome.exit_code, stdout=outcome.stdout, stderr=outcome.stderr,
+            batch_timeout=outcome.batch_timeout,
         )
     if not outcome.cases:
         return not_run(test, test_id, REASON_NO_TEST_COLLECTED, stdout=outcome.stdout, stderr=outcome.stderr)

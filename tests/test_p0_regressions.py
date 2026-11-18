@@ -345,13 +345,13 @@ def test_sandbox_does_not_write_into_target(executor, tmp_path):
 def test_heal_keeps_valid_code_with_leading_imports():
     gen = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="mock"))
     code = "import pytest\n\ndef test_real():\n    assert 1 == 2"
-    assert gen._validate_and_heal(code, "finding WB-F-001") == code
+    assert gen._validate_and_heal(code, "finding WB-F-001") == (code, None)
 
 
 def test_heal_strips_markdown_fences():
     gen = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="mock"))
     fenced = "```python\ndef test_real():\n    assert True\n```"
-    assert gen._validate_and_heal(fenced, "finding WB-F-001") == "def test_real():\n    assert True"
+    assert gen._validate_and_heal(fenced, "finding WB-F-001") == ("def test_real():\n    assert True", None)
 
 
 def test_check_test_code_requires_test_function():

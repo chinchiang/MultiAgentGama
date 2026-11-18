@@ -331,15 +331,15 @@ def test_prepare_test_code_and_is_usable_test():
     from vibeharness.agents.whitebox.test_generator import is_usable_test
     from vibeharness.core.codecheck import prepare_test_code
 
-    src = '"""doc"""\nfrom __future__ import annotations\n\ndef test_ok():\n    assert 1 == 1\n'
-    ok, problem, preamble, body = prepare_test_code(src, "python")
-    assert ok and problem is None
+    src = "```python\n\"\"\"doc\"\"\"\nfrom __future__ import annotations\n\ndef test_ok():\n    assert 1 == 1\n```"
+    cleaned, problem, preamble, body = prepare_test_code(src, "python")
+    assert problem is None and "```" not in cleaned
     assert "from __future__ import annotations" in preamble
     assert "def test_ok():" in body
 
-    bad_src = "def not_a_test():\n    pass\n"
-    bad_ok, bad_problem, bad_pre, bad_body = prepare_test_code(bad_src, "python")
-    assert not bad_ok and bad_problem is not None and bad_pre == "" and bad_body == bad_src
+    bad_src = "def not_a_test():\n    pass"
+    bad_cleaned, bad_problem, bad_pre, bad_body = prepare_test_code(bad_src, "python")
+    assert bad_problem is not None and bad_cleaned == bad_src and bad_pre == "" and bad_body == bad_src
 
     assert not is_usable_test({"code": "```python\n```"})
     assert not is_usable_test({"code": "```\n   \n```"})

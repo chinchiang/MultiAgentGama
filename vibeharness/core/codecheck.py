@@ -295,15 +295,19 @@ def split_future_imports(code: str, tree: Optional[ast.Module] = None) -> Tuple[
     return (preamble if preamble.endswith("\n") else preamble + "\n"), "".join(lines[last_line:])
 
 
-def prepare_test_code(code: str, language: str = "python") -> Tuple[bool, Optional[str], str, str]:
-    """以單次解析驗證測試程式碼，並拆出 Python 的前導 docstring 與 `from __future__` 匯入。
-    Validates test code in a single parse and splits off Python's leading docstring and `from __future__` imports."""
+def prepare_test_code(code: str, language: str = "python") -> Tuple[str, Optional[str], str, str]:
+    """剝除程式碼圍欄，以單次解析依語言做靜態檢查，並拆出 Python 的前導 docstring 與 `from __future__` 匯入。
+    回傳 `(cleaned_code, problem, preamble, body)`；`problem` 為 `None` 代表有效。
+    Strips code fences, runs language-specific static validation in a single parse, and splits off Python's leading
+    docstring and `from __future__` imports. Returns `(cleaned_code, problem, preamble, body)`, where `problem` is
+    `None` when valid."""
+    cleaned = strip_code_fences(code)
     if language in ("javascript", "typescript"):
-        is_valid, problem = check_js_test_code(code)
-        return is_valid, problem, "", code
+        _, problem = check_js_test_code(cleaned)
+        return cleaned, problem, "", cleaned
     parsed: List[ast.Module] = []
-    is_valid, problem = check_test_code(code, _tree=parsed)
+    is_valid, problem = check_test_code(cleaned, _tree=parsed)
     if not is_valid or not parsed:
-        return False, problem, "", code
-    preamble, body = split_future_imports(code, tree=parsed[0])
-    return True, None, preamble, body
+        return cleaned, problem, "", cleaned
+    preamble, body = split_future_imports(cleaned, tree=parsed[0])
+    return cleaned, None, preamble, body
