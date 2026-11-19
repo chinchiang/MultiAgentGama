@@ -485,6 +485,13 @@ def test_a_discovered_config_that_filters_files_blocks_ready_to_ship_until_expli
 
     (target / "vuln.py").unlink()
     (target / ".env").unlink()
+    (target / "helper.go").write_text("package main\nfunc main() {}\n", encoding="utf-8")
+    cfg_go = _bundled()
+    cfg_go["global"]["exclude"] = ["helper.go"]
+    _write(target, cfg_go, "vibeharness.yaml")
+    assert _run_cli(monkeypatch, "-t", str(target), "-o", str(report_md)) == 3
+    (target / "helper.go").unlink()
+
     cfg_noop = _bundled()
     cfg_noop["global"]["exclude"] = ["vendor/*"]
     _write(target, cfg_noop, "vibeharness.yaml")

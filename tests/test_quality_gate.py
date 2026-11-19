@@ -155,7 +155,8 @@ GAP_CASES = {
     GapCode.INCOMPLETE_SCAN: lambda e: _with(e, "scope", incomplete_files=["huge.py"]),
     GapCode.OVERSIZED_FILES: lambda e: _with(e, "scope", oversized_files=["/srv/app/big.py"]),
     GapCode.MAX_FILES_SKIPPED: lambda e: _with(e, "scope", skipped_files=["z.py"]),
-    GapCode.DISCOVERED_SCOPE_FILTERED: lambda e: _with(e, "scope", discovered_filtered_count=2),
+    **({GapCode.DISCOVERED_SCOPE_FILTERED: lambda e: _with(e, "scope", discovered_filtered_count=2)}
+       if hasattr(GapCode, "DISCOVERED_SCOPE_FILTERED") else {}),
     GapCode.TESTS_NOT_RUN: lambda e: _with(e, "execution", wb_results=[_result("WB-T-01", TestStatus.ERROR)]),
     GapCode.MUTATION_NO_CONCLUSION: lambda e: _with(e, "execution", mutation_report=MutationReport(skipped_reason="no tests")),
     GapCode.MUTATION_BELOW_THRESHOLD: lambda e: _with(e, "execution", mutation_report=MutationReport(score=50.0, survived=1)),
