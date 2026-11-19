@@ -318,7 +318,7 @@ MultiAgentGama/
 │   ├── test_r4_behaviour.py            # Fourth review round: Action inputs that defer to the config, derived report name, prep-step validation, model strings pinned in discovered configs, no abbreviated flags, null keeping the defaults
 │   ├── test_r5_action_cli.py           # Fifth review round: the Action's verdict only from the audit summary, extra-args checked with the CLI parser, outputs only for written files, --init-config never follows symlinks, non-UTF-8 stdout
 │   ├── test_r5_coverage_gaps.py        # Coverage gaps of baseline.py and the stable sandbox.py helpers, through public functions
-│   ├── test_r5_gateway_harness.py      # litellm callback params reserved, previous bundled models, no cost-map fetch, model_alias checked, null docker_* keys, discovered configs only lower spend
+│   ├── test_r5_gateway_harness.py      # litellm callback params reserved, previous bundled models, no cost-map fetch, model_alias checked, null docker_* keys, discovered configs only lower spend, pin reviewer prompt fields and disclose scope filtering
 │   ├── test_r5_languages_secrets.py    # Unsupported-language files as an evidence gap, local secret scan of config-like files
 │   ├── test_r5_sandbox_coverage.py     # Safe report read-back, run dir handed to nobody (0700), POSIX backslashes, one include per spelling, docker output caps
 │   ├── test_r6_review.py               # Sixth review round: non-ASCII text and paths, a symlinked target, baseline keys, the estimate and the blame of a per-test rerun

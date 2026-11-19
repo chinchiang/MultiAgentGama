@@ -318,7 +318,7 @@ MultiAgentGama/
 │   ├── test_r4_behaviour.py            # 第四輪審查：交給設定檔決定的 Action input、推導的報告名稱、prep step 驗證、自動發現設定檔的模型字串固定、不接受縮寫旗標、null 保留預設值
 │   ├── test_r5_action_cli.py           # 第五輪審查：Action 的判定只取自稽核摘要、extra-args 以 CLI 的解析器檢查、outputs 只指向寫出的檔案、--init-config 不跟隨符號連結、非 UTF-8 的 stdout
 │   ├── test_r5_coverage_gaps.py        # baseline.py 與 sandbox.py 穩定輔助函式的涵蓋率缺口（只經由公開函式）
-│   ├── test_r5_gateway_harness.py      # 保留 litellm 的 callback 參數、先前版本的內建模型、不抓價格表、檢查 model_alias、docker_* 的 null、自動發現的設定檔只能調低花費
+│   ├── test_r5_gateway_harness.py      # 保留 litellm 的 callback 參數、先前版本的內建模型、不抓價格表、檢查 model_alias、docker_* 的 null、自動發現的設定檔只能調低花費且固定審查者提示欄位並揭露範圍篩選
 │   ├── test_r5_languages_secrets.py    # 不支援語言的檔案列為證據缺口、設定類檔案的本機密鑰掃描
 │   ├── test_r5_sandbox_coverage.py     # 安全讀回報告、執行目錄交給 nobody（0700）、POSIX 的反斜線、每種寫法一個 include、docker 輸出上限
 │   ├── test_r6_review.py               # 第六輪審查：非 ASCII 文字與路徑、symlink 目標、基準線鍵、估算與逐測重跑的錯誤歸因

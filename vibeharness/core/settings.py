@@ -649,6 +649,14 @@ class ScopeSettings:
     untrusted_include: bool = False
     untrusted_exclude: bool = False
 
+    def trusted_baseline(self) -> Optional[Tuple[Tuple[str, ...], Tuple[str, ...]]]:
+        """有來自自動發現設定檔且未經 CLI 覆寫的篩選樣式時，回傳受信任的 (include, exclude) 基準；否則為 None。
+        The trusted (include, exclude) baseline when an un-overridden discovered filter is active; None otherwise."""
+        if not (self.untrusted_include or self.untrusted_exclude):
+            return None
+        return (() if self.untrusted_include else self.include,
+                () if self.untrusted_exclude else self.exclude)
+
 
 @dataclass(frozen=True)
 class Settings:
