@@ -291,10 +291,13 @@ _PREVIOUS_BUNDLED_MODELS: Dict[str, Dict[str, FrozenSet[str]]] = {
 _DISCOVERED_COST_LIMIT_KEYS = ("max_model_calls", "max_concurrent_calls", "max_output_tokens", "retry_invalid_output",
                                "max_retries", "max_files", "max_file_bytes")
 _ZERO_MEANS_DEFAULT_KEYS = frozenset({"max_model_calls", "max_concurrent_calls", "max_files", "max_file_bytes"})
-# 每個 whitebox_reviewer_* 代理都會審查每個符號，新增一個就多一整輪付費呼叫；驗證者則依模型別名去重，數量有上限
-# Every whitebox_reviewer_* agent reviews every symbol, so a new one adds a whole round of paid calls; verifiers are
-# de-duplicated per model alias, so their number is bounded
+# 每個 whitebox_reviewer_* 代理都會審查每個符號，新增一個就多一整輪付費呼叫；其 name 與 focus 會直接拼入系統提示詞，
+# 自動發現的設定檔只能沿用同一代理的內建值（或省略／設為 null）；驗證者則依模型別名去重，數量有上限
+# Every whitebox_reviewer_* agent reviews every symbol, so a new one adds a whole round of paid calls, and its name
+# and focus are interpolated straight into its system prompt, so a discovered config may only keep the bundled values
+# of that agent (or omit / null them); verifiers are de-duplicated per model alias, so their number is bounded
 _DISCOVERED_REVIEWER_PREFIX = "whitebox_reviewer_"
+_DISCOVERED_PINNED_REVIEWER_KEYS = frozenset({"name", "focus"})
 
 
 def _builtin_cost_default(key: str) -> Optional[int]:
@@ -347,7 +350,7 @@ def discovered_config_violations(config: Dict[str, Any], reference: Dict[str, An
     models 區段只能使用預設設定裡已有的別名（新別名記為 "models.<alias>"）；每個別名的 model、fallback_model、
     api_key_env 與端點鍵都必須與預設設定中「同一個別名」的值相同，或是先前版本內建設定的同一別名值
     （_PREVIOUS_BUNDLED_MODELS；不能把 ANTHROPIC_API_KEY 接到別的供應商）。agent 仍可在內建別名之間重新指派，
-    但不能新增 whitebox_reviewer_* 代理。花費相關的設定只能調低：execution_mode 不能是 live，
+    但不能新增 whitebox_reviewer_* 代理，也不能自訂其 name 或 focus。花費相關的設定只能調低：execution_mode 不能是 live，
     _DISCOVERED_COST_LIMIT_KEYS 與 models.<alias>.max_output_tokens 的實際值（省略或 null 即 harness 預設值）不能高於預設設定。
     The places where the discovered `config` sets a security-sensitive key (e.g. "global.docker_bin"), sorted;
     an empty list means the config may be used. A value equal to `reference` (the bundled default), null and
@@ -356,9 +359,9 @@ def discovered_config_violations(config: Dict[str, Any], reference: Dict[str, An
     api_key_env and endpoint keys must equal the default config's value for the same alias, or a previous release's
     bundled value for that alias (_PREVIOUS_BUNDLED_MODELS; so ANTHROPIC_API_KEY cannot be wired to another
     provider). Agents may still be reassigned among the bundled aliases, but no whitebox_reviewer_* agent may be
-    added. Cost-related settings may only be lowered: execution_mode must not be live, and neither the
-    _DISCOVERED_COST_LIMIT_KEYS nor models.<alias>.max_output_tokens may exceed the default config in effect (omitted or
-    null means the harness default)."""
+    added and its name and focus may not be customized. Cost-related settings may only be lowered: execution_mode must
+    not be live, and neither the _DISCOVERED_COST_LIMIT_KEYS nor models.<alias>.max_output_tokens may exceed the default
+    config in effect (omitted or null means the harness default)."""
     problems: List[str] = []
     ref_global = reference.get("global") or {}
     cfg_global = config.get("global") or {}
@@ -406,9 +409,18 @@ def discovered_config_violations(config: Dict[str, Any], reference: Dict[str, An
                 continue
             problems.append(f"models.{alias}.{key}")
     ref_agents = reference.get("agents") or {}
-    for agent_id in (config.get("agents") or {}):
-        if str(agent_id).startswith(_DISCOVERED_REVIEWER_PREFIX) and agent_id not in ref_agents:
+    for agent_id, meta in (config.get("agents") or {}).items():
+        if not str(agent_id).startswith(_DISCOVERED_REVIEWER_PREFIX):
+            continue
+        if agent_id not in ref_agents:
             problems.append(f"agents.{agent_id}")
+            continue
+        ref_meta = ref_agents.get(agent_id) or {}
+        if isinstance(meta, dict):
+            for key, value in meta.items():
+                key = str(key)
+                if value is not None and key in _DISCOVERED_PINNED_REVIEWER_KEYS and value != ref_meta.get(key):
+                    problems.append(f"agents.{agent_id}.{key}")
     return sorted(problems)
 
 
@@ -632,6 +644,18 @@ class ScopeSettings:
     include: Tuple[str, ...] = ()
     exclude: Tuple[str, ...] = ()
     changed_since: Optional[str] = None
+    # 來自自動發現設定檔且未經 CLI 覆寫的篩選樣式；實際排除檔案時記為證據缺口
+    # Filter patterns from a discovered config not overridden on the CLI; recorded as an evidence gap when they exclude files
+    untrusted_include: bool = False
+    untrusted_exclude: bool = False
+
+    def trusted_baseline(self) -> Optional[Tuple[Tuple[str, ...], Tuple[str, ...]]]:
+        """有來自自動發現設定檔且未經 CLI 覆寫的篩選樣式時，回傳受信任的 (include, exclude) 基準；否則為 None。
+        The trusted (include, exclude) baseline when an un-overridden discovered filter is active; None otherwise."""
+        if not (self.untrusted_include or self.untrusted_exclude):
+            return None
+        return (() if self.untrusted_include else self.include,
+                () if self.untrusted_exclude else self.exclude)
 
 
 @dataclass(frozen=True)
@@ -692,6 +716,12 @@ def load_settings(path: str, *, origin: Origin, overrides: Optional[Overrides] =
         scope = replace(scope, include=tuple(overrides.include))
     if overrides.exclude is not None:
         scope = replace(scope, exclude=tuple(overrides.exclude))
+    if origin == "discovered":
+        scope = replace(
+            scope,
+            untrusted_include=overrides.include is None and bool(scope.include),
+            untrusted_exclude=overrides.exclude is None and bool(scope.exclude),
+        )
     if overrides.changed_since:
         scope = replace(scope, changed_since=overrides.changed_since)
     if overrides.cache_dir:

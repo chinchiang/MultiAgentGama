@@ -6,7 +6,7 @@
 
 設定檔分三大區段：**`global`**（執行與沙盒參數）、**`models`**（模型提供者定義）、**`agents`**（各 Agent 的模型路由）。找不到設定檔或 YAML 損壞會直接報錯（`ConfigError`，CLI 以 exit code 5 中止）；`--config` 指向目錄、無法讀取或二進位檔，最上層不是 mapping，`global`／`models`／`agents` 區段不是 mapping，或 `models.<alias>`／`agents.<id>` 項目不是 mapping，也一樣，不會用讀錯的設定執行。空檔案或空的 `global:` 區段代表使用預設值。
 
-要用哪個設定檔的優先序：`--config <路徑>` ＞ 目前目錄的 `./vibeharness.yaml` ＞ `./.vibeharness.yaml` ＞ 套件內的 `vibeharness/config/agents_config.yaml`；CLI 啟動時會在 stderr 印出採用的設定檔與來源（報告的 Config 欄位也記錄路徑）。探索到的檔案與 `--config` 一樣受驗證，損壞即 exit 5。`vibeharness --init-config [PATH]` 把套件內的預設設定複製到 PATH（預設 `./vibeharness.yaml`）後以 exit 0 結束，已存在的檔案不覆寫（exit 5），除非加上 `--force`；目標是符號連結（不論是否懸空）、目錄或其他不是一般檔案的東西時，即使加上 `--force` 也拒絕（exit 5）。**資安**：在不受信任的 checkout 裡執行時，該 checkout 的 `vibeharness.yaml` 會被自動載入，所以自動發現的檔案（不是以 `--config` 指定的）不得設定安全敏感的鍵；設定了就以 exit 5 拒絕，並說明信任該檔案時請以 `--config` 指定，若是較舊或較新版本寫出的覆本則以 `--init-config <PATH> --force` 重新產生。除非與套件內建預設相同（或為 null），以下都會被拒絕：`global` 的可執行檔路徑（`docker_bin`、`node_bin` 等任何 `*_bin`）、`docker_*`、`node_*`、`sandbox_provider`／`sandbox_node_provider`（允許 `local_subprocess` 與 `docker`）與 `cache_dir`（預先放好的快取會被當成 live 回答）；每個模型的 `api_base`、`base_url`、`model`、`fallback_model`、`api_key_env`（都必須與內建設定的同一別名相同，或是先前版本內建設定的同一別名值，所以舊版 `--init-config` 寫出的覆本照樣可用；內建設定沒有的新別名也會被拒絕，agent 仍可改指到其他內建別名，但不能新增 `whitebox_reviewer_*` agent）、`aws_*`、`extra_params`，以及任何像端點或憑證的鍵。花費相關的設定只能調低：`execution_mode` 只能是 `hybrid`（內建值）或 `mock`，`max_model_calls`、`max_concurrent_calls`、`max_output_tokens`（含每個模型的）、`retry_invalid_output`、`max_retries`、`max_files`、`max_file_bytes` 的實際值都不能高於內建設定（自動發現的檔案整份取代內建設定，省略或 `null` 即 harness 預設值；內建的 `max_model_calls` 是 `null`，不限制，所以任何值都可以）。範圍與其他設定仍可由自動發現的檔案改變，所以不受信任的 checkout 請明確指定 `--config`。相對路徑的 `*_bin`（例如 `./node`）即使以 `--config` 指定也會印出警告：它相對於目前目錄解析，請用絕對路徑或 PATH 上的名稱。GitHub Action 一律會帶 `--config`（`extra-args` 沒指定時用套件內建的設定）。
+要用哪個設定檔的優先序：`--config <路徑>` ＞ 目前目錄的 `./vibeharness.yaml` ＞ `./.vibeharness.yaml` ＞ 套件內的 `vibeharness/config/agents_config.yaml`；CLI 啟動時會在 stderr 印出採用的設定檔與來源（報告的 Config 欄位也記錄路徑）。探索到的檔案與 `--config` 一樣受驗證，損壞即 exit 5。`vibeharness --init-config [PATH]` 把套件內的預設設定複製到 PATH（預設 `./vibeharness.yaml`）後以 exit 0 結束，已存在的檔案不覆寫（exit 5），除非加上 `--force`；目標是符號連結（不論是否懸空）、目錄或其他不是一般檔案的東西時，即使加上 `--force` 也拒絕（exit 5）。**資安**：在不受信任的 checkout 裡執行時，該 checkout 的 `vibeharness.yaml` 會被自動載入，所以自動發現的檔案（不是以 `--config` 指定的）不得設定安全敏感的鍵；設定了就以 exit 5 拒絕，並說明信任該檔案時請以 `--config` 指定，若是較舊或較新版本寫出的覆本則以 `--init-config <PATH> --force` 重新產生。除非與套件內建預設相同（或為 null），以下都會被拒絕：`global` 的可執行檔路徑（`docker_bin`、`node_bin` 等任何 `*_bin`）、`docker_*`、`node_*`、`sandbox_provider`／`sandbox_node_provider`（允許 `local_subprocess` 與 `docker`）與 `cache_dir`（預先放好的快取會被當成 live 回答）；每個模型的 `api_base`、`base_url`、`model`、`fallback_model`、`api_key_env`（都必須與內建設定的同一別名相同，或是先前版本內建設定的同一別名值，所以舊版 `--init-config` 寫出的覆本照樣可用；內建設定沒有的新別名也會被拒絕，agent 仍可改指到其他內建別名，但不能新增 `whitebox_reviewer_*` agent，也不能自訂其 `name` 或 `focus`）、`aws_*`、`extra_params`，以及任何像端點或憑證的鍵。花費相關的設定只能調低：`execution_mode` 只能是 `hybrid`（內建值）或 `mock`，`max_model_calls`、`max_concurrent_calls`、`max_output_tokens`（含每個模型的）、`retry_invalid_output`、`max_retries`、`max_files`、`max_file_bytes` 的實際值都不能高於內建設定（自動發現的檔案整份取代內建設定，省略或 `null` 即 harness 預設值；內建的 `max_model_calls` 是 `null`，不限制，所以任何值都可以）。自動發現的檔案以 `include`／`exclude` 實際排除了目標檔案時（除非由 CLI `--include`／`--exclude` 覆蓋），會記為證據缺口（判定最多為 `INCONCLUSIVE`，絕不是 `READY_TO_SHIP`）；其他設定仍可由自動發現的檔案改變，所以不受信任的 checkout 請明確指定 `--config`。相對路徑的 `*_bin`（例如 `./node`）即使以 `--config` 指定也會印出警告：它相對於目前目錄解析，請用絕對路徑或 PATH 上的名稱。GitHub Action 一律會帶 `--config`（`extra-args` 沒指定時用套件內建的設定）。
 
 CLI 啟動時可用 `--config <路徑>` 改用其他設定檔、`--mode` 覆蓋 `execution_mode`（優先序：CLI `--mode` ＞ `global.execution_mode` ＞ 預設 `hybrid`）；`--max-files`、`--max-model-calls` 同樣覆蓋對應的 `global` 欄位。
 
@@ -23,8 +23,8 @@ CLI 啟動時可用 `--config <路徑>` 改用其他設定檔、`--mode` 覆蓋 
 | `max_model_calls` | `null`（不限） | 成本護欄：每次執行最多幾次真實模型呼叫（同一次呼叫內 litellm 的重試與 `fallback_model` 不另計）。用完後 `hybrid` 改走模擬引擎、列為證據缺口（判定不會是 `READY_TO_SHIP`）；`live` 直接擲出 `LLMGatewayError`（exit 4）。須為非負整數，`0` 等同不限 |
 | `max_concurrent_calls` | `6` | 每個 Agent 階段（審查、驗證、白箱測試生成、威脅建模、黑箱攻擊合成）同時進行的模型呼叫上限；設 `1` 即完全循序。須為非負整數；`0`／`null` 維持 6，負數、bool 或非整數是 `ConfigError`（exit 5） |
 | `max_file_bytes` | `1000000` | 單一原始碼檔案的大小上限（bytes），超過的檔案不分析並列入證據缺口（minified bundle、產生碼）。只在本機做 VH-AI-007 密鑰掃描的設定類檔案（`.env`、YAML、JSON、TOML、`Dockerfile`、Terraform 等；每次最多 200 個）也受同一上限約束，超過的同樣列為證據缺口。須為非負整數，`0`／`null` 等同預設 |
-| `include` | `[]` | 單一 glob 字串或 glob 清單，只分析相對於 `--target` 的路徑或檔名符合其一的檔案（例如 `["src/*"]`）；空清單＝全部。在本機做密鑰掃描的設定類檔案，以及計入證據缺口的不支援語言檔案，也依同樣的篩選。CLI `--include` 會整個覆蓋此清單；空字串或非字串的項目是 `ConfigError`（exit 5） |
-| `exclude` | `[]` | 單一 glob 字串或 glob 清單，符合其一的檔案不分析（例如 `["tests/*", "vendor/*", "*.min.js"]`；exclude 的 `vendor` 或 `vendor/` 也匹配整個目錄）；被排除的檔案不算證據缺口。CLI `--exclude` 會整個覆蓋；空字串或非字串的項目是 `ConfigError`（exit 5） |
+| `include` | `[]` | 單一 glob 字串或 glob 清單，只分析相對於 `--target` 的路徑或檔名符合其一的檔案（例如 `["src/*"]`）；空清單＝全部。在本機做密鑰掃描的設定類檔案，以及計入證據缺口的不支援語言檔案，也依同樣的篩選。CLI `--include` 會整個覆蓋此清單；若來自自動發現的設定檔且實際排除了檔案（未由 `--config` 或 CLI `--include` 指定），記為證據缺口；空字串或非字串的項目是 `ConfigError`（exit 5） |
+| `exclude` | `[]` | 單一 glob 字串或 glob 清單，符合其一的檔案不分析（例如 `["tests/*", "vendor/*", "*.min.js"]`；exclude 的 `vendor` 或 `vendor/` 也匹配整個目錄）；以 `--config` 或 CLI `--exclude` 明確排除的檔案不算證據缺口，自動發現的設定檔實際排除的檔案則算證據缺口。CLI `--exclude` 會整個覆蓋；空字串或非字串的項目是 `ConfigError`（exit 5） |
 | `cache_dir` | `null`（關閉） | 回應快取目錄（不存在會建立）：可用的 live 回應以模型、設定（含端點：`api_base`、`aws_region_name`、`aws_profile_name`、`api_key_env`）與提示為 key 存成 JSON，之後相同的提示直接取用，不呼叫供應商、不扣 `max_model_calls`；報告「執行來源 ／ Execution Provenance」標為「真實（回應快取） ／ live (response cache)」。CLI `--cache-dir` 會覆蓋。CLI `--cache-only` 只從此快取（或 `--cache-dir`）取用、絕不呼叫供應商，也不重問；快取沒有的呼叫列為證據缺口（`hybrid` 改走模擬，`live` 以 exit 4 中止），沒有快取目錄時 `--cache-only` 是 exit 5；`mock` 模式不讀快取，`--cache-only` 沒有作用，CLI 會印出警告後照常執行。`--estimate` 搭配 `--cache-only` 時最大呼叫數不乘重問次數（不會重問）。目錄內是模型原始回應（可能引用待審程式碼），請比照報告保管 |
 | `retry_invalid_output` | `1` | 模型回應無法使用（非 JSON、缺欄位、空回應）時再問幾次（提示會說明上次的問題）才記為 `invalid`；每次重問都是真實呼叫、計入 `max_model_calls`，報告「執行來源 ／ Execution Provenance」以「無法使用，已重問 ／ unusable, re-asked」列出。`null` 等同未設定（用預設值），`0` 關閉；須為 0–5 的整數 |
 | `max_files` | `50` | 每次分析的原始碼檔案上限，超出的檔案列入證據缺口（判定不會是 `READY_TO_SHIP`）。須為非負整數，`0`／`null` 等同預設；負數或非整數啟動即報 `ConfigError`（exit 5） |
@@ -98,8 +98,8 @@ CLI 啟動時可用 `--config <路徑>` 改用其他設定檔、`--mode` 覆蓋 
 | :--- | :--- | :--- |
 | `model_alias` | 無（解析為 `unconfigured`） | 指向 `models` 區段的別名；**這是實際生效的模型路由欄位**。省略、`null` 或 `unconfigured` 時沒有模型也沒有金鑰：`hybrid` 以模擬引擎執行該 agent，`live` 擲出 `LLMGatewayError`；指向 `models` 區段不存在的別名（打錯字）在啟動時就是 `ConfigError`（exit 5） |
 | `temperature` | `0.2` | 取樣溫度（驗證投票類的 agent 建議 `0.0`）；須為 0–2 的數字（啟動時驗證）；`null` 同省略（`0.2`）。送出時帶 litellm 的 `drop_params=True`，不支援它（或只接受固定值）的模型會直接丟掉這個參數，而不是讓呼叫失敗 |
-| `name` | — | `whitebox_reviewer_*`：審查者名稱，用於其提示詞與報告（「Identified by ...」）；其他 agent 僅供說明 |
-| `focus` | — | `whitebox_reviewer_*`：審查焦點，**會放進該審查者的提示詞**（預設為「General correctness and security defects」） |
+| `name` | — | `whitebox_reviewer_*`：審查者名稱，用於其提示詞與報告（「Identified by ...」；自動發現的設定檔不得改成內建值以外的內容）；其他 agent 僅供說明 |
+| `focus` | — | `whitebox_reviewer_*`：審查焦點，**會放進該審查者的提示詞**（預設為「General correctness and security defects」；自動發現的設定檔不得改成內建值以外的內容） |
 | `role` | — | 說明性欄位，程式不讀取 |
 
 ### 實際生效範圍（重要）
@@ -201,7 +201,7 @@ agents:
     temperature: 0.0
 ```
 
-agent 沒有 `model_alias`（或為 `null`）時，會解析為 `unconfigured`（沒有模型也沒有金鑰）：`hybrid` 改用模擬引擎並在報告中標示，`live` 直接擲出 `LLMGatewayError`（exit 4）。`model_alias` 指向 `models` 區段不存在的別名（例如拼錯）在啟動時就以 `ConfigError` 結束（exit 5），不會在付費呼叫之後才中途失敗。絕不會默默改走其他供應商。`my_model` 這種新別名與新的 `whitebox_reviewer_*` 只能放在以 `--config` 指定的檔案裡：自動發現的 `./vibeharness.yaml` 新增模型別名或審查者（或改了內建別名的模型字串）會以 exit 5 結束。
+agent 沒有 `model_alias`（或為 `null`）時，會解析為 `unconfigured`（沒有模型也沒有金鑰）：`hybrid` 改用模擬引擎並在報告中標示，`live` 直接擲出 `LLMGatewayError`（exit 4）。`model_alias` 指向 `models` 區段不存在的別名（例如拼錯）在啟動時就以 `ConfigError` 結束（exit 5），不會在付費呼叫之後才中途失敗。絕不會默默改走其他供應商。`my_model` 這種新別名、新的 `whitebox_reviewer_*`，以及自訂的審查者 `name`／`focus` 都只能放在以 `--config` 指定的檔案裡：自動發現的 `./vibeharness.yaml` 新增模型別名或審查者、改了審查者 `name`／`focus`，或改了內建別名的模型字串，都會以 exit 5 結束。
 
 ---
 

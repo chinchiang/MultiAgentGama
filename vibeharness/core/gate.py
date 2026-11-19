@@ -39,6 +39,7 @@ class GapCode(str, Enum):
     INCOMPLETE_SCAN = "incomplete_scan"
     OVERSIZED_FILES = "oversized_files"
     MAX_FILES_SKIPPED = "max_files_skipped"
+    DISCOVERED_SCOPE_FILTERED = "discovered_scope_filtered"
     TESTS_NOT_RUN = "tests_not_run"
     MUTATION_NO_CONCLUSION = "mutation_no_conclusion"
     MUTATION_BELOW_THRESHOLD = "mutation_below_threshold"
@@ -100,6 +101,7 @@ class ScopeDisclosure:
     unsupported_files: Sequence[str] = ()  # 樣本 ／ a sample
     incomplete_files: Sequence[str] = ()
     config_files_not_fully_scanned: Sequence[str] = ()
+    discovered_filtered_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -270,6 +272,13 @@ def _evidence_gaps(evidence: GateEvidence) -> List[EvidenceGap]:
         gap(GapCode.MAX_FILES_SKIPPED, bi(
             f"{n_skip} 個原始碼檔案因 max_files 上限（{limits.max_files}）而被略過",
             f"{n_skip} source file(s) were skipped by the max_files limit ({limits.max_files})"
+        ))
+    if scope.discovered_filtered_count > 0:
+        n_disc = scope.discovered_filtered_count
+        gap(GapCode.DISCOVERED_SCOPE_FILTERED, bi(
+            f"自動發現的設定檔排除了 {n_disc} 個檔案，未納入稽核範圍；若信任該設定檔的範圍，請以 --config 明確指定",
+            f"The discovered config excluded {n_disc} file(s) from the audit scope; "
+            "pass --config explicitly if that scope is trusted"
         ))
     not_run = len(evidence.tally.whitebox_not_run.all) + len(evidence.tally.blackbox_not_run.all)
     if not_run:

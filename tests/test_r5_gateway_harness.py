@@ -377,3 +377,122 @@ def test_a_discovered_live_config_exits_5_but_an_explicit_one_is_trusted(monkeyp
     assert _run_cli(monkeypatch, "-t", str(tmp_path), "--estimate") == 5
     assert "global.execution_mode" in capsys.readouterr().err
     assert _run_cli(monkeypatch, "-t", str(tmp_path), "--estimate", "--config", str(tmp_path / "vibeharness.yaml")) == 0
+
+
+def test_a_discovered_config_cannot_customize_reviewer_prompt_fields(monkeypatch, tmp_path, capsys):
+    """自動發現的設定檔不得自訂 whitebox_reviewer_* 的 name 或 focus（會直接拼入系統提示詞）；null、省略與內建值仍允許。
+    A discovered config may not customize a whitebox_reviewer_* agent's name or focus (interpolated into its system
+    prompt); null, omission and the bundled values remain allowed (#169)."""
+    reference = _bundled()
+    bundled_claude = reference["agents"]["whitebox_reviewer_claude"]
+    assert discovered_config_violations({"agents": {
+        "whitebox_reviewer_claude": {"model_alias": "gemini", "name": None, "focus": bundled_claude["focus"]},
+        "whitebox_reviewer_glm": {"model_alias": "claude"},
+    }}, reference) == []
+    assert discovered_config_violations({"agents": {
+        "whitebox_reviewer_claude": {"name": "Custom Reviewer"},
+        "whitebox_reviewer_glm": {"focus": "Only check formatting"},
+    }}, reference) == ["agents.whitebox_reviewer_claude.name", "agents.whitebox_reviewer_glm.focus"]
+
+    cfg = _bundled()
+    cfg["agents"]["whitebox_reviewer_claude"]["focus"] = "Only check formatting"
+    _write(tmp_path, cfg, "vibeharness.yaml")
+    monkeypatch.chdir(tmp_path)
+    assert _run_cli(monkeypatch, "-t", str(tmp_path), "--estimate") == 5
+    assert "agents.whitebox_reviewer_claude.focus" in capsys.readouterr().err
+    assert _run_cli(monkeypatch, "-t", str(tmp_path), "--estimate", "--config", str(tmp_path / "vibeharness.yaml")) == 0
+
+
+def test_a_discovered_config_that_filters_files_blocks_ready_to_ship_until_explicit(fake_live, monkeypatch, tmp_path):
+    """自動發現的設定檔以 include／exclude 排除目標檔案（原始碼或設定檔）時，CLI 最多回 INCONCLUSIVE（exit 3），
+    絕不給 READY_TO_SHIP（exit 0）；改傳 --config 或由 CLI 明確指定篩選條件時才允許 READY_TO_SHIP（#169）。
+    When a discovered config excludes target files (source or config) via include / exclude, the CLI returns at best
+    INCONCLUSIVE (exit 3), never READY_TO_SHIP (exit 0); passing --config or overriding the filter on the CLI allows
+    READY_TO_SHIP (#169)."""
+    def responder(system, user):
+        if "white-box AI code auditor" in system:
+            if "(Claude)" in system:
+                return json.dumps({"findings": [{
+                    "symbol_name": "greet", "severity": "LOW", "title": "check none", "description": "d",
+                    "root_cause": "r", "suspected_vibe_flaw": "v", "suggested_test_scenario": "greet(None)",
+                }]})
+            return json.dumps({"findings": []})
+        if "code-review verifier" in system:
+            return json.dumps({"verdicts": [{"index": 0, "verdict": "confirm", "reason": "ok"}]})
+        if "QA Engineer" in system:
+            return json.dumps({"tests": [{
+                "title": "none",
+                "code": "import pytest\nfrom safe import greet\n\ndef test_none():\n"
+                        "    with pytest.raises(ValueError):\n        greet(None)\n",
+            }]})
+        if "Threat Modeling Specialist" in system:
+            return json.dumps({"threats": [{
+                "threat_id": "THREAT-01", "stride_category": "Tampering", "title": "none input",
+                "description": "d", "asset_at_risk": "a", "attack_vector": "greet",
+                "trust_boundary_crossed": "b", "severity": "MEDIUM",
+                "attack_scenario": "s", "test_verification_goal": "g",
+            }]})
+        if "Offensive Security" in system:
+            return json.dumps({
+                "code": "import pytest\nfrom safe import greet\n\ndef test_defended():\n"
+                        "    with pytest.raises(ValueError):\n        greet(None)\n",
+            })
+        return "{}"
+
+    fake_live(responder)
+    target = tmp_path / "proj"
+    target.mkdir()
+    (target / "safe.py").write_text(
+        "def greet(name):\n    if name is None:\n        raise ValueError('required')\n    return 'hi ' + name\n",
+        encoding="utf-8",
+    )
+    (target / "vuln.py").write_text("import pickle\ndef load(b):\n    return pickle.loads(b)\n", encoding="utf-8")
+    (target / ".env").write_text("OPENAI_API_KEY=sk-proj-1234567890abcdef1234567890abcdef\n", encoding="utf-8")
+    cfg = _bundled()
+    cfg["global"]["exclude"] = ["vuln.py", ".env"]
+    cfg_path = _write(target, cfg, "vibeharness.yaml")
+    summary_json = tmp_path / "summary.json"
+    report_md = tmp_path / "report.md"
+
+    monkeypatch.chdir(target)
+    code = _run_cli(monkeypatch, "-t", str(target), "-o", str(report_md), "--summary-json", str(summary_json))
+    assert code == 3
+    summary = json.loads(summary_json.read_text(encoding="utf-8"))
+    assert summary["verdict"] == "INCONCLUSIVE"
+    assert any("discovered config excluded 2 file(s)" in r for r in summary["inconclusive_reasons"])
+
+    # 部分 CLI 覆寫（只傳 --include，未覆寫 exclude）：vuln.py 仍由探索到的 exclude 排除 -> 仍是 exit 3
+    # Partial CLI override (--include only, leaving exclude from the discovered config): vuln.py is still excluded -> exit 3
+    assert _run_cli(monkeypatch, "-t", str(target), "-o", str(report_md), "--include", "*.py") == 3
+
+    # 明確傳入 --config：使用者信任該設定檔範圍 -> READY_TO_SHIP（exit 0）
+    # Explicit --config: the user trusts that config's scope -> READY_TO_SHIP (exit 0)
+    assert _run_cli(monkeypatch, "-t", str(target), "-o", str(report_md), "--config", cfg_path) == 0
+
+    # 由 CLI 明確覆寫 --exclude：排除條件來自使用者本人 -> READY_TO_SHIP（exit 0）
+    # Explicit CLI --exclude override: the exclusion comes from the user -> READY_TO_SHIP (exit 0)
+    assert _run_cli(
+        monkeypatch, "-t", str(target), "-o", str(report_md), "--exclude", "vuln.py", "--exclude", ".env"
+    ) == 0
+
+    # 自動發現的 include 白名單縮小範圍時同樣列為證據缺口；未實際排除任何檔案的樣式則不構成缺口
+    # A discovered include allowlist that narrows the scope is an evidence gap too; a non-matching pattern is not
+    cfg_inc = _bundled()
+    cfg_inc["global"]["include"] = ["safe.py"]
+    _write(target, cfg_inc, "vibeharness.yaml")
+    assert _run_cli(monkeypatch, "-t", str(target), "-o", str(report_md)) == 3
+    assert _run_cli(monkeypatch, "-t", str(target), "-o", str(report_md), "--include", "safe.py") == 0
+
+    (target / "vuln.py").unlink()
+    (target / ".env").unlink()
+    (target / "helper.go").write_text("package main\nfunc main() {}\n", encoding="utf-8")
+    cfg_go = _bundled()
+    cfg_go["global"]["exclude"] = ["helper.go"]
+    _write(target, cfg_go, "vibeharness.yaml")
+    assert _run_cli(monkeypatch, "-t", str(target), "-o", str(report_md)) == 3
+    (target / "helper.go").unlink()
+
+    cfg_noop = _bundled()
+    cfg_noop["global"]["exclude"] = ["vendor/*"]
+    _write(target, cfg_noop, "vibeharness.yaml")
+    assert _run_cli(monkeypatch, "-t", str(target), "-o", str(report_md)) == 0

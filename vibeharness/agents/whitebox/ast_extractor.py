@@ -6,7 +6,7 @@ import re
 from bisect import bisect_left, bisect_right
 from types import MappingProxyType
 from dataclasses import dataclass, field as dataclass_field
-from typing import AbstractSet, Dict, Iterable, List, Mapping, Optional, Set, Tuple, Union
+from typing import AbstractSet, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, Union
 from vibeharness.core.models import CodeSymbol
 from vibeharness.core.i18n import bi
 
@@ -265,7 +265,8 @@ class ScopeResult:
     skipped_files: Tuple[str, ...] = ()  # 超過 max_files ／ beyond max_files
     oversized_files: Tuple[str, ...] = ()  # 超過 max_file_bytes ／ over max_file_bytes
     parse_failures: Tuple[str, ...] = ()
-    filtered_out: int = 0  # 依要求排除的原始碼檔案（不是證據缺口） ／ source files left out by request (not a gap)
+    filtered_out: int = 0  # 被篩選條件排除的原始碼檔案（明確指定時不是證據缺口） ／ source files dropped by filters (not a gap when explicit)
+    discovered_filtered: int = 0  # 由自動發現設定檔排除的檔案（證據缺口） ／ files excluded by a discovered config (a gap)
     unsupported_count: int = 0
     # 唯讀的對照表 ／ a read-only mapping
     unsupported_languages: Mapping[str, int] = dataclass_field(default_factory=lambda: MappingProxyType({}))
@@ -299,11 +300,12 @@ class ASTExtractor:
         # 因超過 max_file_bytes 而被排除的檔案
         # Files left out because they exceed max_file_bytes
         self.oversized_files: List[str] = []
-        # 被 include/exclude 樣式或 only_files 篩選器排除的原始碼檔案（不是證據缺口：
-        # 是使用者要求排除它們的）
-        # Source files dropped by include/exclude patterns or the only_files filter (not evidence gaps:
-        # the user asked for them to be left out)
+        # 被 include/exclude 樣式或 only_files 篩選器排除的原始碼檔案（使用者明確指定時不是證據缺口）
+        # Source files dropped by include/exclude patterns or the only_files filter (not a gap when explicitly requested)
         self.filtered_out: int = 0
+        # 由自動發現設定檔未受信任的 include/exclude 樣式排除的檔案（證據缺口）
+        # Files dropped by untrusted include/exclude patterns from a discovered config (an evidence gap)
+        self.discovered_filtered: int = 0
         # 在 max_files 上限之內的原始碼檔案（靜態 AI 安全規則掃描的正是這些）
         # Source files within the max_files cap (the static AI-security rules scan exactly these)
         self.analyzed_files: List[str] = []
@@ -355,24 +357,28 @@ class ASTExtractor:
         self,
         dir_path: str,
         max_files: int = DEFAULT_MAX_FILES,
-        include: Optional[List[str]] = None,
-        exclude: Optional[List[str]] = None,
+        include: Optional[Sequence[str]] = None,
+        exclude: Optional[Sequence[str]] = None,
         only_files: Optional[Iterable[str]] = None,
         max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
         max_config_files: int = DEFAULT_MAX_CONFIG_FILES,
+        trusted_baseline: Optional[Tuple[Sequence[str], Sequence[str]]] = None,
     ) -> List[CodeSymbol]:
         """解析一個目錄樹（最多 max_files 個原始碼檔案）或單一原始碼檔案。
 
         `include` / `exclude` 是以相對於 dir_path 的路徑（正斜線；`**` 沒有特殊意義，fnmatch 的 `*`
         本來就能跨越目錄）比對的 glob 樣式，例如 `src/**/*.py` 或 `tests/*`。`only_files` 把走訪
-        限制在那些絕對路徑（例如 git diff 觸及的檔案）。大於 max_file_bytes 的檔案列在
-        `oversized_files` 中且不解析。
+        限制在那些絕對路徑（例如 git diff 觸及的檔案）。`trusted_baseline` 不為 None 時為受信任的
+        `(include, exclude)` 基準：通過基準卻被未受信任的自動發現篩選排除的檔案會計入 `discovered_filtered`
+        （證據缺口）。大於 max_file_bytes 的檔案列在 `oversized_files` 中且不解析。
         Parses a directory tree (up to max_files source files) or a single source file.
 
         `include` / `exclude` are glob patterns matched against the path relative to dir_path (forward
         slashes; `**` is not special, fnmatch's `*` already crosses directories), e.g. `src/**/*.py`
         or `tests/*`. `only_files` restricts the walk to those absolute paths (e.g. the files a git diff
-        touched). Files larger than max_file_bytes are listed in `oversized_files` and not parsed.
+        touched). When `trusted_baseline` is given, it is the trusted `(include, exclude)` baseline: files
+        kept by that baseline yet dropped by untrusted discovered filters are counted in `discovered_filtered`
+        (an evidence gap). Files larger than max_file_bytes are listed in `oversized_files` and not parsed.
 
         同樣的走訪規則（略過的目錄、隱藏目錄、include/exclude、only_files）也用來收集：不支援語言的原始碼檔案
         （`unsupported_*`，證據缺口）與只做本機密鑰掃描的設定類檔案（`config_files`，最多 max_config_files 個）。
@@ -382,7 +388,7 @@ class ASTExtractor:
         """
         self.detected_languages = set()
         self.parse_failures, self.skipped_files, self.analyzed_files = [], [], []
-        self.oversized_files, self.filtered_out = [], 0
+        self.oversized_files, self.filtered_out, self.discovered_filtered = [], 0, 0
         self.unsupported_count, self.unsupported_languages, self.unsupported_files = 0, {}, []
         self.config_files, self.skipped_config_files, self.oversized_config_files = [], [], []
         if os.path.isfile(dir_path):
@@ -405,10 +411,15 @@ class ASTExtractor:
                     continue
                 full = os.path.join(root, f)
                 rel = os.path.relpath(full, dir_path).replace(os.sep, "/")
-                if (wanted is not None and os.path.normcase(os.path.abspath(full)) not in wanted) \
-                        or not self._selected(rel, include, exclude):
+                if wanted is not None and os.path.normcase(os.path.abspath(full)) not in wanted:
                     if kind == "source":
                         self.filtered_out += 1
+                    continue
+                if not self._selected(rel, include, exclude):
+                    if kind == "source":
+                        self.filtered_out += 1
+                    if trusted_baseline is not None and self._selected(rel, *trusted_baseline):
+                        self.discovered_filtered += 1
                     continue
                 if kind != "source":
                     self._collect_other(full, kind, max_file_bytes, max_config_files)
@@ -448,21 +459,23 @@ class ASTExtractor:
         self,
         dir_path: str,
         max_files: int = DEFAULT_MAX_FILES,
-        include: Optional[List[str]] = None,
-        exclude: Optional[List[str]] = None,
+        include: Optional[Sequence[str]] = None,
+        exclude: Optional[Sequence[str]] = None,
         only_files: Optional[Iterable[str]] = None,
         max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
         max_config_files: int = DEFAULT_MAX_CONFIG_FILES,
+        trusted_baseline: Optional[Tuple[Sequence[str], Sequence[str]]] = None,
     ) -> Tuple[List[CodeSymbol], ScopeResult]:
         """parse_directory 的符號，加上這次走訪的範圍（不可變）。參數與 parse_directory 相同。
         parse_directory's symbols plus this walk's scope (immutable). Same arguments as parse_directory."""
         symbols = self.parse_directory(dir_path, max_files=max_files, include=include, exclude=exclude,
                                        only_files=only_files, max_file_bytes=max_file_bytes,
-                                       max_config_files=max_config_files)
+                                       max_config_files=max_config_files, trusted_baseline=trusted_baseline)
         return symbols, ScopeResult(
             analyzed_files=tuple(self.analyzed_files), skipped_files=tuple(self.skipped_files),
             oversized_files=tuple(self.oversized_files), parse_failures=tuple(self.parse_failures),
-            filtered_out=self.filtered_out, unsupported_count=self.unsupported_count,
+            filtered_out=self.filtered_out, discovered_filtered=self.discovered_filtered,
+            unsupported_count=self.unsupported_count,
             unsupported_languages=MappingProxyType(dict(self.unsupported_languages)),
             unsupported_files=tuple(self.unsupported_files),
             config_files=tuple(self.config_files), skipped_config_files=tuple(self.skipped_config_files),
@@ -508,7 +521,7 @@ class ASTExtractor:
             self.skipped_config_files.append(path)
 
     @staticmethod
-    def _selected(rel_path: str, include: Optional[List[str]], exclude: Optional[List[str]]) -> bool:
+    def _selected(rel_path: str, include: Optional[Sequence[str]], exclude: Optional[Sequence[str]]) -> bool:
         """include 樣式（若有）必須符合相對路徑或其基底檔名；exclude 樣式優先。
         include patterns (if any) must match the relative path or its basename; exclude patterns win."""
         name = rel_path.rsplit("/", 1)[-1]
