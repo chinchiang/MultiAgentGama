@@ -8,7 +8,7 @@ import textwrap
 from typing import Any, List, Mapping, Optional, Set, Tuple
 from vibeharness.core.models import ReviewFinding, GeneratedTest, CodeSymbol, text_or
 from vibeharness.core.llm_gateway import LLMGateway
-from vibeharness.core.codecheck import prepare_test_code, strip_code_fences
+from vibeharness.core.codecheck import prepare_test_code
 from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import (
     file_source, fence_language, import_instructions, language_for_file, module_import_name, target_root,
@@ -19,37 +19,25 @@ from vibeharness.core.agent_call import (
     AgentCall, Call, CallContext, CallKind, Channel, Content, Part, PlannedCalls, Untrusted, ask, ask_text, fan_out,
 )
 from vibeharness.core.identity import is_unknown_location
-from vibeharness.core.model_output import LIST_OF_OBJECTS, STRING, FieldType, OutputSchema
+from vibeharness.core.model_output import LIST_OF_OBJECTS, STRING, OutputSchema
 
 logger = logging.getLogger("VibeHarness.TestGenerator")
 
 
 def is_usable_test(item: Mapping[str, Any]) -> bool:
-    """模型寫的一項測試可以使用：有去除圍欄後非空的 `code`。測試生成器略過其他項目，閘道的形狀檢查也用同一個判斷。
-    A test item the model wrote is usable: it has non-empty `code` after stripping code fences. The test generator
-    skips the others, and the gateway's shape check uses the same rule."""
-    return bool(strip_code_fences(text_or(item.get("code"), "")))
+    """模型寫的一項測試可以使用：有非空的 `code`。測試生成器略過其他項目，閘道的形狀檢查也用同一個判斷。
+    A test item the model wrote is usable: it has non-empty `code`. The test generator skips the others, and the
+    gateway's shape check uses the same rule."""
+    return bool(text_or(item.get("code"), ""))
 
 
-def _code_field_problem(key: str, value: Any) -> Optional[str]:
-    str_problem = STRING.problem(key, value)
-    if str_problem is not None:
-        return str_problem
-    # 空字串（與 `{"tests": []}` 一樣代表「沒有產生測試」）合格；非空卻只含空圍欄則視為形狀錯誤以觸發重問
-    # An empty string (like `{"tests": []}`, meaning "no test produced") fits; a fence-only string is rejected so the
-    # gateway re-asks instead of caching an empty fence
-    if value.strip() and not is_usable_test({"code": value}):
-        return bi(f"欄位 '{key}' 需要非空的 code", f"field '{key}' needs non-empty code")
-    return None
-
-
-# 測試生成回答的形狀（core/model_output.py）：`tests` 物件清單（至少一項可用）或非空的頂層 `code` 字串，兩者之一合格即可
+# 測試生成回答的形狀（core/model_output.py）：`tests` 物件清單（至少一項可用）或單一的 `code` 字串，兩者之一合格即可
 # The shape of a test-generation answer (core/model_output.py): a `tests` list of objects (at least one usable) or a
-# non-empty top-level `code` string; either one fitting is enough
+# single `code` string; either one fitting is enough
 TESTS_SCHEMA = OutputSchema(any_of={
     "tests": LIST_OF_OBJECTS(usable=is_usable_test,
                              requirement=bi("每一項都要有非空的 code", "each item needs non-empty code")),
-    "code": FieldType("non-empty code", _code_field_problem),
+    "code": STRING,
 })
 
 # 每個發現所顯示目標原始碼的估計 token 預算

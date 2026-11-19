@@ -12,8 +12,8 @@ import logging
 import sys
 import os
 import traceback
-from typing import TYPE_CHECKING, Any, List, NoReturn, Optional, Tuple
-from vibeharness.core.settings import DISCOVERED_CONFIG_NAMES as _DISCOVERED_CONFIG_NAMES, resolve_config
+from typing import TYPE_CHECKING, Any, List, NoReturn
+from vibeharness.core.settings import DEFAULT_CONFIG_PATH, DISCOVERED_CONFIG_NAMES, resolve_config
 from vibeharness import __version__
 from vibeharness.core.i18n import bi
 from vibeharness.core.stdio import force_utf8_stdio
@@ -45,13 +45,6 @@ _LAZY_IMPORTS = {
     "estimate_run": ("vibeharness.core.estimate", "estimate_run"),
 }
 
-# 套件內的預設設定（與 llm_gateway.DEFAULT_CONFIG_PATH 相同）；在這裡計算，--init-config 不需要載入 harness 的相依套件
-# The bundled default config (the same as llm_gateway.DEFAULT_CONFIG_PATH); computed here so --init-config needs none
-# of the harness's dependencies
-DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "agents_config.yaml")
-# 沒有 --config 時，依序在目前目錄尋找這些檔名；都沒有就用套件內的預設設定
-# Without --config these file names are looked for in the current directory, in order; if none exists the bundled default is used
-DISCOVERED_CONFIG_NAMES = _DISCOVERED_CONFIG_NAMES
 # --init-config 沒給路徑時寫到這裡 ／ where --init-config writes when no path is given
 DEFAULT_INIT_CONFIG_PATH = "vibeharness.yaml"
 
@@ -146,22 +139,6 @@ def _crash_exit(stage_zh: str, stage_en: str, exc: BaseException) -> NoReturn:
     traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
     print(f"{bi('錯誤', 'Error')}: {bi(stage_zh, stage_en)}: {type(exc).__name__}: {exc}", file=sys.stderr)
     sys.exit(USAGE_ERROR_EXIT_CODE)
-
-
-def resolve_config_path(explicit: Optional[str], cwd: Optional[str] = None) -> Tuple[str, str]:
-    """決定要用的設定檔與它的來源說明。優先序：--config ＞ ./vibeharness.yaml ＞ ./.vibeharness.yaml ＞ 套件內的預設。
-    --config 原樣回傳（不存在時由 harness 以 ConfigError 回報，exit 5）。
-    Decides which config file is used and describes where it came from. Precedence: --config >
-    ./vibeharness.yaml > ./.vibeharness.yaml > the bundled default. --config is returned as given (if it does
-    not exist the harness reports a ConfigError, exit 5).
-    委派給 core/settings.py 的 resolve_config，保留回傳 (path, source) 的雙元素介面。
-    Delegates to resolve_config in core/settings.py while keeping the two-element (path, source) return tuple.
-
-    路徑、來源說明與 Origin 政策都在 resolve_config 單一入口決定，CLI 不再重複判斷。
-    Path, source description, and Origin policy are decided in one place by resolve_config.
-    """
-    path, source, _origin = resolve_config(explicit, cwd=cwd)
-    return path, source
 
 
 def _init_config(path: str, force: bool) -> int:

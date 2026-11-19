@@ -347,13 +347,15 @@ def test_a_broken_discovered_config_exits_5(monkeypatch, tmp_path):
     assert _run_cli(monkeypatch, "-m", "mock") == cli.USAGE_ERROR_EXIT_CODE
 
 
-def test_resolve_config_path_uses_the_given_directory(tmp_path):
-    """resolve_config_path 只看指定的目錄，而且找不到時回到套件內的預設。
-    resolve_config_path looks only in the given directory and falls back to the bundled default."""
-    assert cli.resolve_config_path(None, str(tmp_path))[0] == DEFAULT_CONFIG_PATH
+def test_resolve_config_uses_the_given_directory(tmp_path):
+    """resolve_config 只看指定的目錄，找不到時回到套件內的預設，並回傳對應的 Origin。
+    resolve_config looks only in the given directory, falls back to the bundled default, and returns its Origin."""
+    assert cli.resolve_config(None, str(tmp_path))[0] == DEFAULT_CONFIG_PATH
+    assert cli.resolve_config(None, str(tmp_path))[2] == "bundled"
     (tmp_path / ".vibeharness.yaml").write_text(_MOCK_CONFIG, encoding="utf-8")
-    assert cli.resolve_config_path(None, str(tmp_path))[0] == str(tmp_path / ".vibeharness.yaml")
-    assert cli.resolve_config_path("x.yaml", str(tmp_path)) == ("x.yaml", "--config")
+    assert cli.resolve_config(None, str(tmp_path))[0] == str(tmp_path / ".vibeharness.yaml")
+    assert cli.resolve_config(None, str(tmp_path))[2] == "discovered"
+    assert cli.resolve_config("x.yaml", str(tmp_path)) == ("x.yaml", "--config", "explicit")
 
 
 def test_init_config_message_only_promises_discovery_for_discovered_names(tmp_path, capsys):

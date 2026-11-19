@@ -5,7 +5,7 @@ Known problems. The Quality Gate and the summary read the run's full tally; the 
 results available in phases 3 and 5."""
 import os
 from dataclasses import dataclass
-from typing import Dict, Generic, List, Optional, Sequence, Tuple, TypeVar
+from typing import AbstractSet, Callable, Dict, Generic, List, Optional, Sequence, Tuple, TypeVar
 
 from vibeharness.core.baseline import Baseline
 from vibeharness.core.identity import breach_key, static_key, whitebox_failure_key
@@ -48,6 +48,27 @@ def _unsplit(items: Sequence[T]) -> Split[T]:
     return Split(all=tuple(items), new=tuple(items), known=())
 
 
+def _partition(
+    items: Sequence[T],
+    known_keys: AbstractSet[str],
+    kind: str,
+    describe: Callable[[T], Tuple[Optional[str], str, str]],
+    suppressed: List[BaselineSuppressedItem],
+) -> Split[T]:
+    """依基準鍵集將一組證據拆成 `Split(all, new, known)`，並將命中的已知項目加入 `suppressed`。
+    Partitions `items` into `Split(all, new, known)` against `known_keys`, appending matched items to `suppressed`."""
+    new_items: List[T] = []
+    known_items: List[T] = []
+    for item in items:
+        key, item_id, title = describe(item)
+        if key is not None and key in known_keys:
+            known_items.append(item)
+            suppressed.append(BaselineSuppressedItem(kind=kind, id=item_id, title=title, fingerprint=key))
+        else:
+            new_items.append(item)
+    return Split(all=tuple(items), new=tuple(new_items), known=tuple(known_items))
+
+
 def _split_blocking(
     baseline: Baseline,
     target_dir: str,
@@ -61,50 +82,25 @@ def _split_blocking(
     Splits blocking rule hits, white-box failures and Breaches into new and known against the Baseline in one pass,
     and builds the Known problems list."""
     suppressed: List[BaselineSuppressedItem] = []
-    new_static: List[StaticFinding] = []
-    known_static: List[StaticFinding] = []
-    for sf in blocking:
-        key = static_key(sf, target_dir)
-        if key in baseline.static:
-            known_static.append(sf)
-            suppressed.append(BaselineSuppressedItem(
-                kind="static", id=f"{sf.rule_id}@{os.path.basename(sf.file_path)}:{sf.line_number}",
-                title=sf.title, fingerprint=key,
-            ))
-        else:
-            new_static.append(sf)
-
     findings_by_id: Dict[str, ReviewFinding] = {f.finding_id: f for f in confirmed_findings}
-    new_wb: List[TestExecutionResult] = []
-    known_wb: List[TestExecutionResult] = []
-    for r in wb_failures:
-        finding = findings_by_id.get(r.source_ref or "")
-        wb_key = whitebox_failure_key(r, finding, target_dir)
-        if wb_key is not None and wb_key in baseline.findings:
-            known_wb.append(r)
-            title = finding.title if finding else (r.failure_reason or r.test_id)
-            suppressed.append(BaselineSuppressedItem(kind="whitebox_failure", id=r.test_id, title=title, fingerprint=wb_key))
-        else:
-            new_wb.append(r)
-
     threats_by_id: Dict[str, ThreatItem] = {t.threat_id: t for t in threats}
-    new_bb: List[TestExecutionResult] = []
-    known_bb: List[TestExecutionResult] = []
-    for r in breaches:
+
+    def _wb_desc(r: TestExecutionResult) -> Tuple[Optional[str], str, str]:
+        finding = findings_by_id.get(r.source_ref or "")
+        title = finding.title if finding else (r.failure_reason or r.test_id)
+        return whitebox_failure_key(r, finding, target_dir), r.test_id, title
+
+    def _bb_desc(r: TestExecutionResult) -> Tuple[Optional[str], str, str]:
         threat = threats_by_id.get(r.source_ref or "")
-        bb_key = breach_key(r, threat)
-        if bb_key in baseline.breaches:
-            known_bb.append(r)
-            suppressed.append(BaselineSuppressedItem(
-                kind="breach", id=r.test_id, title=threat.title if threat else r.test_id, fingerprint=bb_key,
-            ))
-        else:
-            new_bb.append(r)
+        return breach_key(r, threat), r.test_id, (threat.title if threat else r.test_id)
 
     return (
-        Split(all=tuple(blocking), new=tuple(new_static), known=tuple(known_static)),
-        Split(all=tuple(wb_failures), new=tuple(new_wb), known=tuple(known_wb)),
-        Split(all=tuple(breaches), new=tuple(new_bb), known=tuple(known_bb)),
+        _partition(blocking, baseline.static, "static",
+                   lambda sf: (static_key(sf, target_dir),
+                               f"{sf.rule_id}@{os.path.basename(sf.file_path)}:{sf.line_number}", sf.title),
+                   suppressed),
+        _partition(wb_failures, baseline.findings, "whitebox_failure", _wb_desc, suppressed),
+        _partition(breaches, baseline.breaches, "breach", _bb_desc, suppressed),
         tuple(suppressed),
     )
 

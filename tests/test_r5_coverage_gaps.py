@@ -325,11 +325,16 @@ def test_node_no_lcov(tmp_path):
     assert sandbox._collect_coverage(str(tmp_path), "", str(tmp_path), None) == (None, None)
 
 
-def test_prepare_test_code_and_is_usable_test():
-    """prepare_test_code 一次完成驗證與切分 __future__，且 is_usable_test 拒絕僅含空圍欄的草稿。
-    prepare_test_code validates and splits __future__ in one pass, and is_usable_test rejects fence-only drafts."""
-    from vibeharness.agents.whitebox.test_generator import is_usable_test
+def test_prepare_test_code_across_generator_and_scenario_builder(scripted, tmp_path):
+    """prepare_test_code 一次完成驗證與切分 __future__；白箱對空圍欄草稿走修復迴圈，黑箱對空圍欄記為未測試並剝除有效測試圍欄。
+    prepare_test_code validates and splits __future__ in one pass; white-box heals fence-only drafts, and black-box
+    treats fence-only drafts as untested while stripping fences on valid tests."""
+    from config_files import CONFIG
+    from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
+    from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator, is_usable_test
     from vibeharness.core.codecheck import prepare_test_code
+    from vibeharness.core.llm_gateway import LLMGateway
+    from vibeharness.core.models import CallKind, FindingSeverity, ReviewFinding, ThreatItem
 
     src = "```python\n\"\"\"doc\"\"\"\nfrom __future__ import annotations\n\ndef test_ok():\n    assert 1 == 1\n```"
     cleaned, problem, preamble, body = prepare_test_code(src, "python")
@@ -341,7 +346,36 @@ def test_prepare_test_code_and_is_usable_test():
     bad_cleaned, bad_problem, bad_pre, bad_body = prepare_test_code(bad_src, "python")
     assert bad_problem is not None and bad_cleaned == bad_src and bad_pre == "" and bad_body == bad_src
 
-    assert not is_usable_test({"code": "```python\n```"})
-    assert not is_usable_test({"code": "```\n   \n```"})
-    assert is_usable_test({"code": "```python\ndef test_x():\n    assert True\n```"})
+    assert is_usable_test({"code": "```python\n```"})
+    assert not is_usable_test({"code": "   "})
+
+    finding = ReviewFinding(
+        finding_id="WB-CLA-01", reviewer_name="Claude", model_alias="claude", file_path=str(tmp_path / "m.py"),
+        symbol_name="f", severity=FindingSeverity.HIGH, title="bug", description="d",
+        root_cause="r", suspected_vibe_flaw="v", suggested_test_scenario="s",
+    )
+
+    def wb_responder(req):
+        if req.kind is CallKind.HEAL:
+            return "def test_healed():\n    assert 1 == 1\n"
+        return {"code": "```python\n```"}
+
+    gw = LLMGateway(CONFIG, execution_mode="live", transport=scripted({"whitebox_test_generator": wb_responder}))
+    wb_tests = WhiteboxTestGenerator(gw).generate_tests_for_findings([finding], [], root_dir=str(tmp_path))
+    assert [t.code.strip() for t in wb_tests] == ["def test_healed():\n    assert 1 == 1"]
+    assert [(r.kind, r.mode) for r in gw.call_log] == [("test_generator", "live"), ("heal", "live")]
+
+    threat = ThreatItem(
+        threat_id="THREAT-01", stride_category="Tampering", title="t", description="d",
+        asset_at_risk="a", attack_vector="f", trust_boundary_crossed="b",
+        severity=FindingSeverity.HIGH, attack_scenario="s", test_verification_goal="g",
+    )
+    gw_empty = LLMGateway(CONFIG, execution_mode="live",
+                          transport=scripted({"blackbox_test_synthesizer": {"code": "```python\n```"}}))
+    assert ThreatScenarioBuilder(gw_empty).build_test_cases_from_threats([threat], root_dir=str(tmp_path)) == []
+
+    gw_fenced = LLMGateway(CONFIG, execution_mode="live",
+                           transport=scripted({"blackbox_test_synthesizer": {"code": src}}))
+    bb_tests = ThreatScenarioBuilder(gw_fenced).build_test_cases_from_threats([threat], root_dir=str(tmp_path))
+    assert len(bb_tests) == 1 and "```" not in bb_tests[0].code
 

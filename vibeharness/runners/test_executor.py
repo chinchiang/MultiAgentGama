@@ -171,7 +171,7 @@ class TestSuiteExecutor:
         header = self._python_header(working_dir)
         files: Dict[str, str] = {}
         for idx, t in enumerate(tests):
-            preamble, body = self._split_future_imports(t.code)
+            preamble, body = split_future_imports(t.code)
             files[f"test_vh_{idx:03d}.py"] = (
                 f"{preamble}{header}\n# Target: {header_field(t.target_component)} | "
                 f"Test: {header_field(t.title)}\n{body}\n"
@@ -334,7 +334,7 @@ class TestSuiteExecutor:
             module = os.path.splitext(filename)[0]
             remaining = _remaining_seconds(deadline, budget)
             if remaining < 1:
-                outcomes[module] = ModuleOutcome(not_rerun=True)
+                outcomes[module] = ModuleOutcome.rerun_budget_exhausted()
                 continue
             timeout = min(per_test, remaining)
             run = sandbox.execute_pytest_files(
@@ -451,26 +451,7 @@ class TestSuiteExecutor:
                 module = os.path.splitext(filename)[0]
                 remaining = _remaining_seconds(deadline, batch_budget)
                 if remaining < 1:
-                    outcomes[module] = ModuleOutcome(
-                        exit_code=TIMEOUT_EXIT_CODE, has_report=False, not_rerun=True,
-                    )
+                    outcomes[module] = ModuleOutcome.rerun_budget_exhausted()
                 else:
                     run_one(filename, code, min(per_test, remaining))
         return outcomes
-
-    @staticmethod
-    def _split_future_imports(code: str) -> Tuple[str, str]:
-        """切出開頭的 docstring 與 `from __future__` 匯入，它們必須留在最頂端。
-
-        harness 的標頭會插在這兩部分之間；若把它加在整個模組前面，
-        每個 `from __future__ import annotations` 都會變成 SyntaxError（收集失敗）。
-        沒有東西需要提前時回傳 ("", code)。程式碼已經由
-        check_test_code() 驗證過，所以能解析。
-        Splits off the leading docstring and `from __future__` imports, which must stay at the very top.
-
-        The harness header is inserted between the two parts; prepending it to the whole module
-        turned every `from __future__ import annotations` into a SyntaxError (collection failure).
-        Returns ("", code) when there is nothing to hoist. The code was already validated by
-        check_test_code(), so it parses.
-        """
-        return split_future_imports(code)
