@@ -278,8 +278,8 @@ def test_real_node_coverage_run_has_no_glob_warning_on_stderr(tmp_path):
                      'test("a", () => { assert.equal(add(1, 2), 3); });')
     sandbox = NodeSubprocessSandbox(timeout_seconds=60, node_version=_NODE_VERSION)
     run = sandbox.execute_pytest_files({"test_vh_000.mjs": code}, working_dir=str(tmp_path),
-                                       collect_coverage=True, coverage_sink=JsLineCoverage())
-    assert run.coverage_pct == 100.0
+                                       collect_coverage=True)
+    assert run.coverage_pct == 100.0 and run.js_coverage is not None and run.js_coverage.percent() == 100.0
     assert "ExperimentalWarning" not in run.stderr, run.stderr
 
 
@@ -312,10 +312,9 @@ def test_real_node_target_under_node_modules_is_covered(tmp_path):
                                   encoding="utf-8")
     code = _esm_test(f'import {{ f }} from "{target_file_url(str(target / "m.mjs"))}";',
                      'test("a", () => { assert.equal(f(1), 2); });')
-    sink = JsLineCoverage()
-    NodeSubprocessSandbox(timeout_seconds=60, node_version=_NODE_VERSION).execute_pytest_files(
-        {"test_vh_000.mjs": code}, working_dir=str(target), collect_coverage=True, coverage_sink=sink)
-    assert list(sink.files) == ["m.mjs"]
+    run = NodeSubprocessSandbox(timeout_seconds=60, node_version=_NODE_VERSION).execute_pytest_files(
+        {"test_vh_000.mjs": code}, working_dir=str(target), collect_coverage=True)
+    assert run.js_coverage is not None and list(run.js_coverage.files) == ["m.mjs"]
 
 
 # --- 7. 版本門檻的說明 -------------------------------------------------------------------------------------

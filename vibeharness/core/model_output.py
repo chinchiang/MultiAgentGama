@@ -13,7 +13,7 @@ index given as a string, defaults) stays in the agents. This module is pure func
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from vibeharness.core.i18n import bi, en_only, zh_only
 
@@ -31,14 +31,37 @@ class FieldType:
     does not fit, None when it does."""
     name: str
     problem: Callable[[str, Any], Optional[str]]
-    # 物件清單的可用項目規則（LIST_OF_OBJECTS 才有）：core/agent_call.py 以它過濾交給 mapper 的 items
-    # The usable-item rule of a list of objects (only LIST_OF_OBJECTS has one): core/agent_call.py filters the items it
-    # hands the mapper with it
+    # 物件清單的可用項目規則（LIST_OF_OBJECTS 才有）：OutputSchema.extract_items 以它擷取並過濾交給 mapper 的 items
+    # The usable-item rule of a list of objects (only LIST_OF_OBJECTS has one): OutputSchema.extract_items extracts and
+    # filters the items handed to the mapper with it
     usable: Optional[Callable[[Mapping[str, Any]], bool]] = None
 
 
 def _type_name(value: Any) -> str:
     return "null" if value is None else type(value).__name__
+
+
+def _scan_object_list(
+    value: Any, usable: Callable[[Mapping[str, Any]], bool]
+) -> Tuple[List[Mapping[str, Any]], Tuple[int, ...], Tuple[int, ...], int]:
+    """掃描物件清單：回傳 `(可用的 items, 它們在清單裡從 1 開始的位置, 不是 dict 的位置, 不可用 dict 的個數)`。
+    `value` 不是清單時當作空清單。
+    Scans a list of objects: returns `(usable items, their 1-based positions in the list, positions that are not dicts,
+    number of unusable dicts)`. When `value` is not a list it is treated as empty."""
+    items: List[Mapping[str, Any]] = []
+    positions: List[int] = []
+    malformed: List[int] = []
+    skipped = 0
+    for position, item in enumerate(value if isinstance(value, list) else [], start=1):
+        if not isinstance(item, dict):
+            malformed.append(position)
+            continue
+        if not usable(item):
+            skipped += 1
+            continue
+        items.append(item)
+        positions.append(position)
+    return items, tuple(positions), tuple(malformed), skipped
 
 
 # 只要求鍵存在，不檢查型別 ／ Only the key's presence is required; its type is not checked
@@ -61,7 +84,8 @@ def LIST_OF_OBJECTS(usable: Callable[[Mapping[str, Any]], bool], requirement: st
         if not isinstance(value, list):
             return bi(f"欄位 '{key}' 必須是物件清單（收到 {_type_name(value)}）",
                       f"field '{key}' must be a list of objects (got {_type_name(value)})")
-        if value and not any(isinstance(item, dict) and usable(item) for item in value):
+        items, _, _, _ = _scan_object_list(value, usable)
+        if value and not items:
             return bi(f"欄位 '{key}' 沒有任何可用的項目（共 {len(value)} 項）：{zh_only(requirement)}",
                       f"field '{key}' has no usable item ({len(value)} item(s)): {en_only(requirement)}")
         return None
@@ -71,10 +95,40 @@ def LIST_OF_OBJECTS(usable: Callable[[Mapping[str, Any]], bool], requirement: st
 @dataclass(frozen=True)
 class OutputSchema:
     """代理期望的回答形狀：`required` 的每個鍵都必須存在且符合型別；`any_of` 不為空時，至少要有一個鍵存在且符合型別。
+    `extract_items` 直接從 `required`／`any_of` 裡的 `LIST_OF_OBJECTS` 欄位擷取可用的 items，代理不必另外宣告
+    `ItemSource`。
     The shape of the answer an agent expects: every key in `required` must be present and fit its type; when `any_of`
-    is not empty, at least one of its keys must be present and fit its type."""
+    is not empty, at least one of its keys must be present and fit its type. `extract_items` extracts the usable items
+    straight from the `LIST_OF_OBJECTS` field in `required` or `any_of`, so an agent never declares a separate
+    `ItemSource`."""
     required: Mapping[str, FieldType] = field(default_factory=dict)
     any_of: Mapping[str, FieldType] = field(default_factory=dict)
+
+    def extract_items(
+        self, data: Mapping[str, Any]
+    ) -> Tuple[List[Mapping[str, Any]], Tuple[int, ...], Tuple[int, ...], int]:
+        """從已通過形狀檢查的 `data` 擷取可用的 items：
+        1. `required` 裡有 `LIST_OF_OBJECTS` 欄位時，回傳那個清單掃描出的 `(items, positions, malformed_positions, skipped_count)`。
+        2. `any_of` 裡有 `LIST_OF_OBJECTS` 欄位時（例如測試生成器的 `tests` 或單一頂層測試），先掃描那個清單；若清單沒有可用的
+           item 但 `data` 本身通過同一條 `usable` 規則，就把整個 `data` 當作第 1 個 item（保留清單裡的 malformed／skipped 計數）。
+        3. 都沒有時，整個 `data` 就是唯一的 item `([data], (1,), (), 0)`。
+        Extracts the usable items from a shape-checked `data`:
+        1. When `required` has a `LIST_OF_OBJECTS` field, returns `(items, positions, malformed_positions, skipped_count)`
+           scanned from that list.
+        2. When `any_of` has a `LIST_OF_OBJECTS` field (e.g. the test generator's `tests` list or a single top-level
+           test), scans that list first; if the list has no usable item and `data` itself passes the same `usable`
+           rule, treats `data` as item 1 (keeping the list's malformed/skipped counts).
+        3. Otherwise the whole `data` is the single item `([data], (1,), (), 0)`."""
+        for name, kind in self.required.items():
+            if kind.usable is not None:
+                return _scan_object_list(data.get(name), kind.usable)
+        for name, kind in self.any_of.items():
+            if kind.usable is not None:
+                items, positions, malformed, skipped = _scan_object_list(data.get(name), kind.usable)
+                if not items and kind.usable(data):
+                    return [data], (1,), malformed, skipped
+                return items, positions, malformed, skipped
+        return [data], (1,), (), 0
 
 
 def parse_json_object(text: str) -> Optional[Dict[str, Any]]:

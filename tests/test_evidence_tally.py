@@ -130,3 +130,73 @@ def test_without_a_baseline_there_are_no_known_problems():
     """沒有基準時沒有任何已知問題。
     Without a Baseline there are no Known problems."""
     assert tally_evidence(bb_results=[_bb("BB-1", TestStatus.FAILED, breach=True)]).known_problems == ()
+
+
+def test_tally_and_json_report_fingerprints():
+    """tally_evidence 處理探測與孤立突破，且 generate_json_report 直接為報告項目加上 fingerprint。
+    tally_evidence handles probes and orphan breaches, and generate_json_report stamps fingerprints directly."""
+    import json
+    from vibeharness.core.baseline import probe_key
+    from vibeharness.core.models import MultiModelDebateResult, ThreatModelReport, VibeHarnessSummary
+    from vibeharness.reports.report_generator import ReportGenerator
+
+    finding, threat = _finding("WB-CLA-01", "f"), _threat("THREAT-01")
+    known_static = _rule_hit(FindingSeverity.HIGH, 1)
+    new_static = _rule_hit(FindingSeverity.HIGH, 2, evidence="eval(x)")
+    probe = TestExecutionResult(test_id="WB-PROBE-1", test_type="whitebox_probe", status=TestStatus.FAILED, source_ref="transfer")
+    wb_known = _wb("WB-1", TestStatus.FAILED, source_ref=finding.finding_id)
+    wb_new = _wb("WB-2", TestStatus.FAILED, source_ref="WB-GONE")
+    wb_passed = _wb("WB-3", TestStatus.PASSED, source_ref=finding.finding_id)
+    bb_known = _bb("BB-1", TestStatus.FAILED, breach=True, source_ref=threat.threat_id)
+    bb_orphan = _bb("BB-9", TestStatus.FAILED, breach=True, source_ref="THREAT-GONE")
+    bb_new = _bb("BB-2", TestStatus.FAILED, breach=True, source_ref="THREAT-02")
+    bb_safe = _bb("BB-3", TestStatus.PASSED, breach=False, source_ref=threat.threat_id)
+
+    base = Baseline(
+        path="/b.json",
+        static={static_key(known_static, TARGET)},
+        findings={finding_key(finding, TARGET), probe_key(probe)},
+        breaches={breach_key(bb_known, threat), breach_key(bb_orphan, None)},
+    )
+    tally = tally_evidence(
+        wb_results=[probe, wb_known, wb_new, wb_passed],
+        bb_results=[bb_known, bb_orphan, bb_new, bb_safe],
+        static_findings=[known_static, new_static],
+        threats=[threat, _threat("THREAT-02")],
+        confirmed_findings=[finding],
+        target_dir=TARGET,
+        baseline=base,
+    )
+    assert tally.blocking_rule_hits.new == (new_static,)
+    assert tally.whitebox_failures.new == (wb_new,)
+    assert tally.breaches.new == (bb_new,)
+    by_id = {s.id: (s.kind, s.title) for s in tally.known_problems}
+    assert by_id == {
+        "VH-AI-001@app.py:1": ("static", "Unsafe load"),
+        "WB-PROBE-1": ("whitebox_failure", "WB-PROBE-1"),  # 探測沒有發現：標題退回測試 id ／ a probe has no finding: the title falls back to the id
+        "WB-1": ("whitebox_failure", finding.title),
+        "BB-1": ("breach", threat.title),
+        "BB-9": ("breach", "BB-9"),
+    }
+
+    summary = VibeHarnessSummary(
+        overall_status="NEEDS_FIXES", total_whitebox_findings=1, confirmed_whitebox_bugs=1, whitebox_tests_passed=1,
+        whitebox_tests_failed=2, total_threats_modeled=1, critical_threats_count=0, blackbox_tests_passed=1,
+        blackbox_security_breaches=1, static_findings=[known_static],
+    )
+    raw = ReportGenerator().generate_json_report(
+        summary=summary,
+        debate_result=MultiModelDebateResult(confirmed_findings=[finding], consensus_summary="ok"),
+        threat_model=ThreatModelReport(system_description="app", threats=[threat]),
+        whitebox_results=[wb_known, wb_passed, wb_new],
+        blackbox_results=[bb_known, bb_safe],
+        target_path=TARGET,
+    )
+    payload = json.loads(raw)
+    assert payload["summary"]["static_findings"][0]["fingerprint"] == static_key(known_static, TARGET)
+    tr = payload["whitebox"]["test_results"]
+    assert tr[0]["fingerprint"] == finding_key(finding, TARGET)
+    assert "fingerprint" not in tr[1] and "fingerprint" not in tr[2]
+    bb = payload["blackbox_test_results"]
+    assert bb[0]["fingerprint"] == breach_key(bb_known, threat) and "fingerprint" not in bb[1]
+

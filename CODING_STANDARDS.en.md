@@ -8,7 +8,7 @@ Apply every rule below to a diff under review. Only rules that need judgement li
 
 - The new test reaches the changed branch: take the fix out and it fails. A test that only checks "does not crash" or that a structure exists does not count.
 - The suite runs offline: mock Execution mode plus the fake litellm in `tests/conftest.py`, with no API key and no network.
-- Agent calls run concurrently on threads through `vibeharness/core/fanout.py`, so a fake responder in a test that keeps shared state needs a lock.
+- Agent calls run concurrently on threads through `fan_out` in `vibeharness/core/agent_call.py`, so a fake responder in a test that keeps shared state needs a lock.
 - A fake that injects a fault records whether the injection triggered, and the test fails when it never did.
 - A violation looks like: a fix with no test; a new test that also passes on `master`; a test that needs a real model or the network; a fault injection that can stop triggering while the test still passes.
 

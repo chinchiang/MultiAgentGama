@@ -16,9 +16,9 @@ import pytest
 import yaml
 
 from vibeharness import action_runner, cli
-from vibeharness.core.llm_gateway import (
-    DEFAULT_CONFIG_PATH, ConfigError, LLMGateway, discovered_config_violations, is_reserved_extra_param,
-    load_config_file, relative_executable_warnings,
+from vibeharness.core.llm_gateway import DEFAULT_CONFIG_PATH, LLMGateway
+from vibeharness.core.settings import (
+    ConfigError, discovered_config_violations, is_reserved_extra_param, load_config_file, relative_executable_warnings,
 )
 from vibeharness.core.models import (
     FindingSeverity, MultiModelDebateResult, ReviewFinding, STRIDECategory, TestExecutionResult, TestStatus,

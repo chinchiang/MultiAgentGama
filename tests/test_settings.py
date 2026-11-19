@@ -14,7 +14,7 @@ import pytest
 import yaml
 
 from vibeharness.core.settings import (
-    DEFAULT_CONFIG_PATH, ConfigError, FrozenDict, FrozenList, Overrides, Settings, load_settings,
+    DEFAULT_CONFIG_PATH, ConfigError, FrozenDict, FrozenList, Overrides, Settings, load_settings, resolve_config,
 )
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -384,6 +384,29 @@ def test_relative_executable_paths_are_warned_about(tmp_path):
     # sys.executable is absolute on every platform (on Windows, since Python 3.13, "/usr/bin/docker" without a drive is not)
     s = _load(tmp_path, global_={"node_bin": "./node", "docker_bin": sys.executable})
     assert len(s.warnings) == 1 and "global.node_bin is a relative path './node'" in s.warnings[0]
+
+
+def test_resolve_config_returns_path_source_and_origin(tmp_path):
+    """resolve_config 一次回傳 (path, source, origin)：優先序為 --config ＞ ./vibeharness.yaml ＞ ./.vibeharness.yaml ＞ 套件預設。
+    resolve_config returns (path, source, origin) in one call: precedence is --config > ./vibeharness.yaml > ./.vibeharness.yaml > bundled default."""
+    assert resolve_config("custom.yaml", str(tmp_path)) == ("custom.yaml", "--config", "explicit")
+    path, source, origin = resolve_config(None, str(tmp_path))
+    assert path == DEFAULT_CONFIG_PATH and "bundled default" in source and origin == "bundled"
+    (tmp_path / ".vibeharness.yaml").write_text("global: {}\n", encoding="utf-8")
+    path, source, origin = resolve_config(None, str(tmp_path))
+    assert path == str(tmp_path / ".vibeharness.yaml") and ".vibeharness.yaml" in source and origin == "discovered"
+    (tmp_path / "vibeharness.yaml").write_text("global: {}\n", encoding="utf-8")
+    path, source, origin = resolve_config(None, str(tmp_path))
+    assert path == str(tmp_path / "vibeharness.yaml") and "vibeharness.yaml" in source and origin == "discovered"
+
+
+def test_cache_only_in_mock_mode_adds_a_warning_to_settings(tmp_path):
+    """--cache-only 搭配 mock 模式時，load_settings 將雙語警告收入 settings.warnings。
+    When --cache-only is combined with mock mode, load_settings records a bilingual warning in settings.warnings."""
+    s = _load(tmp_path, overrides=Overrides(execution_mode="mock", cache_dir=str(tmp_path / "c"), cache_only=True))
+    assert len(s.warnings) == 1 and "--cache-only has no effect in mock mode" in s.warnings[0]
+    s_hybrid = _load(tmp_path, overrides=Overrides(execution_mode="hybrid", cache_dir=str(tmp_path / "c"), cache_only=True))
+    assert s_hybrid.warnings == ()
 
 
 # --- 唯讀 ／ read-only ----------------------------------------------------------------------------

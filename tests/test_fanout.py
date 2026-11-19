@@ -1,7 +1,7 @@
-"""扇出模組（core/fanout.py）：依呼叫順序收集結果、當掉的呼叫換成 fallback 並記成無效呼叫、live 失敗或中斷時
+"""扇出（core/agent_call.py 的 `fan_out`）：依呼叫順序收集結果、當掉的呼叫換成 fallback 並記成無效呼叫、live 失敗或中斷時
 佇列中的呼叫不會開始。各代理只各保留一個接線測試，確認當機記在自己的 agent_id 名下。
-The fan-out module (core/fanout.py): results are collected in call order, a crashed call takes the fallback and is
-booked as an invalid call, and after a live failure or an interrupt no queued call starts. Each agent keeps only one
+Fan-out (`fan_out` in core/agent_call.py): results are collected in call order, a crashed call takes the fallback and
+is booked as an invalid call, and after a live failure or an interrupt no queued call starts. Each agent keeps only one
 wiring test that its crash is booked under its own agent_id."""
 import logging
 import os
@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from vibeharness.core.fanout import Call, fan_out
+from vibeharness.core.agent_call import Call, fan_out
 from vibeharness.core.i18n import bi
 from vibeharness.core.llm_gateway import REASON_CALL_CRASHED, LLMGateway, LLMGatewayError
 
@@ -120,5 +120,5 @@ def test_concurrency_never_exceeds_max_concurrent_calls():
 def test_no_calls_returns_an_empty_list_without_a_pool(monkeypatch):
     def no_pool(*a, **k):
         raise AssertionError("no thread pool may be opened for an empty list of calls")
-    monkeypatch.setattr("vibeharness.core.fanout.ThreadPoolExecutor", no_pool)
+    monkeypatch.setattr("vibeharness.core.agent_call.ThreadPoolExecutor", no_pool)
     assert fan_out(_gateway(), [], fallback=None, logger=LOGGER) == []

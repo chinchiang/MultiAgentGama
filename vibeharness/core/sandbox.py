@@ -62,17 +62,17 @@ REASON_JS_COVERAGE_UNSUPPORTED = bi("這個 JS/TS 沙盒不收集行涵蓋率", 
 
 @dataclass(frozen=True)
 class SandboxRun:
-    """一次沙盒執行的結果。`exit_code` 可能是 TIMEOUT_EXIT_CODE 或 EXECUTION_FAILURE_EXIT_CODE；`coverage_pct` 只有
-    collect_coverage 時才有值；`junit_xml` 是讀回的 JUnit 報告文字，沒有報告（逾時、執行失敗、讀回被拒）時為 None。
+    """一次沙盒執行的結果。`exit_code` 可能是 TIMEOUT_EXIT_CODE 或 EXECUTION_FAILURE_EXIT_CODE；`coverage_pct` 與
+    `js_coverage` 只有 collect_coverage 時才有值；`junit_xml` 是讀回的 JUnit 報告文字，沒有報告時為 None。
     The outcome of one sandbox run. `exit_code` may be TIMEOUT_EXIT_CODE or EXECUTION_FAILURE_EXIT_CODE; `coverage_pct`
-    is only set with collect_coverage; `junit_xml` is the JUnit report text read back, None when there is no report
-    (a timeout, an execution failure, a refused read-back)."""
+    and `js_coverage` are only set with collect_coverage; `junit_xml` is the JUnit report text read back, else None."""
     exit_code: int
     stdout: str
     stderr: str
     duration: float
     coverage_pct: Optional[float] = None
     junit_xml: Optional[str] = None
+    js_coverage: Optional[JsLineCoverage] = None
 
 
 class Sandbox(Protocol):
@@ -87,6 +87,7 @@ class Sandbox(Protocol):
 
     def js_coverage_problem(self) -> Optional[str]: ...
 
+    # JS/TS 逐行涵蓋率透過回傳值 SandboxRun.js_coverage 傳回 ／ JS/TS per-line coverage is returned on SandboxRun.js_coverage
     def execute_pytest_files(
         self,
         files: Dict[str, str],
@@ -95,7 +96,6 @@ class Sandbox(Protocol):
         collect_coverage: bool = False,
         coverage_target: Optional[str] = None,
         timeout_seconds: Optional[int] = None,
-        coverage_sink: Optional[JsLineCoverage] = None
     ) -> SandboxRun: ...
 
 
@@ -365,17 +365,17 @@ class LocalSubprocessSandbox:
         collect_coverage: bool = False,
         coverage_target: Optional[str] = None,
         timeout_seconds: Optional[int] = None,
-        coverage_sink: Optional[JsLineCoverage] = None
     ) -> SandboxRun:
         """
         把每個 {filename: code} 項目寫成獨立的測試模組，並在同一個 pytest 行程中執行。
         某一模組的收集錯誤不會中止其他模組。
-        `coverage_sink`（只有 Node 沙盒使用）：collect_coverage 時，這次執行的逐行 JS/TS 涵蓋率以聯集併入其中，
-        讓呼叫端能跨模組合併；逾時的執行不會併入任何東西。
+        Node 沙盒在 collect_coverage 時，把這次執行的逐行 JS/TS 涵蓋率放在
+        SandboxRun.js_coverage 回傳，讓呼叫端能跨模組合併；逾時的執行不會回傳涵蓋率。
         Writes each {filename: code} entry as a separate test module and runs them in one pytest process.
         A collection error in one module does not abort the others.
-        `coverage_sink` (Node sandboxes only): with collect_coverage, this run's per-line JS/TS coverage is merged into
-        it as a union so the caller can combine modules; a timed-out run merges nothing.
+        In Node sandboxes, with collect_coverage, this run's per-line JS/TS coverage is returned on
+        SandboxRun.js_coverage so the caller can combine modules;
+        a timed-out run returns no coverage.
         """
         timeout = self._effective_timeout(timeout_seconds)
         base_dir = os.path.abspath(working_dir or os.getcwd())
@@ -408,9 +408,9 @@ class LocalSubprocessSandbox:
                 # not write the output, while the container may still be writing the reports): no report is read
                 return SandboxRun(EXECUTION_FAILURE_EXIT_CODE, stdout, stderr, duration)
 
-            coverage_percent = self._collect_coverage(
-                run_dir, stdout, base_dir, coverage_target, coverage_sink
-            ) if collect_coverage else None
+            coverage_percent, js_coverage = self._collect_coverage(
+                run_dir, stdout, base_dir, coverage_target
+            ) if collect_coverage else (None, None)
             # 被測程式碼可以把 junit.xml 換成 symlink、FIFO 或巨大的檔案：安全地讀回，拒絕時把原因放在 stderr 最前面
             # （「沙盒沒有產生報告」的原因只顯示 stderr 的開頭）
             # The code under test can swap junit.xml for a symlink, a FIFO or a huge file: it is read back safely, and a
@@ -419,7 +419,7 @@ class LocalSubprocessSandbox:
             junit_xml, refusal = read_untrusted_file(junit_path, MAX_REPORT_BYTES)
             if refusal:
                 stderr = f"{refusal}\n{stderr}" if stderr else refusal
-            return SandboxRun(returncode, stdout, stderr, duration, coverage_percent, junit_xml)
+            return SandboxRun(returncode, stdout, stderr, duration, coverage_percent, junit_xml, js_coverage)
         except Exception as e:
             duration = time.time() - start_time
             return SandboxRun(EXECUTION_FAILURE_EXIT_CODE, "", f"Execution failed: {str(e)}", duration)
@@ -483,15 +483,15 @@ class LocalSubprocessSandbox:
         return cmd, base_dir, env
 
     def _collect_coverage(
-        self, run_dir: str, stdout: str, base_dir: str, coverage_target: Optional[str],
-        coverage_sink: Optional[JsLineCoverage]
-    ) -> Optional[float]:
-        """一次（未逾時的）執行結束、執行目錄刪除之前呼叫：回傳這次執行的行涵蓋率百分比。Python 從 pytest-cov 的
-        輸出表格讀；Node 沙盒覆寫成讀 lcov 報告。
-        Called once a (non-timed-out) run finished, before the run directory is removed: returns this run's line
-        coverage percentage. Python reads pytest-cov's output table; the Node sandboxes override it to read the lcov
-        report."""
-        return self._extract_coverage_percent(stdout)
+        self, run_dir: str, stdout: str, base_dir: str, coverage_target: Optional[str]
+    ) -> Tuple[Optional[float], Optional[JsLineCoverage]]:
+        """一次（未逾時的）執行結束、執行目錄刪除之前呼叫：回傳 (行涵蓋率百分比, JS/TS 行涵蓋率)。Python 從 pytest-cov 的
+        輸出表格讀；Node 沙盒覆寫成讀 lcov 報告並回傳 JsLineCoverage。
+        Called once a (non-timed-out) run finished, before the run directory is removed: returns (line coverage
+        percentage, JS/TS line coverage). Python reads pytest-cov's output table; the Node sandboxes override it to read
+        the lcov report and return JsLineCoverage."""
+        # Python 沙盒沒有 JS/TS 涵蓋率物件 ／ Python sandboxes have no JS/TS coverage object
+        return self._extract_coverage_percent(stdout), None
 
     def _clean_coverage_stderr(self, stderr: str) -> str:
         """收集涵蓋率的執行結束後整理 stderr：預設原樣回傳；Node 沙盒拿掉涵蓋率篩選引起的實驗功能警告。
@@ -1134,23 +1134,23 @@ class _NodeCoverageMixin:
         return strip_coverage_glob_warning(stderr)
 
     def _collect_coverage(
-        self, run_dir: str, stdout: str, base_dir: str, coverage_target: Optional[str],
-        coverage_sink: Optional[JsLineCoverage]
-    ) -> Optional[float]:
-        """讀 `run_dir` 裡的 lcov 報告：回傳這次執行自己的百分比，並把逐行結果併入 coverage_sink。沒有報告時為 None。
-        Reads the lcov report in `run_dir`: returns this run's own percentage and merges the per-line result into
-        coverage_sink. None without a report."""
+        self, run_dir: str, stdout: str, base_dir: str, coverage_target: Optional[str]
+    ) -> Tuple[Optional[float], Optional[JsLineCoverage]]:
+        """讀 `run_dir` 裡的 lcov 報告：回傳 (這次執行自己的百分比, 逐行 JsLineCoverage)。
+        沒有報告或無法收集涵蓋率時回傳 (None, None)。
+        Reads the lcov report in `run_dir`: returns (this run's own percentage, per-line JsLineCoverage).
+        Returns (None, None) when there is no report or coverage cannot be collected."""
         if self.js_coverage_problem() is not None:
-            return None
+            return None, None
         text = read_lcov_file(os.path.join(run_dir, LCOV_REPORT_NAME))
         if text is None:
-            return None
+            return None, None
         roots, cwd, windows = self._coverage_paths(base_dir, coverage_target)
         run = JsLineCoverage()
         run.add_lcov(text, roots, cwd, windows=windows)
-        if coverage_sink is not None:
-            coverage_sink.merge(run)
-        return run.percent()
+        # 由呼叫端將回傳的 JsLineCoverage 跨模組合併
+        # The caller merges the returned JsLineCoverage across modules
+        return run.percent(), run
 
 
 def link_node_modules(run_dir: str, base_dir: str) -> Optional[str]:

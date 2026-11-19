@@ -737,7 +737,7 @@ def load_settings(path: str, *, origin: Origin, overrides: Optional[Overrides] =
     else:
         mutation_source = "config" if g.get("mutation_testing") is not None else "default"
     return Settings(path=path, origin=origin, gateway=gateway, sandbox=sandbox, node=node, mutation=mutation,
-                    scope=scope, warnings=warnings, sources=FrozenDict({"mutation_testing": mutation_source}))
+                    scope=scope, warnings=warnings + _cache_only_warnings(gateway), sources=FrozenDict({"mutation_testing": mutation_source}))
 
 
 def _raise_discovered_violations(path: str, problems: List[str]) -> None:
@@ -1008,3 +1008,34 @@ def _pattern_list(value: Any, key: str) -> Tuple[str, ...]:
         raise ConfigError(bi(f"global.{key} 必須是 glob 樣式的清單，實際得到 {value!r}",
                              f"global.{key} must be a list of glob patterns, got {value!r}"))
     return tuple(v.strip() for v in value)
+
+
+# 沒有 --config 時，依序在目前目錄尋找這些檔名；都沒有就用套件內的預設設定
+# Without --config these file names are looked for in the current directory, in order; if none exists the bundled default is used
+DISCOVERED_CONFIG_NAMES = ("vibeharness.yaml", ".vibeharness.yaml")
+
+
+def resolve_config(explicit: Optional[str] = None, cwd: Optional[str] = None) -> Tuple[str, str, Origin]:
+    """決定要用的設定檔、它的來源說明與來源政策（Origin）。優先序：--config ＞ ./vibeharness.yaml ＞ ./.vibeharness.yaml ＞ 套件內的預設。
+    Decides which config file is used, describes where it came from, and returns its Origin policy. Precedence:
+    --config > ./vibeharness.yaml > ./.vibeharness.yaml > the bundled default."""
+    if explicit is not None:
+        return explicit, "--config", "explicit"
+    base = cwd or os.getcwd()
+    for name in DISCOVERED_CONFIG_NAMES:
+        candidate = os.path.join(base, name)
+        if os.path.isfile(candidate):
+            return candidate, bi(f"在目前目錄找到 {name}", f"found {name} in the current directory"), "discovered"
+    return DEFAULT_CONFIG_PATH, bi("套件內的預設設定", "bundled default"), "bundled"
+
+
+def _cache_only_warnings(gateway: GatewaySettings) -> Tuple[str, ...]:
+    """--cache-only 搭配 mock 模式時的雙語警告：mock 模式根本不讀快取。
+    Bilingual warning when --cache-only is combined with mock mode: mock mode never reads the cache."""
+    if gateway.cache_only and gateway.execution_mode == "mock":
+        return (bi(
+            "--cache-only 在 mock 模式下沒有作用：每次呼叫都是模擬的，不會讀取回應快取（要重播快取請用 --mode hybrid 或 live）",
+            "--cache-only has no effect in mock mode: every call is simulated and the response cache is never "
+            "read (use --mode hybrid or live to replay the cache)",
+        ),)
+    return ()

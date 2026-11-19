@@ -11,7 +11,8 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from config_files import load_config, write_config
-from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError, ConfigError, BUDGET_EXHAUSTED_REASON
+from vibeharness.core.llm_gateway import BUDGET_EXHAUSTED_REASON, LLMGateway, LLMGatewayError
+from vibeharness.core.settings import ConfigError
 from vibeharness.core.models import FindingSeverity, ReviewFinding, STRIDECategory, ThreatItem, CodeSymbol
 from vibeharness.core.i18n import has_cjk
 from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
@@ -454,15 +455,17 @@ def test_cli_file_filters_override_config(monkeypatch, tmp_path):
 
 def test_changed_since_selects_git_changes_and_rejects_bad_refs(git_repo, tmp_path):
     from vibeharness.core.harness import VibeHarnessCommander
+    from vibeharness.core.settings import Overrides, load_settings
     root = _tree(tmp_path)
     git_repo(root)
     (root / "src" / "app.py").write_text("def f_app(x, y):\n    return x + y\n")  # 已修改，未暫存 ／ modified, unstaged
     (root / "src" / "new.py").write_text("def g(x):\n    return x\n")             # 未追蹤 ／ untracked
     (root / "vendor" / "lib.py").write_text("def h(x):\n    return x\n")           # 已修改，在目標之外 ／ modified, outside target
-    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
+    commander = VibeHarnessCommander(
+        settings=load_settings(CONFIG, origin="explicit", overrides=Overrides(execution_mode="mock", changed_since="HEAD"))
+    )
     changed = commander.changed_files(str(root / "src"), "HEAD")
     assert [os.path.basename(p) for p in changed] == ["app.py", "new.py"]
-    commander.changed_since = "HEAD"
     summary = commander.run_full_pipeline(target_dir=str(root / "src"), output_report_path=str(tmp_path / "r.md"))
     assert summary.run is not None and summary.run.file_filters == ["changed-since=HEAD (2 file(s))"]
     assert summary.run.target_git_commit and summary.run.target_git_dirty is True
@@ -639,6 +642,6 @@ def test_a_crash_writes_a_partial_report_with_everything_so_far(tmp_path, monkey
 def test_null_retry_invalid_output_keeps_the_default(tmp_path):
     """`retry_invalid_output: null` 與未設定相同，用預設值；只有明確的 0 才關閉重問。
     `retry_invalid_output: null` behaves like an unset key (the default); only an explicit 0 disables re-asking."""
-    from vibeharness.core.llm_gateway import DEFAULT_RETRY_INVALID_OUTPUT
+    from vibeharness.core.settings import DEFAULT_RETRY_INVALID_OUTPUT
     assert LLMGateway(_config(tmp_path, retry_invalid_output=None), execution_mode="hybrid").retry_invalid_output \
         == DEFAULT_RETRY_INVALID_OUTPUT

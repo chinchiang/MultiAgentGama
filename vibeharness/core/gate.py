@@ -116,7 +116,6 @@ class ExecutionEvidence:
     ts_problem: Optional[str] = None
     mutation_report: Optional[MutationReport] = None
 
-
 @dataclass(frozen=True)
 class GateEvidence:
     threat_report: ThreatModelReport

@@ -146,6 +146,41 @@ def git_repo(needs_git, tmp_path_factory):
     return make
 
 
+@pytest.fixture
+def failing_post_checkout(git_repo, tmp_path_factory, monkeypatch):
+    """把開發者的全域 git 設定（`GIT_CONFIG_GLOBAL`）換成一份 `core.hooksPath` 只有一個一定失敗的 `post-checkout` 的
+    設定。夾具先證明它真的擋得住：不經過 `git_repo` 時，`git worktree add` 會因為這個 hook 結束碼不是 0（#158）。
+    Replaces the developer's global git config (`GIT_CONFIG_GLOBAL`) with one whose `core.hooksPath` holds only a
+    `post-checkout` that always fails. The fixture first proves it really blocks: without `git_repo`, `git worktree
+    add` exits non-zero because of that hook (#158)."""
+    home = tmp_path_factory.mktemp("hostile-git")
+    hooks = home / "hooks"
+    hooks.mkdir()
+    hook = hooks / "post-checkout"
+    hook.write_text("#!/bin/sh\necho 'hostile post-checkout hook' >&2\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    config = home / "gitconfig"
+    config.write_text(f"[core]\n\thooksPath = {hooks.as_posix()}\n", encoding="utf-8")
+    # 先從 os.environ 清掉外洩的 `GIT_*`（例如在 hook 裡跑測試時的 `GIT_DIR` 或蓋過全域設定的 `GIT_CONFIG_PARAMETERS`），
+    # 讓底下的 Guard 與繼承 os.environ 的受測腳本跑在完全相同的環境裡
+    # Clear leaked `GIT_*` variables from os.environ first (e.g. `GIT_DIR` inside a hook or `GIT_CONFIG_PARAMETERS`
+    # overriding global config), so the Guard below and the script under test see the exact same environment
+    for key in [k for k in os.environ if k.upper().startswith("GIT_")]:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    # Guard：照開發者的環境執行 worktree add，這個 hook 真的跑了而且擋下來，否則用到它的測試什麼也沒證明
+    # Guard: worktree add run the developer's way really runs this hook and is blocked, else a test using it proves
+    # nothing
+    repo = home / "guard"
+    repo.mkdir()
+    (repo / "g.txt").write_text("g\n", encoding="utf-8")
+    git_repo(repo)
+    added = subprocess.run(["git", "worktree", "add", "--detach", str(home / "guard-wt"), "HEAD"], cwd=repo,
+                           capture_output=True, text=True, encoding="utf-8")
+    assert added.returncode != 0 and "hostile post-checkout hook" in added.stderr, \
+        f"the hostile post-checkout hook did not block worktree add: {added}"
+
+
 def pytest_make_parametrize_id(config, val, argname):
     """長字串參數改用「名稱-長度-雜湊」當測試 ID：pytest 會把測試 ID 寫進 PYTEST_CURRENT_TEST，
     而 Windows 的環境變數上限是 32767 個字元，數十 KB 的惡意輸入會讓整個測試在 setup 就失敗。

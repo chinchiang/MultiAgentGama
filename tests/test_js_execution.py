@@ -775,8 +775,11 @@ def test_js_target_without_a_node_runtime_is_an_evidence_gap(tmp_path, scripted)
     target = tmp_path / "app"
     target.mkdir()
     (target / "auth.mjs").write_text(_JS_TARGET, encoding="utf-8")
-    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="live", transport=scripted(_js_script("INCONCLUSIVE")))
-    commander.node_bin = "definitely-not-a-node-binary-xyz"
+    cfg = load_config()
+    cfg["global"]["node_bin"] = "definitely-not-a-node-binary-xyz"
+    commander = VibeHarnessCommander(
+        config_path=write_config(tmp_path, cfg), execution_mode="live", transport=scripted(_js_script("INCONCLUSIVE"))
+    )
     summary = commander.run_full_pipeline(target_dir=str(target), base_url="http://localhost:59999",
                                           output_report_path=str(tmp_path / "r.md"))
     assert summary.overall_status == "INCONCLUSIVE"
