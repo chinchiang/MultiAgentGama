@@ -145,3 +145,16 @@ def test_every_simulated_output_fits_its_agents_schema(case):
     check for real answers, or the agent would read Simulated output differently from a real answer."""
     name, output, schema = _simulated_outputs()[case]
     assert check_output(output, schema) is None, name
+
+
+def test_extract_items_scans_required_and_any_of_lists_or_whole_answer():
+    req_schema = OutputSchema(required={"items": _TITLES})
+    assert req_schema.extract_items({"items": [{"title": "a"}, {"title": ""}, "bad", {"title": "b"}]}) == (
+        [{"title": "a"}, {"title": "b"}], (1, 4), (3,), 1
+    )
+    any_schema = OutputSchema(any_of={"items": _TITLES, "title": STRING})
+    assert any_schema.extract_items({"items": [{"title": ""}], "title": "whole"}) == (
+        [{"items": [{"title": ""}], "title": "whole"}], (1,), (), 1
+    )
+    ans_schema = OutputSchema(required={"code": STRING})
+    assert ans_schema.extract_items({"code": "x"}) == ([{"code": "x"}], (1,), (), 0)

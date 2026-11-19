@@ -7,14 +7,15 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 from vibeharness.core.models import ThreatItem, GeneratedTest, CodeSymbol, text_or
-from vibeharness.core.fanout import Call, CallKind, PlannedCalls, fan_out
 from vibeharness.core.model_output import STRING, OutputSchema
 from vibeharness.core.llm_gateway import LLMGateway
-from vibeharness.core.codecheck import check_test_code_for, strip_code_fences
+from vibeharness.core.codecheck import prepare_test_code
 from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import render_symbols, import_instructions, language_for_file, target_root
 from vibeharness.core.threat_symbols import named_symbols
-from vibeharness.core.agent_call import AgentCall, CallContext, Channel, Content, ItemSource, Part, Untrusted, ask
+from vibeharness.core.agent_call import (
+    AgentCall, Call, CallContext, CallKind, Channel, Content, Part, PlannedCalls, Untrusted, ask, fan_out,
+)
 
 logger = logging.getLogger("VibeHarness.ScenarioBuilder")
 
@@ -320,6 +321,12 @@ class ThreatScenarioBuilder:
                               f"No executable test synthesized for [{threat.threat_id}]; threat remains untested."))
             return None
         test: GeneratedTest = reply.items[0]
+        cleaned_code, problem, _, _ = prepare_test_code(test.code, language)
+        if not cleaned_code:
+            logger.warning(bi(f"[{threat.threat_id}] 沒有合成出可執行的測試；此威脅仍未測試。",
+                              f"No executable test synthesized for [{threat.threat_id}]; threat remains untested."))
+            return None
+        test = test.model_copy(update={"code": cleaned_code})
         if server_is_live:
             offenders = self._hosts_outside_base_url(test.code, base_url or "")
             if offenders:
@@ -329,8 +336,7 @@ class ThreatScenarioBuilder:
                     f"{', '.join(offenders)}; rejected and the threat remains untested."
                 ))
                 return None
-        is_valid, problem = check_test_code_for(test.code, language)
-        if not is_valid:
+        if problem is not None:
             # 保留下來，讓執行器回報為 ERROR，而不是默默丟掉
             # Kept so the executor reports it as ERROR rather than silently dropping it
             logger.warning(bi(f"[{threat.threat_id}] 合成的測試無法執行：{problem}",
@@ -346,15 +352,14 @@ def _attack_test(items: List[Mapping[str, Any]], ctx: CallContext) -> List[Gener
     tests: List[GeneratedTest] = []
     for item in items:
         raw_code = item.get("code")
-        code_str = strip_code_fences(raw_code if isinstance(raw_code, str) else "")
-        if not code_str:
+        if not isinstance(raw_code, str) or not raw_code.strip():
             continue
         tests.append(GeneratedTest(
             test_id=f"BB-TEST-{threat.threat_id}",
             test_type="blackbox_security",
             target_component=threat.attack_vector,
             title=text_or(item.get("title"), bi(f"{threat.title} 的安全測試", f"Security test for {threat.title}")),
-            code=code_str,
+            code=raw_code,
             rationale=text_or(item.get("rationale"), threat.attack_scenario),
             expected_outcome=text_or(item.get("expected_outcome"), threat.test_verification_goal),
             source_ref=threat.threat_id,
@@ -375,7 +380,7 @@ def _simulated_attack_test(model_alias: str) -> Dict[str, Any]:
 # The attack synthesizer's call: one per threat; the whole answer is the one item; the threat model's fields are
 # model-written and travel in the model-output channel; the context is (threat, test language)
 ATTACK_CALL = AgentCall(
-    schema=CODE_SCHEMA, items=ItemSource.answer(), mapper=_attack_test,
+    schema=CODE_SCHEMA, mapper=_attack_test,
     channels=(Channel.TARGET_CODE, Channel.MODEL_OUTPUT), kind=CallKind.SYNTHESIZER,
     simulated=lambda agent_id, alias: _simulated_attack_test(alias),
 )

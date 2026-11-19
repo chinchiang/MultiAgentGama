@@ -1,19 +1,35 @@
-"""代理呼叫：代理宣告一次模型呼叫（回答的形狀、items 在哪裡、怎麼對應成模型），`ask` 組好提示、經閘道呼叫，
-交回型別化的 items 與這次呼叫的來源。
-Agent calls: an agent declares one model call (the answer's shape, where its items are, how they map to models), and
-`ask` assembles the prompt, calls the gateway and hands back typed items with the call's provenance."""
+"""代理呼叫與扇出：代理宣告一次模型呼叫（回答的形狀、怎麼把 items 對應成模型），`ask` 組好提示、經閘道呼叫，
+交回型別化的 items 與這次呼叫的來源；`ask_batch` 與 `fan_out` 並行執行彼此獨立的呼叫、依呼叫順序收集結果，並由這裡記錄失敗的呼叫。
+
+一般例外（批次在閘道之外當掉）會記錄一行錯誤、以 `record_failure` 記成一次無效呼叫（品質閘門因此把缺少的結果視為證據
+缺口），並以呼叫端給的 `fallback` 取代該呼叫的結果，其他呼叫繼續；LLMGatewayError（嚴格的 live 模式）與
+KeyboardInterrupt 會在取消尚未開始的呼叫之後往外拋。代理只需要交出呼叫清單，不必記得池、順序、取消或失敗紀錄。
+Agent calls and fan-out: an agent declares one model call (the answer's shape and how its items map to models), `ask`
+assembles the prompt, calls the gateway and hands back typed items with the call's provenance; `ask_batch` and
+`fan_out` run independent calls concurrently, collect the results in call order, and book the calls that fail here.
+
+An ordinary exception (a batch that crashed outside the gateway) logs one error line, is booked with `record_failure`
+as an invalid call (so the quality gate sees the missing result as an evidence gap), and the caller's `fallback` takes
+that call's place while the others carry on; an LLMGatewayError (strict live mode) and a KeyboardInterrupt propagate
+after the calls not started yet are cancelled. An agent only hands over its list of calls and has nothing to remember
+about the pool, the order, cancellation or failure booking."""
 import logging
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Generic, List, Mapping, Optional, Sequence, Tuple, TypeVar, Union, cast
 
-from vibeharness.core.llm_gateway import LLMGateway
-from vibeharness.core.models import CallKind
+from vibeharness.core.i18n import bi
+from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
+from vibeharness.core.models import CallKind  # 也從這裡匯出 ／ re-exported here too
 from vibeharness.core.model_output import OutputSchema
 from vibeharness.core.sanitize import (
     UNTRUSTED_CODE_POLICY, UNTRUSTED_MODEL_POLICY, untrusted_block, untrusted_model_block,
 )
+
+_T = TypeVar("_T")
 
 
 class Channel(Enum):
@@ -56,29 +72,6 @@ Part = Union[str, Untrusted]
 
 
 @dataclass(frozen=True)
-class ItemSource:
-    """回答裡的 items 在哪裡：某個鍵的物件清單（`key`）；那個鍵沒有可用的項目時，改用整個回答（`key_or_answer`，
-    回答本身也要符合同一條可用規則）；或整個回答就是唯一的 item（`answer`）。
-    Where an answer's items are: a key's list of objects (`key`); that key's list, or else the whole answer when the
-    list has no usable item (`key_or_answer`, the answer itself must pass the same usable rule); or the whole answer as
-    the one item (`answer`)."""
-    name: Optional[str]
-    or_answer: bool = False
-
-    @classmethod
-    def key(cls, name: str) -> "ItemSource":
-        return cls(name)
-
-    @classmethod
-    def key_or_answer(cls, name: str) -> "ItemSource":
-        return cls(name, or_answer=True)
-
-    @classmethod
-    def answer(cls) -> "ItemSource":
-        return cls(None)
-
-
-@dataclass(frozen=True)
 class CallContext:
     """mapper 看得到的這次呼叫：`context` 是代理在 `ask` 時帶進來的資料（例如這一批的符號），`simulated` 表示 items
     來自代理自己的模擬輸出（建構模型時就帶入，不必事後修改）。
@@ -95,11 +88,11 @@ class CallContext:
 
 @dataclass(frozen=True)
 class AgentCall:
-    """代理對一種模型呼叫的宣告：回答的 `schema`、items 所在的鍵，以及把這次呼叫的 items 對應成模型的 `mapper`。
-    An agent's declaration of one kind of model call: the answer's `schema`, the key its items are under, and the
-    `mapper` turning one call's items into models."""
+    """代理對一種模型呼叫的宣告：回答的 `schema`（`schema.extract_items` 直接決定 items 從哪裡擷取），以及把這次呼叫的
+    items 對應成模型的 `mapper`。
+    An agent's declaration of one kind of model call: the answer's `schema` (`schema.extract_items` decides where its
+    items are extracted from), and the `mapper` turning one call's items into models."""
     schema: OutputSchema
-    items: ItemSource
     mapper: Callable[[List[Mapping[str, Any]], CallContext], Sequence[Any]]
     # 這種呼叫用到的通道：它們的 policy 依 Channel 的順序插在系統提示詞的 head 與 tail 之間
     # The channels this kind of call uses: their policies go between the system prompt's head and tail, in Channel
@@ -180,31 +173,14 @@ def ask(gateway: LLMGateway, call: AgentCall, agent_id: str, system: Tuple[str, 
 
 def _usable_items(call: AgentCall, data: Mapping[str, Any],
                   ctx: CallContext) -> Tuple[List[Mapping[str, Any]], Tuple[int, ...]]:
-    name = call.items.name
-    if name is None:
-        return [data], (1,)
-    field_type = call.schema.required.get(name) or call.schema.any_of.get(name)
-    usable = field_type.usable if field_type and field_type.usable else (lambda item: True)
-    items: List[Mapping[str, Any]] = []
-    positions: List[int] = []
-    # 閘道的形狀檢查已保證可用回答的這個鍵是清單；不是清單時（例如替換閘道的測試）就當作沒有 items
-    # The gateway's shape check already makes this key a list in a usable answer; anything else (e.g. a test replacing
-    # the gateway) counts as no items
-    raw = data.get(name)
-    for position, item in enumerate(raw if isinstance(raw, list) else [], start=1):
-        if not isinstance(item, dict):
-            if call.logger and call.malformed_message:
-                call.logger.warning(call.malformed_message(ctx, position))
-            continue
-        if not usable(item):
-            if call.logger and call.skip_message:
-                call.logger.warning(call.skip_message(ctx))
-            continue
-        items.append(item)
-        positions.append(position)
-    if not items and call.items.or_answer and usable(data):
-        return [data], (1,)
-    return items, tuple(positions)
+    items, positions, malformed, skipped = call.schema.extract_items(data)
+    if call.logger and call.malformed_message:
+        for position in malformed:
+            call.logger.warning(call.malformed_message(ctx, position))
+    if call.logger and call.skip_message:
+        for _ in range(skipped):
+            call.logger.warning(call.skip_message(ctx))
+    return items, positions
 
 
 @dataclass(frozen=True)
@@ -225,3 +201,193 @@ def ask_text(gateway: LLMGateway, agent_id: str, system: Tuple[str, str], prompt
     answer = gateway.generate(agent_id, head + tail, _user_prompt(prompt), json_output=False,
                               simulated=lambda alias: {}, kind=kind)
     return TextReply(status=answer.mode, text=answer.text or "")
+
+
+@dataclass(frozen=True)
+class Call(Generic[_T]):
+    """一個代理呼叫：失敗時記在哪個代理名下、錯誤訊息的雙語標籤（中文, 英文）、不帶參數的工作，以及這份工作的
+    呼叫種類（當掉時的紀錄帶著它）。
+    One agent call: which agent a failure is booked under, the bilingual label (Chinese, English) of the error line,
+    the zero-argument work, and the kind of call the work is (a crash's record carries it)."""
+    agent_id: str
+    label: Tuple[str, str]
+    run: Callable[[], _T]
+    kind: Optional[CallKind] = None
+
+
+@dataclass(frozen=True)
+class PlannedCalls:
+    """一個代理對給定輸入會發出的一組呼叫（`--estimate` 加總它們，不發出任何呼叫）。`calls` 是呼叫數；
+    `conditional` 的呼叫只在回答需要時才發生（例如修復無效的測試），這時 `calls` 是機會數，每個機會最多
+    `max_per_call` 次。`json_output` 的呼叫在回答無法使用時會被重新詢問；`code_tokens` 是每次呼叫帶上的程式碼
+    token 數：`exact` 的計畫是實際的程式碼清單大小，其餘是估算假設的大小（預算上限或典型估計）；`exact` 表示輸入
+    在執行前就已知（符號），不是依假設推出的情境（發現、威脅）。
+    A set of calls an agent would make for given inputs (`--estimate` adds them up and makes none). `calls` is the
+    number of calls; `conditional` calls only happen when an answer needs them (e.g. healing an invalid test), and
+    `calls` is then the number of opportunities, each with at most `max_per_call` calls. `json_output` calls are
+    re-asked when the answer is unusable; `code_tokens` is the code each call carries, in tokens: the actual code
+    listing for `exact` plans, otherwise the size the estimate assumes (a budget cap or a typical size); `exact`
+    means the inputs are known before the run (symbols) rather than a scenario from assumptions (findings, threats).
+    把項目分派給各次呼叫的代理（驗證者分派發現）另外填 `assigned`（分到的項目數，情境數可能不是整數）與
+    `per_call`（每次呼叫最多幾項），`--estimate` 的說明文字讀它們。
+    An agent that hands items out to its calls (the verifiers hand out findings) also fills `assigned` (how many it is
+    assigned, a scenario count that may not be whole) and `per_call` (the most per call), which `--estimate`'s basis
+    text reads."""
+    agent_id: str
+    model_alias: str
+    kind: CallKind
+    calls: int
+    json_output: bool
+    code_tokens: int
+    exact: bool
+    conditional: bool = False
+    max_per_call: int = 1
+    assigned: Optional[float] = None
+    per_call: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class AgentInput:
+    """一次代理呼叫的可變輸入：`system` 的 `(head, tail)`、`prompt` 片段清單與選用的 `context`。
+    The per-call inputs of one agent call: the `(head, tail)` system prompt, the user-prompt parts, and the optional
+    `context`."""
+    system: Tuple[str, str]
+    prompt: Sequence[Part]
+    context: Any = None
+
+
+def ask_batch(
+    gateway: LLMGateway,
+    call: Union[AgentCall, Callable[[_T], AgentCall]],
+    items: Sequence[_T],
+    prepare: Callable[[_T], AgentInput],
+    *,
+    agent_id: Union[str, Callable[[_T], str]],
+    label: Union[Tuple[str, str], Callable[[_T], Tuple[str, str]]],
+) -> List[AgentReply]:
+    """對 `items` 裡的每一項建立呼叫輸入並執行 `ask()`，以 `fan_out`（`fallback=NO_REPLY`）並行執行並依序回傳
+    `AgentReply` 清單。`call`、`agent_id` 與 `label` 可以是固定值或依 item 計算的函式。
+    Prepares inputs and runs `ask()` for each item in `items` concurrently through `fan_out` (`fallback=NO_REPLY`),
+    returning the `AgentReply` list in item order. `call`, `agent_id`, and `label` may be constants or per-item
+    callables."""
+    if not items:
+        return []
+    calls: List[Call[AgentReply]] = []
+    batch_logger: Optional[logging.Logger] = None
+    for item in items:
+        item_call = call(item) if callable(call) else call
+        item_agent = agent_id(item) if callable(agent_id) else agent_id
+        if batch_logger is None and item_call.logger is not None:
+            batch_logger = item_call.logger
+
+        def _run_one(item: _T = item, ic: AgentCall = item_call, ia: str = item_agent) -> AgentReply:
+            inp = prepare(item)
+            return ask(gateway, ic, ia, system=inp.system, prompt=inp.prompt, context=inp.context)
+
+        calls.append(Call(
+            agent_id=item_agent,
+            label=label(item) if callable(label) else label,
+            run=_run_one,
+            kind=item_call.kind,
+        ))
+    return fan_out(
+        gateway, calls, fallback=NO_REPLY, logger=batch_logger or logging.getLogger("VibeHarness.AgentCall")
+    )
+
+
+def fan_out(gateway: LLMGateway, calls: Sequence[Call[_T]], *, fallback: _T, logger: logging.Logger) -> List[_T]:
+    """依呼叫順序回傳每個呼叫的結果；當掉的呼叫記錄一行錯誤（以呼叫端的 logger）、記成無效呼叫，結果換成 `fallback`。
+    並行數是閘道的 `max_concurrent_calls`；沒有呼叫時直接回傳空清單。
+    Returns each call's result in call order; a call that crashes logs one error line (with the caller's logger), is
+    booked as an invalid call, and `fallback` takes its result's place. The concurrency is the gateway's
+    `max_concurrent_calls`; no calls means an empty list straight away."""
+    if not calls:
+        return []
+    results: List[_T] = []
+    for call, (result, error) in zip(calls, _run_ordered([c.run for c in calls], gateway.max_concurrent_calls), strict=True):
+        if error is not None:
+            _book(gateway, call, error, logger)
+            results.append(fallback)
+        else:
+            # 成功的呼叫的結果就是 run() 的回傳值（可能本來就是 None）
+            # A successful call's result is what run() returned (which may itself be None)
+            results.append(cast(_T, result))
+    return results
+
+
+def _book(gateway: LLMGateway, call: "Call[Any]", error: Exception, logger: logging.Logger) -> None:
+    zh, en = call.label
+    logger.error(bi(f"{zh}失敗：{type(error).__name__}: {error}", f"{en} failed: {type(error).__name__}: {error}"))
+    # 記入 call_log，讓品質閘門把缺少的結果視為證據缺口
+    # Booked in call_log so the quality gate sees the missing result as an evidence gap
+    gateway.record_failure(call.agent_id, f"{type(error).__name__}: {error}", kind=call.kind)
+
+
+def _run_ordered(calls: List[Callable[[], _T]], max_workers: int) -> List[Tuple[Optional[_T], Optional[Exception]]]:
+    """並行執行彼此獨立的呼叫，依呼叫順序回傳每一個的（結果, 例外）。
+
+    一般例外會記成該呼叫的結果，讓其他呼叫繼續；LLMGatewayError（嚴格的 live 模式）與
+    KeyboardInterrupt 會中止整批：還沒開始的呼叫被取消、絕不送出，然後才把例外往外拋。
+    失敗的工作執行緒在自己的執行緒裡就設下中止旗標，所以它不會再接手佇列中的下一個呼叫。
+    Runs independent calls concurrently and returns (result, exception) for each, in call order.
+
+    An ordinary exception becomes that call's result so the others carry on; an LLMGatewayError (strict
+    live mode) or a KeyboardInterrupt aborts the batch: calls that have not started are cancelled and never
+    sent, then the exception propagates. The failing worker raises the abort flag in its own thread, so it
+    never picks up the next queued call.
+    """
+    abort = threading.Event()
+
+    def guarded(call: Callable[[], _T]) -> _T:
+        if abort.is_set():
+            raise _Aborted()
+        try:
+            return call()
+        except BaseException as e:
+            # 致命的失敗（嚴格 live 模式或中斷）在這個執行緒裡就中止整批，佇列中的下一個呼叫不會開始
+            # A fatal failure (strict live mode or an interrupt) aborts the batch right in this thread, so the
+            # next queued call never starts
+            if isinstance(e, LLMGatewayError) or not isinstance(e, Exception):
+                abort.set()
+            raise
+
+    results: List[Tuple[Optional[_T], Optional[Exception]]] = []
+    with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(calls) or 1))) as pool:
+        futures = [pool.submit(guarded, call) for call in calls]
+        try:
+            for future in futures:
+                try:
+                    results.append((future.result(), None))
+                except LLMGatewayError:
+                    raise
+                except _Aborted:
+                    # 致命的失敗可能排在後面：等所有呼叫結束後拋出它，而不是拋出中止標記
+                    # The fatal failure may come later in call order: raise it once all calls are done,
+                    # never the abort marker
+                    raise _fatal_error(futures) from None
+                except Exception as e:
+                    results.append((None, e))
+        except BaseException:
+            abort.set()
+            for future in futures:
+                future.cancel()
+            raise
+    return results
+
+
+def _fatal_error(futures: "List[Future[Any]]") -> BaseException:
+    """已中止的一批呼叫中，第一個致命的例外（LLMGatewayError 或非 Exception 的中斷）。
+    The first fatal exception (LLMGatewayError or a non-Exception interrupt) of an aborted batch of calls."""
+    for future in futures:
+        if future.cancelled():
+            continue
+        error = future.exception()
+        if error is not None and not isinstance(error, _Aborted) and (
+                isinstance(error, LLMGatewayError) or not isinstance(error, Exception)):
+            return error
+    return LLMGatewayError(bi("一批模型呼叫已中止", "a batch of model calls was aborted"))
+
+
+class _Aborted(Exception):
+    """整批已中止後，佇列中尚未開始的呼叫收到的標記例外（從不往外拋給呼叫端）。
+    Marker raised by a queued call that starts after the batch was aborted (never surfaces to callers)."""

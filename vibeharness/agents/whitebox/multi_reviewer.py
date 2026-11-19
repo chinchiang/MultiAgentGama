@@ -1,4 +1,3 @@
-import functools
 import logging
 import re
 from typing import List, Dict, Any, Mapping, Optional, Sequence, Tuple, TypeVar
@@ -8,9 +7,9 @@ from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import estimate_tokens, render_symbols, batch_symbols, target_root
 from vibeharness.core.agent_call import (
-    NO_REPLY, AgentCall, AgentReply, CallContext, Channel, Content, ItemSource, Part, Untrusted, ask,
+    AgentCall, AgentInput, AgentReply, CallContext, CallKind, Channel, Content, Part, PlannedCalls, Untrusted,
+    ask_batch,
 )
-from vibeharness.core.fanout import Call, CallKind, PlannedCalls, fan_out
 from vibeharness.core.identity import UNKNOWN_FILE
 from vibeharness.core.model_output import LIST_OF_OBJECTS, OutputSchema
 
@@ -149,16 +148,16 @@ class HeterogeneousReviewerEnsemble:
         jobs = self._jobs(self._review_batches(symbols, root))
 
         # 審查者是彼此獨立的模型，所以它們的呼叫並行執行。一個當掉的批次不能丟掉其他所有批次（已經付費的）結果：
-        # fan_out 把它記成無效呼叫（該批次的發現是缺漏，而不是不存在）；live 模式的失敗仍會往上傳遞，讓執行大聲地失敗。
+        # ask_batch（透過 fan_out）把它記成無效呼叫（該批次的發現是缺漏，而不是不存在）；live 模式的失敗仍會往上傳遞，讓執行大聲地失敗。
         # Reviewers are independent models, so their calls run concurrently. A crashed batch must not discard every
-        # other batch's (already paid-for) results: fan_out books it as an invalid call (the batch's findings are
-        # missing, not absent); live-mode failures still propagate so the run fails loudly.
-        calls = [
-            Call(reviewer["agent_id"], (f"{reviewer['name']} 的審查批次", f"Reviewer batch for {reviewer['name']}"),
-                 functools.partial(self._review_batch, reviewer, batch, root), CallKind.REVIEWER)
-            for reviewer, batch in jobs
-        ]
-        replies: List[AgentReply] = fan_out(self.gateway, calls, fallback=NO_REPLY, logger=logger)
+        # other batch's (already paid-for) results: ask_batch (via fan_out) books it as an invalid call (the batch's
+        # findings are missing, not absent); live-mode failures still propagate so the run fails loudly.
+        replies: List[AgentReply] = ask_batch(
+            self.gateway, REVIEW_CALL, jobs,
+            lambda job: self._review_batch(job[0], job[1], root),
+            agent_id=lambda job: job[0]["agent_id"],
+            label=lambda job: (f"{job[0]['name']} 的審查批次", f"Reviewer batch for {job[0]['name']}"),
+        )
 
         # 編號依呼叫順序在這裡補上（mapper 在工作執行緒裡並行執行，不能決定 id）
         # Ids are assigned here in call order (the mapper runs concurrently in the worker threads, so it cannot)
@@ -191,7 +190,7 @@ class HeterogeneousReviewerEnsemble:
             unique.append(f if count == 1 else f.model_copy(update={"finding_id": f"{f.finding_id}-{count}"}))
         return unique
 
-    def _review_batch(self, reviewer: Dict[str, str], batch: List[CodeSymbol], root: str) -> AgentReply:
+    def _review_batch(self, reviewer: Dict[str, str], batch: List[CodeSymbol], root: str) -> AgentInput:
         name = reviewer["name"]
         # 模型提示詞：維持英文（雙語的預設名稱／專注領域只貢獻其英文半）
         # Model prompt: stays English (a bilingual default name / focus contributes its English half only)
@@ -224,8 +223,7 @@ class HeterogeneousReviewerEnsemble:
         ]
         logger.info(bi(f"以審查者 {name} 執行白箱稽核（{len(batch)} 個符號）",
                        f"Running white-box audit with reviewer: {name} ({len(batch)} symbols)"))
-        return ask(self.gateway, REVIEW_CALL, reviewer["agent_id"], system=(system_prompt, ""), prompt=prompt,
-                   context=(reviewer, batch))
+        return AgentInput(system=(system_prompt, ""), prompt=prompt, context=(reviewer, batch))
 
     @staticmethod
     def _match_symbol(name: Any, batch: List[CodeSymbol]) -> Optional[CodeSymbol]:
@@ -367,7 +365,7 @@ def _review_findings(items: List[Mapping[str, Any]], ctx: CallContext) -> List[O
 # 審查者的呼叫：一個審查者、一個白箱批次一次；context 是 (審查者, 批次)
 # The reviewers' call: one per reviewer and white-box batch; the context is (reviewer, batch)
 REVIEW_CALL = AgentCall(
-    schema=FINDINGS_SCHEMA, items=ItemSource.key("findings"), mapper=_review_findings,
+    schema=FINDINGS_SCHEMA, mapper=_review_findings,
     channels=(Channel.TARGET_CODE,), logger=logger, kind=CallKind.REVIEWER,
     skip_message=lambda ctx: bi(
         f"略過 {ctx.context[0]['name']} 沒有可用標題或描述的發現",

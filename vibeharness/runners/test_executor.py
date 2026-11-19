@@ -1,29 +1,29 @@
-import ast
 import math
 import os
 import time
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable, List, Tuple, Optional, Dict, Set
-from vibeharness.core.models import GeneratedTest, TestExecutionResult
+from typing import Any, Callable, List, Tuple, Optional, Dict
+from vibeharness.core.models import GeneratedTest, TestExecutionResult, unique_test_ids
 from vibeharness.core.sandbox import (
     REASON_JS_COVERAGE_UNSUPPORTED as REASON_JS_COVERAGE_UNSUPPORTED, NodeRuntime, Sandbox, SandboxUnavailableError,
     TIMEOUT_EXIT_CODE,
 )
-from vibeharness.core.codecheck import check_test_code_for
+from vibeharness.core.codecheck import prepare_test_code, split_future_imports
+# 使用者可見的原因字串與工具匯入 ／ user-visible reason strings and helper imports
 from vibeharness.core.jscoverage import JsLineCoverage
 from vibeharness.core.i18n import bi
-from vibeharness.runners.attribution import attribute, header_field, mutant_outcome, not_run, parse_junit
+from vibeharness.runners.attribution import (
+    REASON_NO_TEST_COLLECTED as _REASON_NO_TEST_COLLECTED, REASON_REPORT_UNPARSEABLE as _REASON_REPORT_UNPARSEABLE,
+    REASON_RERUN_BUDGET_EXHAUSTED as _REASON_RERUN_BUDGET_EXHAUSTED, ModuleOutcome, attribute_module, header_field,
+    mutant_outcome, not_run, parse_junit,
+)
 
 logger = logging.getLogger("VibeHarness.TestExecutor")
 
-# 使用者可見的原因字串（中文 ／ English）；測試以 == / startswith 比對的匯出為常數
-# User-visible reason strings (Chinese / English); the ones tests compare with == / startswith are exported
-REASON_NO_TEST_COLLECTED = bi("產生的程式碼中沒有收集到任何測試", "No test was collected from the generated code")
-REASON_REPORT_UNPARSEABLE = bi("沙盒測試報告無法解析；沒有逐一測試的判定結果",
-                               "Sandbox test report could not be parsed; no per-test verdict available")
-REASON_RERUN_BUDGET_EXHAUSTED = bi("批次逾時後重跑預算已用盡；此模組未重新執行",
-                                   "Rerun budget exhausted after the batch timeout; module was not re-run")
+REASON_NO_TEST_COLLECTED = _REASON_NO_TEST_COLLECTED
+REASON_REPORT_UNPARSEABLE = _REASON_REPORT_UNPARSEABLE
+REASON_RERUN_BUDGET_EXHAUSTED = _REASON_RERUN_BUDGET_EXHAUSTED
 REASON_JS_RUNNER_NOT_CONFIGURED = bi("未設定 JavaScript/TypeScript 執行器", "no JavaScript/TypeScript runner is configured")
 REASON_NO_NODE_RUNTIME = bi("找不到可用的 Node 執行環境", "no usable Node runtime was found")
 REASON_JS_NOT_RUN = bi("JavaScript/TypeScript 測試未執行", "JavaScript/TypeScript test was not run")
@@ -129,7 +129,7 @@ class TestSuiteExecutor:
         Runs a set of tests; Python and JS/TS line coverage are reported separately (see SuiteResult)."""
         if not tests:
             return SuiteResult(results=[])
-        unique_ids = self._unique_test_ids(tests)
+        unique_ids = unique_test_ids(tests)
         results: Dict[int, TestExecutionResult] = {}
         py_idx = [i for i, t in enumerate(tests) if t.language == "python"]
         js_idx = [i for i, t in enumerate(tests) if t.language != "python"]
@@ -171,7 +171,7 @@ class TestSuiteExecutor:
         header = self._python_header(working_dir)
         files: Dict[str, str] = {}
         for idx, t in enumerate(tests):
-            preamble, body = self._split_future_imports(t.code)
+            preamble, body = split_future_imports(t.code)
             files[f"test_vh_{idx:03d}.py"] = (
                 f"{preamble}{header}\n# Target: {header_field(t.target_component)} | "
                 f"Test: {header_field(t.title)}\n{body}\n"
@@ -242,8 +242,8 @@ class TestSuiteExecutor:
 
         for idx in indices:
             t = tests[idx]
-            is_valid, problem = check_test_code_for(t.code, t.language)
-            if not is_valid:
+            _, problem, preamble, body = prepare_test_code(t.code, t.language)
+            if problem is not None:
                 results[idx] = not_run(
                     t, unique_ids[idx],
                     bi(f"產生的測試無法執行（{problem}）；未執行", f"Generated test is not executable ({problem}); not run")
@@ -251,7 +251,7 @@ class TestSuiteExecutor:
                 continue
             module = f"test_vh_{idx:03d}"
             module_to_idx[module] = idx
-            preamble, body = ("", t.code) if is_js else self._split_future_imports(t.code)
+            # 前導的 docstring 與 __future__ 匯入已由 prepare_test_code 拆開 ／ leading docstring and __future__ imports already split
             files[f"{module}{ext}"] = (
                 f"{preamble}{header}\n{comment} Target: {header_field(t.target_component)} | "
                 f"Test: {header_field(t.title)}\n{body}\n"
@@ -263,24 +263,9 @@ class TestSuiteExecutor:
             return None, None
         logger.info(bi(f"在沙盒中執行 {len(files)} 個 {language} 測試模組（coverage={collect_coverage}）...",
                        f"Executing {len(files)} {language} test module(s) in sandbox (coverage={collect_coverage})..."))
-        # 每個模組：(結束碼, stdout, stderr, junit xml)；Python 批次共用一次執行，JS 模組
-        # 則各自有自己的行程（Node 的 junit 報告器不會記錄最上層測試來自哪個檔案）
-        # Per module: (exit code, stdout, stderr, junit xml); a Python batch shares one run, a JS module
-        # gets its own process (Node's junit reporter does not name the file a top-level test came from)
-        runs: Dict[str, Tuple[int, str, str, Optional[str]]] = {}
-        cases: Optional[Dict[str, List[dict]]] = {}
-        timed_out: Set[str] = set()
-        not_rerun: Set[str] = set()
-        parse_failed: Set[str] = set()
-        batch_timeout: Optional[int] = None
-        # 實際使用的逾時（秒），供逾時原因字串使用：絕不能回報一個沒有真正生效的預算
-        # The timeout actually used (seconds), for the timeout reason: never report a budget that did not apply
-        timeout_used: Dict[str, int] = {}
         if is_js:
             js_coverage, coverage_problem = self._js_coverage_or_none(sandbox) if collect_coverage else (None, None)
-            cases, timed_out, not_rerun, parse_failed = self._run_js_modules(
-                files, working_dir, sandbox, language, runs, timeout_used, coverage=js_coverage
-            )
+            outcomes = self._run_js_modules(files, working_dir, sandbox, language, coverage=js_coverage)
             if js_coverage is not None:
                 coverage_pct = js_coverage.percent()
                 if coverage_pct is None:
@@ -300,89 +285,47 @@ class TestSuiteExecutor:
                 collect_coverage=collect_coverage,
                 coverage_target=working_dir
             )
-            exit_code, stdout, stderr, coverage_pct, junit_xml = (
-                run.exit_code, run.stdout, run.stderr, run.coverage_pct, run.junit_xml)
-            cases = parse_junit(junit_xml, language)
-            if exit_code == TIMEOUT_EXIT_CODE and len(files) > 1:
+            coverage_pct = run.coverage_pct
+            if run.exit_code == TIMEOUT_EXIT_CODE and len(files) > 1:
                 # 一個卡住的測試不能讓整個批次作廢：用各自的預算重跑每個模組
                 # One hanging test must not void the whole batch: rerun each module on its own budget
                 logger.warning(bi("批次執行逾時；逐一重新執行每個測試模組以找出卡住的測試。",
                                   "Batch run timed out; re-running each test module individually to isolate the hang."))
                 coverage_pct = None
-                cases, timed_out, not_rerun, parse_failed = self._run_individually(
-                    files, working_dir, sandbox, language, timeout_used, runs
-                )
-                junit_xml = ""  # 逐模組的結果現在在 `cases`／`timed_out` 裡 ／ per-module outcomes are now in `cases` / `timed_out`
-            elif exit_code == TIMEOUT_EXIT_CODE:
-                batch_timeout = sandbox.timeout_seconds
-            # 重跑過的模組保留自己那次的結果（含沒有報告的情況）；其餘沿用批次的結果
-            # A rerun module keeps its own outcome (including no report); the others take the batch's
-            for module in module_to_idx:
-                runs.setdefault(module, (exit_code, stdout, stderr, junit_xml))
+                outcomes = self._run_individually(files, working_dir, sandbox, language)
+            else:
+                cases = parse_junit(run.junit_xml, language)
+                batch_timeout = sandbox.timeout_seconds if run.exit_code == TIMEOUT_EXIT_CODE else None
+                outcomes = {
+                    module: ModuleOutcome(
+                        exit_code=run.exit_code,
+                        stdout=run.stdout,
+                        stderr=run.stderr,
+                        has_report=run.junit_xml is not None,
+                        cases=cases.get(module) if cases is not None else None,
+                        batch_timeout=batch_timeout,
+                        parse_failed=run.junit_xml is not None and cases is None,
+                    )
+                    for module in module_to_idx
+                }
 
         for module, idx in module_to_idx.items():
-            t = tests[idx]
-            exit_code, stdout, stderr, junit_xml = runs[module]
-            module_cases = cases.get(module) if cases is not None else None
-            if module in not_rerun:
-                results[idx] = not_run(t, unique_ids[idx], REASON_RERUN_BUDGET_EXHAUSTED)
-            elif module in parse_failed:
-                results[idx] = not_run(t, unique_ids[idx], REASON_REPORT_UNPARSEABLE, stderr=stderr)
-            elif module in timed_out and (is_js or not module_cases):
-                used = timeout_used.get(module, self._per_test_budget(sandbox))
-                results[idx] = not_run(
-                    t, unique_ids[idx],
-                    bi(f"測試在 {used} 秒後逾時；未執行完畢",
-                       f"Test timed out after {used}s; not run to completion")
-                )
-            elif junit_xml is None:
-                if exit_code == TIMEOUT_EXIT_CODE:
-                    results[idx] = not_run(
-                        t, unique_ids[idx],
-                        bi(f"測試批次在 {batch_timeout or '?'} 秒後逾時，且沒有產生逐一測試的報告",
-                           f"Test batch timed out after {batch_timeout or '?'}s "
-                           "and no per-test report was produced")
-                    )
-                else:
-                    results[idx] = not_run(
-                        t, unique_ids[idx],
-                        f"{bi('沙盒執行沒有產生報告', 'Sandbox run produced no report')}: "
-                        f"{stderr.strip()[:200] or f'exit code {exit_code}'}",
-                        stdout=stdout, stderr=stderr
-                    )
-            elif cases is None:
-                results[idx] = not_run(t, unique_ids[idx], REASON_REPORT_UNPARSEABLE, stdout=stdout, stderr=stderr)
-            elif not module_cases:
-                results[idx] = not_run(t, unique_ids[idx], REASON_NO_TEST_COLLECTED, stdout=stdout, stderr=stderr)
-            else:
-                results[idx] = attribute(t, unique_ids[idx], module_cases)
+            results[idx] = attribute_module(tests[idx], unique_ids[idx], outcomes[module])
         return coverage_pct, coverage_problem
 
     def _run_individually(
         self, files: Dict[str, str], working_dir: str, sandbox: Optional[Sandbox] = None,
-        language: str = "python", timeout_used: Optional[Dict[str, int]] = None,
-        runs: Optional[Dict[str, Tuple[int, str, str, Optional[str]]]] = None
-    ) -> Tuple[Dict[str, List[dict]], Set[str], Set[str], Set[str]]:
+        language: str = "python"
+    ) -> Dict[str, ModuleOutcome]:
         """在各自的行程中執行每個模組。每次重跑的逾時是 min(單測預算, 剩下的重跑預算)，所以重跑的總時間
         不會超出沙盒的批次預算（只差無條件進位的不到 1 秒），而不是在最後一個模組多出整整一份單測預算。
-        實際使用的逾時填入 `timeout_used`（若有給）；每次重跑的 (結束代碼, stdout, stderr, junit xml) 填入 `runs`（若有給），
-        讓沒有產生報告的重跑回報成沙盒問題，而不是「沒有收集到測試」。
+        回傳依模組名稱鍵控的 `ModuleOutcome`，讓沒有產生報告的重跑回報成沙盒問題，而不是「沒有收集到測試」。
         Runs each module in its own process. Each rerun's timeout is min(per-test budget, rerun budget left), so the
         reruns never exceed the sandbox's batch budget in total (up to sub-second rounding up), instead of
-        overshooting by a whole per-test budget on the last module. The timeout actually used goes into
-        `timeout_used` (when given); each rerun's (exit code, stdout, stderr, junit xml) goes into `runs` (when given), so
-        a rerun that produced no report is reported as a sandbox problem rather than "no test collected".
-
-        回傳 (依模組分組的 junit 案例, 逾時的模組, 因重跑預算（沙盒自己的批次預算）
-        用盡而跳過的模組, JUnit 報告無法解析的模組)。
-        Returns (junit cases by module, modules that timed out, modules skipped because the
-        rerun budget (the sandbox's own batch budget) was exhausted, modules whose JUnit
-        report could not be parsed).
+        overshooting by a whole per-test budget on the last module. Returns a `ModuleOutcome` per module so a rerun
+        that produced no report is reported as a sandbox problem rather than "no test collected".
         """
-        cases: Dict[str, List[dict]] = {}
-        timed_out: Set[str] = set()
-        not_rerun: Set[str] = set()
-        parse_failed: Set[str] = set()
+        outcomes: Dict[str, ModuleOutcome] = {}
         sandbox = sandbox or self.sandbox
         per_test = self._per_test_budget(sandbox)
         budget = float(sandbox.timeout_seconds or 0)
@@ -391,25 +334,17 @@ class TestSuiteExecutor:
             module = os.path.splitext(filename)[0]
             remaining = _remaining_seconds(deadline, budget)
             if remaining < 1:
-                not_rerun.add(module)
+                outcomes[module] = ModuleOutcome.rerun_budget_exhausted()
                 continue
             timeout = min(per_test, remaining)
-            if timeout_used is not None:
-                timeout_used[module] = timeout
             run = sandbox.execute_pytest_files(
                 {filename: code}, working_dir=working_dir, timeout_seconds=timeout
             )
-            if runs is not None:
-                runs[module] = (run.exit_code, run.stdout, run.stderr, run.junit_xml)
-            if run.exit_code == TIMEOUT_EXIT_CODE:
-                timed_out.add(module)
-                continue
-            module_cases = parse_junit(run.junit_xml, language)
-            if module_cases is None:
-                parse_failed.add(module)
-                continue
-            cases.update(module_cases)
-        return cases, timed_out, not_rerun, parse_failed
+            outcomes[module] = ModuleOutcome.from_sandbox(
+                module=module, language=language, exit_code=run.exit_code,
+                stdout=run.stdout, stderr=run.stderr, junit_xml=run.junit_xml, timeout=timeout,
+            )
+        return outcomes
 
     def _js_coverage_or_none(self, sandbox: Sandbox) -> Tuple[Optional[JsLineCoverage], Optional[str]]:
         """(這次 JS/TS 執行要用的涵蓋率累加器, None)；沙盒不支援（不收集涵蓋率的沙盒、舊版 Node）時為 (None, 原因)。
@@ -434,9 +369,8 @@ class TestSuiteExecutor:
 
     def _run_js_modules(
         self, files: Dict[str, str], working_dir: str, sandbox: Sandbox, language: str,
-        runs: Dict[str, Tuple[int, str, str, Optional[str]]], timeout_used: Dict[str, int],
         coverage: Optional[JsLineCoverage] = None
-    ) -> Tuple[Dict[str, List[dict]], Set[str], Set[str], Set[str]]:
+    ) -> Dict[str, ModuleOutcome]:
         """每個 JS/TS 模組各自一個 `node --test` 行程（Node 的 junit 報告器不會記錄最上層測試來自哪個檔案），
         但逾時語意與 Python 批次一致（docs/configuration.md：sandbox_timeout_seconds 是一批的總預算，
         per_test_timeout_seconds 只用於批次逾時後的逐測重跑）。
@@ -448,7 +382,7 @@ class TestSuiteExecutor:
         每一批之內：第一輪依序執行各模組，每個模組拿到這一批「剩下的」預算；某個模組逾時就代表這一批逾時，
         尚未執行（或逾時時拿到的預算比單測預算還少）的模組進入第二輪，各用 min(單測預算, 剩下的重跑預算) 重跑，
         所以第二輪總時間不會超出這一批的預算（只差無條件進位的不到 1 秒），超出的模組標為未重跑。
-        填入 `runs` 與 `timeout_used`；回傳 (依模組分組的 junit 案例, 逾時的模組, 未重跑的模組, 報告無法解析的模組)。
+        回傳依模組名稱鍵控的 `ModuleOutcome`。
         Each JS/TS module gets its own `node --test` process (Node's junit reporter does not name the file a
         top-level test came from), but the timeout semantics match a Python batch (docs/configuration.md:
         sandbox_timeout_seconds is the whole batch's budget, per_test_timeout_seconds only applies to per-test
@@ -465,16 +399,13 @@ class TestSuiteExecutor:
         the per-test budget) go to a second pass, each re-run on min(per-test budget, rerun budget left), so the
         second pass never exceeds the batch budget (up to sub-second rounding up); modules beyond it are marked
         not re-run.
-        Fills `runs` and `timeout_used`; returns (junit cases by module, timed-out modules, modules not re-run,
-        modules whose report could not be parsed).
-        給了 `coverage` 時，每個執行完（未逾時）的模組都帶著涵蓋率執行，其 lcov 結果以聯集併入 `coverage`；
+        Returns a `ModuleOutcome` per module.
+        給了 `coverage` 時，每個執行完（未逾時）的模組都帶著涵蓋率執行，其 `SandboxRun.js_coverage` 以聯集併入 `coverage`；
         逾時後重跑成功的模組也算。
-        With `coverage`, every module runs with coverage on and the lcov result of each one that finished (did not time
-        out) is merged into `coverage` as a union; a module that succeeded on its rerun after a timeout counts too."""
-        cases: Dict[str, List[dict]] = {}
-        timed_out: Set[str] = set()
-        not_rerun: Set[str] = set()
-        parse_failed: Set[str] = set()
+        With `coverage`, every module runs with coverage on and the `SandboxRun.js_coverage` of each one that finished
+        (did not time out) is merged into `coverage` as a union; a module that succeeded on its rerun after a timeout
+        counts too."""
+        outcomes: Dict[str, ModuleOutcome] = {}
         per_test = self._per_test_budget(sandbox)
         batch_budget = float(sandbox.timeout_seconds or 0) or float(per_test)
 
@@ -484,21 +415,18 @@ class TestSuiteExecutor:
             # 只有要收集涵蓋率時才傳涵蓋率參數：沙盒替身不必認得它們
             # The coverage arguments are only passed when coverage is collected: sandbox stand-ins need not know them
             coverage_kwargs: Dict[str, Any] = {} if coverage is None else {
-                "collect_coverage": True, "coverage_target": working_dir, "coverage_sink": coverage}
+                "collect_coverage": True, "coverage_target": working_dir}
             run = sandbox.execute_pytest_files(
                 {filename: code}, working_dir=working_dir, timeout_seconds=timeout, **coverage_kwargs
             )
-            stdout = run.stdout
-            runs[module] = (run.exit_code, stdout, run.stderr, run.junit_xml)
-            timeout_used[module] = timeout
+            outcomes[module] = ModuleOutcome.from_sandbox(
+                module=module, language=language, exit_code=run.exit_code,
+                stdout=run.stdout, stderr=run.stderr, junit_xml=run.junit_xml, timeout=timeout,
+            )
             if run.exit_code == TIMEOUT_EXIT_CODE:
                 return False
-            timed_out.discard(module)
-            parsed = parse_junit(run.junit_xml, language, module=module, runner_stdout=stdout)
-            if parsed is None:
-                parse_failed.add(module)
-                return True
-            cases.update(parsed)
+            if coverage is not None and run.js_coverage is not None:
+                coverage.merge(run.js_coverage)
             return True
 
         items = list(files.items())
@@ -509,12 +437,10 @@ class TestSuiteExecutor:
                 remaining = _remaining_seconds(deadline, batch_budget)
                 if remaining < 1:
                     pending.append((filename, code))
-                elif not run_one(filename, code, remaining):
-                    timed_out.add(os.path.splitext(filename)[0])
-                    if remaining < per_test:
-                        # 逾時時拿到的預算比單測預算少：要重跑才公平
-                        # Timed out on less than the per-test budget: only a rerun is fair
-                        pending.append((filename, code))
+                elif not run_one(filename, code, remaining) and remaining < per_test:
+                    # 逾時時拿到的預算比單測預算少：要重跑才公平
+                    # Timed out on less than the per-test budget: only a rerun is fair
+                    pending.append((filename, code))
             if not pending:
                 continue
             logger.warning(bi("JS/TS 批次預算已用盡；以單測預算逐一重跑這一批剩下的模組。",
@@ -525,52 +451,7 @@ class TestSuiteExecutor:
                 module = os.path.splitext(filename)[0]
                 remaining = _remaining_seconds(deadline, batch_budget)
                 if remaining < 1:
-                    not_rerun.add(module)
-                    timed_out.discard(module)
-                    runs.setdefault(module, (TIMEOUT_EXIT_CODE, "", "", None))
-                elif not run_one(filename, code, min(per_test, remaining)):
-                    timed_out.add(module)
-        return cases, timed_out, not_rerun, parse_failed
-
-    @staticmethod
-    def _split_future_imports(code: str) -> Tuple[str, str]:
-        """切出開頭的 docstring 與 `from __future__` 匯入，它們必須留在最頂端。
-
-        harness 的標頭會插在這兩部分之間；若把它加在整個模組前面，
-        每個 `from __future__ import annotations` 都會變成 SyntaxError（收集失敗）。
-        沒有東西需要提前時回傳 ("", code)。程式碼已經由
-        check_test_code() 驗證過，所以能解析。
-        Splits off the leading docstring and `from __future__` imports, which must stay at the very top.
-
-        The harness header is inserted between the two parts; prepending it to the whole module
-        turned every `from __future__ import annotations` into a SyntaxError (collection failure).
-        Returns ("", code) when there is nothing to hoist. The code was already validated by
-        check_test_code(), so it parses.
-        """
-        tree = ast.parse(code)
-        last_line = 0
-        for i, node in enumerate(tree.body):
-            if isinstance(node, ast.ImportFrom) and node.module == "__future__":
-                last_line = node.end_lineno or node.lineno
-            elif i == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) \
-                    and isinstance(node.value.value, str):
-                continue  # 模組 docstring 可以出現在 future 匯入之前 ／ module docstring may precede future imports
-            else:
-                break
-        if not last_line:
-            return "", code
-        lines = code.splitlines(keepends=True)
-        preamble = "".join(lines[:last_line])
-        return (preamble if preamble.endswith("\n") else preamble + "\n"), "".join(lines[last_line:])
-
-    @staticmethod
-    def _unique_test_ids(tests: List[GeneratedTest]) -> List[str]:
-        """消除重複的 test_id（例如來自 LLM 輸出），讓每個結果都可追溯。
-        Disambiguates duplicate test_ids (e.g. from LLM output) so each result is traceable."""
-        seen: Dict[str, int] = {}
-        unique = []
-        for t in tests:
-            count = seen.get(t.test_id, 0) + 1
-            seen[t.test_id] = count
-            unique.append(t.test_id if count == 1 else f"{t.test_id}-{count}")
-        return unique
+                    outcomes[module] = ModuleOutcome.rerun_budget_exhausted()
+                else:
+                    run_one(filename, code, min(per_test, remaining))
+        return outcomes

@@ -1,16 +1,16 @@
-"""回應快取（`vibeharness/core/response_cache.py`）：鍵、讀取與寫入，以及重新詢問時存兩把鍵的規則。
+"""回應快取（`vibeharness/core/llm_gateway.py` 的 `ResponseCache`）：鍵、讀取與寫入，以及重新詢問時存兩把鍵的規則。
 透過閘道的整合行為（`--cache-only`、重新詢問、預算）在 tests/test_review_cache_only.py 與
 tests/test_parallel_and_budgets.py。
-The response cache (`vibeharness/core/response_cache.py`): the key, lookup and store, and the rule that stores a
-re-asked answer under both keys. The integration through the gateway (`--cache-only`, re-asks, the budget) is in
-tests/test_review_cache_only.py and tests/test_parallel_and_budgets.py."""
+The response cache (`ResponseCache` in `vibeharness/core/llm_gateway.py`): the key, lookup and store, and the rule
+that stores a re-asked answer under both keys. The integration through the gateway (`--cache-only`, re-asks, the
+budget) is in tests/test_review_cache_only.py and tests/test_parallel_and_budgets.py."""
 import json
 import os
 
 import pytest
 
-import vibeharness.core.response_cache as rc
-from vibeharness.core.response_cache import key, lookup, store
+import vibeharness.core.llm_gateway as lg
+from vibeharness.core.llm_gateway import ResponseCache
 
 INFO = {"model": "anthropic/claude-x", "fallback_model": "openai/gpt-y", "max_output_tokens": 1234,
         "extra_params": {"top_p": 0.9}, "api_key_env": "K", "api_base": "https://a.example/v1",
@@ -21,14 +21,18 @@ def _key(**overrides):
     parts = dict(model_alias="claude", model_info=INFO, temperature=0.2, max_output_tokens=1234,
                  system_prompt="sys prompt", user_prompt="user prompt")
     parts.update(overrides)
-    return key(**parts)
+    return ResponseCache.key(**parts)
+
+
+def lookup(cache_dir, cache_key):
+    return ResponseCache(cache_dir).lookup(cache_key)
 
 
 def _store(cache_dir, k, **overrides):
     fields = dict(agent_id="whitebox_reviewer_claude", model="anthropic/claude-x", raw_text='{"findings": []}',
                   finish_reason="stop", prompt_sha256="abc")
     fields.update(overrides)
-    store(cache_dir, k, **fields)
+    ResponseCache(cache_dir).store(k, **fields)
 
 
 # --- 鍵 ／ key --------------------------------------------------------------------------------------------------
@@ -133,7 +137,7 @@ def test_a_write_that_fails_halfway_leaves_no_torn_entry_and_no_temp_file(tmp_pa
         f.write('{"raw_text": "par')
         raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr(rc.json, "dump", half_then_fail)
+    monkeypatch.setattr(lg.json, "dump", half_then_fail)
     k = _key()
     _store(str(tmp_path), k)
     assert not (tmp_path / f"{k}.json").exists()
@@ -148,7 +152,7 @@ def test_a_publish_that_fails_leaves_no_temp_file(tmp_path, monkeypatch, caplog)
     def refuse_replace(src, dst):
         raise PermissionError(13, "Permission denied")
 
-    monkeypatch.setattr(rc.os, "replace", refuse_replace)
+    monkeypatch.setattr(lg.os, "replace", refuse_replace)
     k = _key()
     _store(str(tmp_path), k)
     assert _leftover_temp_files(tmp_path) == []
@@ -172,8 +176,8 @@ def test_a_temp_file_that_cannot_be_removed_still_only_warns(tmp_path, monkeypat
         removed.append(os.path.basename(path))
         raise PermissionError(13, "Permission denied")
 
-    monkeypatch.setattr(rc.json, "dump", full_disk)
-    monkeypatch.setattr(rc.os, "unlink", refuse_unlink)
+    monkeypatch.setattr(lg.json, "dump", full_disk)
+    monkeypatch.setattr(lg.os, "unlink", refuse_unlink)
     _store(str(tmp_path), _key())
     assert len(removed) == 1 and removed[0].startswith(".tmp-"), \
         f"os.unlink should be tried once on the temporary file, got {removed}"

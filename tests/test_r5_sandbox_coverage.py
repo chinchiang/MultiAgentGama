@@ -16,7 +16,7 @@ import pytest
 
 import vibeharness.core.sandbox as sandbox_mod
 from vibeharness.core.jscoverage import (
-    LCOV_REPORT_NAME, JsLineCoverage, _glob_include_root, _glob_include_roots, node_coverage_args, read_lcov_file,
+    LCOV_REPORT_NAME, _glob_include_root, _glob_include_roots, node_coverage_args, read_lcov_file,
     read_untrusted_file,
 )
 from vibeharness.core.codecontext import target_file_url
@@ -141,11 +141,11 @@ def test_node_lcov_read_back_does_not_follow_a_symlink(tmp_path):
     run_dir.mkdir()
     sandbox = NodeSubprocessSandbox(node_version=(22, 14, 0))
     (run_dir / LCOV_REPORT_NAME).write_text(host_lcov.read_text(encoding="utf-8"), encoding="utf-8")
-    assert sandbox._collect_coverage(str(run_dir), "", str(target), None, JsLineCoverage()) == 100.0
+    pct, cov = sandbox._collect_coverage(str(run_dir), "", str(target), None)
+    assert pct == 100.0 and cov is not None and cov.reports == 1
     os.unlink(run_dir / LCOV_REPORT_NAME)
     os.symlink(host_lcov, run_dir / LCOV_REPORT_NAME)
-    sink = JsLineCoverage()
-    assert sandbox._collect_coverage(str(run_dir), "", str(target), None, sink) is None and sink.reports == 0
+    assert sandbox._collect_coverage(str(run_dir), "", str(target), None) == (None, None)
 
 
 # --- 2. root harness 把執行目錄交給 nobody ----------------------------------------------------------------
@@ -332,10 +332,9 @@ def test_real_node_target_behind_a_symlink_is_covered(tmp_path):
     code = ('import { test } from "node:test";\nimport assert from "node:assert/strict";\n'
             f'import {{ f }} from "{target_file_url(str(link / "m.mjs"))}";\n'
             'test("a", () => { assert.equal(f(1), 2); });\n')
-    sink = JsLineCoverage()
-    NodeSubprocessSandbox(timeout_seconds=60, node_version=_NODE_VERSION).execute_pytest_files(
-        {"test_vh_000.mjs": code}, working_dir=str(link), collect_coverage=True, coverage_sink=sink)
-    assert list(sink.files) == ["m.mjs"] and sink.percent() == 100.0
+    run = NodeSubprocessSandbox(timeout_seconds=60, node_version=_NODE_VERSION).execute_pytest_files(
+        {"test_vh_000.mjs": code}, working_dir=str(link), collect_coverage=True)
+    assert run.js_coverage is not None and list(run.js_coverage.files) == ["m.mjs"] and run.js_coverage.percent() == 100.0
 
 
 # --- 5. 擷取輸出的上限（本機與 docker CLI） -------------------------------------------------------------------

@@ -17,8 +17,9 @@ from vibeharness.core.models import (
     VibeHarnessSummary,
     TestStatus,
     FindingSeverity,
-    StaticFinding
+    StaticFinding, unique_test_ids
 )
+from vibeharness.core.baseline import annotate_report_payload
 from vibeharness.core.identity import (
     is_unknown_location, sarif_breach_fingerprint, sarif_finding_fingerprint, sarif_static_fingerprint,
 )
@@ -431,9 +432,9 @@ class ReportGenerator:
         whitebox_tests: Optional[List[GeneratedTest]] = None,
         blackbox_tests: Optional[List[GeneratedTest]] = None
     ) -> str:
-        """與 Markdown 報告內容相同（含來源紀錄）的機器可讀報告。
+        """與 Markdown 報告內容相同（含來源紀錄與跨執行 fingerprint）的機器可讀報告。
         產生的測試程式碼原樣儲存，讓一次執行可被稽核、其測試可被重新執行。
-        Machine-readable report with the same content as the Markdown one (provenance included).
+        Machine-readable report with the same content as the Markdown one (provenance and cross-run fingerprints included).
         Generated test code is stored verbatim, so a run can be audited and its tests re-executed."""
         payload = {
             "tool": "vibeharness-mas",
@@ -451,6 +452,10 @@ class ReportGenerator:
             "blackbox_test_results": [r.model_dump() for r in blackbox_results],
             "blackbox_generated_tests": [t.model_dump() for t in blackbox_tests or []],
         }
+        annotate_report_payload(
+            payload, target_path, summary.static_findings, debate_result.confirmed_findings,
+            whitebox_results, blackbox_results, threat_model.threats,
+        )
         return json.dumps(payload, indent=2, ensure_ascii=False, default=str)
 
     def generate_sarif_report(
@@ -897,7 +902,7 @@ class ReportGenerator:
         Appendix with every executed test's code next to its outcome. A model-written test that "passes"
         may be asserting the defect itself (e.g. `pytest.raises(KeyError)`), so the code must be reviewable;
         the JSON report keeps it verbatim, here control characters are removed for safe rendering."""
-        from vibeharness.runners.test_executor import TestSuiteExecutor
+        # 由 unique_test_ids 消除重複的 test_id ／ unique_test_ids disambiguates duplicate test_ids
         if not whitebox_tests and not blackbox_tests:
             return []
         md = ["\n" + HEADING_GENERATED_TESTS,
@@ -912,7 +917,7 @@ class ReportGenerator:
                 continue
             md.append(f"### {label} ({len(tests)})")
             by_id = {r.test_id: r for r in results}
-            for test_id, t in zip(TestSuiteExecutor._unique_test_ids(tests), tests, strict=True):
+            for test_id, t in zip(unique_test_ids(tests), tests, strict=True):
                 result = by_id.get(test_id)
                 if result is None:
                     outcome = OUTCOME_NOT_RUN

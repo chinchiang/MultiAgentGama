@@ -69,7 +69,7 @@ flowchart TD
     SAN -- "威脅項目放在 &lt;untrusted_model_output&gt;" --> ATK
 
     GATE["階段 6・品質門禁<br/>READY_TO_SHIP / NEEDS_FIXES /<br/>INCONCLUSIVE / BLOCKED_CRITICAL_RISK"]
-    BASE["基準比對 baseline.py<br/>compare_with_baseline（--baseline）"]
+    BASE["基準載入 baseline.py<br/>證據計數 tally.py 比對（--baseline）"]
     CMD -- "審查者設定：沒有 whitebox_reviewer_*／<br/>少於兩個不同的模型別名" --> GATE
     AST -- "解析失敗、略過／過大的檔案、<br/>不支援語言的檔案、超過上限的設定類檔案" --> GATE
     SAST -- "HIGH 以上命中；VH-AI-008／009 完整性命中；<br/>未完整掃描（30 秒上限）" --> GATE
@@ -202,22 +202,20 @@ MultiAgentGama/
 │   ├── core/
 │   │   ├── __init__.py
 │   │   ├── harness.py               # 指揮官：六個階段加上選用的階段 3.5；把本次執行的證據交給品質閘門
-│   │   ├── llm_gateway.py           # 統一模型閘道：路由、fallback、模擬回退、呼叫預算與 call_log（模型呼叫經 transport.py）
-│   │   ├── model_output.py          # 模型回答的解析與形狀檢查：擷取 JSON 物件、對照代理宣告的 OutputSchema（純函式）
-│   │   ├── agent_call.py            # 代理呼叫：代理宣告一種呼叫，ask 組好提示（不可信內容依種類走各自的通道）、經閘道呼叫，交回型別化的 items 與來源
+│   │   ├── llm_gateway.py           # 統一模型閘道：路由、fallback、模擬回退、回應快取（ResponseCache）、呼叫預算與 call_log（經 transport.py）
+│   │   ├── model_output.py          # 模型回答的解析、形狀檢查與可用項目擷取：擷取 JSON 物件、OutputSchema 與 extract_items（純函式）
+│   │   ├── agent_call.py            # 代理呼叫與扇出：ask 組裝提示並呼叫閘道；ask_batch／fan_out 並行收集與記錄當機；PlannedCalls（呼叫計畫）
 │   │   ├── models.py                # Pydantic 數據模型
-│   │   ├── baseline.py              # --baseline：載入、比對與加註指紋，已知問題不計入（鍵在 identity.py）
-│   │   ├── codecheck.py             # 生成測試的靜態檢查（每個 test_ 函式／方法都要有斷言；拒絕安裝套件）
+│   │   ├── baseline.py              # --baseline：載入基準與 JSON 報告指紋加註（annotate_report_payload；比對在 tally.py，鍵在 identity.py）
+│   │   ├── codecheck.py             # 生成測試的靜態檢查與圍欄剝除（prepare_test_code；每個測試都要有斷言；拒絕安裝套件）
 │   │   ├── codecontext.py           # 提供給模型的原始碼與 import 指引（經不受信任程式碼通道）
 │   │   ├── estimate.py              # --estimate：加總各代理的呼叫計畫，不呼叫模型即估算呼叫數、token 與花費
-│   │   ├── fanout.py                # 扇出：並行執行代理的模型呼叫、依呼叫順序收集、當掉的呼叫記成證據缺口；PlannedCalls（代理的呼叫計畫）
-│   │   ├── gate.py                  # 品質閘門：證據缺口、--baseline 的新／已知拆分、判定與建議（純函式）
+│   │   ├── gate.py                  # 品質閘門：證據缺口、判定與建議（純函式）
 │   │   ├── i18n.py                  # 「中文 ／ English」雙語輸出的工具（bi／en_only）
 │   │   ├── identity.py              # 身分識別：模型文字正規化、位置規則、嚴重度順序，--baseline 鍵與 SARIF 指紋並排（雜湊必須不變）
 │   │   ├── jscoverage.py            # JS/TS 行涵蓋率：Node 涵蓋率旗標、lcov 解析、跨模組聯集
 │   │   ├── mutation.py              # 選用的突變測試（Python）
 │   │   ├── sanitize.py              # 信任邊界：去隱形字元、遮蔽密鑰、不受信任程式碼／模型輸出通道、報告消毒
-│   │   ├── response_cache.py        # 回應快取：以請求為鍵存取可用的模型回答（鍵、讀取、原子寫入，重新詢問時存兩把鍵）
 │   │   ├── sandbox.py               # 沙盒：本機子程序（非安全邊界）與 Docker 容器；Node 版本各一（node --test）；Node 執行環境的選擇與版本偵測
 │   │   ├── settings.py              # 設定：設定檔只載入、套用預設值並驗證一次（探索到的設定檔政策、CLI 覆寫值）
 │   │   ├── stdio.py                 # 主控台串流防護：讓 stdout／stderr 寫得出雙語輸出（CLI、Action、harness 共用）

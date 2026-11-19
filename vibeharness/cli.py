@@ -12,8 +12,8 @@ import logging
 import sys
 import os
 import traceback
-from typing import TYPE_CHECKING, Any, List, NoReturn, Optional, Tuple
-
+from typing import TYPE_CHECKING, Any, List, NoReturn
+from vibeharness.core.settings import DEFAULT_CONFIG_PATH, DISCOVERED_CONFIG_NAMES, resolve_config
 from vibeharness import __version__
 from vibeharness.core.i18n import bi
 from vibeharness.core.stdio import force_utf8_stdio
@@ -23,8 +23,8 @@ if TYPE_CHECKING:
     # 型別檢查器看得到這些名稱；執行時由 _load_dependencies() 放進模組命名空間
     # Type checkers see these names; at run time _load_dependencies() puts them into the module namespace
     from vibeharness.core.harness import VibeHarnessCommander
-    from vibeharness.core.llm_gateway import LLMGatewayError, ConfigError
-    from vibeharness.core.settings import Origin, Overrides, load_settings
+    from vibeharness.core.llm_gateway import LLMGatewayError
+    from vibeharness.core.settings import ConfigError, Overrides, load_settings
     from vibeharness.core.sandbox import SandboxUnavailableError
     from vibeharness.agents.blackbox.scenario_builder import validate_base_url
     from vibeharness.core.baseline import load_baseline
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 _LAZY_IMPORTS = {
     "VibeHarnessCommander": ("vibeharness.core.harness", "VibeHarnessCommander"),
     "LLMGatewayError": ("vibeharness.core.llm_gateway", "LLMGatewayError"),
-    "ConfigError": ("vibeharness.core.llm_gateway", "ConfigError"),
+    "ConfigError": ("vibeharness.core.settings", "ConfigError"),
     "Overrides": ("vibeharness.core.settings", "Overrides"),
     "load_settings": ("vibeharness.core.settings", "load_settings"),
     "SandboxUnavailableError": ("vibeharness.core.sandbox", "SandboxUnavailableError"),
@@ -45,13 +45,6 @@ _LAZY_IMPORTS = {
     "estimate_run": ("vibeharness.core.estimate", "estimate_run"),
 }
 
-# 套件內的預設設定（與 llm_gateway.DEFAULT_CONFIG_PATH 相同）；在這裡計算，--init-config 不需要載入 harness 的相依套件
-# The bundled default config (the same as llm_gateway.DEFAULT_CONFIG_PATH); computed here so --init-config needs none
-# of the harness's dependencies
-DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "agents_config.yaml")
-# 沒有 --config 時，依序在目前目錄尋找這些檔名；都沒有就用套件內的預設設定
-# Without --config these file names are looked for in the current directory, in order; if none exists the bundled default is used
-DISCOVERED_CONFIG_NAMES = ("vibeharness.yaml", ".vibeharness.yaml")
 # --init-config 沒給路徑時寫到這裡 ／ where --init-config writes when no path is given
 DEFAULT_INIT_CONFIG_PATH = "vibeharness.yaml"
 
@@ -146,22 +139,6 @@ def _crash_exit(stage_zh: str, stage_en: str, exc: BaseException) -> NoReturn:
     traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
     print(f"{bi('錯誤', 'Error')}: {bi(stage_zh, stage_en)}: {type(exc).__name__}: {exc}", file=sys.stderr)
     sys.exit(USAGE_ERROR_EXIT_CODE)
-
-
-def resolve_config_path(explicit: Optional[str], cwd: Optional[str] = None) -> Tuple[str, str]:
-    """決定要用的設定檔與它的來源說明。優先序：--config ＞ ./vibeharness.yaml ＞ ./.vibeharness.yaml ＞ 套件內的預設。
-    --config 原樣回傳（不存在時由 harness 以 ConfigError 回報，exit 5）。
-    Decides which config file is used and describes where it came from. Precedence: --config >
-    ./vibeharness.yaml > ./.vibeharness.yaml > the bundled default. --config is returned as given (if it does
-    not exist the harness reports a ConfigError, exit 5)."""
-    if explicit is not None:
-        return explicit, "--config"
-    base = cwd or os.getcwd()
-    for name in DISCOVERED_CONFIG_NAMES:
-        candidate = os.path.join(base, name)
-        if os.path.isfile(candidate):
-            return candidate, bi(f"在目前目錄找到 {name}", f"found {name} in the current directory")
-    return DEFAULT_CONFIG_PATH, bi("套件內的預設設定", "bundled default")
 
 
 def _init_config(path: str, force: bool) -> int:
@@ -522,19 +499,19 @@ def _summary_json(summary: Any, execution_mode: str) -> str:
 
 def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     setup_logging(args.verbose)
-    explicit_config = args.config is not None
-    args.config, config_source = resolve_config_path(args.config)
+    # 設定檔路徑、來源說明與 Origin 政策由 resolve_config 一次決定
+    # Path, source description, and Origin policy come from resolve_config
+    args.config, config_source, origin = resolve_config(args.config)
     print(f"{bi('設定檔', 'Config')}: {args.config} ({config_source})", file=sys.stderr)
-    origin: "Origin"
-    if explicit_config:
-        origin = "explicit"
-    elif os.path.abspath(args.config) == os.path.abspath(DEFAULT_CONFIG_PATH):
-        origin = "bundled"
-    else:
-        # 自動發現的設定檔可能來自不可信的 checkout：在 harness 執行任何東西之前拒絕安全敏感的鍵
-        # A discovered config may come from an untrusted checkout: refuse security-sensitive keys before the
-        # harness runs anything
-        origin = "discovered"
+    # origin 為 "explicit"（--config）、"discovered"（目前目錄找到的設定檔）或 "bundled"（套件內的預設設定）：
+    # 自動發現的設定檔可能來自不可信的 checkout，load_settings 會在 harness 執行任何東西之前
+    # 依 origin="discovered" 政策拒絕安全敏感的鍵與調高花費的設定，不再由 CLI 重複判斷來源分支。
+    # origin is "explicit" (--config), "discovered" (found in the current directory), or "bundled" (the bundled default):
+    # a discovered config may come from an untrusted checkout, so load_settings refuses security-sensitive keys and
+    # spend-raising settings under origin="discovered" before the harness runs anything, without CLI branching.
+    # 自動發現的設定檔可能來自不可信的 checkout：在 harness 執行任何東西之前拒絕安全敏感的鍵
+    # A discovered config may come from an untrusted checkout: refuse security-sensitive keys before the
+    # harness runs anything
     # 設定檔只載入、驗證一次，連同 CLI 旗標的覆寫值；任何設定問題都在檢查目標與旗標之前回報
     # The config is loaded and validated once, together with the CLI flags' overrides; every config problem is
     # reported before the target and the flags are checked
@@ -581,13 +558,13 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                                            f"cannot write to '{path}' (directory missing or not writable)"))
     try:
         commander = VibeHarnessCommander(settings=settings)
-        if settings.gateway.cache_only and settings.gateway.execution_mode == "mock":
-            # mock 模式根本不讀快取：--cache-only 不會有任何作用，說出來而不是默默接受
-            # Mock mode never reads the cache: --cache-only has no effect, so say so instead of silently accepting it
-            print(f"{bi('警告', 'Warning')}: " + bi(
-                "--cache-only 在 mock 模式下沒有作用：每次呼叫都是模擬的，不會讀取回應快取（要重播快取請用 --mode hybrid 或 live）",
-                "--cache-only has no effect in mock mode: every call is simulated and the response cache is never "
-                "read (use --mode hybrid or live to replay the cache)"), file=sys.stderr)
+        # --cache-only 搭配 mock 模式的雙語警告已由 load_settings 收進 settings.warnings，
+        # 並於上方啟動檢查階段統一印出（mock 模式根本不讀快取：--cache-only 不會有任何作用）。
+        # The bilingual warning for --cache-only in mock mode is collected into settings.warnings by
+        # load_settings and printed above during start-up checks (mock mode never reads the cache).
+        # 因此這裡不再重複檢查與印出警告。
+        # So it is no longer checked and printed a second time here.
+        # 載入基準線報告（若有指定 --baseline） ／ Load baseline report (when --baseline is given)
         if args.baseline:
             commander.baseline = load_baseline(args.baseline)
     except (ConfigError, ValueError, SandboxUnavailableError) as e:

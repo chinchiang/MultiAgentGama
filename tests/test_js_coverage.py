@@ -241,9 +241,8 @@ def test_node_docker_sandbox_coverage_command_and_container_path_translation(tmp
         "SF:/sandbox/test_vh_000.mjs\nDA:1,1\nend_of_record\n"
         "SF:/work/other/x.mjs\nDA:1,1\nend_of_record\n"
         "SF:/work/app/node_modules/dep/index.js\nDA:1,1\nend_of_record\n", encoding="utf-8")
-    sink = JsLineCoverage()
-    pct = sandbox._collect_coverage(str(run_dir), "", str(target), str(target), sink)
-    assert sink.files == {"lib.mjs": {1: True, 2: True}, "sub/b.cjs": {1: False}}
+    pct, sink = sandbox._collect_coverage(str(run_dir), "", str(target), str(target))
+    assert sink is not None and sink.files == {"lib.mjs": {1: True, 2: True}, "sub/b.cjs": {1: False}}
     assert pct == pytest.approx(66.7) and sink.percent() == pytest.approx(66.7)
     # 映像檔內的 Node 版本未知 -> 不加任何涵蓋率旗標 ／ unknown Node version inside the image -> no coverage flag at all
     unknown = NodeDockerSandbox(verify=False)
@@ -259,9 +258,9 @@ PASS_JUNIT = '<testsuites><testcase name="a" time="0.01" classname="test"/></tes
 
 
 class _CoverageSandbox:
-    """Node 沙盒的替身：依模組回應預先準備的 lcov，並照真正的沙盒一樣併入 coverage_sink；逾時的模組什麼都不併入。
-    Stands in for a Node sandbox: answers each module with a canned lcov and merges it into coverage_sink like the
-    real sandbox does; a timed-out module merges nothing."""
+    """Node 沙盒的替身：依模組回應預先準備的 lcov，並照真正的沙盒一樣在 SandboxRun.js_coverage 回傳；逾時的模組什麼都不回傳。
+    Stands in for a Node sandbox: answers each module with a canned lcov and returns it on SandboxRun.js_coverage like
+    the real sandbox does; a timed-out module returns none."""
     timeout_seconds = 30
     supports_typescript = True
 
@@ -279,10 +278,12 @@ class _CoverageSandbox:
         module = os.path.splitext(next(iter(files)))[0]
         if module in self.timeouts:
             return SandboxRun(TIMEOUT_EXIT_CODE, "", "timed out", 1.0, None, None)
-        sink = kw.get("coverage_sink")
-        if kw.get("collect_coverage") and sink is not None and module in self.lcov_by_module:
-            sink.add_lcov(self.lcov_by_module[module], [working_dir], working_dir, windows=False)
-        return SandboxRun(0, "", "", 0.1, None, PASS_JUNIT)
+        js_cov = None
+        if kw.get("collect_coverage"):
+            js_cov = JsLineCoverage()
+            if module in self.lcov_by_module:
+                js_cov.add_lcov(self.lcov_by_module[module], [working_dir], working_dir, windows=False)
+        return SandboxRun(0, "", "", 0.1, js_cov.percent() if js_cov else None, PASS_JUNIT, js_cov)
 
 
 _LCOV_A = "SF:lib.mjs\nDA:1,1\nDA:2,1\nDA:3,0\nDA:4,0\nend_of_record\n"
@@ -416,10 +417,10 @@ def _assert_union(singles, suite):
 
 def _lines_of(sandbox, target, test):
     """直接對沙盒跑一個模組並回傳合併後的逐行涵蓋率 ／ Runs one module on the sandbox and returns the merged per-line coverage."""
-    sink = JsLineCoverage()
-    sandbox.execute_pytest_files({"test_vh_000.mjs": test.code}, working_dir=str(target), collect_coverage=True,
-                                 coverage_target=str(target), coverage_sink=sink)
-    return sink
+    run = sandbox.execute_pytest_files({"test_vh_000.mjs": test.code}, working_dir=str(target), collect_coverage=True,
+                                       coverage_target=str(target))
+    assert run.js_coverage is not None
+    return run.js_coverage
 
 
 @node_coverage_only

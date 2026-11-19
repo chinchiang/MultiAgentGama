@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Optional
+from typing import Dict, List, Optional, Sequence
 from pydantic import BaseModel, Field
 from enum import Enum
 
@@ -375,3 +375,16 @@ class BaselineSuppressedItem(BaseModel):
 
 
 VibeHarnessSummary.model_rebuild()
+
+
+def unique_test_ids(tests: Sequence[GeneratedTest]) -> List[str]:
+    """消除重複的 test_id（例如來自 LLM 輸出），讓每個結果都可追溯。
+    Disambiguates duplicate test_ids (e.g. from LLM output) so each result is traceable."""
+    seen: Dict[str, int] = {}
+    unique: List[str] = []
+    for t in tests:
+        count = seen.get(t.test_id, 0) + 1
+        seen[t.test_id] = count
+        unique.append(t.test_id if count == 1 else f"{t.test_id}-{count}")
+    return unique
+

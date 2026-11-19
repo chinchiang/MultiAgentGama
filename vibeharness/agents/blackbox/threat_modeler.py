@@ -1,4 +1,3 @@
-import functools
 import logging
 import os
 import re
@@ -6,12 +5,12 @@ import yaml
 from pydantic import ValidationError
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from vibeharness.core.models import ThreatItem, ThreatModelReport, STRIDECategory, FindingSeverity, CodeSymbol
-from vibeharness.core.fanout import Call, CallKind, PlannedCalls, fan_out
 from vibeharness.core.identity import severity_rank, threat_identity
 from vibeharness.core.model_output import LIST_OF_OBJECTS, OutputSchema
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.agent_call import (
-    NO_REPLY, AgentCall, AgentReply, CallContext, Channel, Content, ItemSource, Part, Untrusted, ask,
+    AgentCall, AgentInput, AgentReply, CallContext, CallKind, Channel, Content, Part, PlannedCalls, Untrusted,
+    ask_batch,
 )
 from vibeharness.core.i18n import bi
 from vibeharness.core.codecontext import estimate_tokens, render_symbols, batch_symbols, target_root
@@ -201,7 +200,7 @@ class AutomatedThreatModeler:
         routes_summary: str,
         root_dir: Optional[str],
         ai_components: Optional[List[str]] = None
-    ) -> AgentReply:
+    ) -> AgentInput:
         prompt: List[Part] = [
             f"System Description: {system_description}\n"
             f"Entrypoints: {entrypoints_summary}\n"
@@ -212,7 +211,7 @@ class AutomatedThreatModeler:
             "Perform comprehensive threat modeling identifying vibe-coding vulnerabilities. "
             "Only include threats that are plausible for the code shown, and name the concrete function/route in attack_vector.",
         ]
-        return ask(self.gateway, THREAT_MODEL_CALL, AGENT_ID, system=(system_prompt, ""), prompt=prompt)
+        return AgentInput(system=(system_prompt, ""), prompt=prompt)
 
     def plan(self, symbols: Optional[List[CodeSymbol]], root: str) -> List[PlannedCalls]:
         """model_system 對這些符號會發出的呼叫：每個威脅建模批次一次，執行前就已知（沒有符號時仍有一個批次）。
@@ -279,16 +278,17 @@ class AutomatedThreatModeler:
         batches = _batches(symbols, root_dir or os.getcwd())
 
         logger.info(bi("開始 STRIDE 與 OWASP 威脅建模...", "Initiating STRIDE & OWASP threat modeling..."))
-        calls: List[Call[AgentReply]] = [
-            Call(AGENT_ID, ("威脅建模批次", "Threat modeler batch"), functools.partial(
-                self._model_batch, batch, system_prompt, system_description, entrypoints_summary, routes_summary,
-                root_dir, ai_components), CallKind.THREAT_MODELER)
-            for batch in batches
-        ]
-        # 當掉的批次由 fan_out 記成證據缺口；LLMGatewayError 與 KeyboardInterrupt 會在取消尚未開始的批次後往外拋
-        # fan_out books a crashed batch as an evidence gap; LLMGatewayError and KeyboardInterrupt propagate after the
-        # batches not yet started are cancelled
-        replies: List[AgentReply] = fan_out(self.gateway, calls, fallback=NO_REPLY, logger=logger)
+        # 當掉的批次由 ask_batch（透過 fan_out）記成證據缺口；LLMGatewayError 與 KeyboardInterrupt 會在取消尚未開始的批次後往外拋
+        # ask_batch (via fan_out) books a crashed batch as an evidence gap; LLMGatewayError and KeyboardInterrupt
+        # propagate after the batches not yet started are cancelled
+        replies: List[AgentReply] = ask_batch(
+            self.gateway, THREAT_MODEL_CALL, batches,
+            lambda batch: self._model_batch(
+                batch, system_prompt, system_description, entrypoints_summary, routes_summary, root_dir, ai_components
+            ),
+            agent_id=AGENT_ID,
+            label=("威脅建模批次", "Threat modeler batch"),
+        )
 
         report_fields: Optional[Mapping[str, Any]] = None
         threats: List[ThreatItem] = []
@@ -487,7 +487,7 @@ def _simulated_threat_model(model_alias: str) -> Dict[str, Any]:
 # The threat modeler's call: one per symbol batch; an entry that is not an object logs one warning with its position
 # in the list
 THREAT_MODEL_CALL = AgentCall(
-    schema=THREATS_SCHEMA, items=ItemSource.key("threats"), mapper=_threat_drafts,
+    schema=THREATS_SCHEMA, mapper=_threat_drafts,
     channels=(Channel.TARGET_CODE,), logger=logger, kind=CallKind.THREAT_MODELER,
     malformed_message=lambda ctx, position: bi(f"略過格式錯誤的威脅項目 #{position}（不是 JSON 物件）",
                                                f"Skipping malformed threat entry #{position} (not a JSON object)"),

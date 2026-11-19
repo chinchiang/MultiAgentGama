@@ -129,10 +129,12 @@ def test_select_symbols_returns_the_scope_with_the_filters_applied(tmp_path):
     The harness's select_symbols returns the scope with a description of the filters it applied, which --estimate
     and the report read."""
     from vibeharness.core.harness import VibeHarnessCommander
+    from vibeharness.core.settings import Overrides, load_settings
     _write(tmp_path, "keep.py", "def f():\n    return 1\n")
     _write(tmp_path, "skip.py", "def g():\n    return 2\n")
-    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
-    commander.exclude_patterns = ["skip.py"]
+    commander = VibeHarnessCommander(
+        settings=load_settings(CONFIG, origin="explicit", overrides=Overrides(execution_mode="mock", exclude=("skip.py",)))
+    )
     symbols, scope = commander.select_symbols(str(tmp_path))
     assert [s.name for s in symbols] == ["f"] and scope.filtered_out == 1
     assert scope.filters == ("exclude=skip.py",) and scope.analyzed_files == (str(tmp_path / "keep.py"),)

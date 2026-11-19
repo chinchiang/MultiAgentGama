@@ -7,9 +7,10 @@ import os
 import re
 import xml.etree.ElementTree as ET
 from typing import Any, Dict, List, Optional, Tuple
-
+from dataclasses import dataclass
 from vibeharness.core.i18n import bi
 from vibeharness.core.models import GeneratedTest, TestExecutionResult, TestStatus
+from vibeharness.core.sandbox import TIMEOUT_EXIT_CODE
 
 # 與執行器同一個紀錄器名稱：log 格式會印出名稱，搬家不能改變輸出
 # The executor's logger name: the log format prints the name, so the move must not change the output
@@ -590,3 +591,111 @@ def header_field(text: Optional[str]) -> str:
     check_test_code() never validated, so every line separator becomes a space.
     """
     return " ".join(str(text or "").splitlines()) or "-"
+
+
+REASON_NO_TEST_COLLECTED = bi("產生的程式碼中沒有收集到任何測試", "No test was collected from the generated code")
+REASON_REPORT_UNPARSEABLE = bi("沙盒測試報告無法解析；沒有逐一測試的判定結果",
+                               "Sandbox test report could not be parsed; no per-test verdict available")
+REASON_RERUN_BUDGET_EXHAUSTED = bi("批次逾時後重跑預算已用盡；此模組未重新執行",
+                                   "Rerun budget exhausted after the batch timeout; module was not re-run")
+
+
+@dataclass(frozen=True)
+class ModuleOutcome:
+    """單一測試模組在沙盒執行（或重跑）後的完整狀態，供 attribute_module 歸因成 TestExecutionResult。
+    The complete outcome of one test module after sandbox execution (or a rerun), for attribute_module to turn into a
+    TestExecutionResult."""
+    exit_code: int = 0
+    stdout: str = ""
+    stderr: str = ""
+    has_report: bool = True
+    cases: Optional[List[Dict[str, Any]]] = None
+    timed_out_budget: Optional[int] = None
+    batch_timeout: Optional[int] = None
+    not_rerun: bool = False
+    parse_failed: bool = False
+
+    @classmethod
+    def rerun_budget_exhausted(cls) -> "ModuleOutcome":
+        """重跑預算用盡、模組未重新執行時的狀態。
+        Outcome for a module skipped when the rerun budget after a batch timeout was exhausted."""
+        return cls(exit_code=TIMEOUT_EXIT_CODE, has_report=False, not_rerun=True)
+
+    @classmethod
+    def from_sandbox(
+        cls,
+        *,
+        module: str,
+        language: str,
+        exit_code: int,
+        stdout: str,
+        stderr: str,
+        junit_xml: Optional[str],
+        timeout: int,
+    ) -> "ModuleOutcome":
+        """將單一測試模組的沙盒執行結果轉為 `ModuleOutcome`（逾時、缺報告、JUnit 損毀或解析出的案例清單）。
+        Turns one test module's sandbox run into a `ModuleOutcome` (timeout, missing report, unparseable JUnit, or
+        parsed test cases)."""
+        if exit_code == TIMEOUT_EXIT_CODE:
+            return cls(
+                exit_code=exit_code, stdout=stdout, stderr=stderr,
+                has_report=junit_xml is not None, timed_out_budget=timeout,
+            )
+        if junit_xml is None:
+            return cls(exit_code=exit_code, stdout=stdout, stderr=stderr, has_report=False)
+        parsed = (parse_junit(junit_xml, language) if language == "python"
+                  else parse_junit(junit_xml, language, module=module, runner_stdout=stdout))
+        if parsed is None:
+            return cls(exit_code=exit_code, stderr=stderr, parse_failed=True)
+        return cls(exit_code=exit_code, stdout=stdout, stderr=stderr, cases=parsed.get(module, []))
+
+
+def not_run_for_sandbox(
+    test: GeneratedTest,
+    test_id: str,
+    *,
+    exit_code: int,
+    stdout: str = "",
+    stderr: str = "",
+    batch_timeout: Optional[int] = None,
+) -> TestExecutionResult:
+    """沙盒執行沒有寫出逐測報告（批次逾時或沙盒失敗）時的「未執行 ／ Not run」歸因結果。
+    The Not run attribution when a sandbox run produced no per-test report (a batch timeout or a sandbox failure)."""
+    if exit_code == TIMEOUT_EXIT_CODE:
+        return not_run(
+            test, test_id,
+            bi(f"測試批次在 {batch_timeout or '?'} 秒後逾時，且沒有產生逐一測試的報告",
+               f"Test batch timed out after {batch_timeout or '?'}s "
+               "and no per-test report was produced")
+        )
+    return not_run(
+        test, test_id,
+        f"{bi('沙盒執行沒有產生報告', 'Sandbox run produced no report')}: "
+        f"{stderr.strip()[:200] or f'exit code {exit_code}'}",
+        stdout=stdout, stderr=stderr
+    )
+
+
+def attribute_module(test: GeneratedTest, test_id: str, outcome: ModuleOutcome) -> TestExecutionResult:
+    """把單一測試模組的 ModuleOutcome 歸因成 TestExecutionResult：涵蓋所有「未執行 ／ Not run」分支與 JUnit 案例歸因。
+    Turns one test module's ModuleOutcome into a TestExecutionResult, covering all Not run branches and JUnit case
+    attribution."""
+    if outcome.not_rerun:
+        return not_run(test, test_id, REASON_RERUN_BUDGET_EXHAUSTED)
+    if outcome.parse_failed:
+        return not_run(test, test_id, REASON_REPORT_UNPARSEABLE, stdout=outcome.stdout, stderr=outcome.stderr)
+    if outcome.timed_out_budget is not None:
+        return not_run(
+            test, test_id,
+            bi(f"測試在 {outcome.timed_out_budget} 秒後逾時；未執行完畢",
+               f"Test timed out after {outcome.timed_out_budget}s; not run to completion")
+        )
+    if not outcome.has_report:
+        return not_run_for_sandbox(
+            test, test_id, exit_code=outcome.exit_code, stdout=outcome.stdout, stderr=outcome.stderr,
+            batch_timeout=outcome.batch_timeout,
+        )
+    if not outcome.cases:
+        return not_run(test, test_id, REASON_NO_TEST_COLLECTED, stdout=outcome.stdout, stderr=outcome.stderr)
+    return attribute(test, test_id, outcome.cases)
+

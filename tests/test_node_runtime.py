@@ -93,8 +93,10 @@ def test_harness_records_the_docker_node_version_for_js_only_targets_too(monkeyp
     """純 JS 目標也讀映像檔內的 Node 版本：它是 RunMetadata.node_runtime 的來源；型別剝除只在有 TypeScript 時開。
     A JS-only target reads the image's Node version too (it is RunMetadata.node_runtime's provenance); type stripping
     is enabled only when TypeScript exists."""
-    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
-    commander.sandbox_node_provider = "docker"
+    from dataclasses import replace
+    from vibeharness.core.settings import Overrides, load_settings
+    base = load_settings(CONFIG, origin="explicit", overrides=Overrides(execution_mode="mock"))
+    commander = VibeHarnessCommander(settings=replace(base, node=replace(base.node, provider="docker")))
     monkeypatch.setattr(NodeDockerSandbox, "_verify_available", lambda self: None)
     monkeypatch.setattr(NodeDockerSandbox, "probe_node_version", lambda self: (22, 9, 0))
     commander.scope = ScopeResult(analyzed_files=("/app/x.mjs",))

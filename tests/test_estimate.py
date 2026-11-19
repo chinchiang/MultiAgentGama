@@ -95,8 +95,8 @@ def test_prices_turn_tokens_into_cost_and_are_validated(tmp_path):
 def test_estimate_honours_file_selection(tmp_path):
     for name in ("a.py", "b.py"):
         (tmp_path / name).write_text("def f(x):\n    return x\n")
-    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
-    commander.exclude_patterns = ["b.py"]
+    commander = VibeHarnessCommander(config_path=_config(tmp_path, global_overrides={"exclude": ["b.py"]}),
+                                     execution_mode="mock")
     est = estimate_run(commander, str(tmp_path))
     assert est.files_analyzed == 1 and est.symbols == 1
     assert any("File selection applied: exclude=b.py" in w for w in est.warnings)

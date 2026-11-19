@@ -25,11 +25,11 @@ from vibeharness.core.llm_gateway import LLMGateway, DEFAULT_CONFIG_PATH
 from vibeharness.core.sandbox import (
     LocalSubprocessSandbox, DockerSandbox, DEFAULT_DOCKER_IMAGE as DEFAULT_DOCKER_IMAGE, build_node_sandbox,
 )
-from vibeharness.core.baseline import Baseline, annotate_report_payload
+from vibeharness.core.baseline import Baseline
 from vibeharness.core.gate import (
     ExecutionEvidence, GateEvidence, GateLimits, ReviewEvidence, ScopeDisclosure, evaluate,
 )
-from vibeharness.core.settings import Overrides, SandboxSettings, Settings, load_settings
+from vibeharness.core.settings import FrozenDict, Overrides, SandboxSettings, Settings, load_settings
 from vibeharness.core.transport import ModelTransport
 from vibeharness.core.tally import tally_evidence
 from vibeharness.core.verdict import Verdict
@@ -113,26 +113,27 @@ class VibeHarnessCommander:
                                    for f in (self.scope.analyzed_files if self.scope else ())),
             ),
         )
-        # JS/TS 測試以 Node 內建的執行器執行；沙盒採延遲建立，在第一次需要時才建立（它的設定在載入時就驗證過）
+        # JS/TS 測試以 Node 內建的執行器執行；沙盒採延遲建立，在第一次需要時才建立（它的設定在載入時就驗證過）。
         # JS/TS tests run with Node's built-in runner; the sandbox is built lazily, the first time one is needed
-        # (its settings were validated at load time)
-        self.node_bin = settings.node.node_bin
-        self.sandbox_node_provider = settings.node.provider
-        # 突變測試：開關優先順序為 CLI（--mutation，經 Overrides）> global.mutation_testing > 預設關閉，來源記進 RunMetadata
-        # Mutation testing: the switch precedence is CLI (--mutation, through Overrides) > global.mutation_testing > off by default,
-        # and the source is recorded in RunMetadata
-        self.mutation_testing: bool = settings.mutation.enabled
-        self.mutation_source: str = settings.sources["mutation_testing"]
+        # (its settings were validated at load time).
+        # 過去在 __init__ 拆出的 11 個純量屬性（node_bin、sandbox_node_provider、mutation_testing、mutation_source、
+        # max_files、max_file_bytes、config_path、sandbox_provider、include_patterns、exclude_patterns、changed_since）
+        # 現在都直接以 self.settings 為唯一真實來源（透過下方唯讀 property 讀取，突變開關經 set_mutation 更新），避免在建構子重複拆解設定樹。
+        # The 11 scalar attributes formerly unpacked in __init__ (node_bin, sandbox_node_provider, mutation_testing,
+        # mutation_source, max_files, max_file_bytes, config_path, sandbox_provider, include_patterns, exclude_patterns,
+        # changed_since) now read from self.settings directly via read-only properties below (set_mutation updates the
+        # mutation switch), keeping self.settings as the single source of truth.
         self.reporter = ReportGenerator()
-        self.max_files = settings.scope.max_files
-        self.max_file_bytes = settings.scope.max_file_bytes
-        self.config_path = os.path.abspath(settings.path)
-        self.sandbox_provider = settings.sandbox.provider
+        # 突變測試開關優先順序為 CLI（--mutation，經 Overrides）> global.mutation_testing > 預設關閉，來源記進 RunMetadata。
+        # Mutation testing switch precedence is CLI (--mutation, through Overrides) > global.mutation_testing > off by default,
+        # and the source is recorded in RunMetadata.
         # 檔案選取（CLI 的 --include/--exclude 會覆寫設定檔中的清單；--changed-since 會加入 only_files）
+        # 同樣直接讀取 self.settings.scope。
         # File selection (CLI --include/--exclude override the config lists; --changed-since adds only_files)
-        self.include_patterns: List[str] = list(settings.scope.include)
-        self.exclude_patterns: List[str] = list(settings.scope.exclude)
-        self.changed_since: Optional[str] = settings.scope.changed_since
+        # likewise reads self.settings.scope directly.
+        # 其餘執行期狀態（baseline 與第 1 階段選定的 scope）在下方初始化。
+        # Remaining runtime state (baseline and the scope selected in phase 1) is initialized below.
+        # 預設為 None，待執行期間或由 CLI 指派 ／ Defaults to None until assigned by the CLI or during the run
         # --baseline：先前的 JSON 報告；其中已包含的問題仍會列出，但不計入
         # --baseline: a previous JSON report; problems it already contains are reported but not counted
         self.baseline: Optional[Baseline] = None
@@ -225,8 +226,11 @@ class VibeHarnessCommander:
     def set_mutation(self, enabled: bool, source: str = "cli") -> None:
         """依 CLI 旗標開啟或關閉突變測試（優先於設定檔）。
         Turns mutation testing on or off from a CLI flag (it wins over the config file)."""
-        self.mutation_testing = enabled
-        self.mutation_source = source
+        self.settings = replace(
+            self.settings,
+            mutation=replace(self.settings.mutation, enabled=bool(enabled)),
+            sources=FrozenDict({**self.settings.sources, "mutation_testing": source}),
+        )
 
     @staticmethod
     def _build_sandbox(sandbox: SandboxSettings) -> LocalSubprocessSandbox:
@@ -625,12 +629,11 @@ class VibeHarnessCommander:
             # The tests' code is part of the audit trail (md / json); SARIF carries findings only
             test_args: Dict[str, Any] = dict(whitebox_tests=wb_tests, blackbox_tests=bb_tests)
             if output_format == "json":
-                payload = json.loads(self.reporter.generate_json_report(**report_args, **test_args))
-                annotate_report_payload(
-                    payload, target_dir, static_findings, debate_result.confirmed_findings, wb_results, bb_results,
-                    threat_report.threats
-                )
-                md_content = json.dumps(payload, indent=2, ensure_ascii=False, default=str)
+                # generate_json_report 會在序列化前直接為靜態命中、確認發現、白箱失敗與黑箱突破印上 fingerprint，
+                # 不再需要先 json.loads 讀回再重新 json.dumps。
+                # generate_json_report stamps fingerprints directly onto static hits, confirmed findings, white-box failures,
+                # and black-box breaches before serializing, without a json.loads / json.dumps round-trip.
+                md_content = self.reporter.generate_json_report(**report_args, **test_args)
             else:
                 md_content = self.reporter.generate_markdown_report(**report_args, **test_args)
 
@@ -657,6 +660,7 @@ class VibeHarnessCommander:
         except (Exception, KeyboardInterrupt) as exc:
             self._write_partial_report(output_report_path, target_dir, progress, exc)
             raise
+
 
     def _write_partial_report(self, output_report_path: str, target_dir: str, progress: Dict[str, Any], exc: BaseException) -> None:
         """將 `exc` 中止執行前已產出的所有內容寫入 `<output>.partial.json`。
@@ -693,3 +697,47 @@ class VibeHarnessCommander:
                  f"Run stopped in phase {payload['phase_reached']} ({type(exc).__name__}); partial results written to {escape(path)}")
             + "[/yellow]"
         )
+
+    @property
+    def node_bin(self) -> str:
+        return self.settings.node.node_bin
+
+    @property
+    def sandbox_node_provider(self) -> str:
+        return self.settings.node.provider
+
+    @property
+    def mutation_testing(self) -> bool:
+        return self.settings.mutation.enabled
+
+    @property
+    def mutation_source(self) -> str:
+        return self.settings.sources["mutation_testing"]
+
+    @property
+    def max_files(self) -> int:
+        return self.settings.scope.max_files
+
+    @property
+    def max_file_bytes(self) -> int:
+        return self.settings.scope.max_file_bytes
+
+    @property
+    def config_path(self) -> str:
+        return os.path.abspath(self.settings.path)
+
+    @property
+    def sandbox_provider(self) -> str:
+        return self.settings.sandbox.provider
+
+    @property
+    def include_patterns(self) -> List[str]:
+        return list(self.settings.scope.include)
+
+    @property
+    def exclude_patterns(self) -> List[str]:
+        return list(self.settings.scope.exclude)
+
+    @property
+    def changed_since(self) -> Optional[str]:
+        return self.settings.scope.changed_since

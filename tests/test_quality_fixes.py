@@ -225,8 +225,8 @@ def test_future_imports_survive_the_harness_header(tmp_path, code):
 
 
 def test_header_still_precedes_code_without_future_imports():
-    from vibeharness.runners.test_executor import TestSuiteExecutor
-    assert TestSuiteExecutor._split_future_imports("import os\n\ndef test_a():\n    assert os\n") == (
+    from vibeharness.core.codecheck import split_future_imports
+    assert split_future_imports("import os\n\ndef test_a():\n    assert os\n") == (
         "", "import os\n\ndef test_a():\n    assert os\n"
     )
 
