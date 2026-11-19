@@ -71,14 +71,21 @@ def test_adding_two_numbers_gives_their_sum():
     assert "test_adding_zero_keeps_the_number" not in out
 
 
-def test_a_failing_global_post_checkout_hook_does_not_stop_the_comparison(make_repo, failing_post_checkout, tmp_path,
+def test_a_failing_global_post_checkout_hook_does_not_stop_the_comparison(make_repo, tmp_path, monkeypatch, request,
                                                                          capsys):
-    """開發者的全域 hook 裡有一個一定失敗的 `post-checkout`：建基準 worktree 時不跑它，比對照常進行，新的測試列成紅的，
-    結束碼是 0。原本 `worktree add` 因為這個 hook 結束碼是 1，整次比對以 2 收場（#158）。
-    The developer's global hooks include a `post-checkout` that always fails: adding the base worktree does not run
-    it, the comparison goes on, the new test is listed as red and the exit code is 0. `worktree add` used to exit 1
-    because of that hook, ending the whole comparison with 2 (#158)."""
+    """開發者的全域 hook 裡有一個一定失敗的 `post-checkout`（即使環境外洩 `GIT_DIR` 或 `GIT_CONFIG_PARAMETERS`）：
+    夾具先清掉外洩的 `GIT_*` 讓 Guard 與受測腳本處於同一環境，建基準 worktree 時不跑該 hook，比對照常進行，新的測試列成
+    紅的，結束碼是 0。原本 `worktree add` 因為這個 hook 結束碼是 1，整次比對以 2 收場（#158）。
+    The developer's global hooks include a `post-checkout` that always fails (even with `GIT_DIR` or
+    `GIT_CONFIG_PARAMETERS` leaked into the environment): the fixture clears leaked `GIT_*` so the Guard and the script
+    under test share the same environment, adding the base worktree does not run the hook, the comparison goes on, the
+    new test is listed as red and the exit code is 0. `worktree add` used to exit 1 because of that hook, ending the
+    whole comparison with 2 (#158)."""
     repo = make_repo(tmp_path / "repo")
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "bogus-git-dir"))
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", f"'core.hooksPath={(tmp_path / 'empty').as_posix()}'")
+    request.getfixturevalue("failing_post_checkout")
+    assert [k for k in os.environ if k.upper().startswith("GIT_")] == ["GIT_CONFIG_GLOBAL"]
     (repo / "calc.py").write_text(FIXED, encoding="utf-8")
     (repo / "tests" / "test_calc.py").write_text(BASE_TESTS + '''
 

@@ -161,19 +161,21 @@ def failing_post_checkout(git_repo, tmp_path_factory, monkeypatch):
     hook.chmod(0o755)
     config = home / "gitconfig"
     config.write_text(f"[core]\n\thooksPath = {hooks.as_posix()}\n", encoding="utf-8")
+    # 先從 os.environ 清掉外洩的 `GIT_*`（例如在 hook 裡跑測試時的 `GIT_DIR` 或蓋過全域設定的 `GIT_CONFIG_PARAMETERS`），
+    # 讓底下的 Guard 與繼承 os.environ 的受測腳本跑在完全相同的環境裡
+    # Clear leaked `GIT_*` variables from os.environ first (e.g. `GIT_DIR` inside a hook or `GIT_CONFIG_PARAMETERS`
+    # overriding global config), so the Guard below and the script under test see the exact same environment
+    for key in [k for k in os.environ if k.upper().startswith("GIT_")]:
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
-    # Guard：照開發者的環境執行 worktree add，這個 hook 真的跑了而且擋下來，否則用到它的測試什麼也沒證明。只清掉
-    # 外洩的 `GIT_*`（例如在 hook 裡跑測試時的 `GIT_DIR`），留下這份設定的 `GIT_CONFIG_GLOBAL`
+    # Guard：照開發者的環境執行 worktree add，這個 hook 真的跑了而且擋下來，否則用到它的測試什麼也沒證明
     # Guard: worktree add run the developer's way really runs this hook and is blocked, else a test using it proves
-    # nothing. Only leaked `GIT_*` variables (such as `GIT_DIR` when tests run inside a hook) are cleared, keeping
-    # this config's `GIT_CONFIG_GLOBAL`
+    # nothing
     repo = home / "guard"
     repo.mkdir()
     (repo / "g.txt").write_text("g\n", encoding="utf-8")
     git_repo(repo)
-    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
-    env["GIT_CONFIG_GLOBAL"] = str(config)
-    added = subprocess.run(["git", "worktree", "add", "--detach", str(home / "guard-wt"), "HEAD"], cwd=repo, env=env,
+    added = subprocess.run(["git", "worktree", "add", "--detach", str(home / "guard-wt"), "HEAD"], cwd=repo,
                            capture_output=True, text=True, encoding="utf-8")
     assert added.returncode != 0 and "hostile post-checkout hook" in added.stderr, \
         f"the hostile post-checkout hook did not block worktree add: {added}"
