@@ -6,7 +6,7 @@ import re
 from bisect import bisect_left, bisect_right
 from types import MappingProxyType
 from dataclasses import dataclass, field as dataclass_field
-from typing import AbstractSet, Dict, Iterable, List, Mapping, Optional, Set, Tuple, Union
+from typing import AbstractSet, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, Union
 from vibeharness.core.models import CodeSymbol
 from vibeharness.core.i18n import bi
 
@@ -266,6 +266,7 @@ class ScopeResult:
     oversized_files: Tuple[str, ...] = ()  # 超過 max_file_bytes ／ over max_file_bytes
     parse_failures: Tuple[str, ...] = ()
     filtered_out: int = 0  # 依要求排除的原始碼檔案（不是證據缺口） ／ source files left out by request (not a gap)
+    discovered_filtered: int = 0  # 由自動發現設定檔排除的檔案（證據缺口） ／ files excluded by a discovered config (a gap)
     unsupported_count: int = 0
     # 唯讀的對照表 ／ a read-only mapping
     unsupported_languages: Mapping[str, int] = dataclass_field(default_factory=lambda: MappingProxyType({}))
@@ -304,6 +305,9 @@ class ASTExtractor:
         # Source files dropped by include/exclude patterns or the only_files filter (not evidence gaps:
         # the user asked for them to be left out)
         self.filtered_out: int = 0
+        # 由自動發現設定檔未受信任的 include/exclude 樣式排除的檔案（證據缺口）
+        # Files dropped by untrusted include/exclude patterns from a discovered config (an evidence gap)
+        self.discovered_filtered: int = 0
         # 在 max_files 上限之內的原始碼檔案（靜態 AI 安全規則掃描的正是這些）
         # Source files within the max_files cap (the static AI-security rules scan exactly these)
         self.analyzed_files: List[str] = []
@@ -355,11 +359,13 @@ class ASTExtractor:
         self,
         dir_path: str,
         max_files: int = DEFAULT_MAX_FILES,
-        include: Optional[List[str]] = None,
-        exclude: Optional[List[str]] = None,
+        include: Optional[Sequence[str]] = None,
+        exclude: Optional[Sequence[str]] = None,
         only_files: Optional[Iterable[str]] = None,
         max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
         max_config_files: int = DEFAULT_MAX_CONFIG_FILES,
+        trusted_include: Optional[Sequence[str]] = None,
+        trusted_exclude: Optional[Sequence[str]] = None,
     ) -> List[CodeSymbol]:
         """解析一個目錄樹（最多 max_files 個原始碼檔案）或單一原始碼檔案。
 
@@ -382,7 +388,7 @@ class ASTExtractor:
         """
         self.detected_languages = set()
         self.parse_failures, self.skipped_files, self.analyzed_files = [], [], []
-        self.oversized_files, self.filtered_out = [], 0
+        self.oversized_files, self.filtered_out, self.discovered_filtered = [], 0, 0
         self.unsupported_count, self.unsupported_languages, self.unsupported_files = 0, {}, []
         self.config_files, self.skipped_config_files, self.oversized_config_files = [], [], []
         if os.path.isfile(dir_path):
@@ -397,6 +403,7 @@ class ASTExtractor:
             return self.parse_file(dir_path)
         source_files: List[str] = []
         wanted = {os.path.normcase(os.path.abspath(p)) for p in only_files} if only_files is not None else None
+        check_untrusted = trusted_include is not None or trusted_exclude is not None
         for root, dirs, files in os.walk(dir_path):
             dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in SKIPPED_DIRS)
             for f in sorted(files):
@@ -405,10 +412,15 @@ class ASTExtractor:
                     continue
                 full = os.path.join(root, f)
                 rel = os.path.relpath(full, dir_path).replace(os.sep, "/")
-                if (wanted is not None and os.path.normcase(os.path.abspath(full)) not in wanted) \
-                        or not self._selected(rel, include, exclude):
+                if wanted is not None and os.path.normcase(os.path.abspath(full)) not in wanted:
                     if kind == "source":
                         self.filtered_out += 1
+                    continue
+                if not self._selected(rel, include, exclude):
+                    if kind == "source":
+                        self.filtered_out += 1
+                    if check_untrusted and self._selected(rel, trusted_include, trusted_exclude):
+                        self.discovered_filtered += 1
                     continue
                 if kind != "source":
                     self._collect_other(full, kind, max_file_bytes, max_config_files)
@@ -448,21 +460,25 @@ class ASTExtractor:
         self,
         dir_path: str,
         max_files: int = DEFAULT_MAX_FILES,
-        include: Optional[List[str]] = None,
-        exclude: Optional[List[str]] = None,
+        include: Optional[Sequence[str]] = None,
+        exclude: Optional[Sequence[str]] = None,
         only_files: Optional[Iterable[str]] = None,
         max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
         max_config_files: int = DEFAULT_MAX_CONFIG_FILES,
+        trusted_include: Optional[Sequence[str]] = None,
+        trusted_exclude: Optional[Sequence[str]] = None,
     ) -> Tuple[List[CodeSymbol], ScopeResult]:
         """parse_directory 的符號，加上這次走訪的範圍（不可變）。參數與 parse_directory 相同。
         parse_directory's symbols plus this walk's scope (immutable). Same arguments as parse_directory."""
         symbols = self.parse_directory(dir_path, max_files=max_files, include=include, exclude=exclude,
                                        only_files=only_files, max_file_bytes=max_file_bytes,
-                                       max_config_files=max_config_files)
+                                       max_config_files=max_config_files, trusted_include=trusted_include,
+                                       trusted_exclude=trusted_exclude)
         return symbols, ScopeResult(
             analyzed_files=tuple(self.analyzed_files), skipped_files=tuple(self.skipped_files),
             oversized_files=tuple(self.oversized_files), parse_failures=tuple(self.parse_failures),
-            filtered_out=self.filtered_out, unsupported_count=self.unsupported_count,
+            filtered_out=self.filtered_out, discovered_filtered=self.discovered_filtered,
+            unsupported_count=self.unsupported_count,
             unsupported_languages=MappingProxyType(dict(self.unsupported_languages)),
             unsupported_files=tuple(self.unsupported_files),
             config_files=tuple(self.config_files), skipped_config_files=tuple(self.skipped_config_files),
@@ -508,7 +524,7 @@ class ASTExtractor:
             self.skipped_config_files.append(path)
 
     @staticmethod
-    def _selected(rel_path: str, include: Optional[List[str]], exclude: Optional[List[str]]) -> bool:
+    def _selected(rel_path: str, include: Optional[Sequence[str]], exclude: Optional[Sequence[str]]) -> bool:
         """include 樣式（若有）必須符合相對路徑或其基底檔名；exclude 樣式優先。
         include patterns (if any) must match the relative path or its basename; exclude patterns win."""
         name = rel_path.rsplit("/", 1)[-1]

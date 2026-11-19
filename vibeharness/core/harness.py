@@ -162,9 +162,13 @@ class VibeHarnessCommander:
             filters.append("include=" + ",".join(self.include_patterns))
         if self.exclude_patterns:
             filters.append("exclude=" + ",".join(self.exclude_patterns))
+        untrusted = self.settings.scope.untrusted_include or self.settings.scope.untrusted_exclude
+        trusted_inc = (() if self.settings.scope.untrusted_include else self.include_patterns) if untrusted else None
+        trusted_exc = (() if self.settings.scope.untrusted_exclude else self.exclude_patterns) if untrusted else None
         symbols, scope = self.ast_extractor.scan_directory(
             target_dir, max_files=self.max_files, include=self.include_patterns or None,
-            exclude=self.exclude_patterns or None, only_files=only_files, max_file_bytes=self.max_file_bytes
+            exclude=self.exclude_patterns or None, only_files=only_files, max_file_bytes=self.max_file_bytes,
+            trusted_include=trusted_inc, trusted_exclude=trusted_exc,
         )
         return symbols, replace(scope, filters=tuple(filters))
 
@@ -541,6 +545,7 @@ class VibeHarnessCommander:
                     config_files_not_fully_scanned=[
                         *scope.skipped_config_files, *scope.oversized_config_files,
                         *scan.incomplete_config_files],
+                    discovered_filtered_count=scope.discovered_filtered,
                 ),
                 static_findings=static_findings,
                 execution=ExecutionEvidence(

@@ -155,6 +155,7 @@ GAP_CASES = {
     GapCode.INCOMPLETE_SCAN: lambda e: _with(e, "scope", incomplete_files=["huge.py"]),
     GapCode.OVERSIZED_FILES: lambda e: _with(e, "scope", oversized_files=["/srv/app/big.py"]),
     GapCode.MAX_FILES_SKIPPED: lambda e: _with(e, "scope", skipped_files=["z.py"]),
+    GapCode.DISCOVERED_SCOPE_FILTERED: lambda e: _with(e, "scope", discovered_filtered_count=2),
     GapCode.TESTS_NOT_RUN: lambda e: _with(e, "execution", wb_results=[_result("WB-T-01", TestStatus.ERROR)]),
     GapCode.MUTATION_NO_CONCLUSION: lambda e: _with(e, "execution", mutation_report=MutationReport(skipped_reason="no tests")),
     GapCode.MUTATION_BELOW_THRESHOLD: lambda e: _with(e, "execution", mutation_report=MutationReport(score=50.0, survived=1)),
@@ -370,3 +371,15 @@ def test_pipeline_wires_scope_limits_and_review_facts_into_the_gate(tmp_path, mo
         "1 configuration-like file(s) were not fully secret-scanned",
     ):
         assert expected in reasons, expected
+
+
+def test_discovered_config_scope_filtering_is_an_evidence_gap():
+    """探索到的設定檔實際排除了目標檔案時，記為 DISCOVERED_SCOPE_FILTERED 證據缺口並阻擋 READY_TO_SHIP。
+    When a discovered config filters out target files, DISCOVERED_SCOPE_FILTERED forbids READY_TO_SHIP (#169)."""
+    base = clean()
+    assert evaluate(base).verdict == Verdict.READY_TO_SHIP
+    filtered = clean(scope=replace(base.scope, discovered_filtered_count=2))
+    res = evaluate(filtered)
+    assert res.verdict == Verdict.INCONCLUSIVE
+    assert [g.code for g in res.gaps] == [GapCode.DISCOVERED_SCOPE_FILTERED]
+    assert "2 file(s)" in res.reasons[0] and "--config" in res.reasons[0]
