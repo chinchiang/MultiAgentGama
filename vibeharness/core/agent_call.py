@@ -246,31 +246,52 @@ class PlannedCalls:
     per_call: Optional[int] = None
 
 
+@dataclass(frozen=True)
+class AgentInput:
+    """一次代理呼叫的可變輸入：`system` 的 `(head, tail)`、`prompt` 片段清單與選用的 `context`。
+    The per-call inputs of one agent call: the `(head, tail)` system prompt, the user-prompt parts, and the optional
+    `context`."""
+    system: Tuple[str, str]
+    prompt: Sequence[Part]
+    context: Any = None
+
+
 def ask_batch(
     gateway: LLMGateway,
-    call: AgentCall,
+    call: Union[AgentCall, Callable[[_T], AgentCall]],
     items: Sequence[_T],
-    run: Callable[[_T], AgentReply],
+    prepare: Callable[[_T], AgentInput],
     *,
     agent_id: Union[str, Callable[[_T], str]],
     label: Union[Tuple[str, str], Callable[[_T], Tuple[str, str]]],
 ) -> List[AgentReply]:
-    """對 `items` 裡的每一項建立一個帶著 `call.kind` 的 `Call`，以 `fan_out`（`fallback=NO_REPLY`）並行執行並依序回傳
-    `AgentReply` 清單。`agent_id` 與 `label` 可以是固定值或依 item 計算的函式。
-    Builds one `Call` carrying `call.kind` for each item in `items` and runs them concurrently through `fan_out`
-    (`fallback=NO_REPLY`), returning the `AgentReply` list in item order. `agent_id` and `label` may be constants or
-    per-item callables."""
-    calls = [
-        Call(
-            agent_id=agent_id(item) if callable(agent_id) else agent_id,
+    """對 `items` 裡的每一項建立呼叫輸入並執行 `ask()`，以 `fan_out`（`fallback=NO_REPLY`）並行執行並依序回傳
+    `AgentReply` 清單。`call`、`agent_id` 與 `label` 可以是固定值或依 item 計算的函式。
+    Prepares inputs and runs `ask()` for each item in `items` concurrently through `fan_out` (`fallback=NO_REPLY`),
+    returning the `AgentReply` list in item order. `call`, `agent_id`, and `label` may be constants or per-item
+    callables."""
+    if not items:
+        return []
+    calls: List[Call[AgentReply]] = []
+    batch_logger: Optional[logging.Logger] = None
+    for item in items:
+        item_call = call(item) if callable(call) else call
+        item_agent = agent_id(item) if callable(agent_id) else agent_id
+        if batch_logger is None and item_call.logger is not None:
+            batch_logger = item_call.logger
+
+        def _run_one(item: _T = item, ic: AgentCall = item_call, ia: str = item_agent) -> AgentReply:
+            inp = prepare(item)
+            return ask(gateway, ic, ia, system=inp.system, prompt=inp.prompt, context=inp.context)
+
+        calls.append(Call(
+            agent_id=item_agent,
             label=label(item) if callable(label) else label,
-            run=lambda item=item: run(item),  # type: ignore[misc]
-            kind=call.kind,
-        )
-        for item in items
-    ]
+            run=_run_one,
+            kind=item_call.kind,
+        ))
     return fan_out(
-        gateway, calls, fallback=NO_REPLY, logger=call.logger or logging.getLogger("VibeHarness.AgentCall")
+        gateway, calls, fallback=NO_REPLY, logger=batch_logger or logging.getLogger("VibeHarness.AgentCall")
     )
 
 

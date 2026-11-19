@@ -7,7 +7,7 @@ import pytest
 
 from config_files import CONFIG
 from vibeharness.core.agent_call import (
-    NO_REPLY, AgentCall, CallKind, Channel, Content, Untrusted, ask, ask_batch, ask_text,
+    NO_REPLY, AgentCall, AgentInput, CallKind, Channel, Content, Untrusted, ask, ask_batch, ask_text,
 )
 from vibeharness.core.i18n import bi
 from vibeharness.core.llm_gateway import LLMGateway
@@ -240,18 +240,22 @@ def test_a_declared_malformed_message_is_logged_with_the_position_of_each_item_t
 
 
 def test_ask_batch_fans_out_agent_calls_with_no_reply_fallback_and_call_kind(scripted):
-    call = AgentCall(schema=FINDINGS, mapper=_titles, kind=CallKind.REVIEWER)
     transport = scripted({REVIEWER: {"findings": [{"title": "ok"}]}})
     gateway = _live(transport)
 
-    def run_item(name):
+    def prepare(name):
         if name == "boom":
             raise RuntimeError("boom")
-        return ask(gateway, call, REVIEWER, system=("", ""), prompt=[name], context=name)
+        return AgentInput(system=("", ""), prompt=[name], context=name)
 
+    assert ask_batch(gateway, lambda name: FINDINGS_CALL, [], prepare, agent_id=REVIEWER, label=("x", "x")) == []
     replies = ask_batch(
-        gateway, call, ["b1", "boom", "b2"], run_item,
-        agent_id=REVIEWER, label=lambda name: (f"批次 {name}", f"batch {name}"),
+        gateway,
+        lambda name: AgentCall(schema=FINDINGS, mapper=_titles, kind=CallKind.REVIEWER),
+        ["b1", "boom", "b2"],
+        prepare,
+        agent_id=REVIEWER,
+        label=lambda name: (f"批次 {name}", f"batch {name}"),
     )
     assert [r.items for r in replies] == [(("b1", "ok"),), (), (("b2", "ok"),)]
     assert replies[1] is NO_REPLY

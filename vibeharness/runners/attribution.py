@@ -615,6 +615,34 @@ class ModuleOutcome:
     not_rerun: bool = False
     parse_failed: bool = False
 
+    @classmethod
+    def from_sandbox(
+        cls,
+        *,
+        module: str,
+        language: str,
+        exit_code: int,
+        stdout: str,
+        stderr: str,
+        junit_xml: Optional[str],
+        timeout: int,
+    ) -> "ModuleOutcome":
+        """將單一測試模組的沙盒執行結果轉為 `ModuleOutcome`（逾時、缺報告、JUnit 損毀或解析出的案例清單）。
+        Turns one test module's sandbox run into a `ModuleOutcome` (timeout, missing report, unparseable JUnit, or
+        parsed test cases)."""
+        if exit_code == _TIMEOUT_EXIT_CODE:
+            return cls(
+                exit_code=exit_code, stdout=stdout, stderr=stderr,
+                has_report=junit_xml is not None, timed_out_budget=timeout,
+            )
+        if junit_xml is None:
+            return cls(exit_code=exit_code, stdout=stdout, stderr=stderr, has_report=False)
+        parsed = (parse_junit(junit_xml, language) if language == "python"
+                  else parse_junit(junit_xml, language, module=module, runner_stdout=stdout))
+        if parsed is None:
+            return cls(exit_code=exit_code, stderr=stderr, parse_failed=True)
+        return cls(exit_code=exit_code, stdout=stdout, stderr=stderr, cases=parsed.get(module, []))
+
 
 def not_run_for_sandbox(
     test: GeneratedTest,

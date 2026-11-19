@@ -7,7 +7,8 @@ from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import estimate_tokens, render_symbols, batch_symbols, target_root
 from vibeharness.core.agent_call import (
-    AgentCall, AgentReply, CallContext, CallKind, Channel, Content, Part, PlannedCalls, Untrusted, ask, ask_batch,
+    AgentCall, AgentInput, AgentReply, CallContext, CallKind, Channel, Content, Part, PlannedCalls, Untrusted,
+    ask_batch,
 )
 from vibeharness.core.identity import UNKNOWN_FILE
 from vibeharness.core.model_output import LIST_OF_OBJECTS, OutputSchema
@@ -189,7 +190,7 @@ class HeterogeneousReviewerEnsemble:
             unique.append(f if count == 1 else f.model_copy(update={"finding_id": f"{f.finding_id}-{count}"}))
         return unique
 
-    def _review_batch(self, reviewer: Dict[str, str], batch: List[CodeSymbol], root: str) -> AgentReply:
+    def _review_batch(self, reviewer: Dict[str, str], batch: List[CodeSymbol], root: str) -> AgentInput:
         name = reviewer["name"]
         # 模型提示詞：維持英文（雙語的預設名稱／專注領域只貢獻其英文半）
         # Model prompt: stays English (a bilingual default name / focus contributes its English half only)
@@ -222,8 +223,7 @@ class HeterogeneousReviewerEnsemble:
         ]
         logger.info(bi(f"以審查者 {name} 執行白箱稽核（{len(batch)} 個符號）",
                        f"Running white-box audit with reviewer: {name} ({len(batch)} symbols)"))
-        return ask(self.gateway, REVIEW_CALL, reviewer["agent_id"], system=(system_prompt, ""), prompt=prompt,
-                   context=(reviewer, batch))
+        return AgentInput(system=(system_prompt, ""), prompt=prompt, context=(reviewer, batch))
 
     @staticmethod
     def _match_symbol(name: Any, batch: List[CodeSymbol]) -> Optional[CodeSymbol]:

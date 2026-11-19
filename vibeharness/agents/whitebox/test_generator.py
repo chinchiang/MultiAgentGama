@@ -19,7 +19,7 @@ from vibeharness.core.agent_call import (
     AgentCall, Call, CallContext, CallKind, Channel, Content, Part, PlannedCalls, Untrusted, ask, ask_text, fan_out,
 )
 from vibeharness.core.identity import is_unknown_location
-from vibeharness.core.model_output import LIST_OF_OBJECTS, STRING, OutputSchema
+from vibeharness.core.model_output import LIST_OF_OBJECTS, STRING, FieldType, OutputSchema
 
 logger = logging.getLogger("VibeHarness.TestGenerator")
 
@@ -31,13 +31,25 @@ def is_usable_test(item: Mapping[str, Any]) -> bool:
     return bool(strip_code_fences(text_or(item.get("code"), "")))
 
 
-# 測試生成回答的形狀（core/model_output.py）：`tests` 物件清單（至少一項可用）或單一的 `code` 字串，兩者之一合格即可
+def _code_field_problem(key: str, value: Any) -> Optional[str]:
+    str_problem = STRING.problem(key, value)
+    if str_problem is not None:
+        return str_problem
+    # 空字串（與 `{"tests": []}` 一樣代表「沒有產生測試」）合格；非空卻只含空圍欄則視為形狀錯誤以觸發重問
+    # An empty string (like `{"tests": []}`, meaning "no test produced") fits; a fence-only string is rejected so the
+    # gateway re-asks instead of caching an empty fence
+    if value.strip() and not is_usable_test({"code": value}):
+        return bi(f"欄位 '{key}' 需要非空的 code", f"field '{key}' needs non-empty code")
+    return None
+
+
+# 測試生成回答的形狀（core/model_output.py）：`tests` 物件清單（至少一項可用）或非空的頂層 `code` 字串，兩者之一合格即可
 # The shape of a test-generation answer (core/model_output.py): a `tests` list of objects (at least one usable) or a
-# single `code` string; either one fitting is enough
+# non-empty top-level `code` string; either one fitting is enough
 TESTS_SCHEMA = OutputSchema(any_of={
     "tests": LIST_OF_OBJECTS(usable=is_usable_test,
                              requirement=bi("每一項都要有非空的 code", "each item needs non-empty code")),
-    "code": STRING,
+    "code": FieldType("non-empty code", _code_field_problem),
 })
 
 # 每個發現所顯示目標原始碼的估計 token 預算
@@ -395,9 +407,9 @@ class WhiteboxTestGenerator:
 
 
 def _test_drafts(items: List[Mapping[str, Any]], ctx: CallContext) -> List[GeneratedTest]:
-    """把一次測試生成呼叫的可用項目對應成測試；程式碼先去除圍欄，修復迴圈之後才換成修好的版本。
-    Maps one test-generation call's usable items to tests; the code has fences stripped first and is replaced by the
-    healed version after the heal loop."""
+    """把一次測試生成呼叫的可用項目對應成測試；程式碼保留模型原文，交由 `_validate_and_heal`（`prepare_test_code`）統一剝除圍欄與修復。
+    Maps one test-generation call's usable items to tests; the raw model code is handed to `_validate_and_heal`
+    (`prepare_test_code`) to strip fences and repair in one place."""
     idx, finding, target_file, language = ctx.context
     return [
         GeneratedTest(
@@ -405,7 +417,7 @@ def _test_drafts(items: List[Mapping[str, Any]], ctx: CallContext) -> List[Gener
             test_type="whitebox_unit",
             target_component=finding.symbol_name or target_file,
             title=text_or(item.get("title"), finding.title),
-            code=strip_code_fences(item["code"]),
+            code=item["code"],
             rationale=text_or(item.get("rationale"), finding.suggested_test_scenario),
             expected_outcome=text_or(item.get("expected_outcome"), bi("妥善處理而不當機", "Graceful handling without crash")),
             source_ref=finding.finding_id,

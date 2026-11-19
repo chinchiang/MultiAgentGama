@@ -558,11 +558,12 @@ def _shape_cases():
         ("blackbox_threat_modeler", THREATS_SCHEMA, {"threats": [1, 2]}, "each item must be an object"),
         ("whitebox_test_generator", TESTS_SCHEMA, {"tests": [{"title": "t"}]}, "each item needs non-empty code"),
         ("whitebox_test_generator", TESTS_SCHEMA, {"code": 42}, "field 'code' must be a string (got int)"),
+        ("whitebox_test_generator", TESTS_SCHEMA, {"code": "```python\n```"}, "field 'code' needs non-empty code"),
         ("blackbox_test_synthesizer", CODE_SCHEMA, {"code": None}, "field 'code' must be a string (got null)"),
     ]
 
 
-@pytest.mark.parametrize("case", range(10))
+@pytest.mark.parametrize("case", range(11))
 def test_a_shape_error_is_reasked_with_the_reason_then_booked_invalid(scripted, case):
     """鍵在、形狀不對的回答（`findings: 5`、沒有任何可用項目的清單、`code: 42`）過去被當成可用的回答，代理再把它讀成
     「什麼都沒找到」；現在與缺鍵一樣：以指名欄位的原因重新詢問一次，仍不合就記為 invalid（證據缺口）。

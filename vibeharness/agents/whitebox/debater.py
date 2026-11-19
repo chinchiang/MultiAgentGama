@@ -6,7 +6,8 @@ from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import render_symbols, truncate_to_tokens, target_root
 from vibeharness.core.agent_call import (
-    AgentCall, AgentReply, CallContext, CallKind, Channel, Content, Part, PlannedCalls, Untrusted, ask, ask_batch,
+    AgentCall, AgentInput, AgentReply, CallContext, CallKind, Channel, Content, Part, PlannedCalls, Untrusted,
+    ask_batch,
 )
 from vibeharness.core.model_output import LIST_OF_OBJECTS, OutputSchema
 
@@ -149,7 +150,7 @@ class MultiModelDebater:
             # other batch's (already paid-for) votes: ask_batch (via fan_out) books it as an invalid call (these votes
             # are missing, not "unsure"); live-mode failures still propagate so the run fails loudly.
             replies: List[AgentReply] = ask_batch(
-                self.gateway, _verify_call(1), jobs,
+                self.gateway, lambda job: _verify_call(len(job[1])), jobs,
                 lambda job: self._verify(job[0], findings, job[1], symbols, root_dir),
                 agent_id=lambda job: job[0],
                 label=lambda job: (f"{job[0]} 的驗證批次", f"Verifier batch for {job[0]}"),
@@ -225,7 +226,7 @@ class MultiModelDebater:
         idxs: List[int],
         symbols: Optional[List[CodeSymbol]],
         root_dir: Optional[str]
-    ) -> AgentReply:
+    ) -> AgentInput:
         alias = self.verifiers[agent_id]
         listing = self._build_listing(findings, idxs)
         system_prompt = (
@@ -248,8 +249,7 @@ class MultiModelDebater:
         # goes into the untrusted channel too
         prompt: List[Part] = [*self._code_context(findings, idxs, symbols, root_dir), "Findings to verify:\n\n",
                               Untrusted(Content.REVIEWER_FINDING, listing)]
-        return ask(self.gateway, _verify_call(len(idxs)), agent_id, system=(system_prompt, system_tail),
-                   prompt=prompt, context=(alias, idxs))
+        return AgentInput(system=(system_prompt, system_tail), prompt=prompt, context=(alias, idxs))
 
     @staticmethod
     def _parse_index(value: object) -> Optional[int]:

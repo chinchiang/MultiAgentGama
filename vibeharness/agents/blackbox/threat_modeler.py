@@ -9,7 +9,8 @@ from vibeharness.core.identity import severity_rank, threat_identity
 from vibeharness.core.model_output import LIST_OF_OBJECTS, OutputSchema
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.agent_call import (
-    AgentCall, AgentReply, CallContext, CallKind, Channel, Content, Part, PlannedCalls, Untrusted, ask, ask_batch,
+    AgentCall, AgentInput, AgentReply, CallContext, CallKind, Channel, Content, Part, PlannedCalls, Untrusted,
+    ask_batch,
 )
 from vibeharness.core.i18n import bi
 from vibeharness.core.codecontext import estimate_tokens, render_symbols, batch_symbols, target_root
@@ -199,7 +200,7 @@ class AutomatedThreatModeler:
         routes_summary: str,
         root_dir: Optional[str],
         ai_components: Optional[List[str]] = None
-    ) -> AgentReply:
+    ) -> AgentInput:
         prompt: List[Part] = [
             f"System Description: {system_description}\n"
             f"Entrypoints: {entrypoints_summary}\n"
@@ -210,7 +211,7 @@ class AutomatedThreatModeler:
             "Perform comprehensive threat modeling identifying vibe-coding vulnerabilities. "
             "Only include threats that are plausible for the code shown, and name the concrete function/route in attack_vector.",
         ]
-        return ask(self.gateway, THREAT_MODEL_CALL, AGENT_ID, system=(system_prompt, ""), prompt=prompt)
+        return AgentInput(system=(system_prompt, ""), prompt=prompt)
 
     def plan(self, symbols: Optional[List[CodeSymbol]], root: str) -> List[PlannedCalls]:
         """model_system 對這些符號會發出的呼叫：每個威脅建模批次一次，執行前就已知（沒有符號時仍有一個批次）。

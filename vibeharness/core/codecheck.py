@@ -78,39 +78,45 @@ def _has_assertion(fn: ast.AST) -> bool:
     return False
 
 
-def check_test_code(code: str, _tree: Optional[List[ast.Module]] = None) -> Tuple[bool, Optional[str]]:
-    """驗證產生的 pytest 片段。
-    回傳 (is_valid, problem_description)。有效代表：能解析、至少定義一個 test_ 函式，
-    且每個 test_ 函式都含有斷言（否則空洞的測試會被算成已防禦的邊界）。
-    Validates a generated pytest snippet.
-    Returns (is_valid, problem_description). Valid means: parses, defines at least one test_ function,
-    and every test_ function contains an assertion (a vacuous test would otherwise count as a defended boundary)."""
+def _parse_and_check_python(code: str) -> Tuple[Optional[ast.Module], Optional[str]]:
+    """單次解析並驗證產生的 pytest 程式碼：有效時回傳 `(tree, None)`，無效時回傳 `(None, problem_description)`。
+    Parses and validates generated pytest code in one pass: returns `(tree, None)` when valid, `(None, problem)` when
+    invalid."""
     if not code or not code.strip():
-        return False, "empty test code"
+        return None, "empty test code"
     try:
         tree = ast.parse(code)
     except (SyntaxError, ValueError, RecursionError) as e:
         # ValueError：原始碼含有 null 位元組；RecursionError：巢狀深得離譜
         # ValueError: source with null bytes; RecursionError: absurdly deep nesting
-        return False, f"syntax error: {e}"
+        return None, f"syntax error: {e}"
     installer = _package_install_call(tree)
     if installer:
-        return False, f"test installs packages at run time ({installer}); refused (slopsquatting / OWASP LLM04:2026)"
+        return None, f"test installs packages at run time ({installer}); refused (slopsquatting / OWASP LLM04:2026)"
     tests = _top_level_test_nodes(tree)
     if not tests:
-        return False, "no top-level test_ function defined"
+        return None, "no top-level test_ function defined"
     try:
         vacuous = [name for t in tests for name in _vacuous_tests(t, tree)]
     except RecursionError:
         # 走訪本身是迭代的；這只是保險：保守地視為找不到斷言證據，絕不讓整次執行崩潰
         # The walk itself is iterative; this is only a safety net: conservatively treated as no assertion evidence
         # found, never crashing the whole run
-        return False, "test function(s) without any assertion: analysis too deep"
+        return None, "test function(s) without any assertion: analysis too deep"
     if vacuous:
-        return False, f"test function(s) without any assertion: {', '.join(vacuous)}"
-    if _tree is not None:
-        _tree.append(tree)
-    return True, None
+        return None, f"test function(s) without any assertion: {', '.join(vacuous)}"
+    return tree, None
+
+
+def check_test_code(code: str) -> Tuple[bool, Optional[str]]:
+    """驗證產生的 pytest 片段。
+    回傳 (is_valid, problem_description)。有效代表：能解析、至少定義一個 test_ 函式，
+    且每個 test_ 函式都含有斷言（否則空洞的測試會被算成已防禦的邊界）。
+    Validates a generated pytest snippet.
+    Returns (is_valid, problem_description). Valid means: parses, defines at least one test_ function,
+    and every test_ function contains an assertion (a vacuous test would otherwise count as a defended boundary)."""
+    tree, problem = _parse_and_check_python(code)
+    return tree is not None, problem
 
 
 _INSTALLER_RE = re.compile(r"\b(?:pip3?|uv|poetry|conda|mamba|npm|pnpm|yarn|bun|ensurepip)\b")
@@ -305,9 +311,8 @@ def prepare_test_code(code: str, language: str = "python") -> Tuple[str, Optiona
     if language in ("javascript", "typescript"):
         _, problem = check_js_test_code(cleaned)
         return cleaned, problem, "", cleaned
-    parsed: List[ast.Module] = []
-    is_valid, problem = check_test_code(cleaned, _tree=parsed)
-    if not is_valid or not parsed:
+    tree, problem = _parse_and_check_python(cleaned)
+    if tree is None:
         return cleaned, problem, "", cleaned
-    preamble, body = split_future_imports(cleaned, tree=parsed[0])
+    preamble, body = split_future_imports(cleaned, tree=tree)
     return cleaned, None, preamble, body

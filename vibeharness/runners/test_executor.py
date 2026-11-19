@@ -129,7 +129,7 @@ class TestSuiteExecutor:
         Runs a set of tests; Python and JS/TS line coverage are reported separately (see SuiteResult)."""
         if not tests:
             return SuiteResult(results=[])
-        unique_ids = self._unique_test_ids(tests)
+        unique_ids = unique_test_ids(tests)
         results: Dict[int, TestExecutionResult] = {}
         py_idx = [i for i, t in enumerate(tests) if t.language == "python"]
         js_idx = [i for i, t in enumerate(tests) if t.language != "python"]
@@ -340,26 +340,9 @@ class TestSuiteExecutor:
             run = sandbox.execute_pytest_files(
                 {filename: code}, working_dir=working_dir, timeout_seconds=timeout
             )
-            if run.exit_code == TIMEOUT_EXIT_CODE:
-                outcomes[module] = ModuleOutcome(
-                    exit_code=run.exit_code, stdout=run.stdout, stderr=run.stderr,
-                    has_report=run.junit_xml is not None, timed_out_budget=timeout,
-                )
-                continue
-            if run.junit_xml is None:
-                outcomes[module] = ModuleOutcome(
-                    exit_code=run.exit_code, stdout=run.stdout, stderr=run.stderr, has_report=False,
-                )
-                continue
-            module_cases = parse_junit(run.junit_xml, language)
-            if module_cases is None:
-                outcomes[module] = ModuleOutcome(
-                    exit_code=run.exit_code, stderr=run.stderr, parse_failed=True,
-                )
-                continue
-            outcomes[module] = ModuleOutcome(
-                exit_code=run.exit_code, stdout=run.stdout, stderr=run.stderr,
-                cases=module_cases.get(module, []),
+            outcomes[module] = ModuleOutcome.from_sandbox(
+                module=module, language=language, exit_code=run.exit_code,
+                stdout=run.stdout, stderr=run.stderr, junit_xml=run.junit_xml, timeout=timeout,
             )
         return outcomes
 
@@ -436,29 +419,14 @@ class TestSuiteExecutor:
             run = sandbox.execute_pytest_files(
                 {filename: code}, working_dir=working_dir, timeout_seconds=timeout, **coverage_kwargs
             )
+            outcomes[module] = ModuleOutcome.from_sandbox(
+                module=module, language=language, exit_code=run.exit_code,
+                stdout=run.stdout, stderr=run.stderr, junit_xml=run.junit_xml, timeout=timeout,
+            )
             if run.exit_code == TIMEOUT_EXIT_CODE:
-                outcomes[module] = ModuleOutcome(
-                    exit_code=run.exit_code, stdout=run.stdout, stderr=run.stderr,
-                    has_report=run.junit_xml is not None, timed_out_budget=timeout,
-                )
                 return False
             if coverage is not None and run.js_coverage is not None:
                 coverage.merge(run.js_coverage)
-            if run.junit_xml is None:
-                outcomes[module] = ModuleOutcome(
-                    exit_code=run.exit_code, stdout=run.stdout, stderr=run.stderr, has_report=False,
-                )
-                return True
-            parsed = parse_junit(run.junit_xml, language, module=module, runner_stdout=run.stdout)
-            if parsed is None:
-                outcomes[module] = ModuleOutcome(
-                    exit_code=run.exit_code, stderr=run.stderr, parse_failed=True,
-                )
-                return True
-            outcomes[module] = ModuleOutcome(
-                exit_code=run.exit_code, stdout=run.stdout, stderr=run.stderr,
-                cases=parsed.get(module, []),
-            )
             return True
 
         items = list(files.items())
@@ -506,9 +474,3 @@ class TestSuiteExecutor:
         check_test_code(), so it parses.
         """
         return split_future_imports(code)
-
-    @staticmethod
-    def _unique_test_ids(tests: List[GeneratedTest]) -> List[str]:
-        """消除重複的 test_id（例如來自 LLM 輸出），讓每個結果都可追溯。
-        Disambiguates duplicate test_ids (e.g. from LLM output) so each result is traceable."""
-        return unique_test_ids(tests)

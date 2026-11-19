@@ -63,6 +63,7 @@ def clean(**changes):
     A run with no gap and no executed defect: the verdict is READY_TO_SHIP."""
     evidence = GateEvidence(
         threat_report=ThreatModelReport(system_description="app", threats=[_threat()]),
+        tally=tally_evidence(),  # 由 evaluate() 依最後的證據重建 ／ rebuilt by evaluate() from the final evidence
         limits=GateLimits(max_model_calls=10, max_files=200, max_file_bytes=1000, mutation_min_score=80.0),
         call_log=[_call()],
         review=ReviewEvidence(reviewers_configured=True, reviewer_models=["gpt", "claude"]),
@@ -74,10 +75,9 @@ def clean(**changes):
 
 
 def evaluate(evidence, baseline=None):
-    """像 harness 一樣，有基準時從證據建出證據計數，沒有基準時直接交給品質閘門。
-    Like the harness, build the Evidence tally when a Baseline is given, or hand the evidence directly to the gate."""
-    if baseline is None:
-        return gate_evaluate(evidence)
+    """像 harness 一樣，從證據本身建出證據計數（含未測試的威脅與基準比對），再交給品質閘門。
+    Like the harness, build the Evidence tally from the evidence itself (untested threats and the baseline comparison
+    included), then hand it to the Quality Gate."""
     ex = evidence.execution
     tally = tally_evidence(wb_results=ex.wb_results, bb_tests=ex.bb_tests, bb_results=ex.bb_results,
                            static_findings=evidence.static_findings, threats=evidence.threat_report.threats,
