@@ -1,7 +1,8 @@
-"""repo 文件與測試套件本身的一致性：README 的檔案樹列出每個檔案、規則文件點名的名稱與路徑都存在、讀 `.github/` 的
-測試在 sdist 裡會略過（sdist 不帶 `.github/`）。
-Consistency of the repo's documents and of the suite itself: the README file trees list every file, the names and
-paths the rule documents cite exist, and tests that read `.github/` skip in the sdist (which does not ship it)."""
+"""repo 文件與測試套件本身的一致性：README 的檔案樹列出每個檔案且沒有過時項目、規則文件點名的名稱與路徑都存在、
+讀 `.github/` 的測試在 sdist 裡會略過（sdist 不帶 `.github/`）。
+Consistency of the repo's documents and of the suite itself: the README file trees list every file without stale
+entries, the names and paths the rule documents cite exist, and tests that read `.github/` skip in the sdist (which
+does not ship it)."""
 
 import ast
 import builtins
@@ -13,6 +14,19 @@ import re
 import pytest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MANIFEST = os.path.join(REPO_ROOT, "MANIFEST.in")
+# sdist 刻意不打包的檔案：在 sdist 裡（沒有 .github/）無法核對
+# Files the sdist deliberately leaves out: they cannot be checked from the sdist (no .github/)
+_NOT_SHIPPED = ("AGENTS.md", ".pre-commit-config.yaml")
+
+
+def pruned_dirs(manifest):
+    """MANIFEST.in 用 prune 排除的目錄，依出現順序，不帶結尾的 `/`；參數當成字面上的目錄，不展開樣式。
+    The directories a MANIFEST.in excludes with prune, in order and without a trailing `/`; the argument is taken
+    as a literal directory, not expanded as a pattern."""
+    with open(manifest, encoding="utf-8") as f:
+        lines = [line.split() for line in f]
+    return [words[1].rstrip("/") for words in lines if len(words) == 2 and words[0] == "prune"]
 
 # 檔案樹必須列出的檔案：(目錄, 副檔名, 是否遞迴)
 # Files the trees must list: (directory, extensions, recursive)
@@ -93,11 +107,117 @@ def test_tree_paths_follows_the_indentation_and_catches_a_file_under_the_wrong_d
     assert "tests/test_misplaced.py" not in tree_paths(text)
 
 
+def stale_tree_paths(text, root=REPO_ROOT, manifest=MANIFEST):
+    """README 檔案樹裡在磁碟上找不到（或型別不符：目錄沒加 `/`、一般檔案加了 `/`）的路徑，依字母排序。
+    sdist 不帶 `.github/`、`_NOT_SHIPPED` 與 `MANIFEST.in` prune 掉的目錄：在缺少它們的環境裡略過。
+    Paths in a README file tree that are missing on disk (or have the wrong kind: a directory without `/`, a regular
+    file with `/`), sorted. The sdist leaves out `.github/`, `_NOT_SHIPPED` and directories `MANIFEST.in` prunes, so
+    those are skipped when absent."""
+    pruned = pruned_dirs(manifest)
+    has_github = os.path.isdir(os.path.join(root, ".github"))
+    stale = []
+    for path in sorted(tree_paths(text)):
+        if not has_github and (path in _NOT_SHIPPED or path.startswith(".github/")):
+            continue
+        if any(path.startswith(d + "/") and not os.path.isdir(os.path.join(root, d)) for d in pruned):
+            continue
+        full = os.path.join(root, path.rstrip("/"))
+        exists = os.path.isdir(full) if path.endswith("/") else os.path.isfile(full)
+        if not exists:
+            stale.append(path)
+    return stale
+
+
+@pytest.mark.parametrize("readme", ["README.md", "README.en.md"])
+def test_the_readme_file_tree_has_no_stale_entries(readme):
+    """README 的檔案樹不殘留已刪除或型別不符的路徑（目錄必須以 `/` 結尾，一般檔案不得以 `/` 結尾）。
+    The README file tree holds no deleted or wrong-kind paths (directories end in `/`, regular files do not)."""
+    with open(os.path.join(REPO_ROOT, readme), encoding="utf-8") as f:
+        stale = stale_tree_paths(f.read())
+    assert stale == [], f"remove these stale entries from the file tree of {readme}:\n" + "\n".join(stale)
+
+
+def test_stale_tree_paths_flags_missing_entries_and_kind_mismatches(tmp_path):
+    """完整的 checkout 裡，已刪除的檔案與目錄（含 `.github/` 與存在的 prune 目錄底下）、沒加 `/` 的目錄、加了 `/` 的
+    一般檔案，以及缺少的 `.pre-commit-config.yaml` 都會被列出；存在的項目不算。
+    In a full checkout, deleted files and directories (under `.github/` and a present pruned directory included), a
+    directory without `/`, a regular file with `/`, and a missing `.pre-commit-config.yaml` are all listed; existing
+    entries are not."""
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    (tmp_path / ".github" / "workflows" / "tests.yml").write_text("", encoding="utf-8")
+    (tmp_path / ".pre-commit-config.yaml").write_text("", encoding="utf-8")
+    (tmp_path / "MANIFEST.in").write_text("prune scripts/golden\n", encoding="utf-8")
+    (tmp_path / "scripts" / "golden").mkdir(parents=True)
+    (tmp_path / "scripts" / "golden" / "run.py").write_text("", encoding="utf-8")
+    (tmp_path / "scripts" / "sub").mkdir()
+    (tmp_path / "vibeharness" / "core").mkdir(parents=True)
+    (tmp_path / "vibeharness" / "core" / "gate.py").write_text("", encoding="utf-8")
+    (tmp_path / "vibeharness" / "core" / "models.py").write_text("", encoding="utf-8")
+    text = "\n".join([
+        "```text", TREE_ROOT,
+        "├── .github/",
+        "│   └── workflows/",
+        "│       ├── tests.yml",
+        "│       └── old.yml",
+        "├── .pre-commit-config.yaml",
+        "├── scripts/",
+        "│   ├── golden/",
+        "│   │   ├── run.py",
+        "│   │   └── old.py",
+        "│   └── sub",
+        "└── vibeharness/",
+        "    ├── core/",
+        "    │   ├── fanout.py",
+        "    │   ├── gate.py",
+        "    │   └── models.py/",
+        "    └── legacy/",
+        "```",
+    ])
+    manifest = tmp_path / "MANIFEST.in"
+    assert stale_tree_paths(text, root=tmp_path, manifest=manifest) == [
+        ".github/workflows/old.yml",
+        "scripts/golden/old.py",
+        "scripts/sub",
+        "vibeharness/core/fanout.py",
+        "vibeharness/core/models.py/",
+        "vibeharness/legacy/",
+    ]
+    (tmp_path / ".pre-commit-config.yaml").unlink()
+    assert ".pre-commit-config.yaml" in stale_tree_paths(text, root=tmp_path, manifest=manifest)
+
+
+def test_stale_tree_paths_skips_repo_only_and_pruned_entries_in_sdist(tmp_path):
+    """在解開的 sdist 裡（沒有 `.github/`，也沒有 `MANIFEST.in` prune 掉的目錄），`.github/`、`_NOT_SHIPPED` 與
+    被 prune 的目錄會略過，但其他不存在的路徑照樣列出；缺少 `MANIFEST.in` 時直接報錯。
+    In an unpacked sdist (no `.github/`, and no directory `MANIFEST.in` prunes), `.github/`, `_NOT_SHIPPED` and
+    pruned directories are skipped while other missing paths are still listed; a missing `MANIFEST.in` raises."""
+    (tmp_path / "MANIFEST.in").write_text("prune scripts/golden\n", encoding="utf-8")
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "vibeharness" / "core").mkdir(parents=True)
+    (tmp_path / "vibeharness" / "core" / "gate.py").write_text("", encoding="utf-8")
+    text = "\n".join([
+        "```text", TREE_ROOT,
+        "├── .github/",
+        "│   └── workflows/",
+        "│       └── tests.yml",
+        "├── .pre-commit-config.yaml",
+        "├── scripts/",
+        "│   └── golden/",
+        "└── vibeharness/",
+        "    └── core/",
+        "        ├── fanout.py",
+        "        └── gate.py",
+        "```",
+    ])
+    assert stale_tree_paths(text, root=tmp_path, manifest=tmp_path / "MANIFEST.in") == ["vibeharness/core/fanout.py"]
+    with pytest.raises(FileNotFoundError):
+        stale_tree_paths(text, root=tmp_path, manifest=tmp_path / "missing.in")
+
+
 # --- 規則文件點名的名稱與路徑 ----------------------------------------------------------------------------
 # --- Names and paths cited by the rule documents -----------------------------------------------------------
 
 RULE_DOCS = ("CODING_STANDARDS.md", "CODING_STANDARDS.en.md", "CONTRIBUTING.md", "AGENTS.md")
-MANIFEST = os.path.join(REPO_ROOT, "MANIFEST.in")
 _SPAN_RE = re.compile(r"`([^`\n]+)`")
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*(?:\(\))?$")
 _FILE_RE = re.compile(r"^[\w.*/-]+\.(?:py|ya?ml|md|toml|in|txt|lock|json|cfg|Dockerfile)$")
@@ -133,20 +253,6 @@ def _definitions():
 def _looks_like_code(name):
     return (name.startswith("_") or "_" in name.strip("_") and not name.isupper()
             or bool(_CAMEL_RE.match(name)))
-
-
-def pruned_dirs(manifest):
-    """MANIFEST.in 用 prune 排除的目錄，依出現順序，不帶結尾的 `/`；參數當成字面上的目錄，不展開樣式。
-    The directories a MANIFEST.in excludes with prune, in order and without a trailing `/`; the argument is taken
-    as a literal directory, not expanded as a pattern."""
-    with open(manifest, encoding="utf-8") as f:
-        lines = [line.split() for line in f]
-    return [words[1].rstrip("/") for words in lines if len(words) == 2 and words[0] == "prune"]
-
-
-# sdist 刻意不打包的檔案：在 sdist 裡（沒有 .github/）無法核對
-# Files the sdist deliberately leaves out: they cannot be checked from the sdist (no .github/)
-_NOT_SHIPPED = ("AGENTS.md",)
 
 
 def _file_exists(span, pruned):
