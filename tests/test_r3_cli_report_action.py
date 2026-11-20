@@ -384,17 +384,6 @@ def test_the_extra_args_split_ignores_a_planted_shlex_module(tmp_path):
     assert out.stdout.split() == ["--max-files", "3"] and not marker.exists()
 
 
-def test_action_header_pins_upload_sarif_v4_with_security_events_permission():
-    """action.yml 的用法註解：upload-sarif 釘在與 CodeQL workflow 相同的 v4.39.1 commit，並列出 security-events: write。
-    action.yml's usage comment pins upload-sarif to the same v4.39.1 commit as the CodeQL workflow and lists
-    security-events: write."""
-    with open(os.path.join(REPO_ROOT, "action.yml"), encoding="utf-8") as f:
-        text = f.read()
-    assert "github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1" in text
-    assert "security-events: write" in text and "contents: read" in text
-    assert "9f759ee644a3e7c15c1390abf49868036c00067b" not in text
-
-
 @pytest.mark.parametrize("fail_on,rc,fails", [
     ("blocked", 2, True), ("blocked", 1, False), ("needs-fixes", 1, True), ("needs-fixes", 2, True),
     ("needs-fixes", 3, False), ("inconclusive", 3, True), ("inconclusive", 0, False), ("never", 2, False),

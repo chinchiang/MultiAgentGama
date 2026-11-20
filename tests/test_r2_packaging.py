@@ -1,10 +1,10 @@
 """公開發布後的打包、版本參照與 CI 文件的回歸測試：PyPI 中繼資料、README 絕對連結、`@vX.Y.Z` 參照與
 `__version__` 一致、帶雜湊的建置後端、action 的 sandbox／artifact-name 輸入、CHANGELOG 比較連結，以及
-設計文件 §15.2 列出的 action 版本與 workflow 釘版一致。
+設計文件 §15.2／§16.4、用法範例與 workflow 釘版的一致性。
 Regression tests for packaging, version references and the CI docs after the public release: PyPI metadata,
 absolute README links, `@vX.Y.Z` references matching `__version__`, the hash-verified build backend, the
-action's sandbox / artifact-name inputs, the CHANGELOG compare links, and the action versions listed in design
-§15.2 matching the workflow pins."""
+action's sandbox / artifact-name inputs, the CHANGELOG compare links, and pin parity across design §15.2 / §16.4,
+the usage examples and the workflows."""
 import os
 import re
 import subprocess
@@ -254,14 +254,23 @@ def test_every_changelog_section_has_a_compare_link(changelog):
     assert releases[0] == __version__
 
 
-# --- 設計文件 §15.2 與 workflow 釘版 -------------------------------------------------------------
-# --- Design §15.2 versus the workflow pins -------------------------------------------------------
+# --- 設計文件 §15.2／§16.4、用法範例與 workflow 釘版 ---------------------------------------------
+# --- Design §15.2 / §16.4, the usage examples and the workflow pins ------------------------------
 
 _DESIGN_ACTIONS = {
     "checkout": "actions/checkout", "setup-python": "actions/setup-python", "upload-artifact": "actions/upload-artifact",
     "download-artifact": "actions/download-artifact", "setup-node": "actions/setup-node",
-    "gh-action-pypi-publish": "pypa/gh-action-pypi-publish",
+    "gh-action-pypi-publish": "pypa/gh-action-pypi-publish", "codeql-action": "github/codeql-action",
 }
+_ACTION_PIN_RE = re.compile(
+    r"uses:\s*(?P<repo>[\w.-]+/[\w.-]+)(?:/(?P<sub>[\w./-]+))?@(?P<sha>[0-9a-f]{40})\s*#\s*(?P<version>v[\d.]+)"
+)
+
+
+def _design_section(design, start, end):
+    """取出設計文件兩個標題之間的區段文字。
+    Extracts the text between two headings of a design document."""
+    return _read(*design.split("/")).split(start, 1)[1].split(end, 1)[0]
 
 
 def _workflow_pins():
@@ -271,8 +280,8 @@ def _workflow_pins():
     files = [os.path.join(REPO_ROOT, "action.yml")] + [
         os.path.join(WORKFLOWS, f) for f in sorted(os.listdir(WORKFLOWS)) if f.endswith((".yml", ".yaml"))]
     for path in files:
-        for m in re.finditer(r"uses:\s*([\w.-]+/[\w.-]+)@[0-9a-f]{40}\s*#\s*(v[\d.]+)", _read(path)):
-            pins.setdefault(m.group(1), set()).add(m.group(2))
+        for m in _ACTION_PIN_RE.finditer(_read(path)):
+            pins.setdefault(m["repo"], set()).add(m["version"])
     return pins
 
 
@@ -281,14 +290,66 @@ def _workflow_pins():
 def test_design_section_15_2_lists_the_pinned_action_versions(design):
     """設計文件 §15.2 列出的每個 action 版本，都等於 workflow 裡實際的釘版（每個 action 只用一個版本）。
     Every action version listed in design §15.2 equals the actual pin in the workflows (one version per action)."""
-    text = _read(*design.split("/"))
-    section = text.split("### 15.2", 1)[1].split("### 15.3", 1)[0]
+    section = _design_section(design, "### 15.2", "### 15.3")
     listed = dict(re.findall(r"\b(" + "|".join(map(re.escape, _DESIGN_ACTIONS)) + r") (v\d+\.\d+\.\d+)", section))
     assert set(listed) == set(_DESIGN_ACTIONS), set(_DESIGN_ACTIONS) - set(listed)
     pins = _workflow_pins()
     mismatched = {name: (version, pins.get(_DESIGN_ACTIONS[name]))
                   for name, version in listed.items() if pins.get(_DESIGN_ACTIONS[name]) != {version}}
     assert mismatched == {}
+
+
+@pytest.mark.parametrize("design", ["docs/design.md", "docs/design.en.md"])
+def test_design_section_15_2_lists_the_pinned_lint_tool_versions(design):
+    """設計文件 §15.2 列出的 ruff 與 mypy 版本等於 requirements-dev.txt 的釘版；
+    在有 .github/ 的環境裡，pre-commit 的 7 字元 SHA 前綴也等於 .pre-commit-config.yaml 的 ruff rev。
+    The ruff and mypy versions listed in design §15.2 equal the pins in requirements-dev.txt; when .github/ is
+    present, the 7-character pre-commit SHA prefix also equals the ruff rev in .pre-commit-config.yaml."""
+    dev = _read("requirements-dev.txt")
+    expected = dict(re.findall(r"^(ruff|mypy)==(\S+)", dev, re.MULTILINE))
+    assert set(expected) == {"ruff", "mypy"}
+    section = _design_section(design, "### 15.2", "### 15.3")
+    assert re.findall(r"\b(ruff|mypy) (\d+\.\d+\.\d+)", section) == [
+        ("ruff", expected["ruff"]), ("mypy", expected["mypy"])]
+    frozen = re.findall(r"rev:\s*([0-9a-f]{7})…\s+#\s*frozen:\s*v(\d+\.\d+\.\d+)", section)
+    assert len(frozen) == 1, frozen
+    rev_prefix, frozen_version = frozen[0]
+    assert frozen_version == expected["ruff"]
+    if os.path.isdir(WORKFLOWS):
+        pre_commit = yaml.safe_load(_read(".pre-commit-config.yaml"))
+        rev = next(r["rev"] for r in pre_commit["repos"] if r["repo"].endswith("/ruff-pre-commit"))
+        assert rev_prefix == rev[:7]
+
+
+def test_upload_sarif_examples_and_design_16_4_match_the_codeql_workflow_pin():
+    """action.yml 與兩份 README 的用法範例以 SHA＋v4 版本註解釘住同一個 upload-sarif 並列出權限，
+    兩份設計文件 §16.4 列出同一個 7 字元 SHA 前綴與版本；在有 .github/ 的環境裡，這些釘版也等於
+    codeql.yml 所有 github/codeql-action 步驟的釘版。
+    The usage examples in action.yml and both READMEs pin the same upload-sarif by SHA + v4 version comment and
+    list the required permissions, and both design §16.4 sections list the same 7-character SHA prefix and version;
+    when .github/ is present, they also equal every github/codeql-action pin in codeql.yml."""
+    pins = set()
+    for name in ("action.yml", "README.md", "README.en.md"):
+        doc = _read(name)
+        matches = [(m["sha"], m["version"]) for m in _ACTION_PIN_RE.finditer(doc)
+                   if (m["repo"], m["sub"]) == ("github/codeql-action", "upload-sarif")]
+        assert len(matches) == 1 and doc.count("github/codeql-action/") == 1, (name, matches)
+        sha, version = matches[0]
+        assert version.startswith("v4.")
+        pins.add((sha, version))
+        assert "security-events: write" in doc and "contents: read" in doc
+        assert "9f759ee644a3e7c15c1390abf49868036c00067b" not in doc
+    assert len(pins) == 1, pins
+    sha, version = next(iter(pins))
+    for design in ("docs/design.md", "docs/design.en.md"):
+        section = _design_section(design, "### 16.4", "## 17.")
+        assert re.findall(r"`upload-sarif@([0-9a-f]{7})…`\s+(v[\d.]+)", section) == [(sha[:7], version)], design
+    if os.path.isdir(WORKFLOWS):
+        codeql_doc = _read(".github", "workflows", "codeql.yml")
+        workflow_matches = [(m["sha"], m["version"]) for m in _ACTION_PIN_RE.finditer(codeql_doc)
+                            if m["repo"] == "github/codeql-action" and m["sub"]]
+        assert len(workflow_matches) == codeql_doc.count("github/codeql-action/") >= 2
+        assert set(workflow_matches) == {(sha, version)}
 
 
 @pytest.mark.parametrize("pair", [("docs/design.md", "docs/design.en.md"), ("CHANGELOG.md", "CHANGELOG.en.md"),

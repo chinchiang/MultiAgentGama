@@ -40,6 +40,9 @@ jobs:
       - run: python -m pip install -r requirements-dev.txt
       - run: ruff check .
       - run: mypy vibeharness/ main.py
+      # 幾秒內跑完的 repo 結構與釘版一致性測試：釘版或文件不同步時在這裡即刻失敗，不必起整個測試矩陣
+      # Fast repo-structure and pin-consistency checks: fail here in seconds on pin or doc drift before starting the test matrix
+      - run: python -m pytest -q -p no:cacheprovider tests/test_repo_docs.py tests/test_i18n.py tests/test_review_build.py tests/test_r2_packaging.py tests/test_r3_repo_meta.py tests/test_design_refs.py tests/test_required_checks.py
 
   # 對鎖定的相依套件集做已知弱點稽核；每個 PR 都跑，帶進 CVE 的升版會在合併前失敗
   # Known-vulnerability audit of the exact locked dependency set; runs on every PR so a
@@ -66,6 +69,7 @@ jobs:
   # 安裝後的 wheel 必須在沒有原始碼 checkout 的情況下能跑（曾經漏掉 config/*.yaml）
   # The installed wheel must run without the source checkout (it once shipped without config/*.yaml)
   package:
+    needs: lint
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -109,6 +113,7 @@ jobs:
           VIBEHARNESS_SDIST="$sdist" "$RUNNER_TEMP/sdist-venv/bin/python" -m pytest -q -p no:cacheprovider
 
   test:
+    needs: lint
     strategy:
       fail-fast: false
       matrix:
