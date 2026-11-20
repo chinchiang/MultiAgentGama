@@ -220,11 +220,21 @@ def test_threat_modeler_plan_is_one_call_per_batch(scripted, tmp_path):
     assert _planned_code_tokens(plans) == _actual_code_tokens(transport)
 
 
-def test_scenario_builder_plan_is_one_call_per_threat(scripted):
-    transport = scripted({scenario_builder.AGENT_ID: {"code": _VALID_TEST}})
+def test_scenario_builder_plan_is_one_call_per_threat_and_bounds_the_heals(scripted):
+    def answer(request):
+        if request.kind is CallKind.HEAL:
+            return _INVALID_TEST  # 修復仍失敗，用完唯一一次修復機會 ／ repair still fails, spending its one attempt
+        return {"code": _INVALID_TEST}
+    transport = scripted({scenario_builder.AGENT_ID: answer})
     builder = ThreatScenarioBuilder(LLMGateway(CONFIG, execution_mode="live", transport=transport))
     threats = [_threat(i) for i in range(4)]
     plans = builder.plan(len(threats))
     builder.build_test_cases_from_threats(threats)
     assert not any(p.exact for p in plans)
-    assert _planned(plans) == _actual(transport) == Counter({(scenario_builder.AGENT_ID, plans[0].model_alias): 4})
+    synthesis = _actual(transport, CallKind.SYNTHESIZER)
+    assert _planned(plans, CallKind.SYNTHESIZER) == synthesis == Counter({(scenario_builder.AGENT_ID, plans[0].model_alias): 4})
+    (heal,) = [p for p in plans if p.kind is CallKind.HEAL]
+    assert heal.conditional and not heal.json_output and heal.max_per_call == scenario_builder.HEAL_ATTEMPTS == 1
+    assert heal.code_tokens > 0 and heal.calls == len(threats)
+    healed = sum(_actual(transport, CallKind.HEAL).values())
+    assert healed == len(threats) * scenario_builder.HEAL_ATTEMPTS == heal.calls * heal.max_per_call

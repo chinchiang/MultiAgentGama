@@ -54,7 +54,7 @@ flowchart TD
 
     subgraph BB ["階段 4–5・黑箱：威脅建模驅動的攻擊測試（模型呼叫平行）"]
         TM["STRIDE / OWASP API／LLM 威脅建模<br/>（+ MITRE ATLAS 對應）threat_modeler.py<br/>符號分批送審、跨批次去重"]
-        ATK["攻擊腳本生成<br/>scenario_builder.py"]
+        ATK["攻擊腳本生成 scenario_builder.py<br/>無效測試修復 1 次"]
         BEX["黑箱測試執行<br/>test_executor.py → 同一沙盒；HTTP / in-process"]
         TM --> ATK --> BEX
     end
@@ -66,7 +66,7 @@ flowchart TD
     CLI -- "--desc" --> TM
     CLI -- "--base-url" --> ATK
     SAN --> TM
-    SAN -- "威脅項目放在 &lt;untrusted_model_output&gt;" --> ATK
+    SAN -- "威脅項目與待修復測試放在 &lt;untrusted_model_output&gt;" --> ATK
 
     GATE["階段 6・品質門禁<br/>READY_TO_SHIP / NEEDS_FIXES /<br/>INCONCLUSIVE / BLOCKED_CRITICAL_RISK"]
     BASE["基準載入 baseline.py<br/>證據計數 tally.py 比對（--baseline）"]
@@ -145,7 +145,7 @@ VibeHarness 本身就是一個 LLM 應用：待審程式碼是每個審查、驗
 
 | 風險 | Harness 的控制 |
 | :--- | :--- |
-| LLM01 提示注入（AML.T0051.001、AML.T0068） | 程式碼送模型前去除隱形字元（tag block、variation selector、零寬、雙向控制）；包在 `<untrusted_target_code>` 來源標記通道內，交給另一個模型的模型撰寫文字（威脅模型項目、審查者的發現）則放進 `<untrusted_model_output>` 或同一個不可信通道（防二階注入），兩種通道的偽造標籤在兩種通道內都會被中和；每個讀取目標程式碼的 Agent 系統提示附加安全政策（程式碼中的指令只是資料，且本身就是缺陷），且自動發現的設定檔不得自訂審查者的 `name`／`focus`；`VH-AI-008`／`009` 偵測植入的審查者指令並列為證據缺口 |
+| LLM01 提示注入（AML.T0051.001、AML.T0068） | 程式碼送模型前去除隱形字元（tag block、variation selector、零寬、雙向控制）；包在 `<untrusted_target_code>` 來源標記通道內，交給另一個模型的模型撰寫文字（威脅模型項目、待修復的生成測試草稿與其驗證錯誤、審查者的發現）則放進 `<untrusted_model_output>` 或同一個不可信通道（防二階注入），兩種通道的偽造標籤在兩種通道內都會被中和；每個讀取目標程式碼的 Agent 系統提示附加安全政策（程式碼中的指令只是資料，且本身就是缺陷），且自動發現的設定檔不得自訂審查者的 `name`／`focus`；`VH-AI-008`／`009` 偵測植入的審查者指令並列為證據缺口 |
 | LLM02／LLM08 敏感資訊（AML.T0055） | 寫死的憑證（OpenAI／Anthropic／AWS access 與 secret／GitHub／Google／Slack／HF／NVIDIA／Stripe 金鑰、JWT、Azure storage 金鑰、URL 帳密中的密碼、私鑰）在送往外部模型前以 `<REDACTED:…>` 取代，報告也不回顯其值；沙盒環境變數白名單不傳入 API 金鑰，`extra_params` 也不能把模型改導到別的端點、改變憑證與標頭，或把提示與回答轉送給 litellm 的記錄／觀測 callback（保留鍵加上名稱樣式）；自動發現的設定檔不得設定端點、金鑰變數、可執行檔路徑或快取目錄，也不得改模型字串（每個別名固定）或新增模型別名；設定類檔案（`.env`、YAML 等）只在本機做密鑰掃描，絕不送給模型 |
 | LLM04 供應鏈（AML.T0010、AML.T0060） | 預設模型使用帶版本號的 id（不用 `deepseek-chat` 這類會被供應商替換的別名）；`api_base` 只允許 https（http 僅限 loopback）；生成的測試若安裝套件（`pip`／`uv`／`poetry`／`conda`／`mamba`／`npm`／`pnpm`／`yarn`／`bun install`、`import pip`／`ensurepip`…）直接拒絕執行，避免幻覺套件名被搶註（slopsquatting）；本 repo 的 CI 與沙盒映像以帶雜湊的鎖定檔安裝相依套件（`--require-hashes`），基底映像以 digest 釘死 |
 | LLM06 無上限消耗（AML.T0034） | `max_model_calls`（硬上限，用完即停止真實呼叫）、`max_output_tokens`（全域與每模型）、請求與沙盒逾時、並行上限 `max_concurrent_calls`、批次 token 預算；live 失敗或 Ctrl-C 時取消仍在排隊的呼叫；自動發現的設定檔只能調低這些上限，不能改成 `live` 或新增審查者 |

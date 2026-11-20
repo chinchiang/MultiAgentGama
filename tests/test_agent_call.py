@@ -207,6 +207,22 @@ def test_ask_text_returns_the_raw_reply_and_sends_the_parts_verbatim(scripted):
     assert transport.prompts() == [("Fix Python Test Code", "Code:\nx = 1")]
 
 
+def test_ask_text_with_model_output_channel_wraps_generated_test_and_adds_policy(scripted):
+    from vibeharness.core.sanitize import UNTRUSTED_MODEL_OPEN, UNTRUSTED_MODEL_POLICY
+    transport = scripted({"blackbox_test_synthesizer": "def test_ok():\n    assert True\n"})
+
+    reply = ask_text(
+        _live(transport), "blackbox_test_synthesizer", system=("Fix Python Test Code", ""),
+        prompt=["Fix:\n", Untrusted(Content.GENERATED_TEST, "def test_bad():\n    pass\n")],
+        channels=(Channel.MODEL_OUTPUT,),
+    )
+
+    assert reply.status == "live"
+    (system, user), = transport.prompts()
+    assert system.startswith("Fix Python Test Code") and UNTRUSTED_MODEL_POLICY in system
+    assert UNTRUSTED_MODEL_OPEN in user and "def test_bad():" in user
+
+
 def test_ask_text_without_a_model_is_simulated_with_no_text():
     reply = ask_text(LLMGateway(CONFIG, execution_mode="mock"), "whitebox_test_generator", system=("", ""), prompt=[""])
 

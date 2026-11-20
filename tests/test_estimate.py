@@ -52,6 +52,9 @@ def test_scenario_figures_scale_with_assumptions_and_retries(tmp_path):
     assert more.calls_typical > base.calls_typical and more.calls_exact == base.calls_exact
     gen = next(c for c in base.by_agent if c.agent == "whitebox_test_generator")
     assert gen.calls_exact is None and gen.calls_typical > 0  # 只有情境估算的代理 ／ scenario-only agent
+    synth = next(c for c in base.by_agent if c.agent == "blackbox_test_synthesizer")
+    assert synth.calls_exact is None and synth.calls_typical == 6  # 4 個威脅 + ceil(4 * 0.3) = 2 次修復 ／ 4 threats + 2 heals
+    assert "+ heals (typical 2, max 1 per test)" in synth.basis
     retried = VibeHarnessCommander(config_path=_config(tmp_path, {"retry_invalid_output": 2}), execution_mode="mock")
     assert estimate_run(retried, EXAMPLES).calls_max > base.calls_max
     capped = VibeHarnessCommander(config_path=_config(tmp_path, {"max_model_calls": 3}), execution_mode="mock")
