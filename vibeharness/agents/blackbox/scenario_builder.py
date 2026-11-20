@@ -14,7 +14,8 @@ from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.codecontext import render_symbols, import_instructions, language_for_file, target_root
 from vibeharness.core.threat_symbols import named_symbols
 from vibeharness.core.agent_call import (
-    AgentCall, Call, CallContext, CallKind, Channel, Content, Part, PlannedCalls, Untrusted, ask, fan_out,
+    AgentCall, Call, CallContext, CallKind, Channel, Content, HealSpec, Part, PlannedCalls, Untrusted, ask,
+    fan_out, heal_invalid_test,
 )
 
 logger = logging.getLogger("VibeHarness.ScenarioBuilder")
@@ -30,6 +31,23 @@ CODE_CONTEXT_TOKENS = 4000
 # 這個代理在 agents_config.yaml 裡的 id：模型別名、呼叫計畫與呼叫紀錄都以它為鍵
 # This agent's id in agents_config.yaml: its model alias, call plans and call records are keyed by it
 AGENT_ID = "blackbox_test_synthesizer"
+# 無法通過靜態閘門的黑箱攻擊測試最多請模型修復幾次（之後原樣保留，由執行器回報為 ERROR）
+# How many times an invalid black-box attack test is sent back to the model for repair (after that it is kept as is
+# and reported as ERROR by the executor)
+HEAL_ATTEMPTS = 1
+HEAL_SPEC = HealSpec(
+    agent_id=AGENT_ID,
+    max_attempts=HEAL_ATTEMPTS,
+    python_rule=(
+        "every test_ function asserts that defensive boundaries hold "
+        "(so an assertion failure means the attack succeeded), without contacting non-target hosts."
+    ),
+    js_rule=(
+        "every test() asserts with node:assert that defensive boundaries hold "
+        "(so an assertion failure means the attack succeeded), without using the network."
+    ),
+    logger=logger,
+)
 
 
 def validate_base_url(base_url: str) -> str:
@@ -168,12 +186,17 @@ class ThreatScenarioBuilder:
         return 443 if parts.scheme.lower() == "https" else 80
 
     def plan(self, threat_count: int) -> List[PlannedCalls]:
-        """build_test_cases_from_threats 會發出的呼叫：每個威脅一次。威脅數 `threat_count` 是情境（由威脅建模的回答決定）。
-        The calls build_test_cases_from_threats would make: one per threat. The number of threats, `threat_count`, is
-        a scenario (it comes from the threat model's answer)."""
-        return [PlannedCalls(agent_id=AGENT_ID, model_alias=self.gateway.settings.alias_for(AGENT_ID),
-                             kind=CallKind.SYNTHESIZER, calls=threat_count, json_output=True,
-                             code_tokens=CODE_CONTEXT_TOKENS, exact=False)]
+        """build_test_cases_from_threats 會發出的呼叫：每個威脅一次 JSON 呼叫，以及在產生的測試無法通過靜態閘門時最多
+        HEAL_ATTEMPTS 次修復（純文字呼叫，不會被重新詢問）。威脅數 `threat_count` 是情境（由威脅建模的回答決定）。
+        The calls build_test_cases_from_threats would make: one JSON call per threat, plus up to HEAL_ATTEMPTS
+        plain-text repairs when a synthesized test fails the static gate (never re-asked). The number of threats,
+        `threat_count`, is a scenario (it comes from the threat model's answer)."""
+        alias = self.gateway.settings.alias_for(AGENT_ID)
+        return [
+            PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind=CallKind.SYNTHESIZER, calls=threat_count,
+                         json_output=True, code_tokens=CODE_CONTEXT_TOKENS, exact=False),
+            HEAL_SPEC.plan(alias, threat_count),
+        ]
 
     def build_test_cases_from_threats(
         self,
@@ -326,22 +349,36 @@ class ThreatScenarioBuilder:
             logger.warning(bi(f"[{threat.threat_id}] 沒有合成出可執行的測試；此威脅仍未測試。",
                               f"No executable test synthesized for [{threat.threat_id}]; threat remains untested."))
             return None
-        test = test.model_copy(update={"code": cleaned_code})
-        if server_is_live:
-            offenders = self._hosts_outside_base_url(test.code, base_url or "")
-            if offenders:
-                logger.warning(bi(
-                    f"[{threat.threat_id}] 合成的測試指向非目標主機 {', '.join(offenders)}；已拒絕，此威脅仍未測試。",
-                    f"Synthesized test for [{threat.threat_id}] targets non-target host(s) "
-                    f"{', '.join(offenders)}; rejected and the threat remains untested."
-                ))
+        if server_is_live and self._reject_offending_hosts(threat.threat_id, cleaned_code, base_url or ""):
+            return None
+        if problem is not None:
+            cleaned_code, problem = heal_invalid_test(
+                self.gateway, HEAL_SPEC, cleaned_code, problem,
+                subject=(f"威脅 [{threat.threat_id}]", f"threat [{threat.threat_id}]"),
+                language=language,
+            )
+            if server_is_live and self._reject_offending_hosts(threat.threat_id, cleaned_code, base_url or ""):
                 return None
+        test = test.model_copy(update={"code": cleaned_code})
         if problem is not None:
             # 保留下來，讓執行器回報為 ERROR，而不是默默丟掉
             # Kept so the executor reports it as ERROR rather than silently dropping it
             logger.warning(bi(f"[{threat.threat_id}] 合成的測試無法執行：{problem}",
                               f"Synthesized test for [{threat.threat_id}] is not executable: {problem}"))
         return test
+
+    def _reject_offending_hosts(self, threat_id: str, code: str, base_url: str) -> bool:
+        """若程式碼含有指向非目標主機的 URL 字面值則記錄警告並回傳 True。
+        Logs a warning and returns True when the code contains URL literals targeting non-target hosts."""
+        offenders = self._hosts_outside_base_url(code, base_url)
+        if not offenders:
+            return False
+        logger.warning(bi(
+            f"[{threat_id}] 合成的測試指向非目標主機 {', '.join(offenders)}；已拒絕，此威脅仍未測試。",
+            f"Synthesized test for [{threat_id}] targets non-target host(s) "
+            f"{', '.join(offenders)}; rejected and the threat remains untested.",
+        ))
+        return True
 
 
 def _attack_test(items: List[Mapping[str, Any]], ctx: CallContext) -> List[GeneratedTest]:

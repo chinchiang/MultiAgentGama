@@ -27,12 +27,12 @@ from vibeharness.core.settings import UNCONFIGURED_ALIAS
 
 # 程式碼清單以外的提示額外負擔（系統提示、結構描述、指引）與典型回答大小，
 # 以估計的 token 計。回答大小是線上執行的平均產出；真正的上限是
-# max_output_tokens，它是天花板而非花費。修復的回答大小和測試生成器的
+# max_output_tokens，它是天花板而非花費。修復的回答大小和代理呼叫模組的
 # HEAL_CODE_TOKENS 數字相同只是巧合：一個是觀察到的輸出，一個是假設的輸入，各自調整。
 # Prompt overhead beyond the code listing (system prompt, schema, guidance) and typical answer sizes,
 # in estimated tokens. Answer sizes are what live runs produced on average; the real cap is
-# max_output_tokens, which is a ceiling, not a spend. The repair answer size matching the test
-# generator's HEAL_CODE_TOKENS is a coincidence: one is an observed output, the other an assumed input,
+# max_output_tokens, which is a ceiling, not a spend. The repair answer size matching the agent-call
+# module's HEAL_CODE_TOKENS is a coincidence: one is an observed output, the other an assumed input,
 # and each is tuned on its own.
 _OVERHEAD = {CallKind.REVIEWER: 450, CallKind.VERIFIER: 350, CallKind.TEST_GENERATOR: 700, CallKind.HEAL: 300,
              CallKind.THREAT_MODELER: 2200, CallKind.SYNTHESIZER: 900}
@@ -200,12 +200,15 @@ def estimate_run(
     est.by_agent.append(_row(*_one_agent(tm_plans), tm_plans, reask, heal_rate, bi(
         f"{len(tm_plans)} 個威脅模型批次 × 1 次呼叫", f"{len(tm_plans)} threat-model batch(es) × 1 call")))
 
-    # 5. 每個威脅的攻擊合成
-    # 5. Attack synthesis per threat
+    # 5. 每個威脅的攻擊合成（+ 修復）
+    # 5. Attack synthesis per threat (+ heals)
     threats = math.ceil(threats_per_batch * len(tm_plans))
     synthesis = commander.scenario_builder.plan(threats)
-    est.by_agent.append(_row(*_one_agent(synthesis), synthesis, reask, heal_rate,
-                             bi(f"~{threats} 個威脅 × 1 次呼叫", f"~{threats} threat(s) × 1 call")))
+    bb_heal = _of_kind(synthesis, CallKind.HEAL)
+    bb_heal_typical = _typical_calls(bb_heal, heal_rate)
+    est.by_agent.append(_row(*_one_agent(synthesis), synthesis, reask, heal_rate, bi(
+        f"~{threats} 個威脅 × 1 次呼叫，+ 修復（典型 {bb_heal_typical}，每個測試最多 {bb_heal.max_per_call}）",
+        f"~{threats} threat(s) × 1 call, + heals (typical {bb_heal_typical}, max {bb_heal.max_per_call} per test)")))
 
     est.calls_exact = sum(c.calls_exact or 0 for c in est.by_agent)
     est.calls_typical = sum(c.calls_typical for c in est.by_agent)

@@ -5,7 +5,7 @@ import math
 import os
 import re
 import textwrap
-from typing import Any, List, Mapping, Optional, Set, Tuple
+from typing import Any, List, Mapping, Optional, Set, Tuple, Union
 from vibeharness.core.models import ReviewFinding, GeneratedTest, CodeSymbol, text_or
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.codecheck import prepare_test_code
@@ -16,7 +16,8 @@ from vibeharness.core.codecontext import (
 )
 from vibeharness.core.sanitize import prepare_untrusted_code
 from vibeharness.core.agent_call import (
-    AgentCall, Call, CallContext, CallKind, Channel, Content, Part, PlannedCalls, Untrusted, ask, ask_text, fan_out,
+    AgentCall, Call, CallContext, CallKind, Channel, Content, HealSpec, Part, PlannedCalls, Untrusted, ask,
+    fan_out, heal_invalid_test,
 )
 from vibeharness.core.identity import is_unknown_location
 from vibeharness.core.model_output import LIST_OF_OBJECTS, STRING, OutputSchema
@@ -50,10 +51,13 @@ AGENT_ID = "whitebox_test_generator"
 # How many times an invalid test is sent back to the model for repair (after that it is kept as is and the executor
 # reports it as ERROR)
 HEAL_ATTEMPTS = 2
-# 修復提示詞帶的測試程式碼的估計大小（一個典型的測試）；提示詞不截斷，所以這不是上限
-# Estimated size of the test code a repair prompt carries (one typical test); the prompt is not truncated, so this is
-# not a cap
-HEAL_CODE_TOKENS = 1200
+HEAL_SPEC = HealSpec(
+    agent_id=AGENT_ID,
+    max_attempts=HEAL_ATTEMPTS,
+    python_rule="every test_ function asserts on the target's behavior.",
+    js_rule="every test() asserts on the target's behavior with node:assert.",
+    logger=logger,
+)
 
 
 class WhiteboxTestGenerator:
@@ -89,9 +93,7 @@ class WhiteboxTestGenerator:
         return [
             PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind=CallKind.TEST_GENERATOR, calls=generated,
                          json_output=True, code_tokens=CODE_CONTEXT_TOKENS, exact=False),
-            PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind=CallKind.HEAL,
-                         calls=math.ceil(generated * tests_per_finding), json_output=False,
-                         code_tokens=HEAL_CODE_TOKENS, exact=False, conditional=True, max_per_call=HEAL_ATTEMPTS),
+            HEAL_SPEC.plan(alias, math.ceil(generated * tests_per_finding)),
         ]
 
     def generate_tests_for_findings(
@@ -208,13 +210,15 @@ class WhiteboxTestGenerator:
         has_valid_test = False
         for draft in reply.items:
             # 自我修復驗證迴圈；仍然無效的程式碼會保留，以便回報為 ERROR ／ Self-healing loop; invalid code is kept as ERROR
-            validated_code, problem = self._validate_and_heal(draft.code, f"finding {finding.finding_id}", language)
+            validated_code, problem = self._validate_and_heal(
+                draft.code, (f"發現 {finding.finding_id}", f"finding {finding.finding_id}"), language
+            )
             has_valid_test = has_valid_test or problem is None
             tests.append(draft.model_copy(update={"code": validated_code}))
         return tests, has_valid_test
 
     def _validate_and_heal(
-        self, code: str, subject: str, language: str = "python"
+        self, code: str, subject: Union[str, Tuple[str, str]], language: str = "python"
     ) -> Tuple[str, Optional[str]]:
         """剝除圍欄並依語言驗證測試程式碼；失敗時請模型修復。
         回傳 `(cleaned_code, problem)`（有效時 `problem` 為 `None`）；無法修復的程式碼原樣保留，
@@ -223,38 +227,10 @@ class WhiteboxTestGenerator:
         Returns `(cleaned_code, problem)` (`problem` is `None` when valid); code that could not be repaired is kept
         as is so the executor reports it as ERROR (never silently replaced by a no-op test that would pass)."""
         code_to_check, problem, _, _ = prepare_test_code(code, language)
-
-        # 最多 HEAL_ATTEMPTS 次修復；計畫的 max_per_call 也是它
-        # At most HEAL_ATTEMPTS repairs; the plan's max_per_call is the same constant
-        for attempt in range(HEAL_ATTEMPTS + 1):
-            if problem is None:
-                return code_to_check, None
-            logger.warning(bi(f"為 {subject} 產生的測試無效（第 {attempt+1} 次嘗試）：{problem}",
-                              f"Generated test for {subject} is invalid (attempt {attempt+1}): {problem}"))
-            if attempt == HEAL_ATTEMPTS:
-                break
-            if language == "python":
-                heal_prompt = (
-                    f"The following Python pytest code is invalid: {problem}.\n"
-                    f"Fix it so it parses and defines at least one module-level test_ function, "
-                    f"and every test_ function asserts on the target's behavior. "
-                    f"Output the corrected Python code only:\n\n{code_to_check}"
-                )
-                heal_system = "Fix Python Test Code"
-            else:
-                heal_prompt = (
-                    f"The following node:test module is invalid: {problem}.\n"
-                    f"Fix it so it is a valid ES module that defines at least one test() call, "
-                    f"and every test() asserts on the target's behavior with node:assert. "
-                    f"Output the corrected JavaScript code only:\n\n{code_to_check}"
-                )
-                heal_system = "Fix JavaScript Test Code"
-            reply = ask_text(self.gateway, AGENT_ID, system=(heal_system, ""), prompt=[heal_prompt], kind=CallKind.HEAL)
-            fixed, next_problem, _, _ = prepare_test_code(reply.text, language)
-            if not fixed:
-                break  # 沒有可用來修復的內容（例如模擬引擎） ／ Nothing to repair with (e.g. simulation engine)
-            code_to_check, problem = fixed, next_problem
-        return code_to_check, problem
+        if problem is None:
+            return code_to_check, None
+        pair = (subject, subject) if isinstance(subject, str) else subject
+        return heal_invalid_test(self.gateway, HEAL_SPEC, code_to_check, problem, subject=pair, language=language)
 
     @staticmethod
     def _code_context(finding: ReviewFinding, symbols: List[CodeSymbol], root: str, default_file: str) -> List[Part]:

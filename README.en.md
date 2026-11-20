@@ -54,7 +54,7 @@ flowchart TD
 
     subgraph BB ["Phases 4–5 · Black-box: threat-model-driven attack testing (model calls in parallel)"]
         TM["STRIDE / OWASP API/LLM threat modeling<br/>(+ MITRE ATLAS mapping) threat_modeler.py<br/>symbols sent in batches, cross-batch dedup"]
-        ATK["Attack script generation<br/>scenario_builder.py"]
+        ATK["Attack script generation scenario_builder.py<br/>invalid tests repaired once"]
         BEX["Black-box test execution<br/>test_executor.py → same sandbox; HTTP / in-process"]
         TM --> ATK --> BEX
     end
@@ -66,7 +66,7 @@ flowchart TD
     CLI -- "--desc" --> TM
     CLI -- "--base-url" --> ATK
     SAN --> TM
-    SAN -- "threat items in &lt;untrusted_model_output&gt;" --> ATK
+    SAN -- "threat items &amp; repaired tests in &lt;untrusted_model_output&gt;" --> ATK
 
     GATE["Phase 6 · Quality gate<br/>READY_TO_SHIP / NEEDS_FIXES /<br/>INCONCLUSIVE / BLOCKED_CRITICAL_RISK"]
     BASE["Baseline loading baseline.py<br/>compared in tally.py (--baseline)"]
@@ -145,7 +145,7 @@ VibeHarness-MAS is itself an LLM application: the target's code is untrusted inp
 
 | Risk | Harness control |
 | :--- | :--- |
-| LLM01 Prompt Injection (AML.T0051.001, AML.T0068) | Invisible Unicode (tag block, variation selectors, zero-width, bidi controls) is stripped before code reaches a model; code is passed in a provenance-labeled `<untrusted_target_code>` channel, and model-written text handed to another model (a threat-model item, a reviewer's finding) in `<untrusted_model_output>` or the same untrusted channel (second-order injection); forged tags of either channel are neutralized in both; every agent that reads target code has a security policy appended to its system prompt (instructions inside code are data, and a defect in themselves), and a discovered config may not customize a reviewer's `name` / `focus`; `VH-AI-008`/`009` detect planted reviewer-directed instructions and list them as an evidence gap |
+| LLM01 Prompt Injection (AML.T0051.001, AML.T0068) | Invisible Unicode (tag block, variation selectors, zero-width, bidi controls) is stripped before code reaches a model; code is passed in a provenance-labeled `<untrusted_target_code>` channel, and model-written text handed to another model (a threat-model item, a generated test draft with its validation error awaiting repair, a reviewer's finding) in `<untrusted_model_output>` or the same untrusted channel (second-order injection); forged tags of either channel are neutralized in both; every agent that reads target code has a security policy appended to its system prompt (instructions inside code are data, and a defect in themselves), and a discovered config may not customize a reviewer's `name` / `focus`; `VH-AI-008`/`009` detect planted reviewer-directed instructions and list them as an evidence gap |
 | LLM02 / LLM08 Sensitive Information (AML.T0055) | Hard-coded secrets (OpenAI / Anthropic / AWS access and secret / GitHub / Google / Slack / HF / NVIDIA / Stripe keys, JWTs, Azure storage keys, passwords in URL userinfo, private keys) are replaced with `<REDACTED:…>` before any code reaches an external model, and reports never echo their values; the sandbox environment allowlist never passes API keys, and `extra_params` cannot redirect a model to another endpoint, change its credentials or headers, or forward prompts and answers to litellm's logging / observability callbacks (reserved keys plus a name pattern); a discovered config may not set endpoints, key variables, executable paths or the cache directory, change a model string (pinned per alias) or add a model alias; config-like files (`.env`, YAML, …) are secret-scanned locally and never sent to a model |
 | LLM04 Supply Chain (AML.T0010, AML.T0060) | Default models use versioned ids (not moving aliases like `deepseek-chat` that a provider can swap); `api_base` must be https (http only for loopback); generated tests that install packages (`pip` / `uv` / `poetry` / `conda` / `mamba` / `npm` / `pnpm` / `yarn` / `bun install`, `import pip` / `ensurepip`, ...) are refused, so hallucinated package names cannot be slopsquatted; this repo's CI and sandbox images install hash-locked dependencies (`--require-hashes`) on digest-pinned base images |
 | LLM06 Unbounded Consumption (AML.T0034) | `max_model_calls` (a hard cap: live calls stop when it is spent), `max_output_tokens` (global and per model), request and sandbox timeouts, the `max_concurrent_calls` parallelism cap, and per-batch token budgets; a live failure or Ctrl-C cancels the calls still queued; a discovered config may only lower these limits and cannot switch to `live` or add a reviewer |

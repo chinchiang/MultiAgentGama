@@ -21,7 +21,8 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Any, Callable, Dict, Generic, List, Mapping, Optional, Sequence, Tuple, TypeVar, Union, cast
 
-from vibeharness.core.i18n import bi
+from vibeharness.core.codecheck import prepare_test_code
+from vibeharness.core.i18n import bi, en_only
 from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
 from vibeharness.core.models import CallKind  # 也從這裡匯出 ／ re-exported here too
 from vibeharness.core.model_output import OutputSchema
@@ -49,12 +50,14 @@ class Content(Enum):
     # (the 0.6.0 design)
     REVIEWER_FINDING = "reviewer_finding"
     THREAT_ITEM = "threat_item"
+    GENERATED_TEST = "generated_test"
 
 
 _CHANNEL_OF = {
     Content.TARGET_CODE: Channel.TARGET_CODE,
     Content.REVIEWER_FINDING: Channel.TARGET_CODE,
     Content.THREAT_ITEM: Channel.MODEL_OUTPUT,
+    Content.GENERATED_TEST: Channel.MODEL_OUTPUT,
 }
 _POLICY = {Channel.TARGET_CODE: UNTRUSTED_CODE_POLICY, Channel.MODEL_OUTPUT: UNTRUSTED_MODEL_POLICY}
 _WRAP = {Channel.TARGET_CODE: untrusted_block, Channel.MODEL_OUTPUT: untrusted_model_block}
@@ -192,15 +195,101 @@ class TextReply:
     text: str = ""
 
 
+# 修復提示詞帶的測試程式碼的估計大小（一個典型的測試）；提示詞不截斷，所以這不是上限
+# Estimated size of the test code a repair prompt carries (one typical test); the prompt is not truncated, so this is
+# not a cap
+HEAL_CODE_TOKENS = 1200
+
+
 def ask_text(gateway: LLMGateway, agent_id: str, system: Tuple[str, str], prompt: Sequence[Part],
-             kind: Optional[CallKind] = None) -> TextReply:
-    """為 `agent_id` 問一次模型、要純文字回答（不檢查形狀），`kind` 是這次呼叫的種類；它的模擬輸出沒有文字。
-    Asks the model once for `agent_id` for a plain-text reply (no shape check), `kind` being the kind of call; its
-    Simulated output has no text."""
+             kind: Optional[CallKind] = None, channels: Tuple[Channel, ...] = ()) -> TextReply:
+    """為 `agent_id` 問一次模型、要純文字回答（不檢查形狀），`kind` 是這次呼叫的種類；宣告 `channels` 時一併附上對應的
+    不可信通道 policy；它的模擬輸出沒有文字。
+    Asks the model once for `agent_id` for a plain-text reply (no shape check), `kind` being the kind of call; when
+    `channels` are declared, their untrusted-channel policies are included; its Simulated output has no text."""
     head, tail = system
-    answer = gateway.generate(agent_id, head + tail, _user_prompt(prompt), json_output=False,
+    policies = "".join(_POLICY[c] for c in Channel if c in channels)
+    answer = gateway.generate(agent_id, head + policies + tail, _user_prompt(prompt), json_output=False,
                               simulated=lambda alias: {}, kind=kind)
     return TextReply(status=answer.mode, text=answer.text or "")
+
+
+@dataclass(frozen=True)
+class HealSpec:
+    """代理對無效測試修復呼叫的靜態宣告：歸屬哪個代理、最多修復幾次、各語言的斷言規則與記錄警告的 logger。
+    An agent's static declaration of its invalid-test repair policy: owning agent, repair cap, per-language assertion
+    rules and warning logger."""
+    agent_id: str
+    max_attempts: int
+    python_rule: str
+    js_rule: str
+    logger: logging.Logger
+
+    def plan(self, model_alias: str, opportunities: int) -> "PlannedCalls":
+        """無效測試的修復呼叫計畫：每個產生的測試是一個機會，最多修復 `max_attempts` 次（純文字呼叫，不會被重新詢問）。
+        Call plan for healing invalid tests: each generated test is one opportunity with at most `max_attempts`
+        plain-text repairs (never re-asked)."""
+        return PlannedCalls(
+            agent_id=self.agent_id, model_alias=model_alias, kind=CallKind.HEAL, calls=opportunities,
+            json_output=False, code_tokens=HEAL_CODE_TOKENS, exact=False, conditional=True,
+            max_per_call=self.max_attempts,
+        )
+
+
+def heal_invalid_test(
+    gateway: LLMGateway,
+    spec: HealSpec,
+    cleaned_code: str,
+    problem: str,
+    *,
+    subject: Tuple[str, str],
+    language: str,
+) -> Tuple[str, Optional[str]]:
+    """將未通過靜態檢查的測試程式碼與錯誤訊息透過不可信模型輸出通道請模型修復最多 `spec.max_attempts` 次。
+    回傳 `(cleaned_code, problem)`（有效時 `problem` 為 `None`）；無法修復的程式碼原樣保留，絕不換成會通過的空測試。
+    Asks the model at most `spec.max_attempts` times to repair test code that failed static validation, sending both the
+    validation error and the draft through the untrusted model-output channel. Returns `(cleaned_code, problem)` (`None`
+    when valid); unrepairable code is kept as is and never swapped for a passing no-op test."""
+    zh_subject, en_subject = subject
+    current_code = cleaned_code
+    current_problem: Optional[str] = problem
+    for attempt in range(spec.max_attempts + 1):
+        assert current_problem is not None
+        spec.logger.warning(bi(
+            f"為 {zh_subject} 產生的測試無效（第 {attempt + 1} 次嘗試）：{current_problem}",
+            f"Generated test for {en_subject} is invalid (attempt {attempt + 1}): {current_problem}",
+        ))
+        if attempt == spec.max_attempts:
+            break
+        if language == "python":
+            head = (
+                "The following Python pytest code failed static validation.\n"
+                "Fix it so it parses and defines at least one module-level test_ function, "
+                f"and {spec.python_rule} "
+                "Output the corrected Python code only:\n\n"
+            )
+            heal_system = "Fix Python Test Code"
+        else:
+            head = (
+                "The following node:test module failed static validation.\n"
+                "Fix it so it is a valid ES module that defines at least one test() call, "
+                f"and {spec.js_rule} "
+                "Output the corrected JavaScript code only:\n\n"
+            )
+            heal_system = "Fix JavaScript Test Code"
+        untrusted_draft = f"Validation error: {en_only(current_problem)}\n\n{current_code}"
+        reply = ask_text(
+            gateway, spec.agent_id, system=(heal_system, ""),
+            prompt=[head, Untrusted(Content.GENERATED_TEST, untrusted_draft)],
+            kind=CallKind.HEAL, channels=(Channel.MODEL_OUTPUT,),
+        )
+        fixed, next_problem, _, _ = prepare_test_code(reply.text, language)
+        if not fixed:
+            break  # 沒有可用來修復的內容（例如模擬引擎） ／ Nothing to repair with (e.g. simulation engine)
+        current_code, current_problem = fixed, next_problem
+        if current_problem is None:
+            return current_code, None
+    return current_code, current_problem
 
 
 @dataclass(frozen=True)
