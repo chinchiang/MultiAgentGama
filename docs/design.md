@@ -825,7 +825,7 @@ console 輸出另外用 `rich.markup.escape`（`vibeharness/core/harness.py:9`�
 | `test_r2_cli_gateway.py` | 第二輪審查：沒有驗證時已確認數為 `null`、安裝不完整時 exit 5、litellm 罐頭回應鍵與 `ssl_verify` 為保留鍵、呼叫紀錄的時間順序（`attempt`）、`--cache-only` 的估算與 mock 警告、`--target` 預設值、`--init-config`、設定檔探索 |
 | `test_r2_executor_sandbox.py` | 測試執行中目標載入失敗、測試呼叫不存在的函式、單檔大小上限、不可 dump 的開關、JS 分批與重跑上限、同模組輔助函式與基底類別裡的斷言、Windows 假家目錄、遺失的結束狀態絕不讀成 0 |
 | `test_r2_extractor_scanner.py` | JS/TS lexer 的遞迴與時間上限、JSX 掃描預算、VH-AI-006 的 argv 程式解析（直譯器、包裝前綴、常數、可變位置引數與關鍵字引數）、根路由／萬用路由的比對 |
-| `test_r2_packaging.py` | PyPI 中繼資料、README 絕對連結、`@vX.Y.Z` 參照與 `__version__` 一致、帶雜湊的建置後端、action 的 `sandbox`／`artifact-name` 輸入與明確的 `--config`、CHANGELOG 比較連結、第 15.2 節列出的 action 版本 |
+| `test_r2_packaging.py` | PyPI 中繼資料、README 絕對連結、`@vX.Y.Z` 參照與 `__version__` 一致、帶雜湊的建置後端、action 的 `sandbox`／`artifact-name` 輸入與明確的 `--config`、CHANGELOG 比較連結、第 15.2 節／第 16.4 節與用法範例的 action 及 lint 工具釘版 |
 | `test_r2_sanitize.py` | VH-AI-009 的否定／條件／描述句規則、英文描述句、長行的線性時間、URL 憑證的密碼字元與佔位值豁免、每條清理樣式在 200 KB 惡意輸入上的時間上限 |
 | `test_r3_cli_report_action.py` | 第三輪審查：自動發現的設定檔不得設定安全敏感的鍵（與內建預設相同的值、`--init-config` 的覆本仍可用）、相對路徑 `*_bin` 的警告、`--help`／`--version`／`--init-config` 不載入相依套件、`--summary-json`、SARIF 不收模擬的發現與突破、證據缺口的「未經驗證」用詞、`extra_params` 的端點／憑證保留鍵與名稱樣式、Action 的 `exec` 啟動器（`vibeharness.action_runner`）、`fail-on` 預先驗證與 `::warning::` |
 | `test_r3_executor_sandbox.py` | 目標自己以 `compile()`／`ast.parse()` 解析檔案的 SyntaxError 是缺陷、`importlib.import_module` 匯入壞模組是載入失敗、JS 的 EFBIG 是 harness 錯誤、極深的輔助函式鏈不讓靜態閘門崩潰、`TMPDIR` 與 `NODE_V8_COVERAGE` 留在執行目錄、涵蓋率 glob 警告從 stderr 拿掉、`node_modules` 底下的目標仍有涵蓋率、Windows 上大小寫不同的同一模組不重複計算 |
@@ -857,8 +857,8 @@ console 輸出另外用 `rich.markup.escape`（`vibeharness/core/harness.py:9`�
 
 ### 15.2 CI（`.github/workflows/`、`action.yml`）
 
-- 觸發：push 到 `master`、所有 PR，以及 `workflow_call`（publish.yml 對 tag 指向的 commit 跑同一個 workflow）；`permissions: contents: read`；同一個 PR 或 ref 有新的執行時會取消舊的（`concurrency` 加 `cancel-in-progress: true`）；所有 action 以 commit SHA 釘版並在註解標出版本（checkout v7.0.1、setup-python v7.1.0、upload-artifact v7.0.2、download-artifact v8.0.2、setup-node v7.1.0、gh-action-pypi-publish v1.14.3，CodeQL 的 codeql-action v4.39.1；`pypa/gh-action-pypi-publish` 釘在該版本的 commit，而不是 annotated tag 物件；`tests/test_r2_packaging.py` 檢查這裡列的版本與 workflow 的釘版一致）。
-- `lint`：從 `requirements-dev.txt` 安裝釘版的 ruff 0.17.0 與 mypy 2.4.0（`check_untyped_defs`）；pre-commit 的 ruff hook 釘在同一版本 tag 指向的 commit SHA（`rev: 44b5042…  # frozen: v0.17.0`；tag 可被改指，SHA 不會），由 Dependabot 的 pre-commit 生態系一併升級（`tests/test_review_build.py` 會檢查版本一致）。
+- 觸發：push 到 `master`、所有 PR，以及 `workflow_call`（publish.yml 對 tag 指向的 commit 跑同一個 workflow）；`permissions: contents: read`；同一個 PR 或 ref 有新的執行時會取消舊的（`concurrency` 加 `cancel-in-progress: true`）；所有 action 以 commit SHA 釘版並在註解標出版本（checkout v7.0.1、setup-python v7.1.0、upload-artifact v7.0.2、download-artifact v8.0.2、setup-node v7.1.0、gh-action-pypi-publish v1.14.3，CodeQL 的 codeql-action v4.39.3；`pypa/gh-action-pypi-publish` 釘在該版本的 commit，而不是 annotated tag 物件；`tests/test_r2_packaging.py` 檢查這裡列的版本與 workflow 的釘版一致）。
+- `lint`：從 `requirements-dev.txt` 安裝釘版的 ruff 0.17.5 與 mypy 2.4.1（`check_untyped_defs`），並執行幾秒內完成的 repo 結構與釘版一致性測試（`test_repo_docs.py`、`test_i18n.py`、`test_review_build.py`、`test_r2_packaging.py`、`test_r3_repo_meta.py`、`test_design_refs.py`、`test_required_checks.py`）；`package` 與 `test` 都設 `needs: lint`，釘版或文件不同步時在這裡即刻擋下，不必啟動整個跨平台測試矩陣。pre-commit 的 ruff hook 釘在同一版本 tag 指向的 commit SHA（`rev: ef6cf06…  # frozen: v0.17.5`；tag 可被改指，SHA 不會），由 Dependabot 的 pre-commit 生態系一併升級（`tests/test_review_build.py` 會檢查版本一致）。
 - `codeql.yml`（workflow 名稱 `CodeQL Advanced`）：push 到 `master`、所有 PR（包括疊在其他 PR 上、目標不是 `master` 的；改目標不會觸發 workflow，被疊的 PR 合併後必要檢查才不會等不到）與每週排程時以 `security-extended` 查詢掃描 Python 與 GitHub Actions workflow；最上層 `permissions: {}`，分析 job 只拿 `security-events: write` 與 `contents: read`，`timeout-minutes: 30`，同一個 PR 的新推送取消舊的分析（`master` 與排程不取消）。job 名稱 `Analyze (python)`／`Analyze (actions)` 是 `master` 的必要檢查，所以 workflow 與 job 名稱不可改（`tests/test_r3_repo_meta.py` 檢查每個 workflow 的權限都有上限、檔名與 `name` 相符）。
 - `audit`：安裝 `requirements-dev.txt` 釘版的 `pip-audit`，執行 `pip-audit -r requirements.lock --disable-pip --require-hashes`，含已知 CVE 的依賴升級會擋在合併前。
 - `package`：先以 `--require-hashes` 從 `requirements-build.txt` 安裝建置後端，以 `python -m build --no-isolation` build sdist 與 wheel，在 checkout 外的 venv 安裝 wheel，只複製 `examples/vibe_sample_app.py` 到暫存目錄、以 mock 模式跑一次（exit > 3 判失敗；wheel 曾經沒帶 `vibeharness/config/*.yaml`），再解開 sdist、以帶雜湊鎖定的依賴在裡面跑完整測試套件，並以 `VIBEHARNESS_SDIST` 讓 `tests/test_review_build.py` 檢查封存檔內容。
@@ -916,7 +916,7 @@ DAST／fuzzing、以 hypothesis 為測試策略（Docker 沙盒映像已附 `hyp
 ### 16.4 交付與工程
 
 - （已於 0.3.0 處理）`pypi-publish` 改下載建置 job 的產物（當時名為 `build-and-upload`，0.6.0 起改名為 `build`）；兩個 job 都有 `timeout-minutes`；pre-commit 加了 mypy hook；Dependabot 追蹤 Actions 與鎖定檔。
-- （已處理）README 與 `action.yml` 給目標專案的 SARIF 範例改用 SHA 釘版，現為 `upload-sarif@9b32540…` v4.39.1（與本 repo 的 CodeQL workflow 同一個 commit），並列出 job 需要的 `contents: read`／`security-events: write` 權限。
+- （已處理）README 與 `action.yml` 給目標專案的 SARIF 範例改用 SHA 釘版，現為 `upload-sarif@33d7b85…` v4.39.3（與本 repo 的 CodeQL workflow 同一個 commit），並列出 job 需要的 `contents: read`／`security-events: write` 權限。
 - （已於 `[0.6.0]` 處理）釘版的 actions 改為手動升版（取代 Dependabot PR #38），`pypa/gh-action-pypi-publish` 改釘 commit 而不是 annotated tag 物件，`publish.yml` 先跑測試、只有 release job 拿到 `contents: write`，Dependabot 另外追蹤沙盒基底映像與 `docker/sandbox-requirements.*`。
 - v0.1.0 的 CHANGELOG 日期 2026-10-03 正確：tag commit 是 2026-10-02 21:41（UTC−7），換算 UTC 與臺灣時間都是 10-03。
 
