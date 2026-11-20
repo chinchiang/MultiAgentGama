@@ -116,10 +116,10 @@ def language_for_file(file_path: str) -> str:
     return "python"
 
 
-def target_file_url(file_path: str, path_cls: type = pathlib.Path) -> str:
+def target_file_url(file_path: str) -> str:
     """Node 測試用來匯入目標的 file:// URL（Windows 上為 `file:///C:/proj/app.js`）。
     The file:// URL a Node test imports the target through (`file:///C:/proj/app.js` on Windows)."""
-    return path_cls(os.path.abspath(file_path)).as_uri()
+    return pathlib.Path(os.path.abspath(file_path)).as_uri()
 
 
 def _masked_js(source: str) -> str:

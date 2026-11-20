@@ -5,10 +5,10 @@ JavaScript / TypeScript dynamic execution: the JS code gate, module-kind detecti
 instructions, Node JUnit parsing and classification, the Node sandboxes (real `node` when available,
 forced with VIBEHARNESS_REQUIRE_NODE=1), the executor's language split and the harness evidence gaps."""
 import os
-import pathlib
 import shutil
 import subprocess
 import textwrap
+import warnings
 
 import pytest
 
@@ -208,12 +208,19 @@ def test_import_instructions_for_esm_cjs_and_typescript(tmp_path):
 
 
 def test_target_file_url_shapes():
-    posix = target_file_url("/home/u/proj/app.mjs", pathlib.PurePosixPath) if os.name != "nt" else None
-    if posix is not None:
-        assert posix == "file:///home/u/proj/app.mjs"
-    windows = pathlib.PureWindowsPath(r"C:\proj\app.mjs").as_uri()
-    assert windows == "file:///C:/proj/app.mjs"
-    assert target_file_url("app.mjs").startswith("file:///")
+    """target_file_url 以具體的 pathlib.Path.as_uri 產生絕對與相對路徑的 file:// URL（含空白與 `#` 百分比編碼），
+    不觸發 PurePath.as_uri 的棄用警告。
+    target_file_url builds file:// URLs for absolute and relative paths (including percent-encoded spaces and `#`)
+    via concrete pathlib.Path.as_uri without triggering the PurePath.as_uri DeprecationWarning."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        if os.name == "nt":
+            assert target_file_url(r"C:\proj\app.mjs") == "file:///C:/proj/app.mjs"
+            assert target_file_url(r"C:\my dir\a#b.mjs") == "file:///C:/my%20dir/a%23b.mjs"
+        else:
+            assert target_file_url("/home/u/proj/app.mjs") == "file:///home/u/proj/app.mjs"
+            assert target_file_url("/home/u/my dir/a#b.mjs") == "file:///home/u/my%20dir/a%23b.mjs"
+        assert target_file_url("app.mjs").startswith("file:///")
 
 
 # --- Node JUnit 解析與分類 ----------------------------------------------------------------------
