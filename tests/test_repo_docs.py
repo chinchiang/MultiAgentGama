@@ -46,27 +46,34 @@ def _tree_files(directory, extensions, recursive):
                   if p.endswith(extensions) and os.path.basename(p) != "__init__.py" and "__pycache__" not in p)
 
 
-_TREE_ENTRY_RE = re.compile(r"^((?:│   |    )*)[├└]── (\S+)")
+_TREE_ENTRY_RE = re.compile(r"^((?:│   |    )*)[├└]── ([^\s#]+)(?:\s+#.*)?$")
 TREE_ROOT = "MultiAgentGama/"
 
 
 def tree_paths(text):
-    """把 README 的檔案樹還原成相對於 repo 根目錄的路徑：每層縮排 4 個字元，目錄以 `/` 結尾。
+    """把 README 的檔案樹還原成相對於 repo 根目錄的路徑：每層縮排 4 個字元，目錄以 `/` 結尾；圍欄內無法解析的行、
+    跳層縮排、掛在一般檔案底下的子項目、重複項目或缺少結束圍欄時丟出 ValueError。
     Turn a README file tree back into paths relative to the repo root: each level indents 4 characters, and
-    directories end in `/`."""
+    directories end in `/`; inside the fence, an unparseable line, a skipped indent level, a child under a
+    non-directory entry, a duplicate entry or a missing closing fence raises ValueError."""
     lines = text.split("\n")
     start = next(i for i, line in enumerate(lines) if line.strip() == TREE_ROOT)
     stack, paths = [], set()
     for line in lines[start + 1:]:
         if line.startswith("```"):
-            break
+            return paths
         match = _TREE_ENTRY_RE.match(line)
         if not match:
-            continue
+            raise ValueError(f"could not parse README tree line: {line!r}")
         depth, name = len(match.group(1)) // 4, match.group(2)
-        stack = stack[:depth] + [name.rstrip("/")]
-        paths.add("/".join(stack) + ("/" if name.endswith("/") else ""))
-    return paths
+        if depth > len(stack) or (depth > 0 and not stack[depth - 1].endswith("/")):
+            raise ValueError(f"invalid indentation in README tree line: {line!r}")
+        stack = stack[:depth] + [name]
+        entry = "/".join(p.rstrip("/") for p in stack) + ("/" if name.endswith("/") else "")
+        if entry in paths:
+            raise ValueError(f"duplicate README tree entry: {entry}")
+        paths.add(entry)
+    raise ValueError("unclosed README tree code fence")
 
 
 @pytest.mark.parametrize("readme", ["README.md", "README.en.md"])
@@ -107,19 +114,42 @@ def test_tree_paths_follows_the_indentation_and_catches_a_file_under_the_wrong_d
     assert "tests/test_misplaced.py" not in tree_paths(text)
 
 
+def test_tree_paths_rejects_malformed_lines_bad_indentation_duplicates_and_unclosed_fences():
+    """檔案樹圍欄內無法解析的行、跳層縮排、掛在一般檔案底下的子項目、重複項目或缺少結束圍欄，都會丟出 ValueError，
+    不會被悄悄略過。
+    Inside the file-tree fence, an unparseable line, a skipped indent level, a child under a non-directory entry, a
+    duplicate entry or a missing closing fence raises ValueError instead of being silently ignored."""
+    for bad, match in [
+        (["├── a.py", "|-- old.py"], "could not parse"),
+        (["├── dir/", "│  └── old.py"], "could not parse"),
+        (["├── a.py stray_words"], "could not parse"),
+        (["    └── skipped_level.py"], "invalid indentation"),
+        (["├── file.py", "│   └── under_file.py"], "invalid indentation"),
+        (["├── a.py", "└── a.py"], "duplicate"),
+    ]:
+        with pytest.raises(ValueError, match=match):
+            tree_paths("\n".join(["```text", TREE_ROOT, *bad, "```"]))
+    with pytest.raises(ValueError, match="unclosed"):
+        tree_paths("\n".join(["```text", TREE_ROOT, "└── a.py"]))
+
+
+def _repo_only_absent(path, root=REPO_ROOT):
+    return not os.path.isdir(os.path.join(root, ".github")) and (path in _NOT_SHIPPED or path.startswith(".github/"))
+
+
 def stale_tree_paths(text, root=REPO_ROOT, manifest=MANIFEST):
-    """README 檔案樹裡在磁碟上找不到（或型別不符：目錄沒加 `/`、一般檔案加了 `/`）的路徑，依字母排序。
-    sdist 不帶 `.github/`、`_NOT_SHIPPED` 與 `MANIFEST.in` prune 掉的目錄：在缺少它們的環境裡略過。
-    Paths in a README file tree that are missing on disk (or have the wrong kind: a directory without `/`, a regular
-    file with `/`), sorted. The sdist leaves out `.github/`, `_NOT_SHIPPED` and directories `MANIFEST.in` prunes, so
-    those are skipped when absent."""
+    """README 檔案樹裡在磁碟上找不到，或型別不符（目錄沒加 `/`、一般檔案加了 `/`）的路徑，依字母排序。
+    在解開的 sdist 裡（沒有 `.github/`），`.github/`、`_NOT_SHIPPED` 與 `MANIFEST.in` prune 掉且不存在的目錄會略過。
+    Listed paths in a README file tree that are missing on disk or have the wrong kind (a directory without `/`, a
+    regular file with `/`), sorted. In the unpacked sdist (no `.github/`), `.github/`, `_NOT_SHIPPED` and absent
+    directories `MANIFEST.in` prunes are skipped."""
     pruned = pruned_dirs(manifest)
-    has_github = os.path.isdir(os.path.join(root, ".github"))
+    in_sdist = not os.path.isdir(os.path.join(root, ".github"))
     stale = []
     for path in sorted(tree_paths(text)):
-        if not has_github and (path in _NOT_SHIPPED or path.startswith(".github/")):
+        if _repo_only_absent(path, root):
             continue
-        if any(path.startswith(d + "/") and not os.path.isdir(os.path.join(root, d)) for d in pruned):
+        if in_sdist and any(path.startswith(d + "/") and not os.path.isdir(os.path.join(root, d)) for d in pruned):
             continue
         full = os.path.join(root, path.rstrip("/"))
         exists = os.path.isdir(full) if path.endswith("/") else os.path.isfile(full)
@@ -138,15 +168,16 @@ def test_the_readme_file_tree_has_no_stale_entries(readme):
 
 
 def test_stale_tree_paths_flags_missing_entries_and_kind_mismatches(tmp_path):
-    """完整的 checkout 裡，已刪除的檔案與目錄（含 `.github/` 與存在的 prune 目錄底下）、沒加 `/` 的目錄、加了 `/` 的
-    一般檔案，以及缺少的 `.pre-commit-config.yaml` 都會被列出；存在的項目不算。
-    In a full checkout, deleted files and directories (under `.github/` and a present pruned directory included), a
-    directory without `/`, a regular file with `/`, and a missing `.pre-commit-config.yaml` are all listed; existing
-    entries are not."""
+    """完整的 checkout 裡，已刪除的檔案與目錄（含 `.github/`、存在的 prune 目錄底下，以及整個消失但仍寫在
+    `MANIFEST.in` 的 prune 目錄）、沒加 `/` 的目錄、加了 `/` 的一般檔案，以及缺少的 `.pre-commit-config.yaml`
+    都會被列出；存在的項目不算。
+    In a full checkout, deleted files and directories (under `.github/`, under a present pruned directory, and a
+    pruned directory missing on disk while still named in `MANIFEST.in`), a directory without `/`, a regular file with
+    `/`, and a missing `.pre-commit-config.yaml` are all listed; existing entries are not."""
     (tmp_path / ".github" / "workflows").mkdir(parents=True)
     (tmp_path / ".github" / "workflows" / "tests.yml").write_text("", encoding="utf-8")
     (tmp_path / ".pre-commit-config.yaml").write_text("", encoding="utf-8")
-    (tmp_path / "MANIFEST.in").write_text("prune scripts/golden\n", encoding="utf-8")
+    (tmp_path / "MANIFEST.in").write_text("prune scripts/golden\nprune scripts/gone_pruned\n", encoding="utf-8")
     (tmp_path / "scripts" / "golden").mkdir(parents=True)
     (tmp_path / "scripts" / "golden" / "run.py").write_text("", encoding="utf-8")
     (tmp_path / "scripts" / "sub").mkdir()
@@ -164,6 +195,7 @@ def test_stale_tree_paths_flags_missing_entries_and_kind_mismatches(tmp_path):
         "│   ├── golden/",
         "│   │   ├── run.py",
         "│   │   └── old.py",
+        "│   ├── gone_pruned/",
         "│   └── sub",
         "└── vibeharness/",
         "    ├── core/",
@@ -177,6 +209,7 @@ def test_stale_tree_paths_flags_missing_entries_and_kind_mismatches(tmp_path):
     assert stale_tree_paths(text, root=tmp_path, manifest=manifest) == [
         ".github/workflows/old.yml",
         "scripts/golden/old.py",
+        "scripts/gone_pruned/",
         "scripts/sub",
         "vibeharness/core/fanout.py",
         "vibeharness/core/models.py/",
@@ -256,11 +289,9 @@ def _looks_like_code(name):
 
 
 def _file_exists(span, pruned):
-    if span in _NOT_SHIPPED and not os.path.isdir(os.path.join(REPO_ROOT, ".github")):
+    if _repo_only_absent(span):
         return True
     if "/" in span:
-        if span.startswith(".github") and not os.path.isdir(os.path.join(REPO_ROOT, ".github")):
-            return True
         # sdist 也不帶 MANIFEST.in prune 掉的目錄（例如只供開發用的 scripts/golden/）
         # Nor does it ship the directories MANIFEST.in prunes (such as the development-only scripts/golden/)
         if any(span.startswith(d + "/") and not os.path.isdir(os.path.join(REPO_ROOT, d)) for d in pruned):
