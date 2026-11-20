@@ -213,6 +213,7 @@ MultiAgentGama/
 │   │   ├── gate.py                  # Quality gate: evidence gaps, verdict and recommendations (pure)
 │   │   ├── i18n.py                  # bilingual "中文 ／ English" output helpers (bi / en_only)
 │   │   ├── identity.py              # Identity: text normalization, the location rule, severity order, --baseline keys next to SARIF fingerprints (hashes must not change)
+│   │   ├── js_lex.py                # Dependency-free pure JS/TS/JSX lexical primitives: comment/literal masking (mask_js_source) and bracket matching (match_delim)
 │   │   ├── jscoverage.py            # JS/TS line coverage: Node coverage flags, lcov parsing, union across modules
 │   │   ├── mutation.py              # Optional mutation testing (Python)
 │   │   ├── sanitize.py              # Trust-boundary hygiene: invisible chars, secret redaction, untrusted-code / model-output channels, output sanitizing
@@ -227,7 +228,8 @@ MultiAgentGama/
 │   │   ├── __init__.py
 │   │   ├── whitebox/
 │   │   │   ├── __init__.py
-│   │   │   ├── ast_extractor.py     # Symbol parsing and route extraction (AST for Python; dependency-free lexer for JS/TS)
+│   │   │   ├── _js_extractor.py     # Per-file JS/TS declaration and HTTP route extractor (extract_js_ts_symbols, discarding scratch state on return)
+│   │   │   ├── ast_extractor.py     # Directory scope walk and symbol extraction (AST for Python; JS/TS delegated to js_lex.py and _js_extractor.py)
 │   │   │   ├── ai_static_scanner.py # Deterministic AI-security rules VH-AI-001..009 (no model involved)
 │   │   │   ├── multi_reviewer.py    # Heterogeneous model ensemble review (built from the whitebox_reviewer_* entries)
 │   │   │   ├── deduplicator.py      # Merges the same defect reported by multiple models (complete-linkage)

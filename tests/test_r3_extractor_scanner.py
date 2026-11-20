@@ -102,6 +102,8 @@ def _reference_mask_regex(source, out, i):
 
 
 def test_regex_table_agrees_with_the_reference_scan():
+    from vibeharness.core.js_lex import _mask_regex
+
     # 每行只算一次的結尾表與原本逐次掃描的結果相同（跳脫字元後接換行除外：正規表達式字面值不能跨行）
     # The once-per-line closing table gives the original scan's results (except an escape followed by a line break:
     # a regex literal cannot span lines)
@@ -114,7 +116,7 @@ def test_regex_table_agrees_with_the_reference_scan():
             if c != "/":
                 continue
             expected_out, actual_out = list(source), list(source)
-            assert ASTExtractor._mask_regex(source, actual_out, i) == _reference_mask_regex(source, expected_out, i)
+            assert _mask_regex(source, actual_out, i) == _reference_mask_regex(source, expected_out, i)
             assert actual_out == expected_out
 
 
@@ -142,15 +144,17 @@ def _reference_colon_back(masked, pos):
 
 
 def test_annotation_look_back_agrees_with_the_reference_walk():
+    from vibeharness.agents.whitebox._js_extractor import _JsTsExtractor
+
     # 備忘的往回走與原本的走法結果相同（沒有括號群組的隨機型別片段；群組改用配對表跳過）
     # The memoized walk-back gives the original walk's results (random type fragments without bracket groups; groups
     # are now skipped via the pair tables)
     rng = random.Random(5)
     for _ in range(300):
         masked = "".join(rng.choice("ab:<>=;, \n") for _ in range(rng.randint(1, 50)))
-        extractor = ASTExtractor()
+        parser = _JsTsExtractor()
         for pos in range(len(masked)):
-            assert extractor._annotation_colon_back(masked, pos) == _reference_colon_back(masked, pos)
+            assert parser._annotation_colon_back(masked, pos) == _reference_colon_back(masked, pos)
 
 
 def test_return_type_and_annotated_arrows_are_still_found(tmp_path):

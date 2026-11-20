@@ -523,3 +523,144 @@ def test_unrelated():
     assert 1
 '''
     assert unguarded_github_tests(source) == ["test_bare", "test_literal"]
+
+
+# --- vibeharness/core/ 的依賴方向（除管線協調器 harness.py 外不得匯入 vibeharness.agents） ------------------------
+# --- Dependency direction of vibeharness/core/ (only the pipeline orchestrator harness.py may import vibeharness.agents) ---
+
+CORE_DIR = os.path.join(REPO_ROOT, "vibeharness", "core")
+_ALLOWED_PACKAGE_ROOT_NAMES = {"core", "__version__"}
+
+
+def _is_allowed_core_import(node, depth: int) -> bool:
+    """`vibeharness/core/` 非協調器模組的匯入白名單：專案內部只允許 `vibeharness.core.*`（或留在 `core/` 內的具名相對匯入）。
+    Allow-list for non-orchestrator `vibeharness/core/` imports: internal imports may target only `vibeharness.core.*`
+    (or named relative imports that stay within `core/`)."""
+    if isinstance(node, ast.Import):
+        return all(
+            alias.name.split(".")[0] != "vibeharness"
+            or alias.name == "vibeharness.core"
+            or alias.name.startswith("vibeharness.core.")
+            for alias in node.names
+        )
+    if isinstance(node, ast.ImportFrom):
+        mod = node.module or ""
+        has_star = any(a.name == "*" for a in node.names)
+        if node.level > 0:
+            if has_star:
+                return False
+            if node.level <= depth:
+                return True
+            if node.level == depth + 1:
+                return (
+                    mod == "core"
+                    or mod.startswith("core.")
+                    or (mod == "" and all(a.name in _ALLOWED_PACKAGE_ROOT_NAMES for a in node.names))
+                )
+            return False
+        if mod.split(".")[0] != "vibeharness":
+            return True
+        if has_star:
+            return False
+        return (
+            mod == "vibeharness.core"
+            or mod.startswith("vibeharness.core.")
+            or (mod == "vibeharness" and all(a.name in _ALLOWED_PACKAGE_ROOT_NAMES for a in node.names))
+        )
+    if isinstance(node, ast.Call):
+        fn = node.func
+        call_name = fn.id if isinstance(fn, ast.Name) else (fn.attr if isinstance(fn, ast.Attribute) else "")
+        if call_name not in ("__import__", "import_module"):
+            return True
+        if len(node.args) != 1 or node.keywords or not isinstance(node.args[0], ast.Constant):
+            return False
+        target = node.args[0].value
+        if not isinstance(target, str) or target.startswith("."):
+            return False
+        return (
+            target.split(".")[0] != "vibeharness"
+            or target == "vibeharness.core"
+            or target.startswith("vibeharness.core.")
+        )
+    return True
+
+
+def non_orchestrator_agent_imports(core_dir=CORE_DIR):
+    """`core_dir` 底下（遞迴，頂層 `harness.py` 除外）不在 `vibeharness.core` 白名單內的內部／動態匯入位置 `相對路徑:行號`。
+    `relpath:lineno` entries under `core_dir` (recursively, except top-level `harness.py`) whose internal or dynamic
+    imports fall outside the `vibeharness.core` allow-list."""
+    offenders = []
+    for path in sorted(glob.glob(os.path.join(core_dir, "**", "*.py"), recursive=True)):
+        rel = os.path.relpath(path, core_dir).replace(os.sep, "/")
+        if rel == "harness.py":
+            continue
+        depth = len(rel.split("/"))
+        with open(path, encoding="utf-8") as f:
+            tree = ast.parse(f.read(), filename=path)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom, ast.Call)) and not _is_allowed_core_import(node, depth):
+                offenders.append(f"{rel}:{node.lineno}")
+    return sorted(set(offenders), key=lambda item: (item.rsplit(":", 1)[0], int(item.rsplit(":", 1)[1])))
+
+
+def test_core_modules_other_than_harness_never_import_agents():
+    """`vibeharness/core/` 的基礎模組不依賴 `vibeharness/agents/`（只有頂層管線協調器 `harness.py` 組裝各代理）。
+    Foundational modules in `vibeharness/core/` never depend on `vibeharness/agents/` (only the top-level orchestrator
+    `harness.py` wires the agents together)."""
+    assert non_orchestrator_agent_imports() == []
+
+
+def test_non_orchestrator_agent_imports_catches_absolute_and_relative_imports(tmp_path):
+    """絕對匯入、相對匯入、萬用字元 `*`、裸套件匯入、動態匯入與子目錄檔案都會被攔下；`harness.py` 與合法 `core`／外部匯入通過。
+    Absolute, relative, wildcard `*`, bare-package, dynamic and nested-directory imports outside the `core` allow-list
+    are all caught; top-level `harness.py` and allowed `core` / external imports pass."""
+    (tmp_path / "harness.py").write_text(
+        "from vibeharness.agents.whitebox.ast_extractor import ASTExtractor\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "clean.py").write_text(
+        "import os\n"
+        "import vibeharness.core.models\n"
+        "from .models import CodeSymbol\n"
+        "from ..core.i18n import bi\n"
+        "from .. import core\n"
+        "from vibeharness import __version__\n"
+        "importlib.import_module('json')\n"
+        "importlib.import_module('vibeharness.core.js_lex')\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "bad.py").write_text(
+        "import vibeharness\n"
+        "import vibeharness.agents.whitebox.ast_extractor\n"
+        "from vibeharness import agents\n"
+        "from vibeharness import *\n"
+        "from .. import *\n"
+        "def f(dyn):\n"
+        "    from ..agents.whitebox import ast_extractor\n"
+        "    from .. import agents as ag\n"
+        "    importlib.import_module('vibeharness.agents.whitebox.ast_extractor')\n"
+        "    importlib.import_module('..agents', package=__package__)\n"
+        "    importlib.import_module(dyn)\n"
+        "    __import__('vibeharness.agents')\n"
+        "    __import__('agents', None, None, (), 2)\n",
+        encoding="utf-8",
+    )
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "clean_sub.py").write_text("from ..models import CodeSymbol\n", encoding="utf-8")
+    (sub / "harness.py").write_text("from ...agents.whitebox import ast_extractor\n", encoding="utf-8")
+    assert non_orchestrator_agent_imports(str(tmp_path)) == [
+        "bad.py:1",
+        "bad.py:2",
+        "bad.py:3",
+        "bad.py:4",
+        "bad.py:5",
+        "bad.py:7",
+        "bad.py:8",
+        "bad.py:9",
+        "bad.py:10",
+        "bad.py:11",
+        "bad.py:12",
+        "bad.py:13",
+        "sub/harness.py:1",
+    ]

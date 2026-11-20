@@ -9,6 +9,7 @@ import re
 import textwrap
 from typing import Iterable, List, Optional
 
+from vibeharness.core.js_lex import mask_js_source
 from vibeharness.core.models import CodeSymbol
 from vibeharness.core.sanitize import prepare_untrusted_code
 
@@ -122,11 +123,6 @@ def target_file_url(file_path: str) -> str:
     return pathlib.Path(os.path.abspath(file_path)).as_uri()
 
 
-def _masked_js(source: str) -> str:
-    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor  # 不會循環匯入：它只匯入 models ／ no cycle: it imports only models
-    return ASTExtractor._mask_source(source)
-
-
 _JS_ESM_RE = re.compile(r"^\s*export\s|^\s*import\s+(?!\()", re.MULTILINE)
 _JS_CJS_RE = re.compile(r"\brequire\s*\(|\bmodule\.exports\b|\bexports\.[A-Za-z_$][\w$]*\s*=")
 
@@ -164,7 +160,7 @@ def js_module_kind(file_path: str, source: Optional[str] = None) -> str:
                 source = f.read()
         except (OSError, UnicodeDecodeError):
             source = ""
-    masked = _masked_js(source)
+    masked = mask_js_source(source)
     if _JS_ESM_RE.search(masked):
         return "esm"
     if _JS_CJS_RE.search(masked):
@@ -189,7 +185,7 @@ def js_exported_names(file_path: str, source: Optional[str] = None, limit: int =
                 source = f.read()
         except (OSError, UnicodeDecodeError):
             return []
-    masked = _masked_js(source)
+    masked = mask_js_source(source)
     names: List[str] = []
     for pattern in _JS_EXPORT_RES:
         for m in pattern.finditer(masked):

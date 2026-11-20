@@ -68,13 +68,15 @@ def test_lone_backtick_and_quotes_in_nested_jsx_text(tmp_path):
 
 
 def test_jsx_text_is_blanked_but_code_and_line_breaks_are_kept():
+    from vibeharness.core.js_lex import mask_js_source
+
     source = "const a = <p>Use /* x\nmore `text</p>;\nconst b = 1;\n"
-    masked = ASTExtractor._mask_source(source, jsx=True)
+    masked = mask_js_source(source, jsx=True)
     assert len(masked) == len(source) and masked.count("\n") == source.count("\n")
     assert "/*" not in masked and "`" not in masked
     assert "const b = 1;" in masked
     # 沒有 jsx 旗標時（例如 .ts 檔）維持原本的詞法分析 ／ without the jsx flag (e.g. a .ts file) plain lexing stays
-    assert "const b = 1;" not in ASTExtractor._mask_source(source)
+    assert "const b = 1;" not in mask_js_source(source)
 
 
 def test_typescript_generics_in_tsx_fall_back_to_plain_lexing(tmp_path):

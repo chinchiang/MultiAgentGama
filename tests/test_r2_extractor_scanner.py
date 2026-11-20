@@ -63,22 +63,26 @@ def test_unclosed_nested_templates_reach_the_end_of_the_file_without_crashing(tm
 
 
 def test_template_masking_still_lexes_interpolations_as_code():
-    masked = ASTExtractor._mask_source('const s = `a ${x.replace(/\\{/g, "{")} b ${`in ${y}`}`; const t = 1;')
+    from vibeharness.core.js_lex import mask_js_source
+
+    masked = mask_js_source('const s = `a ${x.replace(/\\{/g, "{")} b ${`in ${y}`}`; const t = 1;')
     assert "const t = 1;" in masked
     assert "{" not in masked.split("const s =")[1].split(";")[0]
 
 
 def test_parse_directory_skips_a_file_whose_lexing_fails_and_keeps_going(tmp_path, monkeypatch):
+    import vibeharness.agents.whitebox._js_extractor as js_extractor_module
+
     (tmp_path / "a_bad.js").write_text("function bad() {}\n", encoding="utf-8")
     (tmp_path / "b_good.js").write_text("function good() {}\n", encoding="utf-8")
-    original = ASTExtractor._mask_source
+    original = js_extractor_module.mask_js_source
 
-    def flaky(source, jsx=False):
+    def flaky(source, *, jsx=False):
         if "bad" in source:
             raise RecursionError("simulated")
-        return original(source, jsx)
+        return original(source, jsx=jsx)
 
-    monkeypatch.setattr(ASTExtractor, "_mask_source", staticmethod(flaky))
+    monkeypatch.setattr(js_extractor_module, "mask_js_source", flaky)
     extractor = ASTExtractor()
     symbols = extractor.parse_directory(str(tmp_path))
     assert _names(symbols) == ["good"]
@@ -118,9 +122,11 @@ def test_nested_classes_are_reviewed_inside_the_enclosing_class(tmp_path):
 
 
 def test_a_newline_ends_the_previous_word_so_return_starts_a_regex():
+    from vibeharness.core.js_lex import mask_js_source
+
     # 修正前 `b\nreturn` 被當成一個詞 "breturn"，`/{x/` 變成除法，`{` 沒被清空
     # Before the fix `b\nreturn` was one word "breturn", so `/{x/` was division and the `{` stayed
-    assert ASTExtractor._mask_source("const a = b\nreturn /{x/.test(c)\n") == "const a = b\nreturn /   .test(c)\n"
+    assert mask_js_source("const a = b\nreturn /{x/.test(c)\n") == "const a = b\nreturn /   .test(c)\n"
 
 
 # --- 4. JSX 掃描預算：便宜的失敗不花預算，總掃描量與檔案大小成線性 ---
@@ -206,16 +212,19 @@ def test_lookup_tables_agree_with_the_reference_scans():
         return 0
 
     for _ in range(200):
+        from vibeharness.agents.whitebox._js_extractor import _JsTsExtractor
+        from vibeharness.core.js_lex import match_delim
+
         masked = "".join(rng.choice("(){}[];\n ab") for _ in range(rng.randint(1, 80)))
-        extractor = ASTExtractor()
+        parser = _JsTsExtractor()
         for pos, c in enumerate(masked):
             for open_ch, close_ch in (("(", ")"), ("{", "}"), ("[", "]")):
                 if c == open_ch:
-                    assert extractor._match_pair(masked, pos, open_ch, close_ch) == \
-                        ASTExtractor._match_delim(masked, pos, open_ch, close_ch)
+                    assert parser._match_pair(masked, pos, open_ch, close_ch) == \
+                        match_delim(masked, pos, open_ch, close_ch)
             if c == ")":
-                assert extractor._find_open_paren(masked, pos) == reference_open_paren(masked, pos)
-            assert extractor._statement_end(masked, pos) == ASTExtractor._end_of_statement(masked, pos)
+                assert parser._find_open_paren(masked, pos) == reference_open_paren(masked, pos)
+            assert parser._statement_end(masked, pos) == _JsTsExtractor._end_of_statement(masked, pos)
 
 
 def test_routes_and_methods_are_unchanged_by_the_lookup_tables(tmp_path):
@@ -325,3 +334,25 @@ def test_scanner_skips_a_file_whose_analysis_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(AISecurityStaticScanner, "_scan_python", flaky)
     findings = AISecurityStaticScanner().scan_files([str(bad), str(good)])
     assert {f.file_path for f in findings if f.rule_id == "VH-AI-003"} == {str(good)}
+
+
+def test_ast_extractor_carries_no_per_file_js_scratch_attributes_and_exposes_js_lex(tmp_path):
+    """`ASTExtractor` 實例不再持有單一檔案專用的 JS 詞法／解析暫存欄位；純詞法原語由 `vibeharness.core.js_lex` 提供。
+    `ASTExtractor` instances hold no per-file JS lexing/parsing scratch fields; pure lexical primitives live in
+    `vibeharness.core.js_lex`."""
+    from vibeharness.core.js_lex import mask_js_source, match_delim
+
+    scratch_attrs = (
+        "_content_lines", "_delim_src", "_delim_cache", "_stmt_src", "_stmt_index",
+        "_colon_src", "_colon_memo", "_type_scan_left", "_snippet_left",
+    )
+    extractor, symbols = _parse(tmp_path, "clean.ts", "export const f = (x: number): number => { return x + 1; };\n")
+    assert _names(symbols) == ["f"]
+    for attr in scratch_attrs:
+        assert not hasattr(extractor, attr), attr
+
+    masked = mask_js_source('function a() { return "{"; }')
+    open_brace = masked.index("{")
+    assert match_delim(masked, open_brace, "{", "}") == len(masked) - 1
+    with pytest.raises(TypeError):
+        mask_js_source("const x = 1;", True)

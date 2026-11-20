@@ -18,12 +18,12 @@ import tokenize
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-from vibeharness.agents.whitebox.ast_extractor import SKIPPED_DIRS
 from vibeharness.core.i18n import bi
 from vibeharness.core.models import (
     CodeSymbol, GeneratedTest, MutantResult, MutationReport, ReviewFinding, TestExecutionResult, TestStatus,
 )
 from vibeharness.core.sandbox import rewrite_host_paths
+from vibeharness.core.settings import DEFAULT_MAX_COPY_MB as DEFAULT_MAX_COPY_MB, SKIPPED_DIRS
 
 logger = logging.getLogger("VibeHarness.Mutation")
 
@@ -31,8 +31,6 @@ logger = logging.getLogger("VibeHarness.Mutation")
 # Only white-box unit tests are used: probes (whitebox_probe) swallow exceptions, pass almost always and carry no
 # signal; black-box tests do not map to a single function
 ELIGIBLE_TEST_TYPES = ("whitebox_unit",)
-# 複本大小上限（MB）的預設值定義在 core/settings.py ／ the scratch copy's size cap (MB) default is defined in core/settings.py
-from vibeharness.core.settings import DEFAULT_MAX_COPY_MB as DEFAULT_MAX_COPY_MB  # noqa: E402
 
 _ARITHMETIC = {ast.Add: ("+", "-"), ast.Sub: ("-", "+"), ast.Mult: ("*", "/"), ast.Div: ("/", "*")}
 _COMPARISON = {

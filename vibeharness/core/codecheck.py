@@ -2,6 +2,8 @@ import ast
 import re
 from typing import List, Optional, Tuple, Union
 
+from vibeharness.core.js_lex import mask_js_source, match_delim
+
 _TestNode = Union[ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef]
 
 # 任何 ```<lang> 標籤（python、python3、Python、js、...）接著換行即開啟區塊；
@@ -215,11 +217,6 @@ _JS_SHELL_RE = re.compile(r"child_process|\bexecSync\s*\(|\bspawnSync\s*\(|\bexe
 _JS_OPEN, _JS_CLOSE = "([{", ")]}"
 
 
-def _js_masked(code: str) -> str:
-    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor  # 不會循環匯入：它只匯入 models ／ no cycle: it imports only models
-    return ASTExtractor._mask_source(code)
-
-
 def _js_balanced(masked: str) -> bool:
     stack: List[str] = []
     for ch in masked:
@@ -232,8 +229,7 @@ def _js_balanced(masked: str) -> bool:
 
 
 def _js_call_span(masked: str, open_paren: int) -> int:
-    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
-    close = ASTExtractor._match_delim(masked, open_paren, "(", ")")
+    close = match_delim(masked, open_paren, "(", ")")
     return close if close is not None else len(masked) - 1
 
 
@@ -254,7 +250,7 @@ def check_js_test_code(code: str) -> Tuple[bool, Optional[str]]:
         m = _JS_INSTALL_RE.search(code) or _INSTALLER_RE.search(code)
         return False, (f"test installs packages at run time ({m.group(0) if m else 'installer call'}); "
                        "refused (slopsquatting / OWASP LLM04:2026)")
-    masked = _js_masked(code)
+    masked = mask_js_source(code)
     if not _js_balanced(masked):
         return False, "syntax error: unbalanced delimiters"
     tests = list(_JS_TEST_CALL_RE.finditer(masked))

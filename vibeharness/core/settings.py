@@ -65,6 +65,9 @@ DEFAULT_MAX_FILES = 50
 # A single source file above this size is skipped (reported as an evidence gap): minified bundles and
 # generated code are not reviewable, and the JS/TS lexer is a character-by-character Python loop
 DEFAULT_MAX_FILE_BYTES = 1_000_000
+# 目錄走訪與突變測試複本絕不進入的目錄名稱（再加上任何以 '.' 開頭的名稱）
+# Directory names never descended into by the directory walk or mutation scratch copies (plus any name starting with '.')
+SKIPPED_DIRS = {"venv", "__pycache__", "node_modules", "dist", "build", "site-packages"}
 
 # 設定檔中缺少的代理會解析為此別名，它沒有模型也沒有金鑰：hybrid 模式
 # 會模擬它們，而 live 模式會明確失敗，而不是悄悄地把它們導向某個真實供應商

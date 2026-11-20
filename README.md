@@ -213,6 +213,7 @@ MultiAgentGama/
 │   │   ├── gate.py                  # 品質閘門：證據缺口、判定與建議（純函式）
 │   │   ├── i18n.py                  # 「中文 ／ English」雙語輸出的工具（bi／en_only）
 │   │   ├── identity.py              # 身分識別：模型文字正規化、位置規則、嚴重度順序，--baseline 鍵與 SARIF 指紋並排（雜湊必須不變）
+│   │   ├── js_lex.py                # JS/TS/JSX 無相依純詞法原語：清空註解與字面值（mask_js_source）、括號配對（match_delim）
 │   │   ├── jscoverage.py            # JS/TS 行涵蓋率：Node 涵蓋率旗標、lcov 解析、跨模組聯集
 │   │   ├── mutation.py              # 選用的突變測試（Python）
 │   │   ├── sanitize.py              # 信任邊界：去隱形字元、遮蔽密鑰、不受信任程式碼／模型輸出通道、報告消毒
@@ -227,7 +228,8 @@ MultiAgentGama/
 │   │   ├── __init__.py
 │   │   ├── whitebox/
 │   │   │   ├── __init__.py
-│   │   │   ├── ast_extractor.py     # 符號解析與路由提取（Python 用 AST；JS/TS 用無相依 lexer）
+│   │   │   ├── _js_extractor.py     # 單一檔案的 JS/TS 宣告與 HTTP 路由擷取（extract_js_ts_symbols，呼叫後即釋放暫存狀態）
+│   │   │   ├── ast_extractor.py     # 目錄範圍走訪與符號擷取（Python 用 AST；JS/TS 委派 js_lex.py 與 _js_extractor.py）
 │   │   │   ├── ai_static_scanner.py # 確定性 AI 安全規則 VH-AI-001～009（不經模型）
 │   │   │   ├── multi_reviewer.py    # 異構模型評議 (Ensemble，由設定檔的 whitebox_reviewer_* 組成)
 │   │   │   ├── deduplicator.py      # 合併多個模型回報的同一缺陷（complete-linkage）
