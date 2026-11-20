@@ -46,24 +46,28 @@ def _tree_files(directory, extensions, recursive):
                   if p.endswith(extensions) and os.path.basename(p) != "__init__.py" and "__pycache__" not in p)
 
 
-_TREE_ENTRY_RE = re.compile(r"^((?:│   |    )*)[├└]── ([^\s#]+)(?:\s+#.*)?$")
+_TREE_ENTRY_RE = re.compile(r"^((?:│   |    )*)[├└]── ([^\s#/]+/?)(?:\s+#.*)?$")
 TREE_ROOT = "MultiAgentGama/"
 
 
 def tree_paths(text):
-    """把 README 的檔案樹還原成相對於 repo 根目錄的路徑：每層縮排 4 個字元，目錄以 `/` 結尾；圍欄內無法解析的行、
-    跳層縮排、掛在一般檔案底下的子項目、重複項目或缺少結束圍欄時丟出 ValueError。
-    Turn a README file tree back into paths relative to the repo root: each level indents 4 characters, and
-    directories end in `/`; inside the fence, an unparseable line, a skipped indent level, a child under a
-    non-directory entry, a duplicate entry or a missing closing fence raises ValueError."""
+    """把 README 的檔案樹（緊接在開頭程式碼圍欄後的 `MultiAgentGama/` 到 ` ``` ` 為止）還原成相對於 repo 根目錄的路徑：
+    每層縮排 4 個字元，每個項目是單一檔名或以 `/` 結尾的目錄名；找不到檔頭、圍欄內有無法解析的行、`.`／`..` 名稱、
+    跳層縮排、掛在一般檔案底下的子項目、重複項目或缺少 ` ``` ` 結束圍欄時丟出 ValueError。
+    Turn a README file tree (from `MultiAgentGama/` right after an opening code fence to ` ``` `) back into paths
+    relative to the repo root: each level indents 4 characters, and each entry is a single file name or `/`-suffixed
+    directory name; a missing header, an unparseable line, a `.` / `..` name, a skipped indent level, a child under a
+    non-directory entry, a duplicate entry or a missing ` ``` ` closing fence raises ValueError."""
     lines = text.split("\n")
-    start = next(i for i, line in enumerate(lines) if line.strip() == TREE_ROOT)
+    start = next((i for i, line in enumerate(lines) if line == TREE_ROOT), None)
+    if start is None or start == 0 or not lines[start - 1].startswith("```"):
+        raise ValueError("missing README tree header")
     stack, paths = [], set()
     for line in lines[start + 1:]:
-        if line.startswith("```"):
+        if line == "```":
             return paths
         match = _TREE_ENTRY_RE.match(line)
-        if not match:
+        if not match or match.group(2).rstrip("/") in ("", ".", ".."):
             raise ValueError(f"could not parse README tree line: {line!r}")
         depth, name = len(match.group(1)) // 4, match.group(2)
         if depth > len(stack) or (depth > 0 and not stack[depth - 1].endswith("/")):
@@ -115,45 +119,71 @@ def test_tree_paths_follows_the_indentation_and_catches_a_file_under_the_wrong_d
 
 
 def test_tree_paths_rejects_malformed_lines_bad_indentation_duplicates_and_unclosed_fences():
-    """檔案樹圍欄內無法解析的行、跳層縮排、掛在一般檔案底下的子項目、重複項目或缺少結束圍欄，都會丟出 ValueError，
-    不會被悄悄略過。
-    Inside the file-tree fence, an unparseable line, a skipped indent level, a child under a non-directory entry, a
-    duplicate entry or a missing closing fence raises ValueError instead of being silently ignored."""
+    """找不到緊接圍欄的檔頭、圍欄內無法解析的行、含額外 `/` 或 `.`／`..` 的名稱、跳層縮排、掛在一般檔案底下的子項目、
+    重複項目、結束圍欄帶多餘字元或缺少結束圍欄，都會丟出 ValueError，不會被悄悄略過。
+    A missing fenced header, an unparseable line, a name with extra `/` or `.` / `..`, a skipped indent level, a child
+    under a non-directory entry, a duplicate entry, trailing text on the closing fence or a missing closing fence
+    raises ValueError instead of being silently ignored."""
+    for bad_doc, match in [
+        ("no tree here", "missing README tree header"),
+        ("\n".join(["```text", "stray before root", TREE_ROOT, "└── a.py", "```"]), "missing README tree header"),
+        ("\n".join([TREE_ROOT, "└── a.py", "```"]), "missing README tree header"),
+        ("\n".join(["```text", TREE_ROOT, "└── a.py", "``` extra"]), "could not parse"),
+        ("\n".join(["```text", TREE_ROOT, "└── a.py"]), "unclosed"),
+    ]:
+        with pytest.raises(ValueError, match=match):
+            tree_paths(bad_doc)
     for bad, match in [
         (["├── a.py", "|-- old.py"], "could not parse"),
         (["├── dir/", "│  └── old.py"], "could not parse"),
         (["├── a.py stray_words"], "could not parse"),
+        (["├── a/b.py"], "could not parse"),
+        (["├── dir//"], "could not parse"),
+        (["├── /"], "could not parse"),
+        (["├── ./"], "could not parse"),
+        (["├── ../"], "could not parse"),
         (["    └── skipped_level.py"], "invalid indentation"),
         (["├── file.py", "│   └── under_file.py"], "invalid indentation"),
         (["├── a.py", "└── a.py"], "duplicate"),
     ]:
         with pytest.raises(ValueError, match=match):
             tree_paths("\n".join(["```text", TREE_ROOT, *bad, "```"]))
-    with pytest.raises(ValueError, match="unclosed"):
-        tree_paths("\n".join(["```text", TREE_ROOT, "└── a.py"]))
 
 
-def _repo_only_absent(path, root=REPO_ROOT):
-    return not os.path.isdir(os.path.join(root, ".github")) and (path in _NOT_SHIPPED or path.startswith(".github/"))
+def _unshipped_in_sdist(path):
+    return path in _NOT_SHIPPED or path.startswith(".github/")
+
+
+def _under_absent_pruned(path, root, pruned):
+    return any(path.startswith(d + "/") and not os.path.isdir(os.path.join(root, d)) for d in pruned)
+
+
+def _exists_exact_case(root, path):
+    full = os.path.join(root, path.rstrip("/"))
+    if not (os.path.isdir(full) if path.endswith("/") else os.path.isfile(full)):
+        return False
+    parent, name = os.path.split(full)
+    return name in os.listdir(parent)
 
 
 def stale_tree_paths(text, root=REPO_ROOT, manifest=MANIFEST):
-    """README 檔案樹裡在磁碟上找不到，或型別不符（目錄沒加 `/`、一般檔案加了 `/`）的路徑，依字母排序。
-    在解開的 sdist 裡（沒有 `.github/`），`.github/`、`_NOT_SHIPPED` 與 `MANIFEST.in` prune 掉且不存在的目錄會略過。
-    Listed paths in a README file tree that are missing on disk or have the wrong kind (a directory without `/`, a
-    regular file with `/`), sorted. In the unpacked sdist (no `.github/`), `.github/`, `_NOT_SHIPPED` and absent
-    directories `MANIFEST.in` prunes are skipped."""
+    """README 檔案樹裡在磁碟上找不到（區分大小寫），或型別不符（目錄沒加 `/`、一般檔案加了 `/`）的路徑，依字母排序。
+    在解開的 sdist 裡（沒有 `.github/`），`_unshipped_in_sdist`、被 `MANIFEST.in` prune 掉且不存在的目錄，以及因
+    prune 而變成不存在的上層目錄會略過。
+    Listed paths in a README file tree that are missing on disk (case-exact) or have the wrong kind (a directory
+    without `/`, a regular file with `/`), sorted. In the unpacked sdist (no `.github/`), `_unshipped_in_sdist`, absent
+    directories `MANIFEST.in` prunes, and ancestor directories absent only because a child was pruned are skipped."""
     pruned = pruned_dirs(manifest)
     in_sdist = not os.path.isdir(os.path.join(root, ".github"))
     stale = []
     for path in sorted(tree_paths(text)):
-        if _repo_only_absent(path, root):
-            continue
-        if in_sdist and any(path.startswith(d + "/") and not os.path.isdir(os.path.join(root, d)) for d in pruned):
-            continue
-        full = os.path.join(root, path.rstrip("/"))
-        exists = os.path.isdir(full) if path.endswith("/") else os.path.isfile(full)
-        if not exists:
+        if in_sdist:
+            if _unshipped_in_sdist(path) or _under_absent_pruned(path, root, pruned):
+                continue
+            if path.endswith("/") and any(d.startswith(path) and not os.path.isdir(os.path.join(root, d)) for d in pruned):
+                if not os.path.exists(os.path.join(root, path.rstrip("/"))):
+                    continue
+        if not _exists_exact_case(root, path):
             stale.append(path)
     return stale
 
@@ -167,13 +197,13 @@ def test_the_readme_file_tree_has_no_stale_entries(readme):
     assert stale == [], f"remove these stale entries from the file tree of {readme}:\n" + "\n".join(stale)
 
 
-def test_stale_tree_paths_flags_missing_entries_and_kind_mismatches(tmp_path):
+def test_stale_tree_paths_flags_missing_entries_and_kind_mismatches(tmp_path, monkeypatch):
     """完整的 checkout 裡，已刪除的檔案與目錄（含 `.github/`、存在的 prune 目錄底下，以及整個消失但仍寫在
-    `MANIFEST.in` 的 prune 目錄）、沒加 `/` 的目錄、加了 `/` 的一般檔案，以及缺少的 `.pre-commit-config.yaml`
-    都會被列出；存在的項目不算。
+    `MANIFEST.in` 的 prune 目錄）、沒加 `/` 的目錄、加了 `/` 的一般檔案、大小寫不同的檔名，以及缺少的
+    `.pre-commit-config.yaml` 都會被列出；存在的項目不算。
     In a full checkout, deleted files and directories (under `.github/`, under a present pruned directory, and a
     pruned directory missing on disk while still named in `MANIFEST.in`), a directory without `/`, a regular file with
-    `/`, and a missing `.pre-commit-config.yaml` are all listed; existing entries are not."""
+    `/`, a wrong-case name, and a missing `.pre-commit-config.yaml` are all listed; existing entries are not."""
     (tmp_path / ".github" / "workflows").mkdir(parents=True)
     (tmp_path / ".github" / "workflows" / "tests.yml").write_text("", encoding="utf-8")
     (tmp_path / ".pre-commit-config.yaml").write_text("", encoding="utf-8")
@@ -217,14 +247,21 @@ def test_stale_tree_paths_flags_missing_entries_and_kind_mismatches(tmp_path):
     ]
     (tmp_path / ".pre-commit-config.yaml").unlink()
     assert ".pre-commit-config.yaml" in stale_tree_paths(text, root=tmp_path, manifest=manifest)
+    # 不分大小寫的檔案系統（macOS／Windows）上，`isfile` 對錯誤大小寫回傳 True，仍須被 `listdir` 攔下
+    # On a case-insensitive filesystem (macOS / Windows), `isfile` returns True for wrong case and `listdir` still catches it
+    real_isfile = os.path.isfile
+    monkeypatch.setattr(os.path, "isfile", lambda p: True if str(p).endswith("Gate.py") else real_isfile(p))
+    wrong_case = "\n".join(["```text", TREE_ROOT, "└── vibeharness/", "    └── core/", "        └── Gate.py", "```"])
+    assert stale_tree_paths(wrong_case, root=tmp_path, manifest=manifest) == ["vibeharness/core/Gate.py"]
 
 
 def test_stale_tree_paths_skips_repo_only_and_pruned_entries_in_sdist(tmp_path):
-    """在解開的 sdist 裡（沒有 `.github/`，也沒有 `MANIFEST.in` prune 掉的目錄），`.github/`、`_NOT_SHIPPED` 與
-    被 prune 的目錄會略過，但其他不存在的路徑照樣列出；缺少 `MANIFEST.in` 時直接報錯。
-    In an unpacked sdist (no `.github/`, and no directory `MANIFEST.in` prunes), `.github/`, `_NOT_SHIPPED` and
-    pruned directories are skipped while other missing paths are still listed; a missing `MANIFEST.in` raises."""
-    (tmp_path / "MANIFEST.in").write_text("prune scripts/golden\n", encoding="utf-8")
+    """在解開的 sdist 裡（沒有 `.github/`，也沒有 `MANIFEST.in` prune 掉的目錄），`.github/`、`_NOT_SHIPPED`、
+    被 prune 的目錄，以及因 prune 而空掉消失的上層目錄會略過，但其他不存在的路徑照樣列出；缺少 `MANIFEST.in` 時直接報錯。
+    In an unpacked sdist (no `.github/`, and no directory `MANIFEST.in` prunes), `.github/`, `_NOT_SHIPPED`, pruned
+    directories, and ancestor directories absent because their pruned child was omitted are skipped while other missing
+    paths are still listed; a missing `MANIFEST.in` raises."""
+    (tmp_path / "MANIFEST.in").write_text("prune scripts/golden\nprune dev_only/tools\n", encoding="utf-8")
     (tmp_path / "scripts").mkdir()
     (tmp_path / "vibeharness" / "core").mkdir(parents=True)
     (tmp_path / "vibeharness" / "core" / "gate.py").write_text("", encoding="utf-8")
@@ -234,6 +271,8 @@ def test_stale_tree_paths_skips_repo_only_and_pruned_entries_in_sdist(tmp_path):
         "│   └── workflows/",
         "│       └── tests.yml",
         "├── .pre-commit-config.yaml",
+        "├── dev_only/",
+        "│   └── tools/",
         "├── scripts/",
         "│   └── golden/",
         "└── vibeharness/",
@@ -289,18 +328,19 @@ def _looks_like_code(name):
 
 
 def _file_exists(span, pruned):
-    if _repo_only_absent(span):
+    in_sdist = not os.path.isdir(os.path.join(REPO_ROOT, ".github"))
+    if in_sdist and _unshipped_in_sdist(span):
         return True
     if "/" in span:
         # sdist 也不帶 MANIFEST.in prune 掉的目錄（例如只供開發用的 scripts/golden/）
         # Nor does it ship the directories MANIFEST.in prunes (such as the development-only scripts/golden/)
-        if any(span.startswith(d + "/") and not os.path.isdir(os.path.join(REPO_ROOT, d)) for d in pruned):
+        if _under_absent_pruned(span, REPO_ROOT, pruned):
             return True
         return bool(glob.glob(os.path.join(REPO_ROOT, span)))
     if any(glob.glob(os.path.join(REPO_ROOT, d, span)) for d in _FILE_DIRS):
         return True
     # sdist 不帶 .github/：只寫檔名的 workflow 在那裡無法核對 ／ The sdist has no .github/: a bare workflow name cannot be checked there
-    return span.endswith((".yml", ".yaml")) and not os.path.isdir(os.path.join(REPO_ROOT, ".github"))
+    return in_sdist and span.endswith((".yml", ".yaml"))
 
 
 def stale_citations(text, names, literals, manifest=MANIFEST):
