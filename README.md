@@ -320,7 +320,7 @@ MultiAgentGama/
 │   ├── test_r5_languages_secrets.py    # 不支援語言的檔案列為證據缺口、設定類檔案的本機密鑰掃描
 │   ├── test_r5_sandbox_coverage.py     # 安全讀回報告、執行目錄交給 nobody（0700）、POSIX 的反斜線、每種寫法一個 include、docker 輸出上限
 │   ├── test_r6_review.py               # 第六輪審查：非 ASCII 文字與路徑、symlink 目標、基準線鍵、估算與逐測重跑的錯誤歸因
-│   ├── test_repo_docs.py               # README 檔案樹列出每個檔案、規則文件點名的名稱與路徑存在、讀 .github/ 的測試在 sdist 裡略過
+│   ├── test_repo_docs.py               # README 檔案樹列出每個檔案且沒有過時項目、規則文件點名的名稱與路徑存在、讀 .github/ 的測試在 sdist 裡略過
 │   ├── test_required_checks.py         # matrix 展開成檢查名稱、各種不一致、CONTRIBUTING 與 workflow 一致、比對 workflow 不在 PR 上跑
 │   ├── test_response_cache.py          # 回應快取：鍵與 master 相同、請求每一部分都在鍵內、未命中的幾種檔案、重新詢問時存兩把鍵
 │   ├── test_result_predicates.py       # 單一測試結果的判斷（未分類失敗、未執行、FAILED）在每種狀態下的答案

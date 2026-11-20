@@ -320,7 +320,7 @@ MultiAgentGama/
 │   ├── test_r5_languages_secrets.py    # Unsupported-language files as an evidence gap, local secret scan of config-like files
 │   ├── test_r5_sandbox_coverage.py     # Safe report read-back, run dir handed to nobody (0700), POSIX backslashes, one include per spelling, docker output caps
 │   ├── test_r6_review.py               # Sixth review round: non-ASCII text and paths, a symlinked target, baseline keys, the estimate and the blame of a per-test rerun
-│   ├── test_repo_docs.py               # README file trees list every file, rule documents cite names and paths that exist, tests reading .github/ skip in the sdist
+│   ├── test_repo_docs.py               # README file trees list every file without stale entries, rule documents cite names and paths that exist, tests reading .github/ skip in the sdist
 │   ├── test_required_checks.py         # Matrix expansion into check names, each kind of drift, CONTRIBUTING agreeing with the workflows, the drift workflow never on PRs
 │   ├── test_response_cache.py          # The response cache: the key equals master's, every part of the request is in it, the files that are a miss, a re-ask stored under both keys
 │   ├── test_result_predicates.py       # The single-result predicates (Unclassified failure, Not run, FAILED) for every status

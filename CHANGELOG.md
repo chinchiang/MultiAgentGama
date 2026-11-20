@@ -39,6 +39,7 @@
 - `tests/test_docker_sandbox.py::test_container_is_killed_on_timeout` 只檢查這次執行自己的容器名稱，不再把主機上其他 `vibeharness-` 容器（同時跑的另一份 pytest 或真的執行）當成殘留而失敗；容器真的殘留時照樣失敗（#116）。
 - `tests/test_design_refs.py`：設計文件 §4 資料模型表與 §10.2 證據缺口表的一般數字行號也算引用：§4 的範圍必須正好是 class 的定義範圍（只有部分重疊不算），§10.2 的範圍裡必須用到該列的 `GapCode`；`scripts/recite_design_refs.py` 重新對應時也會一起移動這兩張表的列。原本 `--check` 看不到它們，#109 讓 §4 從 `TestExecutionResult` 起的 8 列偏掉，到 #111 才人工發現（#115）。
 - 新增 `tests/test_bi_english.py`：英文半取自 `bi()` 第二個參數的字串常值（f-string 的欄位寫成 `{}`）、只改變數名稱或把字串搬進 helper 的參數不算改動、改了或移除的英文半要寫進兩份 CHANGELOG 的 `[Unreleased]`、workflow 只有讀取權限且基準 commit 經 env 傳入。
+- `tests/test_repo_docs.py`：新增 `stale_tree_paths` 與 `test_the_readme_file_tree_has_no_stale_entries`，反向檢查兩份 README 檔案樹列出的每個路徑在磁碟上以相符的大小寫與型別存在（目錄以 `/` 結尾、一般檔案不加 `/`），且 `tree_paths` 對缺少緊接圍欄的檔頭、無法解析的行、含額外 `/` 或 `.`／`..` 的項目名稱、跳層縮排、掛在一般檔案底下的子項目、重複項目或缺少 ` ``` ` 結束圍欄一律丟出 `ValueError`；在解開的 sdist 裡（沒有 `.github/`）略過 `.github/`、`_NOT_SHIPPED` 與 `MANIFEST.in` prune 掉且不存在的目錄（含因此空掉消失的上層目錄），其他已刪除或寫錯的路徑仍會報錯。
 
 ### 文件
 
