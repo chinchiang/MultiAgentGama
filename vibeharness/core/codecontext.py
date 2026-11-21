@@ -11,7 +11,7 @@ from typing import Iterable, List, Optional
 
 from vibeharness.core.js_lex import mask_js_source
 from vibeharness.core.models import CodeSymbol
-from vibeharness.core.sanitize import prepare_untrusted_code
+from vibeharness.core.sanitize import prepare_untrusted_code, sanitize_prompt_field
 
 _FENCE_LANG = {".py": "python", ".js": "javascript", ".jsx": "jsx", ".ts": "typescript", ".tsx": "tsx",
                ".mjs": "javascript", ".cjs": "javascript", ".mts": "typescript", ".cts": "typescript"}
@@ -207,6 +207,7 @@ def import_instructions(file_path: str, root_dir: str, symbol_name: Optional[str
     """精確地告訴模型產生的測試必須如何匯入受測程式碼。
     Tells the model exactly how the generated test must import the code under test."""
     abs_path = os.path.abspath(file_path)
+    safe_abs = sanitize_prompt_field(abs_path)
     language = language_for_file(file_path)
     if language != "python":
         return js_import_instructions(file_path, symbol_name)
@@ -214,16 +215,17 @@ def import_instructions(file_path: str, root_dir: str, symbol_name: Optional[str
         # 既不是 Python 也不是 JS/TS：沒有東西能執行它，所以不產生匯入，也不產生可執行的測試程式碼
         # Neither Python nor JS/TS: nothing can execute it, so no import or executable test code
         return (
-            f"Target file (absolute path): {abs_path}\n"
+            f"Target file (absolute path): {safe_abs}\n"
             "This is not a Python file: it can be reviewed statically but cannot be imported or "
             "executed by the test sandbox, so write no import or executable test code for it."
         )
     module = module_import_name(file_path, root_dir)
-    lines = [f"Target file (absolute path): {abs_path}"]
+    lines = [f"Target file (absolute path): {safe_abs}"]
     if module:
-        top = (symbol_name or "").split(".")[0]
-        example = f"from {module} import {top}" if top else f"import {module}"
-        lines.append(f"The directory {import_root(root_dir)} is on sys.path, so import it as: `{example}`")
+        top = sanitize_prompt_field((symbol_name or "").split(".")[0])
+        safe_mod = sanitize_prompt_field(module)
+        example = f"from {safe_mod} import {top}" if top else f"import {safe_mod}"
+        lines.append(f"The directory {sanitize_prompt_field(import_root(root_dir))} is on sys.path, so import it as: `{example}`")
     else:
         lines.append(
             "Load it with importlib: `spec = importlib.util.spec_from_file_location('target', r'<absolute path>')`"
@@ -237,10 +239,11 @@ def js_import_instructions(file_path: str, symbol_name: Optional[str] = None) ->
     How a `node:test` module (always ESM, run from a temp directory) imports the target: through its
     file:// URL, with the import form that matches the target's module system."""
     abs_path = os.path.abspath(file_path)
-    url = target_file_url(file_path)
+    safe_abs = sanitize_prompt_field(abs_path)
+    url = sanitize_prompt_field(target_file_url(file_path))
     kind = js_module_kind(file_path)
-    top = (symbol_name or "").split(".")[0] or "<symbol>"
-    lines = [f"Target file (absolute path): {abs_path}", f"Import URL (use exactly this): {url}"]
+    top = sanitize_prompt_field((symbol_name or "").split(".")[0]) or "<symbol>"
+    lines = [f"Target file (absolute path): {safe_abs}", f"Import URL (use exactly this): {url}"]
     if kind == "esm":
         lines.append(f"Module system: ESM (top-level import/export detected). Import named exports: "
                      f"`import {{ {top} }} from \"{url}\"`.")
@@ -248,14 +251,14 @@ def js_import_instructions(file_path: str, symbol_name: Optional[str] = None) ->
         lines.append(f"Module system: CommonJS (require/module.exports detected). Import it as: "
                      f"`import target from \"{url}\"; const {{ {top} }} = target;` or "
                      f"`import {{ createRequire }} from \"node:module\"; const require = createRequire(import.meta.url); "
-                     f"const {{ {top} }} = require({abs_path!r});`")
+                     f"const {{ {top} }} = require({safe_abs!r});`")
     else:
         lines.append("Module system: not detected. Try the ESM named import first; if Node reports a CommonJS "
                      "module, use the default-import form.")
     if language_for_file(file_path) == "typescript":
         lines.append("TypeScript: the file is executed with Node's type stripping (types only); it must not depend "
                      "on enums, namespaces, parameter properties or decorators; import it with its \".ts\" extension.")
-    names = js_exported_names(file_path)
+    names = [n for raw in js_exported_names(file_path) if (n := sanitize_prompt_field(raw))]
     if names:
         lines.append("Exported names detected: " + ", ".join(names))
     lines.append("Only node: built-ins and the target's own dependencies are available; never install packages.")
@@ -305,10 +308,12 @@ def render_symbol(sym: CodeSymbol, root_dir: str, max_tokens: Optional[int] = No
     """單一符號的清單區塊；若光是這個區塊就會超過 max_tokens，其原始碼會被截斷。
     One symbol's listing block; its source is truncated if the block alone would exceed max_tokens."""
     module = module_import_name(sym.file_path, root_dir)
+    safe_file = sanitize_prompt_field(sym.file_path)
+    safe_name = sanitize_prompt_field(sym.name)
     header = (
-        f"File: {sym.file_path} (Lines {sym.line_start}-{sym.line_end})"
-        + (f" | module: {module}" if module else "")
-        + f"\nSymbol: {sym.name} [{sym.symbol_type}]\n"
+        f"File: {safe_file} (Lines {sym.line_start}-{sym.line_end})"
+        + (f" | module: {sanitize_prompt_field(module)}" if module else "")
+        + f"\nSymbol: {safe_name} [{sym.symbol_type}]\n"
         f"```{fence_language(sym.file_path)}\n"
     )
     footer = "\n```"

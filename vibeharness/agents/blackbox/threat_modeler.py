@@ -13,7 +13,8 @@ from vibeharness.core.agent_call import (
     ask_batch,
 )
 from vibeharness.core.i18n import bi
-from vibeharness.core.codecontext import estimate_tokens, render_symbols, batch_symbols, target_root
+from vibeharness.core.codecontext import estimate_tokens, render_symbols, batch_symbols, target_root, truncate_to_tokens
+from vibeharness.core.sanitize import sanitize_prompt_field
 
 DEFAULT_RULES_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config", "threat_rules.yaml")
 
@@ -34,6 +35,7 @@ THREATS_SCHEMA = OutputSchema(required={"threats": LIST_OF_OBJECTS(
 # instead of rendering everything into one prompt and silently dropping the overflow.
 BATCH_MAX_TOKENS = 8000
 BATCH_MAX_SYMBOLS = 15
+ROUTES_MAX_TOKENS = 500
 # 這個代理在 agents_config.yaml 裡的 id：模型別名、呼叫計畫與呼叫紀錄都以它為鍵
 # This agent's id in agents_config.yaml: its model alias, call plans and call records are keyed by it
 AGENT_ID = "blackbox_threat_modeler"
@@ -49,6 +51,28 @@ def _batches(symbols: Optional[List[CodeSymbol]], root: str) -> List[List[CodeSy
 
 def _listing(symbols: List[CodeSymbol], root: str) -> str:
     return render_symbols(symbols, root, max_tokens=BATCH_MAX_TOKENS)
+
+
+def _routes_header(routes: Sequence[str]) -> str:
+    """從目標程式碼擷取出的路由清單：清理後截斷至 ROUTES_MAX_TOKENS，與程式碼清單一起放進不可信通道。
+    Routes extracted from target code: sanitized and capped at ROUTES_MAX_TOKENS for the untrusted code channel."""
+    cleaned = [r for raw in routes if isinstance(raw, str) if (r := sanitize_prompt_field(raw))]
+    if not cleaned:
+        return ""
+    return "Detected routes: " + truncate_to_tokens(", ".join(cleaned), ROUTES_MAX_TOKENS)
+
+
+def _target_extract(batch: List[CodeSymbol], root_dir: Optional[str], routes: Sequence[str]) -> str:
+    """單一批次的不可信目標摘錄（由 `plan` 與 `_code_guidance` 共用，確保預估與實際 `code_tokens` 一致）。
+    Untrusted target extract for one batch (shared by `plan` and `_code_guidance` so planned and actual `code_tokens` match)."""
+    routes_line = _routes_header(routes)
+    listing = ""
+    if batch:
+        root = target_root(root_dir, batch[0].file_path)
+        listing = _listing(batch, root)
+    if routes_line and listing:
+        return f"{routes_line}\n\n{listing}"
+    return routes_line or listing
 
 # 模型選的威脅 id 會被重複用在測試 id、檔名與報告的程式碼區段中：不在這個純識別字字母表內的 id
 # 會被替換，而不是在每個匯點各自跳脫
@@ -185,11 +209,13 @@ class AutomatedThreatModeler:
         )
 
     @staticmethod
-    def _code_guidance(symbols: Optional[List[CodeSymbol]], root_dir: Optional[str]) -> List[Part]:
-        if not symbols:
+    def _code_guidance(
+        symbols: Optional[List[CodeSymbol]], root_dir: Optional[str], routes: Sequence[str] = ()
+    ) -> List[Part]:
+        extract = _target_extract(symbols or [], root_dir, routes)
+        if not extract:
             return []
-        root = target_root(root_dir, symbols[0].file_path)
-        return ["Target source code:\n", Untrusted(Content.TARGET_CODE, _listing(symbols, root)), "\n\n"]
+        return ["Target source code:\n", Untrusted(Content.TARGET_CODE, extract), "\n\n"]
 
     def _model_batch(
         self,
@@ -197,17 +223,18 @@ class AutomatedThreatModeler:
         system_prompt: str,
         system_description: str,
         entrypoints_summary: str,
-        routes_summary: str,
+        routes: Sequence[str],
         root_dir: Optional[str],
         ai_components: Optional[List[str]] = None
     ) -> AgentInput:
+        routes_summary = "See target extract below" if _routes_header(routes) else "General RESTful APIs"
         prompt: List[Part] = [
             f"System Description: {system_description}\n"
             f"Entrypoints: {entrypoints_summary}\n"
             f"Detected Routes: {routes_summary}\n\n"
             f"{self._rules_guidance()}"
             f"{self._llm_rules_guidance(ai_components)}",
-            *self._code_guidance(batch, root_dir),
+            *self._code_guidance(batch, root_dir, routes),
             "Perform comprehensive threat modeling identifying vibe-coding vulnerabilities. "
             "Only include threats that are plausible for the code shown, and name the concrete function/route in attack_vector.",
         ]
@@ -218,9 +245,10 @@ class AutomatedThreatModeler:
         The calls model_system would make for these symbols: one per threat-model batch, known before the run (one
         batch even without symbols)."""
         alias = self.gateway.settings.alias_for(AGENT_ID)
+        routes = [s.name for s in (symbols or ()) if s.symbol_type == "route"]
         return [
             PlannedCalls(agent_id=AGENT_ID, model_alias=alias, kind=CallKind.THREAT_MODELER, calls=1, json_output=True,
-                         code_tokens=estimate_tokens(_listing(batch, root)), exact=True)
+                         code_tokens=estimate_tokens(_target_extract(batch, root, routes)), exact=True)
             for batch in _batches(symbols, root)
         ]
 
@@ -243,8 +271,15 @@ class AutomatedThreatModeler:
         batch are merged into one report (duplicate threat_ids are renumbered).
         `ai_components` (AI SDKs the target imports) adds the OWASP LLM Top 10 2026 checklist.
         """
-        routes_summary = ", ".join(detected_routes) if detected_routes else "General RESTful APIs"
-        entrypoints_summary = ", ".join(entrypoints) if entrypoints else "HTTP/REST Endpoints"
+        effective_routes: List[str] = (
+            list(detected_routes)
+            if detected_routes is not None
+            else [s.name for s in (symbols or ()) if s.symbol_type == "route"]
+        )
+        safe_description = sanitize_prompt_field(system_description) or "Target application"
+        cleaned_entrypoints = [ep for raw in (entrypoints or []) if isinstance(raw, str)
+                               if (ep := sanitize_prompt_field(raw))]
+        entrypoints_summary = ", ".join(cleaned_entrypoints) if cleaned_entrypoints else "HTTP/REST Endpoints"
 
         system_prompt = (
             "You are a Senior Principal Security Architect and Threat Modeling Specialist.\n"
@@ -284,7 +319,7 @@ class AutomatedThreatModeler:
         replies: List[AgentReply] = ask_batch(
             self.gateway, THREAT_MODEL_CALL, batches,
             lambda batch: self._model_batch(
-                batch, system_prompt, system_description, entrypoints_summary, routes_summary, root_dir, ai_components
+                batch, system_prompt, safe_description, entrypoints_summary, effective_routes, root_dir, ai_components
             ),
             agent_id=AGENT_ID,
             label=("威脅建模批次", "Threat modeler batch"),

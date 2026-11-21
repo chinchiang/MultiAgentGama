@@ -351,3 +351,116 @@ def test_the_runner_survives_a_cp1252_console(tmp_path):
     assert out.returncode == 5, out.stderr.decode("cp1252", "replace")
     assert b"UnicodeEncodeError" not in out.stderr
     assert _outputs(tmp_path)["verdict"] == "ERROR"
+
+
+def test_action_error_paths_always_write_outputs_and_summary_and_guard_sarif_upload(monkeypatch, tmp_path, capsys):
+    """early exit-5（無效 fail-on、non-audit 旗標、prep 失敗、非映射設定檔）皆寫出完整 ERROR outputs 與摘要；
+    舊的 `.partial.json` 會在執行前清掉，upload-artifact 與 upload-sarif 範例只讀 audit 實際寫出的路徑。
+    Early exit-5 paths (bad fail-on, non-audit flags, prep failure, non-mapping config) always write complete ERROR
+    outputs and step summary; stale `.partial.json` is cleared before running, and upload-artifact / upload-sarif use
+    runner-verified outputs."""
+    # 1. action_runner：無效 fail-on 與 non-audit 旗標都寫出 GITHUB_OUTPUT 與 GITHUB_STEP_SUMMARY
+    # action_runner: both bad fail-on and non-audit flags write GITHUB_OUTPUT and GITHUB_STEP_SUMMARY
+    for idx, (fail_on, argv) in enumerate([("bogus", ["--target", "."]), ("needs-fixes", ["--target", ".", "--estimate"])]):
+        cell = tmp_path / f"case_{idx}"
+        cell.mkdir()
+        monkeypatch.setenv("RUNNER_TEMP", str(cell))
+        monkeypatch.setenv("GITHUB_OUTPUT", str(cell / "out"))
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(cell / "summary.md"))
+        monkeypatch.setenv("VH_FAIL_ON", fail_on)
+        assert action_runner.main(argv) == 5
+        assert _outputs(cell) == {"verdict": "ERROR", "exit-code": "5", "report": "", "sarif": ""}
+        summary_text = (cell / "summary.md").read_text(encoding="utf-8")
+        assert "ERROR (exit 5)" in summary_text and "No report was written" in summary_text
+    capsys.readouterr()
+
+    # 2. 舊的 `<output>.partial.json` 在稽核開始前會被清除，不會在正常完成或用法錯誤後殘留上傳
+    # Stale `<output>.partial.json` is removed before the audit starts so it is not uploaded from a prior run
+    run_cell = tmp_path / "stale_partial"
+    run_cell.mkdir()
+    stale_partial = run_cell / "r.md.partial.json"
+    stale_partial.write_text('{"stale": true}\n', encoding="utf-8")
+    monkeypatch.chdir(run_cell)
+    for k, v in {"RUNNER_TEMP": str(run_cell), "GITHUB_OUTPUT": str(run_cell / "out"),
+                 "GITHUB_STEP_SUMMARY": str(run_cell / "summary.md"), "VH_FAIL_ON": "never",
+                 "VH_OUTPUT": "r.md", "VH_SARIF": ""}.items():
+        monkeypatch.setenv(k, v)
+
+    def ok_cli(argv):
+        (run_cell / "r.md").write_text("# report\n", encoding="utf-8")
+        with open(argv[argv.index("--summary-json") + 1], "w", encoding="utf-8") as f:
+            json.dump({"tool": "vibeharness", "exit_code": 0}, f)
+        return 0
+
+    monkeypatch.setattr(action_runner, "run_cli", ok_cli)
+    assert action_runner.main(["--target", "."]) == 0
+    assert not stale_partial.exists()
+
+    # 3. Docker 設定複製片段：非 dict YAML 或非 dict global 以 ::error:: exit 5 拒絕，不噴 AttributeError
+    # Docker config-copy snippet: non-dict YAML or non-dict global exits 5 cleanly with ::error::, no traceback
+    snippet = tmp_path / "docker_cfg.py"
+    snippet.write_text(_sandbox_config_snippet(), encoding="utf-8")
+    for bad_idx, content in enumerate(["- just\n- a\n- list\n", "global: 123\n"]):
+        bad_cfg = tmp_path / f"bad_{bad_idx}.yaml"
+        bad_cfg.write_text(content, encoding="utf-8")
+        args_file = tmp_path / f"args_{bad_idx}"
+        args_file.write_text(f"--config\0{bad_cfg}\0", encoding="utf-8")
+        res = subprocess.run(
+            [sys.executable, str(snippet), str(args_file), str(tmp_path / f"out_{bad_idx}.yaml")],
+            capture_output=True, text=True, env=_env(tmp_path), cwd=str(tmp_path),
+        )
+        assert res.returncode == 5 and "::error::" in res.stdout and "Traceback" not in res.stderr
+
+    # 4. prep／install 失敗亦寫出 ERROR outputs 與摘要；prep 通過時清除舊的 .partial.json 並輸出 partial 路徑
+    # prep / install failures write ERROR outputs & summary; prep success clears stale .partial.json and outputs partial
+    if _BASH is not None and sys.platform != "win32":
+        prep_cell = tmp_path / "prep_fail"
+        prep_cell.mkdir()
+        prep_res = subprocess.run(
+            [_BASH, "-e", "-c", _step("prep")["run"]], cwd=prep_cell, capture_output=True, text=True,
+            encoding="utf-8", env=_env(prep_cell, VH_FAIL_ON="typo", VH_MUTATION="", VH_SANDBOX="local_subprocess",
+                                       VH_FORMAT="md", VH_MODE="", VH_MAX_CALLS="", VH_MAX_FILES="", VH_OUTPUT="",
+                                       VH_SARIF=""),
+        )
+        assert prep_res.returncode == 5
+        assert _outputs(prep_cell) == {"verdict": "ERROR", "exit-code": "5", "report": "", "sarif": ""}
+        assert "ERROR (exit 5)" in (prep_cell / "summary.md").read_text(encoding="utf-8")
+
+        prep_ok = tmp_path / "prep_ok"
+        prep_ok.mkdir()
+        stale_prep = prep_ok / "vibeharness-report.md.partial.json"
+        stale_prep.write_text('{"old": 1}\n', encoding="utf-8")
+        prep_ok_res = subprocess.run(
+            [_BASH, "-e", "-c", _step("prep")["run"]], cwd=prep_ok, capture_output=True, text=True,
+            encoding="utf-8", env=_env(prep_ok, VH_FAIL_ON="never", VH_MUTATION="", VH_SANDBOX="local_subprocess",
+                                       VH_FORMAT="md", VH_MODE="", VH_MAX_CALLS="", VH_MAX_FILES="", VH_OUTPUT="",
+                                       VH_SARIF=""),
+        )
+        assert prep_ok_res.returncode == 0 and not stale_prep.exists()
+        assert _outputs(prep_ok) == {"output": "vibeharness-report.md"}
+
+        inst_step = next(s for s in _action()["runs"]["steps"] if str(s.get("name", "")).startswith("Install"))
+        inst_cell = tmp_path / "inst_fail"
+        inst_cell.mkdir()
+        inst_res = subprocess.run(
+            [_BASH, "-e", "-c", inst_step["run"]], cwd=inst_cell, capture_output=True, text=True,
+            encoding="utf-8", env=_env(inst_cell, GITHUB_ACTION_PATH="", VH_ACTION_REF="test"),
+        )
+        assert inst_res.returncode == 5
+        assert _outputs(inst_cell) == {"verdict": "ERROR", "exit-code": "5", "report": "", "sarif": ""}
+        assert "ERROR (exit 5)" in (inst_cell / "summary.md").read_text(encoding="utf-8")
+
+    action_data = _action()
+    upload_step = next(s for s in action_data["runs"]["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact@"))
+    assert "steps.prep.outputs.output != ''" in upload_step["if"]
+    upload_paths = [ln.strip() for ln in upload_step["with"]["path"].splitlines() if ln.strip()]
+    assert "${{ steps.audit.outputs.report }}" in upload_paths
+    assert "${{ steps.prep.outputs.output }}.partial.json" in upload_paths
+    assert "${{ steps.audit.outputs.sarif }}" in upload_paths
+    assert "${{ inputs.sarif }}" not in upload_paths
+
+    for doc_name in ("action.yml", "README.md", "README.en.md"):
+        with open(os.path.join(REPO_ROOT, doc_name), encoding="utf-8") as f:
+            doc = f.read()
+        assert "steps.audit.outputs.sarif != ''" in doc, doc_name
+        assert "${{ steps.audit.outputs.sarif }}" in doc, doc_name

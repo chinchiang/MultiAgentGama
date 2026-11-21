@@ -10,8 +10,8 @@ import vibeharness.core.sandbox as sandbox_mod
 from vibeharness.core.harness import VibeHarnessCommander
 from vibeharness.core.models import GeneratedTest, TestStatus
 from vibeharness.core.sandbox import (
-    DockerSandbox, SandboxUnavailableError, TIMEOUT_EXIT_CODE, DEFAULT_DOCKER_IMAGE,
-    container_target_dir, rewrite_host_paths,
+    DockerSandbox, EXECUTION_FAILURE_EXIT_CODE, NodeDockerSandbox, SandboxUnavailableError,
+    TIMEOUT_EXIT_CODE, DEFAULT_DOCKER_IMAGE, container_target_dir, rewrite_host_paths,
 )
 from vibeharness.runners.test_executor import TestSuiteExecutor
 
@@ -159,6 +159,62 @@ def test_root_harness_opens_the_run_dir_for_nobody(tmp_path, monkeypatch):
 
 def test_bind_quotes_paths_with_commas():
     assert DockerSandbox._bind("/a,b", "/t", readonly=True) == 'type=bind,"source=/a,b",target=/t,readonly'
+
+
+def test_bind_escapes_csv_quotes_and_newlines_and_rejects_cr_or_nul(tmp_path):
+    """Docker `--mount` 以 RFC-4180 CSV 解析：含引號或換行的路徑必須將 `"` 加倍並包引號，含 CR 或 NUL 則直接拒絕。
+    Docker `--mount` is parsed as RFC-4180 CSV: paths with quotes or newlines double `"` inside quotes, while CR or NUL
+    is rejected outright."""
+    injected = '/repo/x","src=/etc'
+    assert DockerSandbox._bind(injected, "/work/etc", readonly=True) == (
+        'type=bind,"source=/repo/x"",""src=/etc",target=/work/etc,readonly'
+    )
+    assert DockerSandbox._bind('/repo/has"quote', "/work/t", readonly=False) == (
+        'type=bind,"source=/repo/has""quote",target=/work/t'
+    )
+    assert DockerSandbox._bind("/repo/line\nbreak", "/work/t", readonly=True) == (
+        'type=bind,"source=/repo/line\nbreak",target=/work/t,readonly'
+    )
+    for bad in ("/repo/bad\rpath", "/repo/bad\x00path"):
+        with pytest.raises(ValueError, match="CR or NUL"):
+            DockerSandbox._bind(bad, "/work/t", readonly=True)
+    # execute_pytest_files 將無效路徑的 ValueError 轉為沙盒執行失敗，不外洩未捕捉例外
+    # execute_pytest_files turns a bad-path ValueError into a sandbox execution failure instead of crashing
+    sandbox = _sandbox()
+    monkeypatch_dir = str(tmp_path) + "\rcrlf"
+    run = sandbox.execute_pytest_files({"test_x.py": "def test_x(): pass"}, working_dir=monkeypatch_dir)
+    assert run.exit_code == EXECUTION_FAILURE_EXIT_CODE and "CR or NUL" in run.stderr
+
+
+def test_keyboard_interrupt_removes_running_docker_container(tmp_path, monkeypatch):
+    """Ctrl+C（KeyboardInterrupt）中斷 Docker 測試批次或 Node 版本探測時，必須先執行 `docker rm -f` 再向外傳遞。
+    Ctrl+C (KeyboardInterrupt) during a Docker test batch or Node version probe removes the container before propagating."""
+    sandbox = _sandbox()
+
+    def interrupted_run(*a, **k):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(sandbox, "_run", interrupted_run)
+    calls = []
+    monkeypatch.setattr(sandbox_mod.subprocess, "run", lambda cmd, **k: calls.append(cmd))
+    with pytest.raises(KeyboardInterrupt):
+        sandbox.execute_pytest_files({"test_x.py": "def test_x(): pass"}, working_dir=str(tmp_path))
+    assert len(calls) == 1 and calls[0][1:3] == ["rm", "-f"] and calls[0][3].startswith("vibeharness-")
+
+    node_sandbox = NodeDockerSandbox(timeout_seconds=30, verify=False)
+    probe_calls = []
+
+    def interrupted_probe(cmd, **k):
+        probe_calls.append(cmd)
+        if "run" in cmd:
+            raise KeyboardInterrupt()
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(sandbox_mod.subprocess, "run", interrupted_probe)
+    with pytest.raises(KeyboardInterrupt):
+        node_sandbox.probe_node_version()
+    assert len(probe_calls) == 2
+    assert probe_calls[1][1:3] == ["rm", "-f"] and probe_calls[1][3].startswith("vibeharness-")
 
 
 def test_timeout_removes_the_container(tmp_path, monkeypatch):

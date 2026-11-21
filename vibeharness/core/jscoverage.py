@@ -276,6 +276,62 @@ def _reparse_point(st: os.stat_result) -> bool:
     return bool(getattr(st, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
 
 
+def read_untrusted_bytes(
+    path: str, max_bytes: int, *, allow_hardlinks: bool = False
+) -> Tuple[Optional[bytes], Optional[Tuple[str, str]], bool]:
+    """安全讀取不受信任來源的檔案位元組：回傳 `(bytes, None, True)`；檔案不存在時 `(None, None, False)`；
+    被拒絕或無法讀取時 `(None, (中文原因, 英文原因), True)`。POSIX 以 `O_NOFOLLOW | O_NONBLOCK` 開啟，Windows 則在開啟前
+    以 `lstat` 拒絕 symlink／重新剖析點並在開啟後比對 `(st_dev, st_ino)`；只接受不超過 `max_bytes` 的一般檔案。
+    Safely reads bytes from an untrusted file: returns `(bytes, None, True)`; `(None, None, False)` when missing;
+    `(None, (zh_reason, en_reason), True)` when refused or unreadable. Opens with `O_NOFOLLOW | O_NONBLOCK` on POSIX
+    and verifies `lstat` / `fstat` identity, accepting only regular files up to `max_bytes`."""
+    try:
+        before = os.lstat(path)
+    except FileNotFoundError:
+        return None, None, False
+    except OSError as e:
+        return None, (f"無法讀取（{e}）", f"it is unreadable ({e})"), True
+    if stat.S_ISLNK(before.st_mode) or _reparse_point(before):
+        return None, ("它是 symlink／重新剖析點", "it is a symbolic link / reparse point"), True
+    if not stat.S_ISREG(before.st_mode):
+        return None, ("它不是一般檔案", "it is not a regular file"), True
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOCTTY", 0)
+    flags |= getattr(os, "O_BINARY", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return None, None, False
+    except OSError as e:
+        if e.errno == errno.ELOOP:  # 檢查之後才被換成 symlink ／ swapped for a symlink after the check
+            return None, ("它是 symlink／重新剖析點", "it is a symbolic link / reparse point"), True
+        return None, (f"無法讀取（{e}）", f"it is unreadable ({e})"), True
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None, ("它不是一般檔案", "it is not a regular file"), True
+        if (st.st_dev, st.st_ino) != (before.st_dev, before.st_ino):
+            return None, ("檢查之後被換掉了", "it was replaced after being checked"), True
+        if not allow_hardlinks and st.st_nlink > 1:
+            return None, ("它有其他硬連結", "it has other hard links"), True
+        if st.st_size > max_bytes:
+            return None, (f"超過 {max_bytes} 位元組的上限", f"it exceeds the {max_bytes}-byte cap"), True
+        chunks: List[bytes] = []
+        remaining = max_bytes + 1
+        while remaining > 0:
+            chunk = os.read(fd, min(remaining, 1024 * 1024))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if remaining <= 0:
+            return None, (f"超過 {max_bytes} 位元組的上限", f"it exceeds the {max_bytes}-byte cap"), True
+    except OSError as e:
+        return None, (f"無法讀取（{e}）", f"it is unreadable ({e})"), True
+    finally:
+        os.close(fd)
+    return b"".join(chunks), None, True
+
+
 def read_untrusted_file(path: str, max_bytes: int) -> Tuple[Optional[str], Optional[str]]:
     """讀回沙盒裡不受信任的程式碼可以改寫的檔案（junit.xml、lcov 報告）：(文字, None)；檔案不存在時 (None, None)；
     拒絕或讀不了時 (None, 雙語原因)。被測程式碼（容器裡的 nobody，或本機沙盒的同一使用者）可以把報告換成指向
@@ -292,57 +348,15 @@ def read_untrusted_file(path: str, max_bytes: int) -> Tuple[Optional[str], Optio
     file (S_ISREG) with a single hard link (not a hard link to a host file) of at most max_bytes is accepted (at most
     max_bytes + 1 bytes are read, so growing while being read is refused too). Newlines are normalised to \\n."""
     name = os.path.basename(path)
-
-    def refused(zh: str, en: str) -> Tuple[Optional[str], Optional[str]]:
+    raw, problem, exists = read_untrusted_bytes(path, max_bytes, allow_hardlinks=False)
+    if not exists:
+        return None, None
+    if problem is not None or raw is None:
+        zh, en = problem or ("無法讀取", "it is unreadable")
         reason = bi(f"拒絕讀回沙盒產生的 {name}：{zh}", f"Refused to read back the sandbox's {name}: {en}")
         logger.warning(reason)
         return None, reason
-
-    try:
-        before = os.lstat(path)
-    except FileNotFoundError:
-        return None, None
-    except OSError as e:
-        return refused(f"無法讀取（{e}）", f"it is unreadable ({e})")
-    if stat.S_ISLNK(before.st_mode) or _reparse_point(before):
-        return refused("它是 symlink／重新剖析點", "it is a symbolic link / reparse point")
-    if not stat.S_ISREG(before.st_mode):
-        return refused("它不是一般檔案", "it is not a regular file")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOCTTY", 0)
-    flags |= getattr(os, "O_BINARY", 0)
-    try:
-        fd = os.open(path, flags)
-    except FileNotFoundError:
-        return None, None
-    except OSError as e:
-        if e.errno == errno.ELOOP:  # 檢查之後才被換成 symlink ／ swapped for a symlink after the check
-            return refused("它是 symlink／重新剖析點", "it is a symbolic link / reparse point")
-        return refused(f"無法讀取（{e}）", f"it is unreadable ({e})")
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
-            return refused("它不是一般檔案", "it is not a regular file")
-        if (st.st_dev, st.st_ino) != (before.st_dev, before.st_ino):
-            return refused("檢查之後被換掉了", "it was replaced after being checked")
-        if st.st_nlink > 1:
-            return refused("它有其他硬連結", "it has other hard links")
-        if st.st_size > max_bytes:
-            return refused(f"超過 {max_bytes} 位元組的上限", f"it exceeds the {max_bytes}-byte cap")
-        chunks: List[bytes] = []
-        remaining = max_bytes + 1
-        while remaining > 0:
-            chunk = os.read(fd, min(remaining, 1024 * 1024))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        if remaining <= 0:
-            return refused(f"超過 {max_bytes} 位元組的上限", f"it exceeds the {max_bytes}-byte cap")
-    except OSError as e:
-        return refused(f"無法讀取（{e}）", f"it is unreadable ({e})")
-    finally:
-        os.close(fd)
-    return b"".join(chunks).decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n"), None
+    return raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n"), None
 
 
 # 讀回的 junit.xml／lcov 報告的大小上限：與本機沙盒（RLIMIT_FSIZE）和 docker 沙盒（--ulimit fsize）寫檔的上限相同，

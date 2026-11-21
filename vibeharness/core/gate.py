@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Sequence
 
 from vibeharness.core.i18n import bi
 from vibeharness.core.llm_gateway import budget_exhausted_calls, cache_miss_calls, invalid_calls, simulated_calls
+from vibeharness.core.settings import UNCONFIGURED_ALIAS
 from vibeharness.core.models import (
     AgentCallRecord, MutationReport, ReviewFinding, StaticFinding,
     GeneratedTest, TestExecutionResult, ThreatModelReport,
@@ -34,6 +35,7 @@ class GapCode(str, Enum):
     REVIEW_INTEGRITY = "review_integrity"
     NO_REVIEWERS = "no_reviewers"
     SINGLE_REVIEWER_MODEL = "single_reviewer_model"
+    NO_CROSS_VERIFICATION = "no_cross_verification"
     NO_SYMBOLS = "no_symbols"
     PARSE_FAILURES = "parse_failures"
     INCOMPLETE_SCAN = "incomplete_scan"
@@ -82,6 +84,7 @@ class ReviewEvidence:
     What the white-box model review left behind."""
     reviewers_configured: bool = True
     reviewer_models: Sequence[str] = ()
+    verifier_models: Sequence[str] = ()
     arbitration_applied: bool = False
     confirmed_findings: Sequence[ReviewFinding] = ()
     findings_without_model_tests: Sequence[str] = ()
@@ -245,6 +248,21 @@ def _evidence_gaps(evidence: GateEvidence) -> List[EvidenceGap]:
             f"Only one distinct reviewer model ({review.reviewer_models[0]}) is configured, so cross-model verification "
             "could not run; the findings are unfiltered single-model hypotheses"
         ))
+    else:
+        verifier_aliases = sorted({m for m in review.verifier_models if m and m != UNCONFIGURED_ALIAS})
+        if len(verifier_aliases) < 2:
+            configured = verifier_aliases[0] if verifier_aliases else "none"
+            gap(GapCode.NO_CROSS_VERIFICATION, bi(
+                f"設定的獨立驗證模型少於兩個（{configured}），無法對每位審查者執行跨模型驗證；審查發現缺乏獨立佐證",
+                f"Fewer than two distinct verifier models are configured ({configured}), so cross-model verification "
+                "cannot cover every reviewer; findings lack independent verification",
+            ))
+        elif not review.arbitration_applied and any(not f.is_simulated for f in review.confirmed_findings):
+            gap(GapCode.NO_CROSS_VERIFICATION, bi(
+                "跨模型驗證未能產生有效的確認或駁回裁決（全數為 unsure 或無法使用），審查發現仍為未經驗證的假設",
+                "Cross-model verification produced no decisive rulings (all unsure or unusable), leaving the review "
+                "findings as unverified hypotheses",
+            ))
     if not scope.symbols_found:
         gap(GapCode.NO_SYMBOLS, bi("目標中找不到可分析的原始碼符號", "No analyzable source symbols were found in the target"))
     if scope.parse_failures:

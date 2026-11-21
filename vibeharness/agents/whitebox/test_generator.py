@@ -14,7 +14,7 @@ from vibeharness.core.codecontext import (
     file_source, fence_language, import_instructions, language_for_file, module_import_name, target_root,
     truncate_to_tokens,
 )
-from vibeharness.core.sanitize import prepare_untrusted_code
+from vibeharness.core.sanitize import prepare_untrusted_code, sanitize_prompt_field
 from vibeharness.core.agent_call import (
     AgentCall, Call, CallContext, CallKind, Channel, Content, HealSpec, Part, PlannedCalls, Untrusted, ask,
     fan_out, heal_invalid_test,
@@ -240,7 +240,8 @@ class WhiteboxTestGenerator:
         symbol = next((s for s in symbols if s.name == finding.symbol_name and s.file_path == file_path), None)
         if symbol:
             source = truncate_to_tokens(prepare_untrusted_code(symbol.source_code), CODE_CONTEXT_TOKENS)
-            label = f"Source of `{symbol.name}` (lines {symbol.line_start}-{symbol.line_end})"
+            safe_name = sanitize_prompt_field(symbol.name) or "<symbol>"
+            label = f"Source of `{safe_name}` (lines {symbol.line_start}-{symbol.line_end})"
         else:
             source = file_source(file_path, max_tokens=CODE_CONTEXT_TOKENS)
             label = "Source of the target file"

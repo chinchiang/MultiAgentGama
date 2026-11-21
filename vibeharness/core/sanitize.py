@@ -1207,6 +1207,19 @@ def clean_model_text(text: str) -> str:
     return strip_invisible(_CONTROL_RE.sub("", _ANSI_RE.sub("", text.replace("\r\n", "\n"))))
 
 
+def sanitize_prompt_field(text: str) -> str:
+    """提示詞單行欄位（符號名稱、匯出名稱、系統描述、進入點）中的不可信文字：剔除不可見字元與控制字元、遮蔽機密、
+    中和偽造通道標籤，並把換行折成單一空白。
+    Untrusted text for single-line prompt fields (symbol names, exported names, system descriptions, entrypoints):
+    invisible and control characters stripped, secrets redacted, forged channel tags neutralized, and line breaks
+    collapsed to spaces."""
+    if not text:
+        return ""
+    cleaned = _CONTROL_RE.sub(" ", _ANSI_RE.sub("", prepare_untrusted_code(text)))
+    neutralized = _CHANNEL_TAG_RE.sub("<!-- tag removed -->", cleaned)
+    return re.sub(r"[\r\n]+", " ", neutralized).strip()
+
+
 _MD_IMAGE_RE = re.compile(r"!\[")
 _HTML_TAG_RE = re.compile(r"<(?=[A-Za-z/!?])")
 

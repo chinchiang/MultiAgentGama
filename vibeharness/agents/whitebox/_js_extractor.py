@@ -36,6 +36,9 @@ _JS_METHOD_GENERIC = rf"<[^();]{{0,{_JS_GENERIC_LOOKBACK}}}>"
 # How many characters of a route argument, a parameter list or a route object are inspected: the verdict only needs
 # the beginning, and slicing out the whole argument (which may nest to the end of the file) takes quadratic time
 _JS_ARG_SCAN = 4096
+# 路由路徑文字的長度上限（且不得含換行）：真正的 HTTP 路由簡短且單行，多行或過長字面值不是路由
+# Maximum length of a route path (which must also be single-line): real HTTP routes are short and single-line
+_JS_MAX_ROUTE_PATH = 256
 # 每個檔案所有符號原始碼的總字元數上限（檔案大小的倍數再加上固定額度）：巢狀類別／路由的片段彼此包含，
 # 總量可能是檔案大小的平方；超過時該檔案略過並回報為解析失敗
 # The cap on the total source characters of all symbols of one file (a multiple of the file size plus a fixed
@@ -524,6 +527,10 @@ class _JsTsExtractor:
         spans.append((start, close_paren))
         return [(s, e) for s, e in spans if _NON_SPACE_RE.search(content, s, e)]
 
+    @staticmethod
+    def _valid_route_text(text: Optional[str]) -> bool:
+        return text is not None and "\r" not in text and "\n" not in text and len(text) <= _JS_MAX_ROUTE_PATH
+
     def _route_path(self, content: str, masked: str, open_paren: int, close_paren: int,
                     known_router: bool) -> Optional[str]:
         """路由註冊呼叫的路徑文字；不像路由註冊時回傳 None。
@@ -541,8 +548,9 @@ class _JsTsExtractor:
         handler = len(args) >= 2 and self._handler_like(masked[last_start:min(last_end, last_start + _JS_ARG_SCAN)])
         if raw[:1] in "\"'":
             path = self._first_string_literal(raw)
-            if path is None:
+            if not self._valid_route_text(path):
                 return None
+            assert path is not None
             if path.startswith("/") or path == "*":
                 return path if known_router or handler else None
             # 已知路由器上的空路徑（掛在帶前綴的路由器上）；`app.get('port')` 是設定讀取，不是路由
@@ -550,10 +558,11 @@ class _JsTsExtractor:
             return '""' if known_router and path == "" and len(args) >= 2 else None
         if raw[:1] == "`":
             template = self._first_string_literal(raw)
-            if template is None or "/" not in template:
+            if not self._valid_route_text(template) or template is None or "/" not in template:
                 return None
             return template if known_router or handler else None
-        if raw[:1] == "/" and known_router and handler and not long_arg and _JS_REGEX_LITERAL_RE.fullmatch(raw):
+        if raw[:1] == "/" and known_router and handler and not long_arg and self._valid_route_text(raw) \
+                and _JS_REGEX_LITERAL_RE.fullmatch(raw):
             # Express 的正規表達式路徑：`app.get(/^\/users\/(\d+)$/, h)` -> `GET /^\/users\/(\d+)$/`
             # An Express regex path: `app.get(/^\/users\/(\d+)$/, h)` -> `GET /^\/users\/(\d+)$/`
             return raw
@@ -561,7 +570,7 @@ class _JsTsExtractor:
         # 因為 Express 的 `app.get('setting')`／`app.get(SETTING_NAME)` 是讀取應用程式設定
         # An identifier path counts only with a handler argument: `app.get(PATH)` without one is intentionally
         # not a route, because Express's `app.get('setting')` / `app.get(SETTING_NAME)` reads an app setting
-        if known_router and handler and not long_arg \
+        if known_router and handler and not long_arg and self._valid_route_text(raw) \
                 and re.fullmatch(r"[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*", raw):
             return raw
         return None
@@ -621,7 +630,7 @@ class _JsTsExtractor:
             if content[first] not in "\"'`":
                 continue
             path = self._first_string_literal(content[first:min(close_paren, first + _JS_ARG_SCAN)])
-            if path is None or not path.startswith("/"):
+            if not self._valid_route_text(path) or path is None or not path.startswith("/"):
                 continue
             # 沿著鏈往後：.get(h).post(h)...
             # Follow the chain: .get(h).post(h)...
@@ -656,8 +665,8 @@ class _JsTsExtractor:
         """`{method, url|path}` 路由物件的名稱（`GET|POST /x`）；缺少任何一個時回傳 None。
         The name of a `{method, url|path}` route object (`GET|POST /x`); None when either is missing."""
         methods = re.search(r"\bmethod\s*:\s*(\[[^\]]*\]|['\"][A-Za-z*]+['\"])", obj)
-        path_m = re.search(r"\b(?:url|path)\s*:\s*(['\"`])([^'\"`\n]*)\1", obj)
-        if not methods or not path_m:
+        path_m = re.search(r"\b(?:url|path)\s*:\s*(['\"`])([^'\"`\r\n]*)\1", obj)
+        if not methods or not path_m or len(path_m.group(2)) > _JS_MAX_ROUTE_PATH:
             return None
         verb_list = [v.upper() for v in re.findall(r"[A-Za-z]+|\*", methods.group(1))]
         return f"{'|'.join(verb_list)} {path_m.group(2)}"

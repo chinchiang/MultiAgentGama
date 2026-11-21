@@ -834,7 +834,11 @@ def _action_split(tmp_path, value):
         lines = f.read().splitlines()
     begin = next(i for i, line in enumerate(lines) if "extra-args-split-begin" in line)
     end = next(i for i, line in enumerate(lines) if "extra-args-split-end" in line)
-    block = "\n".join(line.strip() for line in lines[begin + 1:end]).replace("python -c", f'"{sys.executable}" -c')
+    block = (
+        "\n".join(line.strip() for line in lines[begin + 1:end])
+        .replace("python -I -c", f'"{sys.executable}" -I -c')
+        .replace("python -c", f'"{sys.executable}" -c')
+    )
     script = f"set -e\n{block}\nprintf '%s\\n' \"${{extra[@]}}\""
     out = subprocess.run([shutil.which("bash"), "-c", script], cwd=tmp_path, capture_output=True, text=True, encoding="utf-8",
                          env={**os.environ, "VH_EXTRA": value, "RUNNER_TEMP": str(tmp_path)})
