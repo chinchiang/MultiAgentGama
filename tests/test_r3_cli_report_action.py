@@ -347,39 +347,42 @@ def test_fail_on_is_validated_before_the_audit(tmp_path, value, code):
     assert ("unknown fail-on value" in out.stdout) == (code == 5)
 
 
-_PATH_FILTER = "sys.path[:] = [p for p in sys.path if p and os.path.abspath(p) != os.getcwd()]"
-
-
 def test_python_helpers_in_the_action_never_import_from_the_workspace():
-    """action 裡的每個 python 呼叫都不從工作目錄（受稽核的 checkout）匯入：-I，或先把 '' 從 sys.path 移除。
-    No python call in the action imports from the working directory (the audited checkout): -I, or '' is dropped
-    from sys.path first."""
+    """action 裡的每個 python 呼叫都帶 `-I`（忽略工作目錄、PYTHONPATH 與 PYTHONUSERBASE），不依賴手動過濾 sys.path。
+    Every python call in the action passes `-I` (ignoring cwd, PYTHONPATH and PYTHONUSERBASE) rather than filtering
+    sys.path manually."""
     with open(os.path.join(REPO_ROOT, "action.yml"), encoding="utf-8") as f:
         action = yaml.safe_load(f)
+    seen = 0
     for step in action["runs"]["steps"]:
         for line in str(step.get("run", "")).splitlines():
             stripped = line.strip()
             if stripped.startswith("#") or "python " not in stripped:
                 continue
             for call in stripped.split("python ")[1:]:
-                assert call.startswith("-I ") or _PATH_FILTER in call \
-                    or call.startswith("- "), stripped
-    docker = _audit_script().split("<<'PY'", 1)[1].split("\nPY\n", 1)[0]
-    assert docker.splitlines()[1:3] == ["import os, sys", _PATH_FILTER]
+                seen += 1
+                assert call.startswith("-I "), stripped
+    assert seen >= 7
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash unavailable")
 def test_the_extra_args_split_ignores_a_planted_shlex_module(tmp_path):
-    """工作目錄裡的 shlex.py 不會被切字片段匯入 ／ A shlex.py in the working directory is not imported by the split snippet."""
+    """工作目錄或 PYTHONPATH 裡的 shlex.py 都不會被 `-I` 切字片段匯入 ／ Neither cwd nor PYTHONPATH can inject shlex.py
+    into the `-I` split snippet."""
     marker = tmp_path / "PWNED"
-    (tmp_path / "shlex.py").write_text(f"open({str(marker)!r}, 'w').write('x')\nsplit = lambda s: ['planted']\n",
-                                       encoding="utf-8")
+    payload = f"open({str(marker)!r}, 'w').write('x')\nsplit = lambda s: ['planted']\n"
+    (tmp_path / "shlex.py").write_text(payload, encoding="utf-8")
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "shlex.py").write_text(payload, encoding="utf-8")
     script = _audit_script()
     block = script.split("# extra-args-split-begin", 1)[1].split("# extra-args-split-end", 1)[0]
-    block = block.replace("python -c", f'"{sys.executable}" -c')
-    out = subprocess.run([shutil.which("bash"), "-e", "-c", block + '\nprintf "%s\\n" "${extra[@]}"'], cwd=tmp_path,
-                         capture_output=True, text=True, encoding="utf-8",
-                         env={**os.environ, "VH_EXTRA": "--max-files 3", "RUNNER_TEMP": str(tmp_path)})
+    block = block.replace("python -I -c", f'"{sys.executable}" -I -c').replace("python -c", f'"{sys.executable}" -c')
+    out = subprocess.run(
+        [shutil.which("bash"), "-e", "-c", block + '\nprintf "%s\\n" "${extra[@]}"'], cwd=tmp_path,
+        capture_output=True, text=True, encoding="utf-8",
+        env={**os.environ, "PYTHONPATH": str(src_dir), "VH_EXTRA": "--max-files 3", "RUNNER_TEMP": str(tmp_path)},
+    )
     assert out.returncode == 0, out.stderr
     assert out.stdout.split() == ["--max-files", "3"] and not marker.exists()
 

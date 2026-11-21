@@ -286,22 +286,83 @@ def test_link_fallback_posix(tmp_path, monkeypatch):
     assert link_node_modules(run_dir, base) is None
 
 
-@pytest.mark.parametrize("outcome, linked", [(0, True), (1, False), (OSError("no cmd"), False)])
+@pytest.mark.parametrize("outcome, linked", [(None, True), (OSError("denied"), False), ("missing", False)])
 def test_link_junction(tmp_path, monkeypatch, outcome, linked):
-    run_dir, base = _node_dirs(tmp_path)
+    """Windows 建立 node_modules junction 時直接呼叫 `_winapi.CreateJunction(source, link)`，絕不經由 `cmd.exe` 展開路徑字元。
+    On Windows, node_modules junctions use `_winapi.CreateJunction(source, link)` directly, never `cmd.exe`."""
+    import types
+    tricky = tmp_path / "proj &calc %TEMP%"
+    (tricky / "node_modules").mkdir(parents=True)
+    run_dir = tmp_path / "run &calc %TEMP%"
+    run_dir.mkdir()
     calls = []
 
-    def fake_run(cmd, **kw):
-        calls.append(cmd)
+    def fake_create_junction(src, dst):
+        calls.append((src, dst))
         if isinstance(outcome, Exception):
             raise outcome
-        return subprocess.CompletedProcess(cmd, outcome)
+
     monkeypatch.setattr(sandbox_mod.os, "symlink", _no_symlink)
-    monkeypatch.setattr(sandbox_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        sandbox_mod.subprocess, "run",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("cmd.exe / subprocess.run must not be called")),
+    )
     monkeypatch.setattr(sys, "platform", "win32")
-    result = link_node_modules(run_dir, base)
-    assert calls and calls[0][:4] == ["cmd", "/c", "mklink", "/J"]
-    assert result == (os.path.join(run_dir, "node_modules") if linked else None)
+    if outcome == "missing":
+        monkeypatch.setitem(sys.modules, "_winapi", None)
+    else:
+        monkeypatch.setitem(sys.modules, "_winapi", types.SimpleNamespace(CreateJunction=fake_create_junction))
+    result = link_node_modules(str(run_dir), str(tricky))
+    if outcome != "missing":
+        assert calls == [(os.path.join(str(tricky), "node_modules"), os.path.join(str(run_dir), "node_modules"))]
+    assert result == (os.path.join(str(run_dir), "node_modules") if linked else None)
+
+
+def test_local_pytest_sandbox_ignores_ancestor_pytest_ini_and_kills_tree_on_interrupt(tmp_path, monkeypatch):
+    """沙盒寫入空 `pytest.ini` 並傳 `-c`，讓上層目錄的毒化設定無效；`_run` 遇 KeyboardInterrupt 時亦先砍掉行程樹。
+    The sandbox writes an empty `pytest.ini` and passes `-c` so ancestor configs are ignored; `_run` also kills the
+    process tree on KeyboardInterrupt."""
+    from vibeharness.core.sandbox import DockerSandbox, LocalSubprocessSandbox
+
+    poison_parent = tmp_path / "tmp_parent"
+    poison_parent.mkdir()
+    (poison_parent / "pytest.ini").write_text("[pytest]\naddopts = --no-such-poison-flag-vh\n", encoding="utf-8")
+    target = tmp_path / "target_app"
+    target.mkdir()
+    (target / "pytest.ini").write_text("[pytest]\naddopts = --another-bad-flag-vh\n", encoding="utf-8")
+
+    real_mkdtemp = sandbox_mod.tempfile.mkdtemp
+    monkeypatch.setattr(sandbox_mod.tempfile, "mkdtemp", lambda prefix="": real_mkdtemp(prefix=prefix, dir=str(poison_parent)))
+    run = LocalSubprocessSandbox(timeout_seconds=15).execute_pytest_files(
+        {"test_ok.py": "def test_ok():\n    assert 1 + 1 == 2\n"}, working_dir=str(target)
+    )
+    assert run.exit_code == 0 and run.junit_xml and 'failures="0"' in run.junit_xml
+
+    docker_run_dir = tmp_path / "docker_run"
+    docker_run_dir.mkdir()
+    cmd, _, _ = DockerSandbox(timeout_seconds=30, verify=False)._build_command(
+        str(docker_run_dir), ["test_vh_000.py"], str(target), False, None, None
+    )
+    assert "-c" in cmd and cmd[cmd.index("-c") + 1] == "/dev/null"
+
+    killed = []
+    real_kill_tree = LocalSubprocessSandbox._kill_tree
+
+    def spy_kill_tree(proc):
+        killed.append(proc.pid)
+        real_kill_tree(proc)
+
+    monkeypatch.setattr(LocalSubprocessSandbox, "_kill_tree", staticmethod(spy_kill_tree))
+    monkeypatch.setattr(
+        LocalSubprocessSandbox, "_wait_for_exit",
+        staticmethod(lambda proc, timeout: (_ for _ in ()).throw(KeyboardInterrupt())),
+    )
+    with pytest.raises(KeyboardInterrupt):
+        LocalSubprocessSandbox._run(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            cwd=str(target), env=os.environ.copy(), timeout=5,
+        )
+    assert len(killed) == 1
 
 
 def test_node_path_fallback(tmp_path, monkeypatch):

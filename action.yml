@@ -15,7 +15,8 @@ branding:
 #     contents: read
 #     security-events: write
 #   steps:
-#   - uses: chinchiang/MultiAgentGama@v0.15.0
+#   - id: audit
+#     uses: chinchiang/MultiAgentGama@v0.15.0
 #     with:
 #       target: src
 #       mode: hybrid
@@ -27,9 +28,9 @@ branding:
 #       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
 #       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 #   - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
-#     if: always()
+#     if: always() && steps.audit.outputs.sarif != ''
 #     with:
-#       sarif_file: vibeharness.sarif
+#       sarif_file: ${{ steps.audit.outputs.sarif }}
 # 供應商金鑰從環境變數讀取，action 不會印出。受稽核的程式碼會送到每一家設定的供應商（寫死的密鑰會先遮蔽）。
 # The provider keys are read from the environment; the action never prints them. The audited code
 # is sent to every configured provider (hard-coded secrets are redacted first).
@@ -120,10 +121,10 @@ inputs:
 outputs:
   verdict:
     description: "READY_TO_SHIP | NEEDS_FIXES | BLOCKED_CRITICAL_RISK | INCONCLUSIVE（harness 本身失敗時為 ERROR）／ (or ERROR when the harness itself failed)"
-    value: ${{ steps.audit.outputs.verdict }}
+    value: ${{ steps.audit.outputs.verdict || steps.prep.outputs.verdict || 'ERROR' }}
   exit-code:
     description: "CLI 的 exit code（0-3 判定、4 live 失敗、5 harness 錯誤、130 中斷）／ The CLI exit code (0-3 verdicts, 4 live failure, 5 harness error, 130 interrupted)"
-    value: ${{ steps.audit.outputs.exit-code }}
+    value: ${{ steps.audit.outputs.exit-code || steps.prep.outputs.exit-code || '5' }}
   report:
     description: >-
       這次稽核寫出的報告路徑（output 留空時為依 format 推導的名稱）；稽核沒有完成（verdict 為 ERROR）時為空 ／
@@ -155,32 +156,38 @@ runs:
       run: |
         # 在安裝與建置 Docker 映像之前就驗證（純 bash），打錯字不會等到建置或整個稽核之後才失敗
         # Validated before the install and the Docker image build (plain bash), so a typo never fails only after a build or a whole audit
+        vh_fail5() {
+          echo "::error::$1"
+          [ -n "${GITHUB_OUTPUT:-}" ] && printf 'verdict=ERROR\nexit-code=5\nreport=\nsarif=\n' >> "$GITHUB_OUTPUT"
+          [ -n "${GITHUB_STEP_SUMMARY:-}" ] && printf '## VibeHarness-MAS: ERROR (exit 5)\n沒有寫出報告 ／ No report was written\n' >> "$GITHUB_STEP_SUMMARY"
+          exit 5
+        }
         case "$VH_FAIL_ON" in
           blocked|needs-fixes|inconclusive|never) ;;
-          *) echo "::error::unknown fail-on value '$VH_FAIL_ON' (use blocked, needs-fixes, inconclusive or never)"; exit 5 ;;
+          *) vh_fail5 "unknown fail-on value '$VH_FAIL_ON' (use blocked, needs-fixes, inconclusive or never)" ;;
         esac
         case "$VH_MUTATION" in
           true|false|"") ;;
-          *) echo "::error::unknown mutation value '$VH_MUTATION' (use true, false or leave empty)"; exit 5 ;;
+          *) vh_fail5 "unknown mutation value '$VH_MUTATION' (use true, false or leave empty)" ;;
         esac
         case "$VH_SANDBOX" in
           local_subprocess|docker) ;;
-          *) echo "::error::unknown sandbox value '$VH_SANDBOX' (use local_subprocess or docker)"; exit 5 ;;
+          *) vh_fail5 "unknown sandbox value '$VH_SANDBOX' (use local_subprocess or docker)" ;;
         esac
         case "$VH_MODE" in
           live|hybrid|mock|"") ;;
-          *) echo "::error::unknown mode value '$VH_MODE' (use live, hybrid, mock or leave empty)"; exit 5 ;;
+          *) vh_fail5 "unknown mode value '$VH_MODE' (use live, hybrid, mock or leave empty)" ;;
         esac
         case "$VH_FORMAT" in
           md|json) ;;
-          *) echo "::error::unknown format value '$VH_FORMAT' (use md or json)"; exit 5 ;;
+          *) vh_fail5 "unknown format value '$VH_FORMAT' (use md or json)" ;;
         esac
         # 數值 input 留空 = 不傳旗標（設定檔決定）；有填就必須是整數 ／ an empty numeric input passes no flag (the config decides); a set one must be an integer
         if [ -n "$VH_MAX_CALLS" ] && ! [[ "$VH_MAX_CALLS" =~ ^[0-9]+$ ]]; then
-          echo "::error::max-model-calls must be a non-negative integer or empty, got '$VH_MAX_CALLS'"; exit 5
+          vh_fail5 "max-model-calls must be a non-negative integer or empty, got '$VH_MAX_CALLS'"
         fi
         if [ -n "$VH_MAX_FILES" ] && ! [[ "$VH_MAX_FILES" =~ ^[1-9][0-9]*$ ]]; then
-          echo "::error::max-files must be an integer >= 1 or empty, got '$VH_MAX_FILES'"; exit 5
+          vh_fail5 "max-files must be an integer >= 1 or empty, got '$VH_MAX_FILES'"
         fi
         # output 留空：依 format 推導報告名稱 ／ empty output: derive the report name from format
         output="$VH_OUTPUT"
@@ -188,11 +195,14 @@ runs:
           if [ "$VH_FORMAT" = json ]; then output=vibeharness-report.json; else output=vibeharness-report.md; fi
         fi
         case "$output" in
-          *$'\n'*|*$'\r'*) echo "::error::output must not contain a line break"; exit 5 ;;
+          *$'\n'*|*$'\r'*) vh_fail5 "output must not contain a line break" ;;
         esac
         case "$VH_SARIF" in
-          *$'\n'*|*$'\r'*) echo "::error::sarif must not contain a line break"; exit 5 ;;
+          *$'\n'*|*$'\r'*) vh_fail5 "sarif must not contain a line break" ;;
         esac
+        if [ ! -L "${output}.partial.json" ] && [ -f "${output}.partial.json" ]; then
+          rm -f -- "${output}.partial.json"
+        fi
         printf 'output=%s\n' "$output" >> "$GITHUB_OUTPUT"
 
     - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -219,6 +229,8 @@ runs:
         if [ -z "$GITHUB_ACTION_PATH" ] || [ ! -f "$GITHUB_ACTION_PATH/pyproject.toml" ] \
           || [ ! -f "$GITHUB_ACTION_PATH/requirements.lock" ] || [ ! -f "$GITHUB_ACTION_PATH/requirements-build.txt" ]; then
           echo "::error::VibeHarness-MAS action sources not found at GITHUB_ACTION_PATH='$GITHUB_ACTION_PATH' (ref '${VH_ACTION_REF:-<none>}')"
+          [ -n "${GITHUB_OUTPUT:-}" ] && printf 'verdict=ERROR\nexit-code=5\nreport=\nsarif=\n' >> "$GITHUB_OUTPUT"
+          [ -n "${GITHUB_STEP_SUMMARY:-}" ] && printf '## VibeHarness-MAS: ERROR (exit 5)\n沒有寫出報告 ／ No report was written\n' >> "$GITHUB_STEP_SUMMARY"
           exit 5
         fi
         echo "Installing VibeHarness-MAS from $GITHUB_ACTION_PATH (ref ${VH_ACTION_REF:-local})"
@@ -244,6 +256,8 @@ runs:
         # so they match the action version
         if ! command -v docker >/dev/null 2>&1; then
           echo "::error::sandbox: docker needs a runner with Docker (e.g. ubuntu-latest)"
+          [ -n "${GITHUB_OUTPUT:-}" ] && printf 'verdict=ERROR\nexit-code=5\nreport=\nsarif=\n' >> "$GITHUB_OUTPUT"
+          [ -n "${GITHUB_STEP_SUMMARY:-}" ] && printf '## VibeHarness-MAS: ERROR (exit 5)\n沒有寫出報告 ／ No report was written\n' >> "$GITHUB_STEP_SUMMARY"
           exit 5
         fi
         docker build --quiet -t vibeharness-sandbox:latest -f "$GITHUB_ACTION_PATH/docker/sandbox.Dockerfile" "$GITHUB_ACTION_PATH"
@@ -269,16 +283,21 @@ runs:
       run: |
         # fail-on、mutation、sandbox、mode、format 與數值 input 已在 prep step（安裝與建置之前）驗證過
         # fail-on, mutation, sandbox, mode, format and the numeric inputs were validated by the prep step (before the install and build)
-        # 以下的 python 片段都以 -I 執行，或先把工作目錄從 sys.path 移除：-c 與 stdin 腳本會把工作目錄（受稽核的 checkout）放在最前面，
-        # 那裡放的 shlex.py、yaml.py 或 vibeharness/ 就會在持有金鑰的 step 裡被匯入
-        # Every python snippet below runs with -I or drops the working directory from sys.path first: -c and stdin scripts put the working directory (the
-        # audited checkout) first, so a shlex.py, yaml.py or vibeharness/ planted there would be imported in a step
-        # that holds the keys
+        # 以下的每個 python 呼叫都帶 -I（忽略工作目錄、PYTHONPATH 與 PYTHONUSERBASE）：受稽核的 checkout 放的
+        # shlex.py、yaml.py 或 vibeharness/ 絕不會在持有金鑰的 step 裡被匯入
+        # Every python call below runs with -I (ignoring cwd, PYTHONPATH and PYTHONUSERBASE): a shlex.py, yaml.py or
+        # vibeharness/ planted in the audited checkout is never imported in a step that holds the keys
         # extra-args 以 shlex 規則切字（引號有效；不執行任何 shell、不展開 glob）；切不開就以 exit 5 失敗
         # extra-args is split by shlex rules (quotes work; no shell execution, no glob expansion); unparsable input exits 5
         # extra-args-split-begin
-        python -c 'import os, sys; sys.path[:] = [p for p in sys.path if p and os.path.abspath(p) != os.getcwd()]; import shlex; sys.stdout.write("".join(a + "\0" for a in shlex.split(sys.argv[1])))' "$VH_EXTRA" > "$RUNNER_TEMP/vh_extra_args" \
-          || { echo "::error::extra-args could not be parsed: $VH_EXTRA"; exit 5; }
+        vh_error_outputs() {
+          [ -n "${GITHUB_OUTPUT:-}" ] && printf 'verdict=ERROR\nexit-code=5\nreport=\nsarif=\n' >> "$GITHUB_OUTPUT"
+          [ -n "${GITHUB_STEP_SUMMARY:-}" ] && printf '## VibeHarness-MAS: ERROR (exit 5)\n沒有寫出報告 ／ No report was written\n' >> "$GITHUB_STEP_SUMMARY"
+          exit 5
+        }
+        vh_fail5() { echo "::error::$1"; vh_error_outputs; }
+        python -I -c 'import shlex, sys; sys.stdout.write("".join(a + "\0" for a in shlex.split(sys.argv[1])))' "$VH_EXTRA" > "$RUNNER_TEMP/vh_extra_args" \
+          || vh_fail5 "extra-args could not be parsed: $VH_EXTRA"
         extra=()
         while IFS= read -r -d '' arg; do extra+=("$arg"); done < "$RUNNER_TEMP/vh_extra_args"
         # extra-args-split-end
@@ -299,30 +318,37 @@ runs:
         # non-audit flags (--estimate, --help, --version, --init-config, --force, --summary-json) and flags with a
         # dedicated input (--output, --format, --sarif) are refused with exit 5; a --config is written to vh_config_arg
         python -I -c 'import sys; from vibeharness.action_runner import extra_args_main; sys.exit(extra_args_main(sys.argv[1], sys.argv[2]))' \
-          "$RUNNER_TEMP/vh_extra_args" "$RUNNER_TEMP/vh_config_arg" || exit 5
+          "$RUNNER_TEMP/vh_extra_args" "$RUNNER_TEMP/vh_config_arg" || vh_error_outputs
         has_config=0
         [ -e "$RUNNER_TEMP/vh_config_arg" ] && has_config=1
         case "$VH_SANDBOX" in
           local_subprocess)
             if [ "$has_config" = 0 ]; then
               bundled=$(python -I -c 'from vibeharness.core.llm_gateway import DEFAULT_CONFIG_PATH; print(DEFAULT_CONFIG_PATH)') \
-                || { echo "::error::could not locate the bundled config"; exit 5; }
+                || vh_fail5 "could not locate the bundled config"
               config_override=(--config "$bundled")
             fi ;;
           docker)
             cfg="$RUNNER_TEMP/vibeharness-sandbox-config.yaml"
-            python - "$RUNNER_TEMP/vh_extra_args" "$cfg" <<'PY' || { echo "::error::could not write the docker sandbox config"; exit 5; }
-        import os, sys
-        sys.path[:] = [p for p in sys.path if p and os.path.abspath(p) != os.getcwd()]
-        import yaml
+            python -I - "$RUNNER_TEMP/vh_extra_args" "$cfg" <<'PY' || vh_fail5 "could not write the docker sandbox config"
+        import sys, yaml
         from vibeharness.action_runner import config_from_extra_args
         from vibeharness.core.llm_gateway import DEFAULT_CONFIG_PATH
         with open(sys.argv[1], encoding="utf-8") as f:
             args = [a for a in f.read().split("\0") if a]
         # 與 CLI 相同的解析器決定底稿（-vc x、-vcx、--config=x 都認得）／ The CLI's own parser picks the base (-vc x, -vcx, --config=x all work)
         base = config_from_extra_args(args) or DEFAULT_CONFIG_PATH
-        with open(base, encoding="utf-8") as f:
-            config = yaml.safe_load(f) or {}
+        try:
+            with open(base, encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+        except (OSError, yaml.YAMLError) as e:
+            print(f"::error::could not read config '{base}': {e}", flush=True)
+            sys.exit(5)
+        if config is None:
+            config = {}
+        if not isinstance(config, dict) or not isinstance(config.get("global") or {}, dict):
+            print(f"::error::config '{base}' must be a YAML mapping with a mapping 'global' section", flush=True)
+            sys.exit(5)
         # JS／TS 測試也進 docker：底稿的 sandbox_node_provider: local_subprocess 不能把它們留在 runner 上
         # JS / TS tests go to docker too: a base's sandbox_node_provider: local_subprocess must not keep them on the runner
         config["global"] = {**(config.get("global") or {}), "sandbox_provider": "docker", "sandbox_node_provider": "docker"}
@@ -331,7 +357,7 @@ runs:
         print(f"sandbox: docker (config based on {base})")
         PY
             config_override=(--config "$cfg") ;;
-          *) echo "::error::unknown sandbox value '$VH_SANDBOX'"; exit 5 ;;
+          *) vh_fail5 "unknown sandbox value '$VH_SANDBOX'" ;;
         esac
         args=(--target "$VH_TARGET" --output "$VH_OUTPUT" --format "$VH_FORMAT")
         # mode／max-model-calls／max-files 只在有填時才傳：留空時由 --config（或內建設定檔）決定，
@@ -360,11 +386,11 @@ runs:
         exec python -I -m vibeharness.action_runner "${args[@]}" "${extra[@]}" "${config_override[@]}"
 
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-      if: always()
+      if: always() && steps.prep.outputs.output != ''
       with:
         name: ${{ inputs.artifact-name }}
         path: |
-          ${{ steps.prep.outputs.output }}
+          ${{ steps.audit.outputs.report }}
           ${{ steps.prep.outputs.output }}.partial.json
-          ${{ inputs.sarif }}
+          ${{ steps.audit.outputs.sarif }}
         if-no-files-found: ignore

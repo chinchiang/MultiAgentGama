@@ -496,3 +496,124 @@ def test_a_discovered_config_that_filters_files_blocks_ready_to_ship_until_expli
     cfg_noop["global"]["exclude"] = ["vendor/*"]
     _write(target, cfg_noop, "vibeharness.yaml")
     assert _run_cli(monkeypatch, "-t", str(target), "-o", str(report_md)) == 0
+
+
+def test_discovered_config_refuses_symlinks_oversized_files_and_resource_or_threshold_relaxations(
+    fake_live, monkeypatch, tmp_path
+):
+    """探索到的設定檔拒絕 symlink／過大檔案，禁止關閉記憶體上限、拉高逾時或突變上限、開啟突變測試或壓低突變門檻；
+    且探索到的設定檔把驗證者縮成少於兩個模型時，CLI 只能回 INCONCLUSIVE（exit 3）。
+    Discovered configs refuse symlinks / oversized files, forbid disabling sandbox_memory_mb, raising timeouts or
+    mutation caps, enabling mutation_testing, or lowering mutation_min_score; and shrinking verifiers below two models
+    yields INCONCLUSIVE (exit 3)."""
+    reference = _bundled()
+    for glob, expected_key in (
+        ({"sandbox_memory_mb": 0}, "global.sandbox_memory_mb"),
+        ({"sandbox_memory_mb": 4096}, "global.sandbox_memory_mb"),
+        ({"sandbox_timeout_seconds": 3600}, "global.sandbox_timeout_seconds"),
+        ({"per_test_timeout_seconds": 600}, "global.per_test_timeout_seconds"),
+        ({"timeout_seconds": 600}, "global.timeout_seconds"),
+        ({"mutation_max_mutants": 100}, "global.mutation_max_mutants"),
+        ({"mutation_max_copy_mb": 500}, "global.mutation_max_copy_mb"),
+        ({"mutation_testing": True}, "global.mutation_testing"),
+        ({"mutation_min_score": 10}, "global.mutation_min_score"),
+    ):
+        assert discovered_config_violations({"global": glob}, reference) == [expected_key], glob
+
+    # 維持或加嚴（較小記憶體／逾時、較高突變門檻、關閉突變測試）仍被允許
+    # Keeping or tightening (smaller memory / timeouts, higher mutation_min_score, mutation_testing: false) stays allowed
+    for allowed in (
+        {"sandbox_memory_mb": 1024}, {"sandbox_memory_mb": None},
+        {"sandbox_timeout_seconds": 60}, {"sandbox_timeout_seconds": 0},
+        {"per_test_timeout_seconds": 15}, {"per_test_timeout_seconds": 0},
+        {"timeout_seconds": 60},
+        {"mutation_max_mutants": 5}, {"mutation_max_copy_mb": 50}, {"mutation_max_copy_mb": 0},
+        {"mutation_testing": False}, {"mutation_min_score": 85},
+    ):
+        assert discovered_config_violations({"global": allowed}, reference) == [], allowed
+
+    # Symlink 與超過 DEFAULT_MAX_FILE_BYTES 的探索設定檔在載入時即以 ConfigError（exit 5）拒絕
+    # Symlinked and oversized discovered config files are refused at load time with ConfigError (exit 5)
+    oversized_dir = tmp_path / "oversized_proj"
+    oversized_dir.mkdir()
+    (oversized_dir / "vibeharness.yaml").write_text("# " + ("x" * 1_050_000) + "\n", encoding="utf-8")
+    with pytest.raises(ConfigError):
+        check_discovered_config(str(oversized_dir / "vibeharness.yaml"))
+    monkeypatch.chdir(oversized_dir)
+    assert _run_cli(monkeypatch, "-t", str(oversized_dir), "--estimate") == 5
+
+    sym_dir = tmp_path / "sym_proj"
+    sym_dir.mkdir()
+    real_cfg = tmp_path / "real.yaml"
+    real_cfg.write_text("global: {}\n", encoding="utf-8")
+    has_symlink = True
+    try:
+        os.symlink(str(real_cfg), str(sym_dir / "vibeharness.yaml"))
+    except (OSError, NotImplementedError):
+        has_symlink = False
+    if has_symlink:
+        with pytest.raises(ConfigError):
+            check_discovered_config(str(sym_dir / "vibeharness.yaml"))
+        monkeypatch.chdir(sym_dir)
+        assert _run_cli(monkeypatch, "-t", str(sym_dir), "--estimate") == 5
+
+    if hasattr(os, "mkfifo"):
+        fifo_dir = tmp_path / "fifo_proj"
+        fifo_dir.mkdir()
+        os.mkfifo(str(fifo_dir / "vibeharness.yaml"))
+        with pytest.raises(ConfigError):
+            check_discovered_config(str(fifo_dir / "vibeharness.yaml"))
+        monkeypatch.chdir(fifo_dir)
+        assert _run_cli(monkeypatch, "-t", str(fifo_dir), "--estimate") == 5
+
+    # 端到端：驗證者縮到單一模型別名時，即使測試全過也不得回 READY_TO_SHIP（回 exit 3 INCONCLUSIVE）
+    # End-to-end: collapsing verifiers to a single model alias forbids READY_TO_SHIP (returns exit 3 INCONCLUSIVE)
+    def responder(system, user):
+        if "white-box AI code auditor" in system:
+            if "(DeepSeek)" in system:
+                return json.dumps({"findings": [{
+                    "symbol_name": "greet", "severity": "LOW", "title": "check none", "description": "d",
+                    "root_cause": "r", "suspected_vibe_flaw": "v", "suggested_test_scenario": "greet(None)",
+                }]})
+            return json.dumps({"findings": []})
+        if "code-review verifier" in system:
+            return json.dumps({"verdicts": [{"index": 0, "verdict": "confirm", "reason": "ok"}]})
+        if "QA Engineer" in system:
+            return json.dumps({"tests": [{
+                "title": "ok",
+                "code": "import pytest\nfrom safe import greet\n\ndef test_ok():\n"
+                        "    with pytest.raises(ValueError):\n        greet(None)\n",
+            }]})
+        if "Threat Modeling Specialist" in system:
+            return json.dumps({"threats": [{
+                "threat_id": "THREAT-01", "stride_category": "Tampering", "title": "none input",
+                "description": "d", "asset_at_risk": "a", "attack_vector": "greet",
+                "trust_boundary_crossed": "b", "severity": "MEDIUM",
+                "attack_scenario": "s", "test_verification_goal": "g",
+            }]})
+        if "Offensive Security" in system:
+            return json.dumps({
+                "code": "import pytest\nfrom safe import greet\n\ndef test_defended():\n"
+                        "    with pytest.raises(ValueError):\n        greet(None)\n",
+            })
+        return "{}"
+
+    fake_live(responder)
+    proj = tmp_path / "single_verifier_proj"
+    proj.mkdir()
+    (proj / "safe.py").write_text(
+        "def greet(name):\n    if name is None:\n        raise ValueError('required')\n    return 'hi ' + name\n",
+        encoding="utf-8",
+    )
+    cfg_ver = _bundled()
+    for k in list(cfg_ver["agents"]):
+        if k.startswith("whitebox_verifier_"):
+            cfg_ver["agents"][k]["model_alias"] = "claude"
+    _write(proj, cfg_ver, "vibeharness.yaml")
+    monkeypatch.chdir(proj)
+    summary_json = tmp_path / "ver_summary.json"
+    assert _run_cli(
+        monkeypatch, "-t", str(proj), "-o", str(tmp_path / "ver.md"), "--summary-json", str(summary_json)
+    ) == 3
+    ver_summary = json.loads(summary_json.read_text(encoding="utf-8"))
+    assert [r for r in ver_summary["inconclusive_reasons"] if "Fewer than two distinct verifier models" in r]

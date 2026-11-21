@@ -66,7 +66,10 @@ def clean(**changes):
         tally=tally_evidence(),  # 由 evaluate() 依最後的證據重建 ／ rebuilt by evaluate() from the final evidence
         limits=GateLimits(max_model_calls=10, max_files=200, max_file_bytes=1000, mutation_min_score=80.0),
         call_log=[_call()],
-        review=ReviewEvidence(reviewers_configured=True, reviewer_models=["gpt", "claude"]),
+        review=ReviewEvidence(
+            reviewers_configured=True, reviewer_models=["gpt", "claude"], arbitration_applied=True,
+            **({"verifier_models": ["gpt", "claude"]} if "verifier_models" in ReviewEvidence.__dataclass_fields__ else {}),
+        ),
         scope=ScopeDisclosure(symbols_found=True, detected_langs=["Python"]),
         execution=ExecutionEvidence(wb_tests=[_test("WB-T-01")], wb_results=[_result("WB-T-01")],
                                     bb_tests=[_test("BB-T-01", source_ref="THREAT-01")], bb_results=[_result("BB-T-01", test_type="blackbox_security")]),
@@ -150,6 +153,8 @@ GAP_CASES = {
     GapCode.REVIEW_INTEGRITY: lambda e: replace(e, static_findings=[_rule_hit(FindingSeverity.MEDIUM, integrity=True)]),
     GapCode.NO_REVIEWERS: lambda e: _with(e, "review", reviewers_configured=False, reviewer_models=[]),
     GapCode.SINGLE_REVIEWER_MODEL: lambda e: _with(e, "review", reviewer_models=["gpt"]),
+    **({GapCode.NO_CROSS_VERIFICATION: lambda e: _with(e, "review", verifier_models=["gpt"])}
+       if hasattr(GapCode, "NO_CROSS_VERIFICATION") else {}),
     GapCode.NO_SYMBOLS: lambda e: _with(e, "scope", symbols_found=False),
     GapCode.PARSE_FAILURES: lambda e: _with(e, "scope", parse_failures=["bad.py"]),
     GapCode.INCOMPLETE_SCAN: lambda e: _with(e, "scope", incomplete_files=["huge.py"]),
@@ -384,3 +389,37 @@ def test_discovered_config_scope_filtering_is_an_evidence_gap():
     assert res.verdict == Verdict.INCONCLUSIVE
     assert [g.code for g in res.gaps] == [GapCode.DISCOVERED_SCOPE_FILTERED]
     assert "2 file(s)" in res.reasons[0] and "--config" in res.reasons[0]
+
+
+def test_cross_verification_gap_requires_two_verifiers_and_decisive_rulings_on_real_findings():
+    """多模型白箱審查必須至少有兩個不同驗證模型，且真實發現必須經過有效裁決；模擬發現或零發現的乾淨執行不誤報。
+    Multi-model white-box review requires at least two distinct verifier models and decisive rulings on real findings;
+    simulated findings or zero-finding clean runs do not trigger a false gap."""
+    code = GapCode.NO_CROSS_VERIFICATION
+
+    # 1. 獨立驗證模型少於兩個（含重複同別名或第二個是 unconfigured）：即使零發現也阻擋 READY_TO_SHIP
+    # Fewer than two distinct configured verifier models (duplicate alias or unconfigured included): forbids READY_TO_SHIP even with zero findings
+    for verifiers in ([], ["gpt"], ["gpt", "gpt"], ["gpt", "unconfigured"]):
+        res = evaluate(_with(clean(), "review", verifier_models=verifiers, arbitration_applied=False))
+        assert res.verdict == Verdict.INCONCLUSIVE and [g.code for g in res.gaps] == [code]
+
+    # 2. 有兩個驗證模型且零發現：arbitration_applied=False 仍允許 READY_TO_SHIP
+    # Two verifier models and zero findings: arbitration_applied=False still permits READY_TO_SHIP
+    zero_findings = _with(clean(), "review", verifier_models=["gpt", "claude"], confirmed_findings=[], arbitration_applied=False)
+    assert evaluate(zero_findings).verdict == Verdict.READY_TO_SHIP
+
+    # 3. 有非模擬發現但 arbitration_applied=False（例如驗證者全投 unsure）：阻擋 READY_TO_SHIP
+    # Non-simulated findings with arbitration_applied=False (e.g. all verifiers voted unsure): forbids READY_TO_SHIP
+    unverified_real = _with(
+        clean(), "review", verifier_models=["gpt", "claude"], confirmed_findings=[_finding()], arbitration_applied=False
+    )
+    res_unverified = evaluate(unverified_real)
+    assert res_unverified.verdict == Verdict.INCONCLUSIVE and [g.code for g in res_unverified.gaps] == [code]
+
+    # 4. 純模擬發現不另外觸發 NO_CROSS_VERIFICATION（由 SIMULATED 缺口負責）
+    # Simulated-only findings do not separately trigger NO_CROSS_VERIFICATION (covered by SIMULATED)
+    sim_finding = _finding().model_copy(update={"is_simulated": True})
+    sim_only = _with(
+        clean(), "review", verifier_models=["gpt", "claude"], confirmed_findings=[sim_finding], arbitration_applied=False
+    )
+    assert code not in _codes(evaluate(sim_only))

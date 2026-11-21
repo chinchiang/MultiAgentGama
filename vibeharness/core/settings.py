@@ -18,6 +18,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Dict, FrozenSet, List, Literal, Mapping, NoReturn, Optional, Tuple
 
 from vibeharness.core.i18n import bi
+from vibeharness.core.jscoverage import read_untrusted_bytes
 
 DEFAULT_CONFIG_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "agents_config.yaml"
@@ -201,29 +202,59 @@ class ConfigError(ValueError):
     """
 
 
-def load_config_file(path: str) -> Dict[str, Any]:
+def _read_discovered_config_text(path: str, max_bytes: int = DEFAULT_MAX_FILE_BYTES) -> str:
+    """安全讀取自動發現的設定檔：複用 `read_untrusted_bytes` 拒絕 symlink／重新剖析點、FIFO／目錄等非一般檔案與超過
+    max_bytes 的檔案（允許硬連結，讓共用物件快取的 checkout 仍可運作）。
+    Safely reads a discovered config file via `read_untrusted_bytes`, refusing symlinks / reparse points, non-regular
+    files and files above max_bytes (hard links stay allowed for shared-cache checkouts)."""
+    raw, problem, exists = read_untrusted_bytes(path, max_bytes, allow_hardlinks=True)
+    if not exists:
+        raise ConfigError(bi(f"找不到代理設定檔：{path}", f"Agent config not found: {path}"))
+    if problem is not None or raw is None:
+        zh, en = problem or ("無法讀取", "it is unreadable")
+        raise ConfigError(bi(
+            f"拒絕讀取自動發現的代理設定檔（{path}）：{zh}；若信任此檔案請改傳 --config",
+            f"Refused to read discovered agent config ({path}): {en}; pass --config explicitly if trusted",
+        ))
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise ConfigError(bi(f"無法讀取代理設定檔（{path}）：{e}",
+                             f"Agent config cannot be read ({path}): {e}")) from e
+
+
+def load_config_file(path: str, *, untrusted: bool = False) -> Dict[str, Any]:
     """讀取並檢查代理設定檔的結構；缺少、無法解析或結構錯誤時拋出 ConfigError。
     Reads an agent config file and checks its structure; raises ConfigError when it is missing, unparseable or malformed."""
     # 缺少或無法解析的設定檔會悄悄地丟掉所有模型／代理對應，因此
     # 以 ConfigError 明確失敗，而不是外洩原始的 FileNotFoundError/YAMLError
     # A missing or unparseable config would silently drop every model/agent mapping, so
     # fail loudly with ConfigError instead of leaking raw FileNotFoundError/YAMLError
-    if not os.path.exists(path):
-        raise ConfigError(bi(f"找不到代理設定檔：{path}", f"Agent config not found: {path}"))
-    # 延遲匯入：只匯入常數的模組（擷取器、沙盒）不必載入 yaml
-    # Lazy import: modules that only import constants (the extractor, the sandbox) need not load yaml
-    import yaml
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-    except yaml.YAMLError as e:
-        raise ConfigError(bi(f"代理設定檔不是有效的 YAML（{path}）：{e}",
-                             f"Agent config is not valid YAML ({path}): {e}")) from e
-    except (OSError, UnicodeDecodeError) as e:
-        # 例如把目錄、無法讀取的檔案或二進位檔當成 --config 傳入
-        # e.g. a directory, an unreadable file or a binary file passed as --config
-        raise ConfigError(bi(f"無法讀取代理設定檔（{path}）：{e}",
-                             f"Agent config cannot be read ({path}): {e}")) from e
+    if untrusted:
+        raw_text = _read_discovered_config_text(path, DEFAULT_MAX_FILE_BYTES)
+        import yaml
+        try:
+            config = yaml.safe_load(raw_text)
+        except yaml.YAMLError as e:
+            raise ConfigError(bi(f"代理設定檔不是有效的 YAML（{path}）：{e}",
+                                 f"Agent config is not valid YAML ({path}): {e}")) from e
+    else:
+        if not os.path.exists(path):
+            raise ConfigError(bi(f"找不到代理設定檔：{path}", f"Agent config not found: {path}"))
+        # 延遲匯入：只匯入常數的模組（擷取器、沙盒）不必載入 yaml
+        # Lazy import: modules that only import constants (the extractor, the sandbox) need not load yaml
+        import yaml
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            raise ConfigError(bi(f"代理設定檔不是有效的 YAML（{path}）：{e}",
+                                 f"Agent config is not valid YAML ({path}): {e}")) from e
+        except (OSError, UnicodeDecodeError) as e:
+            # 例如把目錄、無法讀取的檔案或二進位檔當成 --config 傳入
+            # e.g. a directory, an unreadable file or a binary file passed as --config
+            raise ConfigError(bi(f"無法讀取代理設定檔（{path}）：{e}",
+                                 f"Agent config cannot be read ({path}): {e}")) from e
     if config is None:
         return {}
     if not isinstance(config, dict):
@@ -291,9 +322,15 @@ _PREVIOUS_BUNDLED_MODELS: Dict[str, Dict[str, FrozenSet[str]]] = {
 # Global numeric limits that raise spend: a discovered config may only lower them (or keep the bundled value), never
 # raise them. null or omitted means the harness default; for these keys 0 means the default too (0 / null is
 # unlimited for max_model_calls)
-_DISCOVERED_COST_LIMIT_KEYS = ("max_model_calls", "max_concurrent_calls", "max_output_tokens", "retry_invalid_output",
-                               "max_retries", "max_files", "max_file_bytes")
-_ZERO_MEANS_DEFAULT_KEYS = frozenset({"max_model_calls", "max_concurrent_calls", "max_files", "max_file_bytes"})
+_DISCOVERED_COST_LIMIT_KEYS = (
+    "max_model_calls", "max_concurrent_calls", "max_output_tokens", "retry_invalid_output", "max_retries",
+    "max_files", "max_file_bytes", "timeout_seconds", "sandbox_memory_mb", "sandbox_timeout_seconds",
+    "per_test_timeout_seconds", "mutation_max_mutants", "mutation_max_copy_mb",
+)
+_ZERO_MEANS_DEFAULT_KEYS = frozenset({
+    "max_model_calls", "max_concurrent_calls", "max_files", "max_file_bytes",
+    "sandbox_timeout_seconds", "per_test_timeout_seconds", "mutation_max_copy_mb",
+})
 # 每個 whitebox_reviewer_* 代理都會審查每個符號，新增一個就多一整輪付費呼叫；其 name 與 focus 會直接拼入系統提示詞，
 # 自動發現的設定檔只能沿用同一代理的內建值（或省略／設為 null）；驗證者則依模型別名去重，數量有上限
 # Every whitebox_reviewer_* agent reviews every symbol, so a new one adds a whole round of paid calls, and its name
@@ -310,15 +347,21 @@ def _builtin_cost_default(key: str) -> Optional[int]:
         "max_model_calls": None, "max_concurrent_calls": DEFAULT_MAX_CONCURRENT_CALLS,
         "max_output_tokens": DEFAULT_MAX_OUTPUT_TOKENS, "retry_invalid_output": DEFAULT_RETRY_INVALID_OUTPUT,
         "max_retries": DEFAULT_MAX_RETRIES, "max_files": DEFAULT_MAX_FILES, "max_file_bytes": DEFAULT_MAX_FILE_BYTES,
+        "timeout_seconds": DEFAULT_TIMEOUT_SECONDS, "sandbox_memory_mb": DEFAULT_SANDBOX_MEMORY_MB,
+        "sandbox_timeout_seconds": DEFAULT_SANDBOX_TIMEOUT_SECONDS,
+        "per_test_timeout_seconds": DEFAULT_PER_TEST_TIMEOUT_SECONDS,
+        "mutation_max_mutants": DEFAULT_MUTATION_MAX_MUTANTS, "mutation_max_copy_mb": DEFAULT_MAX_COPY_MB,
     }
     return defaults[key]
 
 
 def _effective_cost_limit(key: str, value: Any) -> Any:
     """設定值實際代表的上限：null（以及 _ZERO_MEANS_DEFAULT_KEYS 的 0）換成內建預設值；None 表示不限制。
-    非數值原樣回傳，由啟動時的驗證回報。
+    sandbox_memory_mb 的 0 代表停用記憶體上限（即 None）。非數值原樣回傳，由啟動時的驗證回報。
     The limit a setting actually means: null (and 0 for _ZERO_MEANS_DEFAULT_KEYS) becomes the built-in default;
-    None means unlimited. A non-number is returned as is, for the start-up validation to report."""
+    None means unlimited, and 0 for sandbox_memory_mb disables the memory cap (None). A non-number is returned as is."""
+    if key == "sandbox_memory_mb" and value == 0 and not isinstance(value, bool):
+        return None
     if value is None or (value == 0 and not isinstance(value, bool) and key in _ZERO_MEANS_DEFAULT_KEYS):
         return _builtin_cost_default(key)
     return value
@@ -376,6 +419,14 @@ def discovered_config_violations(config: Dict[str, Any], reference: Dict[str, An
             if value is not None and value != ref_global.get(key) and value != "mock":
                 problems.append(f"global.{key}")
             continue
+        if key == "mutation_testing":
+            # 不可信的探索設定檔不得開啟突變測試（會倍增沙盒執行次數）；維持內建值、false 或 null 仍允許
+            # An untrusted discovered config may not turn mutation_testing on; false, null or matching reference stays allowed
+            if value is True and not bool(ref_global.get(key)):
+                problems.append(f"global.{key}")
+            continue
+        if key == "mutation_min_score":
+            continue
         if key in _DISCOVERED_COST_LIMIT_KEYS:
             continue
         if value is None or not _is_sensitive_global_key(key):
@@ -388,6 +439,12 @@ def discovered_config_violations(config: Dict[str, Any], reference: Dict[str, An
     for key in _DISCOVERED_COST_LIMIT_KEYS:
         if _raises_limit(_effective_cost_limit(key, cfg_global.get(key)), _effective_cost_limit(key, ref_global.get(key))):
             problems.append(f"global.{key}")
+    cfg_min_score = DEFAULT_MUTATION_MIN_SCORE if cfg_global.get("mutation_min_score") is None else cfg_global.get("mutation_min_score")
+    ref_min_score = DEFAULT_MUTATION_MIN_SCORE if ref_global.get("mutation_min_score") is None else ref_global.get("mutation_min_score")
+    if (isinstance(cfg_min_score, (int, float)) and not isinstance(cfg_min_score, bool)
+            and isinstance(ref_min_score, (int, float)) and not isinstance(ref_min_score, bool)
+            and math.isfinite(cfg_min_score) and cfg_min_score < ref_min_score):
+        problems.append("global.mutation_min_score")
     ref_models = reference.get("models") or {}
     cfg_output_cap = _effective_cost_limit("max_output_tokens", cfg_global.get("max_output_tokens"))
     ref_output_cap = _effective_cost_limit("max_output_tokens", ref_global.get("max_output_tokens"))
@@ -433,7 +490,7 @@ def check_discovered_config(path: str, reference_path: str = DEFAULT_CONFIG_PATH
     Raises ConfigError (the CLI exits 5) when a discovered config sets a security-sensitive key; the message
     names those keys and says to pass the file explicitly with --config if it is trusted, or to regenerate it with
     --init-config --force if another version wrote it."""
-    problems = discovered_config_violations(load_config_file(path), load_config_file(reference_path))
+    problems = discovered_config_violations(load_config_file(path, untrusted=True), load_config_file(reference_path))
     if problems:
         raise ConfigError(_discovered_config_message(path, problems))
 
@@ -686,7 +743,7 @@ def load_settings(path: str, *, origin: Origin, overrides: Optional[Overrides] =
     file limits), so the first error reported for a file with several problems is unchanged. A `discovered` config is
     first compared with `reference_path` (the bundled config), see discovered_config_violations."""
     overrides = overrides or Overrides()
-    config = load_config_file(path)
+    config = load_config_file(path, untrusted=(origin == "discovered"))
     if origin == "discovered":
         _raise_discovered_violations(path, discovered_config_violations(config, load_config_file(reference_path)))
     warnings = tuple(relative_executable_warnings(config))
@@ -1027,7 +1084,7 @@ def resolve_config(explicit: Optional[str] = None, cwd: Optional[str] = None) ->
     base = cwd or os.getcwd()
     for name in DISCOVERED_CONFIG_NAMES:
         candidate = os.path.join(base, name)
-        if os.path.isfile(candidate):
+        if os.path.lexists(candidate):
             return candidate, bi(f"在目前目錄找到 {name}", f"found {name} in the current directory"), "discovered"
     return DEFAULT_CONFIG_PATH, bi("套件內的預設設定", "bundled default"), "bundled"
 

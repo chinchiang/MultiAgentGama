@@ -389,11 +389,21 @@ class LocalSubprocessSandbox:
         start_time = time.time()
         if self._hardens_harness:
             harden_harness_process()
+        cmd: Optional[List[str]] = None
         try:
             cmd, cwd, env = self._build_command(
                 run_dir, list(files), base_dir, collect_coverage, coverage_target, custom_env, timeout
             )
-            returncode, stdout, stderr = self._run(cmd, cwd=cwd, env=env, timeout=timeout, limits=self._limits(timeout))
+            try:
+                returncode, stdout, stderr = self._run(
+                    cmd, cwd=cwd, env=env, timeout=timeout, limits=self._limits(timeout)
+                )
+            except BaseException:
+                # 中斷（例如 Ctrl+C）與逾時一樣：容器必須在刪執行目錄前先移除，否則會在背景繼續跑
+                # An interrupt (e.g. Ctrl+C) needs the same cleanup as a timeout: remove the container before rmtree
+                if cmd is not None:
+                    self._after_timeout(cmd)
+                raise
             duration = time.time() - start_time
             if collect_coverage:
                 stderr = self._clean_coverage_stderr(stderr)
@@ -476,8 +486,14 @@ class LocalSubprocessSandbox:
         env = _without_real_home(env)
         if custom_env:
             env.update(filter_custom_env(custom_env))
+        if sys.platform == "win32":
+            cfg_path = os.path.join(run_dir, "pytest.ini")
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                f.write("[pytest]\n")
+        else:
+            cfg_path = "/dev/null"
         cmd = [sys.executable, "-m", "pytest", *[os.path.join(run_dir, f) for f in filenames]]
-        cmd += self._pytest_options(run_dir, os.path.join(run_dir, "junit.xml"))
+        cmd += self._pytest_options(run_dir, os.path.join(run_dir, "junit.xml"), cfg_path)
         if collect_coverage:
             cmd.extend([f"--cov={coverage_target or base_dir}", "--cov-report=term-missing"])
         return cmd, base_dir, env
@@ -512,12 +528,13 @@ class LocalSubprocessSandbox:
         return False
 
     @staticmethod
-    def _pytest_options(rootdir: str, junit_path: str) -> List[str]:
+    def _pytest_options(rootdir: str, junit_path: str, config_path: str = "/dev/null") -> List[str]:
         return [
             "-v",
             "--continue-on-collection-errors",
             "-p", "no:cacheprovider",
             "-o", "junit_logging=all",
+            "-c", config_path,
             f"--rootdir={rootdir}",
             f"--junitxml={junit_path}",
         ]
@@ -606,7 +623,15 @@ class LocalSubprocessSandbox:
             proc = subprocess.Popen(
                 cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=out_file, stderr=err_file, **popen_kwargs
             )
-            finished = LocalSubprocessSandbox._wait_for_exit(proc, timeout)
+            try:
+                finished = LocalSubprocessSandbox._wait_for_exit(proc, timeout)
+            except BaseException:
+                LocalSubprocessSandbox._kill_tree(proc)
+                try:
+                    proc.wait(timeout=_POST_KILL_DRAIN_SECONDS)
+                except subprocess.TimeoutExpired:
+                    pass
+                raise
             if not finished or sys.platform != "win32":
                 LocalSubprocessSandbox._kill_tree(proc)
             try:
@@ -889,11 +914,24 @@ class DockerSandbox(LocalSubprocessSandbox):
         return rewrite_host_paths(code, self._path_mapping(base_dir))
 
     @staticmethod
+    def _csv_mount_field(key: str, value: str) -> str:
+        # Docker `--mount` 由 Go encoding/csv 解析：CR 與 NUL 無法安全表示（CRLF 會被改寫成 LF），
+        # 而逗號、雙引號與換行則需將欄位以雙引號包住並把 `"` 加倍為 `""`
+        # Docker `--mount` is parsed by Go's encoding/csv: CR and NUL cannot be represented faithfully (CRLF is
+        # normalized to LF), while commas, quotes and newlines require RFC-4180 quoting with doubled `""`
+        if "\r" in value or "\x00" in value:
+            raise ValueError(f"Docker mount {key} path cannot contain CR or NUL: {value!r}")
+        field = f"{key}={value}"
+        if any(ch in value for ch in (",", '"', "\n")):
+            escaped = field.replace('"', '""')
+            return f'"{escaped}"'
+        return field
+
+    @staticmethod
     def _bind(source: str, target: str, readonly: bool) -> str:
-        # --mount 以 CSV 解析：主機路徑含逗號時該欄位需要加引號
-        # --mount is parsed as CSV: a comma in a host path needs the field quoted
-        src = f'"source={source}"' if "," in source else f"source={source}"
-        return f"type=bind,{src},target={target}" + (",readonly" if readonly else "")
+        src = DockerSandbox._csv_mount_field("source", source)
+        dst = DockerSandbox._csv_mount_field("target", target)
+        return f"type=bind,{src},{dst}" + (",readonly" if readonly else "")
 
     @staticmethod
     def _user() -> str:
@@ -932,7 +970,7 @@ class DockerSandbox(LocalSubprocessSandbox):
         cmd = self._docker_run_prefix(run_dir, base_dir, env)
         cmd += [self.image, "timeout", "--kill-after=5", str(self._effective_timeout(timeout_seconds)),
                 "python", "-m", "pytest", *[f"{CONTAINER_RUN_DIR}/{f}" for f in filenames]]
-        cmd += self._pytest_options(CONTAINER_RUN_DIR, f"{CONTAINER_RUN_DIR}/junit.xml")
+        cmd += self._pytest_options(CONTAINER_RUN_DIR, f"{CONTAINER_RUN_DIR}/junit.xml", "/dev/null")
         if collect_coverage:
             cov = target
             if coverage_target:
@@ -1171,10 +1209,12 @@ def link_node_modules(run_dir: str, base_dir: str) -> Optional[str]:
         pass
     if sys.platform == "win32":
         try:
-            result = subprocess.run(["cmd", "/c", "mklink", "/J", link, source], capture_output=True, timeout=30)
-            if result.returncode == 0:
-                return link
-        except (OSError, subprocess.TimeoutExpired):
+            # 直接呼叫 Win32 API，避免透過 cmd /c mklink 展開路徑中的 &、|、^ 或 %VAR%
+            # Call the Win32 API directly instead of cmd /c mklink so &, |, ^ or %VAR% in paths are never expanded
+            import _winapi
+            _winapi.CreateJunction(source, link)
+            return link
+        except (ImportError, OSError):
             pass
     return None
 
@@ -1328,6 +1368,11 @@ class NodeDockerSandbox(_NodeCoverageMixin, DockerSandbox):
                 except subprocess.TimeoutExpired:
                     self._after_timeout(cmd)
                     return None
+                except Exception:
+                    raise
+                except BaseException:
+                    self._after_timeout(cmd)
+                    raise
         except OSError:
             return None
         return parse_node_version(result.stdout) if result.returncode == 0 else None

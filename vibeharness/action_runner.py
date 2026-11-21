@@ -155,6 +155,30 @@ def _append(path: Optional[str], text: str) -> None:
             f.write(text)
 
 
+def _record_outcome(verdict: str, rc: int, report_out: str = "", sarif_out: str = "") -> None:
+    """一次寫出 GITHUB_OUTPUT 與 GITHUB_STEP_SUMMARY，確保所有成功或提早失敗路徑都有一致輸出。
+    Writes GITHUB_OUTPUT and GITHUB_STEP_SUMMARY together so every completion or early-error path leaves consistent outputs."""
+    _append(
+        os.environ.get("GITHUB_OUTPUT"),
+        f"verdict={verdict}\nexit-code={rc}\nreport={report_out}\nsarif={sarif_out}\n",
+    )
+    written = (f"Report: `{report_out}`" + (f", SARIF: `{sarif_out}`" if sarif_out else "")) if report_out \
+        else bi("沒有寫出報告", "No report was written")
+    _append(os.environ.get("GITHUB_STEP_SUMMARY"), f"## VibeHarness-MAS: {verdict} (exit {rc})\n{written}\n")
+
+
+def _remove_if_regular(path: str) -> None:
+    """移除舊的一般檔案（絕不跟隨或刪除 symlink）。
+    Removes a stale regular file without following or unlinking symlinks."""
+    if not path or "\n" in path or "\r" in path or os.path.islink(path):
+        return
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
 def _read_summary(path: str) -> Optional[Dict[str, Any]]:
     """讀取 --summary-json；harness 失敗而沒寫出時為 None ／ Reads --summary-json; None when a failed harness wrote none."""
     try:
@@ -198,19 +222,23 @@ def main(argv: Optional[List[str]] = None) -> int:
     fail_on = os.environ.get("VH_FAIL_ON", "needs-fixes")
     if fail_on not in FAIL_ON_VALUES:
         print(f"::error::unknown fail-on value '{fail_on}' (use {', '.join(FAIL_ON_VALUES)})", flush=True)
+        _record_outcome("ERROR", USAGE_ERROR_EXIT_CODE)
         return USAGE_ERROR_EXIT_CODE
     summary_path = os.path.join(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir(), "vibeharness-summary.json")
     try:
         os.remove(summary_path)
     except OSError:
         pass
+    output, sarif = os.environ.get("VH_OUTPUT", ""), os.environ.get("VH_SARIF", "")
+    if output:
+        _remove_if_regular(f"{output}.partial.json")
     # 不稽核就結束的旗標（--estimate、--help……）在執行前就拒絕：CLI 會以 0 結束，被讀成 READY_TO_SHIP
     # Flags that end without an audit (--estimate, --help, ...) are refused before running: the CLI would exit 0,
     # which reads as READY_TO_SHIP
     non_audit = given_flags(argv, NON_AUDIT_FLAGS)
     if non_audit:
         print(f"::error::{_non_audit_error(non_audit)}", flush=True)
-        _append(os.environ.get("GITHUB_OUTPUT"), f"verdict=ERROR\nexit-code={USAGE_ERROR_EXIT_CODE}\nreport=\nsarif=\n")
+        _record_outcome("ERROR", USAGE_ERROR_EXIT_CODE)
         return USAGE_ERROR_EXIT_CODE
     # 放在最後：argparse 取最後一個，extra-args 裡的 --summary-json 不會蓋掉它
     # Last: argparse keeps the last one, so a --summary-json in extra-args cannot override it
@@ -232,12 +260,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     # 報告與 SARIF 只在稽核完成時寫出：沒有判定時 outputs 為空（workspace 裡舊的同名檔案不算）
     # The report and the SARIF are written only when the audit completes: without a verdict the outputs are empty
     # (an old file of the same name in the workspace does not count)
-    output, sarif = os.environ.get("VH_OUTPUT", ""), os.environ.get("VH_SARIF", "")
     report_out, sarif_out = (_written(output), _written(sarif)) if verdict != "ERROR" else ("", "")
-    _append(os.environ.get("GITHUB_OUTPUT"), f"verdict={verdict}\nexit-code={rc}\nreport={report_out}\nsarif={sarif_out}\n")
-    written = (f"Report: `{report_out}`" + (f", SARIF: `{sarif_out}`" if sarif_out else "")) if report_out \
-        else bi("沒有寫出報告", "No report was written")
-    _append(os.environ.get("GITHUB_STEP_SUMMARY"), f"## VibeHarness-MAS: {verdict} (exit {rc})\n{written}\n")
+    _record_outcome(verdict, rc, report_out, sarif_out)
     if rc >= 4:
         print(f"::error::VibeHarness-MAS could not complete the audit (exit {rc})", flush=True)
         return rc

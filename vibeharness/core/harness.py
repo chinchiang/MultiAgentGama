@@ -457,7 +457,9 @@ class VibeHarnessCommander:
             sys_desc = system_description or f"Vibe-coded application in {os.path.basename(target_dir)}"
             threat_report: ThreatModelReport = self.threat_modeler.model_system(
                 system_description=sys_desc,
-                entrypoints=routes or ["HTTP/REST Endpoints"],
+                # 目標擷取出的路由走 detected_routes 進入不可信通道，不在 Entrypoints 重複印出原始路由名
+                # Target-extracted routes enter the untrusted channel via detected_routes, never raw in Entrypoints
+                entrypoints=["Detected API route handlers"] if routes else ["HTTP/REST Endpoints"],
                 detected_routes=routes,
                 symbols=symbols,
                 root_dir=work_dir,
@@ -529,6 +531,7 @@ class VibeHarnessCommander:
                 review=ReviewEvidence(
                     reviewers_configured=bool(self.multi_reviewer.reviewer_agents),
                     reviewer_models=reviewer_models,
+                    verifier_models=sorted(set(self.debater.verifiers.values())),
                     arbitration_applied=debate_result.arbitration_applied,
                     confirmed_findings=debate_result.confirmed_findings,
                     findings_without_model_tests=self.whitebox_test_gen.findings_without_model_tests,
