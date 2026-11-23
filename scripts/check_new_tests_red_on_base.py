@@ -118,9 +118,9 @@ def pytest_runtest_logreport(report):
 
 
 def pytest_collectreport(report):
-    # 原因與 JUnit 路徑的 _reason 相同：最後一行 `E   …`，沒有就取第一行；壓成一行，記錄才分得出欄位
-    # The reason matches the JUnit path's _reason: the last `E   …` line, else the first line; kept to one line so
-    # the record still splits into its fields
+    # 原因的取法與 JUnit 路徑的 _reason 相同：最後一行 `E   …`，沒有就取第一行；空白壓成一格、壓成一行，記錄才分得出欄位
+    # The reason is taken as the JUnit path's _reason takes it: the last `E   …` line, else the first line; whitespace
+    # runs become one space on one line, so the record still splits into its fields
     if report.failed:
         lines = [line.strip() for line in report.longreprtext.splitlines() if line.strip()]
         errors = [line[1:].strip() for line in lines if line.startswith("E ")]
@@ -377,11 +377,12 @@ def _run_with_timeout(cmd: list[str], cwd: Path, env: dict[str, str], timeout: f
 
 def _results_after_timeout(progress: Path, node_ids: list[str], tail: list[str]) -> BaseRun:
     """逾時的那一次：照外掛的進度記錄分類已經有結果的測試（任何 case 通過是綠、有 skip 是 skipped、否則紅），收集失敗
-    的檔案裡的測試是紅的、帶著外掛記下的收集錯誤（和 JUnit 路徑的 `_reason` 一樣；沒記到就寫「failed to collect on
-    the base」），其餘是 `hang`，絕不算紅或綠。
+    的檔案裡的測試是紅的、帶著外掛記下的收集錯誤（取法與 JUnit 路徑的 `_reason` 相同，空白壓成一格；沒記到就寫
+    「failed to collect on the base」），其餘是 `hang`，絕不算紅或綠。
     The timed-out run: the tests with a result are sorted from the plugin's progress records (any passing case green,
     a skip skipped, otherwise red), the tests of a file that failed to collect are red with the collection error the
-    plugin recorded (as the JUnit path's `_reason` shows it; "failed to collect on the base" when none was recorded),
+    plugin recorded (taken as the JUnit path's `_reason` takes it, whitespace runs collapsed; "failed to collect on the
+    base" when none was recorded),
     and the rest are `hang`, never red or green."""
     outcomes: dict[str, list[str]] = {}
     broken_paths: dict[str, str] = {}
@@ -389,8 +390,7 @@ def _results_after_timeout(progress: Path, node_ids: list[str], tail: list[str])
         for line in progress.read_text(encoding="utf-8", errors="replace").splitlines():
             # 每筆記錄是「node id、結果、原因」，以 tab 分隔；原因只有收集失敗才有
             # Each record is "node id, outcome, reason", tab-separated; only a collection failure has a reason
-            nodeid, _, rest = line.partition("\t")
-            outcome, _, reason = rest.partition("\t")
+            nodeid, outcome, reason = (line.rsplit("\t", 2) + ["", ""])[:3]
             if outcome == "broken":
                 broken_paths[nodeid] = reason
             else:
@@ -408,7 +408,17 @@ def _results_after_timeout(progress: Path, node_ids: list[str], tail: list[str])
             results[node_id] = ("red", broken_paths[_file_of(node_id)] or "failed to collect on the base")
         else:
             results[node_id] = ("hang", "")
-    return BaseRun(results, {path: reason or "failed to collect" for path, reason in broken_paths.items()}, tail)
+    return BaseRun(results, {path: reason or "collection failure" for path, reason in broken_paths.items()}, tail)
+
+
+def _print_broken_files(broken_files: dict[str, str]) -> None:
+    """在 stderr 點名基準上收集失敗的每個檔案與錯誤（沒有就不印）：收集不到或逾時時，只列測試看不出是哪個 import 壞了。
+    Name on stderr each file that failed to collect on the base with its error (nothing when none did): when tests
+    are not collected or the run times out, the test list alone does not show which import broke."""
+    if broken_files:
+        print("files that failed to collect on the base:", file=sys.stderr)
+        for path, error in sorted(broken_files.items()):
+            print(f"  {path}: {error}", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None, repo: str = _REPO) -> int:
@@ -473,8 +483,9 @@ def main(argv: list[str] | None = None, repo: str = _REPO) -> int:
         # Timed out: a stuck test has no result, neither red nor green; pytest's last output follows (faulthandler
         # names the stuck test)
         print(f"could not compare: the run on the base did not finish within {args.timeout:g}s; the tests without "
-              "a result are listed as hang. pytest's last output:", file=sys.stderr)
-        print("\n".join(hang_tail), file=sys.stderr)
+              "a result are listed as hang.", file=sys.stderr)
+        _print_broken_files(broken_files)
+        print("pytest's last output:\n" + "\n".join(hang_tail), file=sys.stderr)
         return 2
     if missing:
         # 沒被收集的測試在基準上沒有結果，紅綠都不能算：整次比對不成立
@@ -483,10 +494,7 @@ def main(argv: list[str] | None = None, repo: str = _REPO) -> int:
         # 點名收集失敗的檔案：收集不到常是另一個檔案壞了的連帶結果，只列測試看不出原因（#186）
         # Name the files that failed to collect: an uncollected test is often a side effect of another broken file,
         # and the test list alone does not show the cause (#186)
-        if broken_files:
-            print("files that failed to collect on the base:", file=sys.stderr)
-            for path, error in sorted(broken_files.items()):
-                print(f"  {path}: {error}", file=sys.stderr)
+        _print_broken_files(broken_files)
         return 2
     return 1 if any(status != "red" for status, _ in results.values()) else 0
 
