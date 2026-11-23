@@ -52,9 +52,9 @@ Apply every rule below to a diff under review. Only rules that need judgement li
 
 ## 8. A guard reads its input from an allow list and denies what it cannot read
 
-- A check that decides from another program's input (a Claude Code hook, a pre-run check) accepts only the forms it fully reads and denies the rest with a reason ("could not check"), so a misread can only deny; an error inside the check denies too.
+- A check that decides from another program's input (a Claude Code hook, a pre-run check) accepts only the forms it fully reads and denies the rest with a reason ("could not check"), so a misread can only deny; an error inside the check denies too. The allow list enumerates the forms the guard fully reads, not the forms it cannot read: a list of names that triggers "could not check" is the latter.
 - It runs nothing the checked input controls before the user agrees: the command's own options, settings and environment stay out of what the guard runs, and the guard pins what it runs itself (locale, settings).
-- A violation looks like: matching known-bad spellings of another tool's syntax, so each new spelling slips through; an error or an unknown form that allows; passing the command's own options or settings on to the guard's own probe.
+- A violation looks like: matching known-bad spellings of another tool's syntax, so each new spelling slips through; a "could not check" branch keyed on a list of known names (functions, modules, attributes), which aliasing (`x = f`), `import *`, reaching an attribute through another object (`app.os`) and lookups (`vars(m)[k]`) slip past; an error or an unknown form that allows; passing the command's own options or settings on to the guard's own probe.
 
 ## Checked by tests and CI (no re-check in review)
 
