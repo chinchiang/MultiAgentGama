@@ -10,11 +10,14 @@ from typing import Dict, List, Optional
 
 # 這些關鍵字之後的 `/` 是正規表達式字面值的開頭，不是除法
 # After these keywords a `/` starts a regex literal, not division
-# 後面可以直接接字串的關鍵字：`import"pkg"`、`from"pkg"` 是合法的 JS，引號開啟字串（不能放進 _JS_REGEX_KEYWORDS：
-# `from / 2` 裡的 from 是識別字，`/` 是除法）
-# Keywords a string may follow directly: `import"pkg"` and `from"pkg"` are valid JS and the quote opens a string (not
-# part of _JS_REGEX_KEYWORDS: in `from / 2`, from is an identifier and `/` is division)
-_JS_STRING_KEYWORDS = {"import", "from"}
+# 後面可以直接接字串的關鍵字：`import"pkg"`、`from"pkg"` 與 ES2022 的字串別名 `export { x as"name" }` 是合法的 JS，
+# 引號開啟字串（識別字 `as` 後面直接接字串本來就是語法錯誤，當成字串無妨）。不能放進 _JS_REGEX_KEYWORDS：
+# `from / 2` 裡的 from 是識別字，`/` 是除法
+# Keywords a string may follow directly: `import"pkg"`, `from"pkg"` and ES2022 string aliases `export { x as"name" }`
+# are valid JS and the quote opens a string (an identifier `as` directly followed by a string is a syntax error
+# anyway, so treating it as a string is harmless). Not part of _JS_REGEX_KEYWORDS: in `from / 2`, from is an
+# identifier and `/` is division
+_JS_STRING_KEYWORDS = {"import", "from", "as"}
 _JS_REGEX_KEYWORDS = {"return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw",
                       "case", "do", "else", "yield", "await"}
 # 可能含 JSX 的副檔名：.ts/.mts/.cts 不算（`<T>x` 是型別斷言，不是 JSX）

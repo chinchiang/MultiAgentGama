@@ -285,3 +285,18 @@ def test_identifiers_ending_in_class_do_not_declare_a_class(tmp_path):
     names = {s.name.split(".")[0] for s in symbols}
     assert "Widget" not in names and "Helper" not in names
     assert "Real" in names
+
+
+def test_a_string_glued_to_as_is_masked(tmp_path):
+    """ES2022 的字串別名 `export { x as"name" }`：`as` 後面的引號也開啟字串（#182 審查）。
+    ES2022 string aliases `export { x as"name" }`: a quote after `as` opens a string too (#182 review)."""
+    from vibeharness.core.js_lex import mask_js_source
+
+    assert mask_js_source('export { x as"{n" };') == 'export { x as"' + " " * 3 + " };"
+    _, symbols = _symbols(tmp_path, "a.js", (
+        'export { x as"function ghost() {}" };\n'
+        "function real(a) {\n"
+        "  return a;\n"
+        "}\n"
+    ))
+    assert sorted(_by_name(symbols)) == ["real"]
