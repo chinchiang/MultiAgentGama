@@ -690,7 +690,7 @@ class VibeHarnessCommander:
             self.console.print(Panel.fit(
                 f"[bold]{bi('品質閘門判定結果', 'Quality Gate Verdict')}:[/bold] [{verdict_color} bold]{overall_status}[/{verdict_color} bold]\n"
                 f"{bi('白箱通過', 'White-Box Passed')}: {wb_passed} | {bi('黑箱突破', 'Black-Box Breaches')}: {summary.blackbox_security_breaches}\n"
-                f"{bi('報告', 'Report')}: {output_report_path}",
+                f"{bi('報告', 'Report')}: {escape(output_report_path)}",
                 title=bi("驗證摘要", "Verification Summary"),
                 border_style=verdict_color
             ))
