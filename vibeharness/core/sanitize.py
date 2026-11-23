@@ -1197,13 +1197,30 @@ UNTRUSTED_CODE_POLICY = (
 # Any opening/closing variant of a channel tag: attributes, inner whitespace ("< /tag >"), any case, and a truncated
 # tag without its closing ">"; the tags of both channels are neutralized inside both channels. Attributes only run
 # to the next "<" or ">", so a long run of repeated truncated tags or of whitespace stays linear
-_CHANNEL_TAG_RE = re.compile(r"<\s*(?:/\s*)?untrusted_(?:target_code|model_output)\b[^<>]*>?", re.I)
+# 通道標籤與它的變形：全形或小寫的角括號與斜線（＜／…＞）、底線換成連字號、空白或全形底線（untrusted-target-code）。
+# 不可見字元在比對前就已經剔除（見 _neutralized），所以 `untrusted_\u200btarget_code` 也對得上
+# The channel tags and their variants: fullwidth or small angle brackets and slashes (＜／...＞), the underscores as
+# hyphens, spaces or fullwidth underscores (untrusted-target-code). Invisible characters are stripped before matching
+# (see _neutralized), so `untrusted_\u200btarget_code` matches too
+_TAG_SEP = r"[_\-\s\uff3f\uff0d]*"
+_CHANNEL_TAG_RE = re.compile(
+    r"[<\uff1c\ufe64]\s*(?:[/\uff0f]\s*)?untrusted" + _TAG_SEP + r"(?:target" + _TAG_SEP + r"code|model" + _TAG_SEP
+    + r"output)\b[^<>\uff1c\uff1e\ufe64\ufe65]*[>\uff1e\ufe65]?", re.I)
+
+
+def _neutralized(content: str) -> str:
+    """通道內容：先剔除不可見字元（模型寫的內容不像目標程式碼那樣事先經過 prepare_untrusted_code），再中和偽造的
+    通道標籤，讓夾帶零寬字元或全形字元的標籤也逃不出通道。
+    A channel's content: invisible characters stripped first (model-written content, unlike target code, has not
+    been through prepare_untrusted_code), then forged channel tags neutralized, so a tag smuggling zero-width or
+    fullwidth characters cannot leave the channel either."""
+    return _CHANNEL_TAG_RE.sub("<!-- tag removed -->", strip_invisible(content))
 
 
 def untrusted_block(content: str) -> str:
     """把目標程式碼包進標示來源的通道；其中偽造的開頭／結尾標籤會被中和。
     Wraps target code in the provenance-labeled channel; a forged opening/closing tag inside it is neutralized."""
-    neutralized = _CHANNEL_TAG_RE.sub("<!-- tag removed -->", content)
+    neutralized = _neutralized(content)
     return f"{UNTRUSTED_CODE_OPEN}\n{neutralized}\n{UNTRUSTED_CODE_CLOSE}"
 
 
@@ -1225,7 +1242,7 @@ def untrusted_model_block(content: str) -> str:
     """把模型撰寫的文字包進 <untrusted_model_output> 通道；其中偽造的任一種通道標籤都會被中和。
     Wraps model-written text in the <untrusted_model_output> channel; a forged tag of either channel inside it
     is neutralized."""
-    neutralized = _CHANNEL_TAG_RE.sub("<!-- tag removed -->", content)
+    neutralized = _neutralized(content)
     return f"{UNTRUSTED_MODEL_OPEN}\n{neutralized}\n{UNTRUSTED_MODEL_CLOSE}"
 
 
