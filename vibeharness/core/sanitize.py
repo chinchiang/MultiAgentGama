@@ -150,7 +150,8 @@ def find_invisible(text: str) -> List[Tuple[int, str, str]]:
     if text.isascii():
         return []
     hits: List[Tuple[int, str, str]] = []
-    for lineno, line in enumerate(text.splitlines(), start=1):
+    # 行號只依 "\n" 計算，與符號擷取和 ast 一致 ／ Line numbers count "\n" only, like symbol extraction and ast
+    for lineno, line in enumerate(text.split("\n"), start=1):
         if lineno == 1 and line.startswith("\ufeff"):
             line = line[1:]
         if line.isascii() or not _INVISIBLE_RE.search(line):
@@ -1068,7 +1069,8 @@ def _hot_lines(text: str, lines: List[str]) -> Dict[int, _Roles]:
     {line index: the trigger and required words of that line}, only for lines holding any such word. Words are
     scanned once over the whole text and a hit jumps straight to the next line start, so the loop runs at most
     once per line holding a word."""
-    starts = [0, *accumulate(len(ln) for ln in text.splitlines(keepends=True))]
+    # 與呼叫端的 lines 一樣只依 "\n" 切行 ／ Split on "\n" only, like the caller's lines
+    starts = [0, *accumulate(len(ln) + 1 for ln in text.split("\n"))]
     hot: Dict[int, _Roles] = {}
     # 重複的行（大量相同的行是常見的惡意輸入）只分析一次 ／ repeated lines (a common adversarial input) are analysed once
     seen: Dict[str, _Roles] = {}
@@ -1102,7 +1104,8 @@ def find_injection_markers(text: str) -> List[Tuple[int, str]]:
     clean = strip_invisible(text)
     if not clean.isascii():
         clean = unicodedata.normalize("NFKC", clean)
-    raw = clean.splitlines()
+    # 行號只依 "\n" 計算（見 find_invisible） ／ Line numbers count "\n" only (see find_invisible)
+    raw = clean.split("\n")
     hot = _hot_lines(clean, raw)
     normalized: Dict[int, str] = {}
     alone_seen: Dict[Tuple[str, FrozenSet[int], int], Optional[str]] = {}

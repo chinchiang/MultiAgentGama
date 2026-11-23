@@ -354,7 +354,12 @@ class ASTExtractor:
             return []
 
         symbols: List[CodeSymbol] = []
-        source_lines = source.splitlines()
+        # 只依 "\n" 切行：ast 的行號只算 "\n"（讀檔時通用換行已把 "\r\n"／"\r" 轉成 "\n"），而 splitlines() 還會在
+        # \x0b \x0c \x1c-\x1e \x85 U+2028 U+2029 切開，幾個這種字元就能讓每個片段錯位、藏起函式真正的內容
+        # Split on "\n" only: ast counts "\n" alone (universal newlines turned "\r\n" / "\r" into "\n" on read), while
+        # splitlines() also splits on \x0b \x0c \x1c-\x1e \x85 U+2028 U+2029, so a few of them shift every snippet and
+        # hide a function's real body
+        source_lines = source.split("\n")
         registered = self._registered_python_views(tree)
 
         for node in self._py_definitions(tree.body):
