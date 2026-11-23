@@ -810,6 +810,18 @@ def test_exactly_the_per_file_cap_drops_nothing(tmp_path):
     assert getattr(result, "capped_hits", "missing") == ()
 
 
+def test_a_config_file_over_the_per_file_cap_is_recorded_too(tmp_path):
+    """設定類檔案的密鑰掃描也套用每檔上限：超過的筆數一樣進 `capped_hits`（#195 審查）。
+    The secret scan of configuration-like files applies the per-file cap too, and what it drops goes into
+    `capped_hits` as well (#195 review)."""
+    path = tmp_path / "app.env"
+    # 金鑰在執行時才組出來，原始碼裡沒有完整的金鑰 ／ The keys are built at run time, so no whole key sits in the source
+    path.write_text("".join(f"KEY_{i}=AKIA{i:04d}QWERTYUIOPAS\n" for i in range(22)), encoding="utf-8")
+    result = AISecurityStaticScanner().scan([], [str(path)])
+    assert len(result.findings) == 20
+    assert getattr(result, "capped_hits", None) == ((str(path), "VH-AI-007", 2),)
+
+
 @pytest.mark.parametrize("call", [
     "AutoModel.from_pretrained('acme/m', revision='abc', trust_remote_code='yes')",
     "AutoModel.from_pretrained('acme/m', revision='abc', trust_remote_code=1)",

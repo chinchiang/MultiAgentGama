@@ -173,10 +173,14 @@ def _remote_code_loads(n):
 
 def test_a_new_hit_the_per_file_cap_drops_behind_known_hits_is_disclosed(tmp_path):
     """基準報告已有一個檔案的 20 筆 HIGH；之後在它們後面多一筆 HIGH：每檔上限留下 20 筆已知的、略過新的那筆，
-    新的阻擋命中是 0。閘門要把略過的命中記成證據缺口，不然 live 模式會判成 READY_TO_SHIP（#195）。
+    新的阻擋命中是 0。閘門要把略過的命中記成證據缺口，不然 live 模式會判成 READY_TO_SHIP（#195）。mock 模式本來就因為
+    SIMULATED 缺口而是 INCONCLUSIVE，所以這裡檢查缺口有進到摘要與寫出的報告；缺口單獨就讓乾淨的執行變成
+    INCONCLUSIVE，由閘門的測試檢查。
     The baseline report holds 20 HIGH hits of one file; then a 21st HIGH hit follows them: the per-file cap keeps the
     20 known ones and drops the new one, leaving 0 new blocking hits. The gate must record the dropped hit as an
-    evidence gap, or a live run would be READY_TO_SHIP (#195)."""
+    evidence gap, or a live run would be READY_TO_SHIP (#195). Mock mode is INCONCLUSIVE anyway (its SIMULATED gap),
+    so this checks that the gap reaches the summary and the written report; the gate tests check that the gap alone
+    turns an otherwise clean run INCONCLUSIVE."""
     target = tmp_path / "t"
     target.mkdir()
     (target / "loads.py").write_text(_remote_code_loads(20), encoding="utf-8")
@@ -191,6 +195,7 @@ def test_a_new_hit_the_per_file_cap_drops_behind_known_hits_is_disclosed(tmp_pat
     reasons = "\n".join(summary.inconclusive_reasons)
     assert "1 deterministic rule hit(s) over the per-file cap in 1 rule/file pair(s)" in reasons, reasons
     assert "loads.py (VH-AI-001)" in reasons, reasons
+    assert "over the per-file cap in 1 rule/file pair(s)" in (tmp_path / "r.md").read_text(encoding="utf-8")
 
 
 def test_cli_baseline_flag_is_validated_before_the_run(monkeypatch, tmp_path):

@@ -644,7 +644,7 @@ flowchart TD
 | 28 | 320-325 | 走訪到的檔案是解析到目標之外的連結，或不是一般檔案（FIFO、裝置、懸空連結），所以沒有讀取、也沒有送給模型（`vibeharness/core/settings.py` 的 `is_unsafe_file`） | `UNSAFE_FILES_SKIPPED` · `scope.unsafe_files` |
 | 29 | 347-353 | 執行了 Python 測試，而目標（本機沙盒時還有它在 `PYTHONPATH` 上的父目錄）頂層有與測試執行器同名的模組（`RUNNER_MODULES`：pytest、`_pytest`、pluggy、coverage、`pytest_cov`、sitecustomize……），會取代它（`vibeharness/core/sandbox.py` 的 `shadowed_runner_modules`） | `RUNNER_SHADOWED` · `execution.runner_shadows` |
 | 30 | 387-391 | 偵測到 Python，但產生的白箱測試全都是 JS/TS（#13 的對應項；一律以 Python 撰寫的黑箱測試不算） | `PYTHON_NO_TESTS` · `scope.detected_langs`, `execution.wb_tests` / `bb_tests` |
-| 31 | 303-313 | 確定性規則在某個檔案的某條規則超過每檔 20 筆的上限，略過的命中沒有列出、也沒有評估（`--baseline` 底下，已知命中佔滿上限時，新的命中會被略過而不是算成新的；訊息寫出略過筆數、（規則, 檔案）組數與前五個檔名，第 7.2 節） | `STATIC_HITS_CAPPED` · `scope.capped_hits` |
+| 31 | 303-313 | 確定性規則在某個檔案的某條規則超過每檔 20 筆的上限，略過的命中沒有列出、也沒有評估（`--baseline` 底下，已知命中佔滿上限時，新的命中會被略過而不是算成新的；訊息寫出略過筆數、（規則, 檔案）組數與前五組，第 7.2 節） | `STATIC_HITS_CAPPED` · `scope.capped_hits` |
 
 ### 10.3 Exit code（`vibeharness/cli.py:130-140`、`:218-268`、`:521-677`）
 
