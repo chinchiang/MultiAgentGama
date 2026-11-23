@@ -60,20 +60,22 @@ def test_majority_decides_and_ties_are_kept(scripted):
     findings = [
         _finding("A", "claude"),                               # 0 票確認對 2 票駁回 -> 有爭議 ／ 0 confirm vs 2 reject -> disputed
         _finding("B", "claude"),                               # 1 對 1 -> 平手，保留 ／ 1 vs 1 -> tie, kept
-        _finding("C", "claude"),                               # 0 對 1 -> 有爭議 ／ 0 vs 1 -> disputed
+        # 0 對 1，但應投票的有 3 位：駁回沒有過半，保留（#183 第 6 項） ／ 0 vs 1 of 3 asked: no reject majority, kept
+        # (#183 item 6)
+        _finding("C", "claude"),
         _finding("D", "deepseek", corroborating=["glm"]),  # 佐證對 claude 駁回 -> 平手，保留 ／ corroborated vs claude reject -> tie, kept
     ]
     result = MultiModelDebater(gateway).arbitrate(findings)
     assert result.arbitration_applied
-    assert [f.finding_id for f in result.confirmed_findings] == ["B", "D"]
-    assert [f.finding_id for f in result.disputed_findings] == ["A", "C"]
-    # B 與 D 平手：保留下來測試，但不算多數確認
-    # B and D are ties: kept for testing, but not majority-confirmed
-    assert result.undecided_count == 2
+    assert [f.finding_id for f in result.confirmed_findings] == ["B", "C", "D"]
+    assert [f.finding_id for f in result.disputed_findings] == ["A"]
+    # B、C、D 未決：保留下來測試，但不算多數確認
+    # B, C and D are undecided: kept for testing, but not majority-confirmed
+    assert result.undecided_count == 3
     assert len(result.confirmed_findings) - result.undecided_count == 0
-    # 一致的決定性票數：A 2 + C 1 = 7 張決定性票中的 3 張（A 2、B 2、C 1、D 2）
-    # Agreeing decisive votes: A 2 + C 1 = 3 of 7 decisive votes (A 2, B 2, C 1, D 2)
-    assert abs(result.model_agreement_ratio - 3 / 7) < 1e-9
+    # 一致的決定性票數：A 的 2 張 = 7 張決定性票中的 2 張（A 2、B 2、C 1、D 2）
+    # Agreeing decisive votes: A's 2 = 2 of 7 decisive votes (A 2, B 2, C 1, D 2)
+    assert abs(result.model_agreement_ratio - 2 / 7) < 1e-9
     votes_a = {v.model_alias: v.verdict for v in result.disputed_findings[0].verification_votes}
     assert votes_a == {"deepseek": "reject", "glm": "reject", "gemini": "unsure"}
 
@@ -133,3 +135,24 @@ def test_report_shows_votes_and_agreement(scripted):
     md = ReportGenerator().generate_markdown_report(summary, result, threat_model, [], [], "app")
     assert "Cross-Model Agreement** | `100.0%`" in md
     assert "deepseek: reject (deepseek on A)" in md
+
+
+def test_one_reject_beside_unsure_or_a_failed_batch_does_not_dispute(scripted):
+    """駁回必須過半數「應投票的驗證者」，不是過半數「回來的票」：只說服一個模型不夠讓缺陷不被測試（#183 第 6 項）。
+    Rejects must be a majority of the verifiers asked, not of the votes that came back: convincing one model is not
+    enough to keep a defect from being tested (#183 item 6)."""
+    transport = scripted({
+        "whitebox_verifier_deepseek": {"verdicts": [{"index": 0, "verdict": "reject", "reason": "not a defect"}]},
+        "whitebox_verifier_glm": "not json",
+        "*": {"verdicts": [{"index": 0, "verdict": "unsure"}]},
+    })
+    result = MultiModelDebater(LLMGateway(CONFIG, execution_mode="live", transport=transport)).arbitrate(
+        [_finding("A", "claude")])
+    assert [f.finding_id for f in result.confirmed_findings] == ["A"]
+    assert result.disputed_findings == []
+
+
+def test_a_reject_majority_of_the_verifiers_asked_disputes(scripted):
+    gateway, _ = _gateway(scripted, {"deepseek": {"A": "reject"}, "glm": {"A": "reject"}, "gemini": {"A": "confirm"}})
+    result = MultiModelDebater(gateway).arbitrate([_finding("A", "claude")])
+    assert [f.finding_id for f in result.disputed_findings] == ["A"]

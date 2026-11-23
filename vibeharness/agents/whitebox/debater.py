@@ -179,6 +179,13 @@ class MultiModelDebater:
                 is_simulated=reason == "simulated"
             )
 
+        # 每筆發現應投票的模型數：被分派裁決它的驗證者，加上已佐證它的模型。駁回必須過半數才算有爭議（不產生測試）：
+        # 以「回來的票」為分母時，一張 reject 配上一個 unsure 或一個失敗的驗證批次就夠了，只要說服一個模型就能讓缺陷不被測試
+        # The models that should vote on each finding: the verifiers assigned to rule on it plus the models that already
+        # corroborated it. Rejects must be a strict majority of them to dispute it (no test is generated): counting
+        # only the votes that came back, one reject beside an unsure or a failed verifier batch was enough, so
+        # convincing a single model kept a defect from being tested
+        asked = {i: sum(1 for idxs in assignments.values() if i in idxs) for i in range(len(findings))}
         confirmed: List[ReviewFinding] = []
         disputed: List[ReviewFinding] = []
         agreeing = decisive = undecided = 0
@@ -186,8 +193,9 @@ class MultiModelDebater:
             vs = votes[idx]
             yes = sum(1 for v in vs if v.verdict in ("confirm", "corroborated"))
             no = sum(1 for v in vs if v.verdict == "reject")
+            eligible = asked[idx] + sum(1 for v in vs if v.verdict == "corroborated")
             ruled = f.model_copy(update={"verification_votes": vs})
-            if no > yes:
+            if 2 * no > eligible:
                 disputed.append(ruled)
                 agreeing += no
             else:
