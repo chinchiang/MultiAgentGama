@@ -491,7 +491,7 @@ flowchart TD
 4. 每個測試都有斷言。認可的斷言：`assert`、`raise AssertionError`、`pytest.raises`／`fail`／`warns`／`deprecated_call`／`approx`（`:17`）。`mock.assert_called_once()` 這類 `assert` 開頭的方法不算。巢狀函式裡的 `assert` 只在該函式真的被呼叫時才算（`:43-80`），否則一個從未呼叫的 helper 就能騙過閘門。每個測試函式，以及 `Test*` 類別裡的**每個** `test_*` 方法，都必須有斷言：可以直接寫，或（可遞移地）呼叫到同一模組裡含斷言的程式：以名稱呼叫的模組層級輔助函式（`check(resp)`），或以 `self.<helper>()` 呼叫的類別方法，包括繼承自同一模組中定義的基底類別的方法（`_vacuous_tests`，`:272-290`；`_class_methods`，`:293-303`；`_asserts`，`:306-329`）。有斷言的方法不能再替同類別裡空洞的方法背書，否則空洞的方法會被算成已防禦的邊界；呼叫模組外（看不到原始碼）的程式仍不算斷言證據。`_asserts` 以明確的堆疊走訪呼叫圖（不遞迴），數千層的輔助函式鏈也不會 `RecursionError`；`_parse_and_check_python` 另有保險（`:105-111`）：真的遇到 `RecursionError` 時保守地當成沒有斷言證據，絕不讓整次執行崩潰。
 
 JS/TS 測試走 `check_js_test_code`（`:399-435`，第 9.5 節）；`prepare_test_code`（`:467-481`）一次完成圍欄剝除、依語言靜態檢查與 Python 前導 `__future__` 匯入切分，生成器、合成器與執行器都用它（`check_test_code_for`，`:438-443`，保留單純的依語言檢查入口）。
-- 安裝檢查讀不懂的寫法以「無法檢查」拒絕（CODING_STANDARDS 第 8 條，`_unreadable_call`／`_js_unreadable_call`）：以 subprocess／os／pty／asyncio 啟動行程但命令不是字面值、動態匯入或執行的名稱／程式碼不是字面值、getattr 的屬性名稱不是字面值、呼叫對象是查表結果（`vars(os)["system"]`），以及 JS 的 require／import()／getBuiltinModule 模組名稱或 child_process 命令不是單一字串字面值。這是品質閘門（擋下模型幻想出來的套件），不是隔離：隔離是沙盒的事。
+- 安裝檢查是粗規則（CODING_STANDARDS 第 8 條，`_unreadable_call`／`_js_unreadable_call`）：啟動行程、動態執行，以及把能力模組當值傳遞，不論參數為何都以「無法檢查」拒絕：匯入 `_REFUSED_MODULES`、`from X import *`、os／asyncio 的 `_PROCESS_ATTRS`、任何參考 `_DYNAMIC_BUILTINS` 的寫法、名稱不是字面值或是能力模組的 getattr 一類、從其他物件取得 `.os`／`.sys`（`_REACHABLE_MODULE_ATTRS`）、以字面值呼叫 `import_module`／`spec_from_file_location` 以外的 importlib 用法、把能力模組當值使用、透過查表的呼叫；JS 端是 child_process／worker_threads／`node:` 的 vm 一類模組、eval、Function、getBuiltinModule、createRequire、process.binding，以及名稱不是字面值的 require／import()。這是品質閘門（擋下模型幻想出來的套件），不是隔離：隔離是沙盒的事。
 
 ### 9.2 執行器（`vibeharness/runners/test_executor.py`）
 
@@ -641,7 +641,7 @@ flowchart TD
 | 27 | 251-257 | 某個符號單獨就超過一個審查批次的預算（`BATCH_MAX_TOKENS`），原始碼在審查提示詞中被截斷，後半段沒有模型審查過（`HeterogeneousReviewerEnsemble.truncated_symbols`） | `TRUNCATED_SYMBOLS` · `review.truncated_symbols` |
 | 28 | 306-311 | 走訪到的檔案是解析到目標之外的連結，或不是一般檔案（FIFO、裝置、懸空連結），所以沒有讀取、也沒有送給模型（`vibeharness/core/settings.py` 的 `is_unsafe_file`） | `UNSAFE_FILES_SKIPPED` · `scope.unsafe_files` |
 | 29 | 333-339 | 執行了 Python 測試，而目標（本機沙盒時還有它在 `PYTHONPATH` 上的父目錄）頂層有與測試執行器同名的模組（`RUNNER_MODULES`：pytest、`_pytest`、pluggy、coverage、`pytest_cov`、sitecustomize……），會取代它（`vibeharness/core/sandbox.py` 的 `shadowed_runner_modules`） | `RUNNER_SHADOWED` · `execution.runner_shadows` |
-| 30 | 372-376 | 偵測到 Python，但產生的測試全都是 JS/TS（#13 的對應項） | `PYTHON_NO_TESTS` · `scope.detected_langs`, `execution.wb_tests` / `bb_tests` |
+| 30 | 372-376 | 偵測到 Python，但產生的白箱測試全都是 JS/TS（#13 的對應項；一律以 Python 撰寫的黑箱測試不算） | `PYTHON_NO_TESTS` · `scope.detected_langs`, `execution.wb_tests` / `bb_tests` |
 
 ### 10.3 Exit code（`vibeharness/cli.py:130-140`、`:218-268`、`:521-663`）
 
@@ -735,7 +735,7 @@ console 輸出另外用 `rich.markup.escape`（`vibeharness/core/harness.py:9`�
 與 OWASP LLM Top 10 2026 的對照見 `README.md` 的「安全設計依據」表；本章是那張表每一列的程式位置。
 
 ---
-- 遮蔽分兩層：低誤判的形狀（含 gitlab、npm、SendGrid、Slack webhook 與 PGP 私鑰區塊）既遮蔽也回報成 VH-AI-007；寬鬆的形狀（`_REDACT_ONLY_PATTERNS`：名稱像憑證的字串賦值、`Bearer`／`Basic` 標頭、短的 `sk-` 金鑰、含未編碼 "/" 的 URL 密碼）只遮蔽不回報。每個通道的內容都先 `strip_invisible` 再中和標籤（`_neutralized`），標籤樣式也認得全形角括號與斜線、連字號、空白與全形底線的變形。日誌由 CLI 的 `SafeLogFormatter` 清理成一行（`log_safe`），模型文字不能注入 ANSI／OSC 序列或偽造 `::error::`。
+- 遮蔽分兩層：低誤判的形狀（含 gitlab、npm、SendGrid、Slack webhook 與 PGP 私鑰區塊）既遮蔽也回報成 VH-AI-007；寬鬆的形狀（`_REDACT_ONLY_PATTERNS`：名稱像憑證的字串賦值、`Bearer`／`Basic` 標頭、短的 `sk-` 金鑰、含未編碼 "/" 的 URL 密碼）只遮蔽不回報。每個通道的內容都先 `strip_invisible` 再中和標籤（`_neutralized`），標籤樣式也認得全形角括號與斜線、連字號、空白與全形底線的變形。日誌訊息由 CLI 的 `SafeLogFormatter` 清理成一行（`log_safe`；回溯保留換行，每行清理並縮排），模型文字不能注入 ANSI／OSC 序列或偽造 `::error::`。
 
 ## 13. 設定與擴充點
 
