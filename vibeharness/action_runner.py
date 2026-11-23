@@ -202,6 +202,14 @@ def warnings_for(rc: int, fail_on: str, summary: Optional[Dict[str, Any]]) -> Li
             "every model call was simulated: no provider key reached the action (e.g. a pull request from a fork "
             "gets no secrets), so this verdict is not model evidence; re-run it with the keys available",
         ))
+    if summary and summary.get("sandbox_provider") == "local_subprocess":
+        warnings.append(bi(
+            "測試以 local_subprocess 沙盒執行：它不是隔離邊界，產生的測試與受稽核的程式碼可以讀取 runner 使用者的檔案、"
+            "使用網路；稽核不受信任的 PR 時請用 sandbox_provider: docker",
+            "the tests ran in the local_subprocess sandbox, which is not an isolation boundary: generated tests and the "
+            "audited code can read the runner user's files and use the network; use sandbox_provider: docker for "
+            "untrusted pull requests",
+        ))
     if rc == 3 and not fails_job(fail_on, rc):
         warnings.append(bi(
             f"判定為 INCONCLUSIVE（有證據缺口），但 fail-on: {fail_on} 不會因此讓 job 失敗；請查看報告的證據缺口",

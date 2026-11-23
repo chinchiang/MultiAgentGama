@@ -12,7 +12,7 @@ import logging
 import sys
 import os
 import traceback
-from typing import TYPE_CHECKING, Any, List, NoReturn
+from typing import TYPE_CHECKING, Any, List, NoReturn, Optional
 from vibeharness.core.settings import DEFAULT_CONFIG_PATH, DISCOVERED_CONFIG_NAMES, resolve_config
 from vibeharness import __version__
 from vibeharness.core.i18n import bi
@@ -494,12 +494,13 @@ def parse_args_for_inspection(argv: List[str]) -> argparse.Namespace:
     return _build_parser(inspection=True).parse_args(argv)
 
 
-def _summary_json(summary: Any, execution_mode: str) -> str:
+def _summary_json(summary: Any, execution_mode: str, sandbox_provider: Optional[str] = None) -> str:
     """--summary-json 的內容：判定、exit code、執行模式與每種模式的模型呼叫數（"retried" 是同一次呼叫的中間詢問，不計入 total）。
     all_simulated 為 True 表示有模型呼叫、而且每一次都是模擬的（例如 hybrid 模式下沒有任何供應商金鑰）。
     The --summary-json content: verdict, exit code, execution mode and the model calls per mode ("retried" entries
     are intermediate asks of one call and are not counted in total). all_simulated is True when there were model
-    calls and every one was simulated (e.g. hybrid mode without any provider key)."""
+    calls and every one was simulated (e.g. hybrid mode without any provider key). sandbox_provider is the Python
+    sandbox the tests ran in (`local_subprocess` is not an isolation boundary; the Action warns about it)."""
     import json
     calls = [c for c in summary.agent_calls if c.mode != "retried"]
     counts = {mode: sum(1 for c in calls if c.mode == mode) for mode in ("live", "simulated", "invalid")}
@@ -509,6 +510,7 @@ def _summary_json(summary: Any, execution_mode: str) -> str:
         "verdict": summary.overall_status,
         "exit_code": verdict_exit_code(summary.overall_status),
         "execution_mode": execution_mode,
+        "sandbox_provider": sandbox_provider,
         "model_calls": {"total": len(calls), **counts, "cached": sum(1 for c in calls if c.cached)},
         "all_simulated": bool(calls) and counts["simulated"] == len(calls),
         "inconclusive_reasons": list(summary.inconclusive_reasons),
@@ -646,7 +648,7 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     if args.summary_json:
         try:
             with open(args.summary_json, "w", encoding="utf-8") as f:
-                f.write(_summary_json(summary, commander.gateway.execution_mode))
+                f.write(_summary_json(summary, commander.gateway.execution_mode, commander.sandbox_provider))
         except OSError as e:
             # 報告已經寫好：摘要寫不出來只是警告，不改變判定的 exit code
             # The report is already written: a summary that cannot be written is only a warning and keeps the verdict's exit code
