@@ -74,6 +74,10 @@ GOOD = textwrap.dedent('''
 
 def test_gate_accepts_a_node_test_module():
     assert check_js_test_code(GOOD) == (True, None)
+    # 字面值的模組名稱與命令讀得懂，照常放行 ／ literal module names and commands are readable and pass
+    literal = ("const { execSync } = require('node:child_process');\nconst app = require('./app.js');\n"
+               "test('x', async () => { const m = await import('./app.mjs'); execSync('node --version'); assert.ok(m); });")
+    assert check_js_test_code(literal) == (True, None)
     assert check_test_code_for(GOOD, "typescript") == (True, None)
 
 
@@ -93,6 +97,13 @@ def test_gate_accepts_a_node_test_module():
     ("test('x', () => { require('child_process').execSync('yarn add evil'); assert.ok(1); });", "installs packages"),
     ("test('x', () => { spawnSync('bun', ['install']); assert.ok(1); });", "installs packages"),
     ("test('x', () => { spawnSync('npx', ['cowsay']); assert.ok(1); });", "installs packages"),
+    # 檢查讀不懂的寫法以「無法檢查」拒絕（#183 第 9 項） ／ forms the check cannot read are refused (#183 item 9)
+    ("const cp = process.getBuiltinModule('child_' + 'process');\n"
+     "test('x', () => { cp.execSync('np' + 'm i x'); assert.ok(1); });", "could not check"),
+    ("const { execSync } = require('node:child_process');\n"
+     "test('x', () => { execSync('np' + 'm i x'); assert.ok(1); });", "could not check"),
+    ("test('x', async () => { const m = await import(name); assert.ok(m); });", "could not check"),
+    ("const m = require(path);\ntest('x', () => { assert.ok(m); });", "could not check"),
 ])
 def test_gate_rejects(code, problem):
     ok, reason = check_js_test_code(code)

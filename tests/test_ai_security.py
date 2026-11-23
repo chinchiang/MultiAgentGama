@@ -296,6 +296,41 @@ def test_ordinary_generated_test_still_passes_the_gate():
     assert check_test_code("def test_x():\n    assert 'install' != 'pip'\n") == (True, None)
 
 
+# 檢查讀不懂的寫法以「無法檢查」拒絕，而不是放行（#183 第 9 項，CODING_STANDARDS 第 8 條）
+# Forms the check cannot read are refused as "could not check", not let through (#183 item 9, CODING_STANDARDS rule 8)
+@pytest.mark.parametrize("call", [
+    "subprocess.run([sys.executable, '-m', 'p' + 'ip', 'install', 'x'])",
+    "subprocess.check_call(command)",
+    "sp.Popen(f'{tool} install x', shell=True)",
+    "run(cmd)",
+    "os.system(' '.join(parts))",
+    "asyncio.create_subprocess_shell(cmd)",
+    "__import__('p' + 'ip')",
+    "importlib.import_module(name)",
+    "exec(source)",
+    "getattr(os, 'sys' + 'tem')('ls')",
+    "vars(os)['system']('ls')",
+])
+def test_generated_tests_the_install_check_cannot_read_are_refused(call):
+    code = ("import asyncio, importlib, os, subprocess, sys\nimport subprocess as sp\nfrom subprocess import run\n\n"
+            f"def test_x():\n    {call}\n    assert True\n")
+    ok, problem = check_test_code(code)
+    assert not ok and "could not check whether the test installs packages" in problem
+
+
+@pytest.mark.parametrize("call", [
+    "subprocess.run([sys.executable, '-c', 'print(1)'], capture_output=True)",
+    "asyncio.run(main())",
+    "re.compile(pattern)",
+    "mock.call(1)",
+    "getattr(response, 'status_code')",
+    "os.path.join(a, b)",
+])
+def test_ordinary_calls_still_pass_the_install_check(call):
+    code = f"import asyncio, os, re, subprocess, sys\nfrom unittest import mock\n\ndef test_x():\n    {call}\n    assert True\n"
+    assert check_test_code(code) == (True, None)
+
+
 # --- 確定性的 AI 安全規則 ---------------------------------------------------------------------------
 # --- Deterministic AI-security rules ------------------------------------------------------------------
 
