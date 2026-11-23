@@ -5,7 +5,7 @@ from typing import List, Dict, Any, Mapping, Optional, Sequence, Tuple, TypeVar
 from pydantic import ValidationError
 from vibeharness.core.models import CodeSymbol, ReviewFinding, FindingSeverity, text_or
 from vibeharness.core.llm_gateway import LLMGateway
-from vibeharness.core.i18n import bi, en_only
+from vibeharness.core.i18n import bi, en_only, default_text
 from vibeharness.core.codecontext import estimate_tokens, render_symbol, render_symbols, batch_symbols, target_root
 from vibeharness.core.agent_call import (
     AgentCall, AgentInput, AgentReply, CallContext, CallKind, Channel, Content, Part, PlannedCalls, Untrusted,
@@ -360,7 +360,7 @@ def _review_findings(items: List[Mapping[str, Any]], ctx: CallContext) -> List[O
                 symbol_name=symbol.name if symbol else reported_symbol,
                 line_number=symbol.line_start if symbol else None,
                 severity=severity,
-                title=text_or(item.get("title"), bi("潛在缺陷", "Potential Defect")),
+                title=text_or(item.get("title"), default_text("潛在缺陷", "Potential Defect")),
                 description=text_or(item.get("description"), ""),
                 root_cause=text_or(item.get("root_cause"), ""),
                 suspected_vibe_flaw=text_or(item.get("suspected_vibe_flaw"), ""),

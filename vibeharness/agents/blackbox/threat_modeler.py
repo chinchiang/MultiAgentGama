@@ -12,7 +12,7 @@ from vibeharness.core.agent_call import (
     AgentCall, AgentInput, AgentReply, CallContext, CallKind, Channel, Content, Part, PlannedCalls, Untrusted,
     ask_batch,
 )
-from vibeharness.core.i18n import bi
+from vibeharness.core.i18n import bi, default_text
 from vibeharness.core.codecontext import estimate_tokens, render_symbols, batch_symbols, target_root, truncate_to_tokens
 from vibeharness.core.sanitize import sanitize_prompt_field
 
@@ -411,7 +411,7 @@ def _threat_drafts(items: List[Mapping[str, Any]], ctx: CallContext) -> List[Tup
                 stride_category=category,
                 owasp_mapping=owasp_mapping if isinstance(owasp_mapping, str) and owasp_mapping.strip() else None,
                 atlas_mapping=atlas_mapping if isinstance(atlas_mapping, str) and atlas_mapping.strip() else None,
-                title=_text(item.get("title"), bi("未分類的威脅", "Unclassified Threat")),
+                title=_text(item.get("title"), default_text("未分類的威脅", "Unclassified Threat")),
                 description=_text(item.get("description"), ""),
                 asset_at_risk=_text(item.get("asset_at_risk"), "Application Data"),
                 attack_vector=_text(item.get("attack_vector"), "REST API"),

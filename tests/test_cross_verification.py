@@ -223,5 +223,31 @@ def test_a_live_finding_shaped_like_bilingual_text_reaches_the_verifier_whole(sc
 def test_a_simulated_bilingual_finding_sends_its_english_half_only():
     from vibeharness.core.i18n import bi, prompt_text
 
-    assert prompt_text(bi("潛在缺陷", "Potential Defect"), simulated=True) == "Potential Defect"
-    assert prompt_text(bi("潛在缺陷", "Potential Defect"), simulated=False) == bi("潛在缺陷", "Potential Defect")
+    assert prompt_text(bi("密碼回傳", "Password echoed"), simulated=True) == "Password echoed"
+    assert prompt_text(bi("密碼回傳", "Password echoed"), simulated=False) == bi("密碼回傳", "Password echoed")
+
+
+def test_harness_defaults_in_live_items_reach_prompts_in_english_only(scripted):
+    """真實模型漏寫標題時，harness 補上的雙語預設值（「潛在缺陷 ／ Potential Defect」）只送英文半進驗證者提示詞：
+    提示詞維持英文（CODING_STANDARDS 第 6 條；#183 審查第 2 輪）。
+    When a live model leaves out the title, the bilingual default the harness fills in ("潛在缺陷 ／ Potential Defect")
+    reaches the verifier prompt as its English half only: prompts stay English (CODING_STANDARDS rule 6; #183
+    review round 2)."""
+    from vibeharness.agents.whitebox.multi_reviewer import _review_findings
+    from vibeharness.core.agent_call import CallContext
+    from vibeharness.core.i18n import has_cjk
+
+    reviewer = {"agent_id": "whitebox_reviewer_claude", "model_alias": "claude", "name": "Claude", "focus": "f"}
+    drafts = _review_findings([{"severity": "HIGH", "description": "SQL built with f-string", "symbol_name": "q"}],
+                              CallContext((reviewer, []), simulated=False))
+    finding = drafts[0].model_copy(update={"finding_id": "WB-CLA-01", "file_path": "app.py"})
+    assert not finding.is_simulated and "潛在缺陷" in finding.title
+    seen = []
+
+    def rule(request):
+        seen.append(request.messages[1]["content"])
+        return {"verdicts": [{"index": 0, "verdict": "confirm", "reason": "x"}]}
+
+    gateway = LLMGateway(CONFIG, execution_mode="live", transport=scripted({"whitebox_verifier_*": rule}))
+    MultiModelDebater(gateway).arbitrate([finding])
+    assert seen and all("Potential Defect" in p and not has_cjk(p) for p in seen)

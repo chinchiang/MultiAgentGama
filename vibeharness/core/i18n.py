@@ -45,15 +45,31 @@ def en_only(text: str) -> str:
     return parts[1] if parts else text
 
 
+# harness 替真實模型漏寫的欄位補上的雙語預設值（見 default_text）：它們和模擬引擎的欄位一樣是 bi() 產生的，送進提示詞時
+# 只送英文半
+# The bilingual defaults the harness fills in for fields a real model left out (see default_text): like the
+# simulation engine's fields they are bi() output, and only their English half goes into a prompt
+_HARNESS_DEFAULTS: set = set()
+
+
+def default_text(zh: str, en: str) -> str:
+    """bi(zh, en)，並登記成 harness 的預設值：prompt_text 會只送它的英文半，即使它填在真實模型的項目裡。
+    bi(zh, en), registered as a harness default: prompt_text sends only its English half, even inside a live model's
+    item."""
+    text = bi(zh, en)
+    _HARNESS_DEFAULTS.add(text)
+    return text
+
+
 def prompt_text(text: str, simulated: bool) -> str:
-    """模型項目的欄位要放進提示詞時的樣子：模擬引擎寫的欄位是 bi() 產生的，只送英文半；真實模型寫的文字原樣保留。
-    真實模型可以自己寫出「中文 ／ English」的形狀，en_only 會只留下最後那段英文，把前面的內容藏起來不給驗證者或
-    測試產生器看到。
-    A model item's field as it goes into a prompt: fields the simulation engine wrote are bi() output and send their
-    English half only; text a real model wrote is kept as is. A real model can write the "中文 ／ English" shape
-    itself, and en_only would keep only the last English part, hiding the rest from the verifier or the test
-    generator."""
-    return en_only(text) if simulated else (text or "")
+    """模型項目的欄位要放進提示詞時的樣子：模擬引擎寫的欄位與 harness 的預設值（default_text）是 bi() 產生的，只送英文半；
+    真實模型寫的文字原樣保留。真實模型可以自己寫出「中文 ／ English」的形狀，en_only 會只留下最後那段英文，把前面的內容
+    藏起來不給驗證者或測試產生器看到。
+    A model item's field as it goes into a prompt: fields the simulation engine wrote and harness defaults
+    (default_text) are bi() output and send their English half only; text a real model wrote is kept as is. A real
+    model can write the "中文 ／ English" shape itself, and en_only would keep only the last English part, hiding the
+    rest from the verifier or the test generator."""
+    return en_only(text) if simulated or text in _HARNESS_DEFAULTS else (text or "")
 
 
 def zh_only(text: str) -> str:
