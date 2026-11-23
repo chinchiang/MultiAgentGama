@@ -36,6 +36,7 @@ class GapCode(str, Enum):
     NO_REVIEWERS = "no_reviewers"
     SINGLE_REVIEWER_MODEL = "single_reviewer_model"
     NO_CROSS_VERIFICATION = "no_cross_verification"
+    TRUNCATED_SYMBOLS = "truncated_symbols"
     NO_SYMBOLS = "no_symbols"
     PARSE_FAILURES = "parse_failures"
     INCOMPLETE_SCAN = "incomplete_scan"
@@ -48,6 +49,7 @@ class GapCode(str, Enum):
     MUTATION_NO_CONCLUSION = "mutation_no_conclusion"
     MUTATION_BELOW_THRESHOLD = "mutation_below_threshold"
     MUTATION_TRUNCATED = "mutation_truncated"
+    PYTHON_NO_TESTS = "python_no_tests"
     JS_NO_TESTS = "js_no_tests"
     JS_TESTS_NOT_RUN = "js_tests_not_run"
     TS_TESTS_NOT_RUN = "ts_tests_not_run"
@@ -90,6 +92,8 @@ class ReviewEvidence:
     arbitration_applied: bool = False
     confirmed_findings: Sequence[ReviewFinding] = ()
     findings_without_model_tests: Sequence[str] = ()
+    # 審查提示詞裡被截斷的符號（見 HeterogeneousReviewerEnsemble.truncated_symbols） ／ symbols truncated in the review prompt
+    truncated_symbols: Sequence[str] = ()
 
 
 @dataclass(frozen=True)
@@ -243,6 +247,13 @@ def _evidence_gaps(evidence: GateEvidence) -> List[EvidenceGap]:
             f"the target ({integrity_rules}); model-based review, verification "
             "and threat modeling may have been manipulated (OWASP LLM01:2026), so review those locations manually"
         ))
+    if review.truncated_symbols:
+        shown = ", ".join(list(review.truncated_symbols)[:5]) + (" …" if len(review.truncated_symbols) > 5 else "")
+        gap(GapCode.TRUNCATED_SYMBOLS, bi(
+            f"{len(review.truncated_symbols)} 個符號超過一個審查批次的預算，原始碼在審查提示詞中被截斷，後半段沒有模型審查過：{shown}",
+            f"{len(review.truncated_symbols)} symbol(s) exceed one review batch's budget, so their source was truncated "
+            f"in the review prompt and no model reviewed the rest: {shown}"
+        ))
     if not review.reviewers_configured:
         gap(GapCode.NO_REVIEWERS, bi("沒有設定任何 whitebox_reviewer_* 代理，因此沒有執行白箱模型審查",
                                      "No whitebox_reviewer_* agents are configured, so no white-box model review ran"))
@@ -346,6 +357,14 @@ def _evidence_gaps(evidence: GateEvidence) -> List[EvidenceGap]:
                 "(limited by mutation_max_mutants), so the score is a sample"
             ))
     js_tests = [t for t in list(ex.wb_tests) + list(ex.bb_tests) if t.language != "python"]
+    # 與 JS/TS 對稱：混合語言的專案裡，測試全都是 JS/TS 時 Python 程式碼只做了靜態審查
+    # Symmetric to JS/TS: in a mixed-language project whose tests are all JS/TS, the Python code was reviewed
+    # statically only
+    if "Python" in scope.detected_langs and js_tests and not ran_python:
+        gap(GapCode.PYTHON_NO_TESTS, bi(
+            "Python 程式碼只做了靜態審查：產生的測試全都是 JS/TS，沒有任何 Python 測試",
+            "Python code was reviewed statically only: every generated test is JS/TS, none is Python"
+        ))
     if "TypeScript/JavaScript" in scope.detected_langs:
         if not js_tests:
             gap(GapCode.JS_NO_TESTS, bi(

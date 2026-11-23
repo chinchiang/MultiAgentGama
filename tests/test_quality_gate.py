@@ -155,6 +155,7 @@ GAP_CASES = {
     GapCode.SINGLE_REVIEWER_MODEL: lambda e: _with(e, "review", reviewer_models=["gpt"]),
     **({GapCode.NO_CROSS_VERIFICATION: lambda e: _with(e, "review", verifier_models=["gpt"])}
        if hasattr(GapCode, "NO_CROSS_VERIFICATION") else {}),
+    GapCode.TRUNCATED_SYMBOLS: lambda e: _with(e, "review", truncated_symbols=["app.py:huge"]),
     GapCode.NO_SYMBOLS: lambda e: _with(e, "scope", symbols_found=False),
     GapCode.PARSE_FAILURES: lambda e: _with(e, "scope", parse_failures=["bad.py"]),
     GapCode.INCOMPLETE_SCAN: lambda e: _with(e, "scope", incomplete_files=["huge.py"]),
@@ -168,6 +169,9 @@ GAP_CASES = {
     GapCode.MUTATION_NO_CONCLUSION: lambda e: _with(e, "execution", mutation_report=MutationReport(skipped_reason="no tests")),
     GapCode.MUTATION_BELOW_THRESHOLD: lambda e: _with(e, "execution", mutation_report=MutationReport(score=50.0, survived=1)),
     GapCode.MUTATION_TRUNCATED: lambda e: _with(e, "execution", mutation_report=MutationReport(score=100.0, truncated=True)),
+    GapCode.PYTHON_NO_TESTS: lambda e: _with(_with(e, "scope", detected_langs=["Python", "TypeScript/JavaScript"]),
+                                             "execution", wb_tests=[_test("WB-T-01", "javascript")],
+                                             bb_tests=[_test("BB-T-01", "javascript", source_ref="THREAT-01")]),
     GapCode.JS_NO_TESTS: lambda e: _with(e, "scope", detected_langs=["Python", "TypeScript/JavaScript"]),
     GapCode.JS_TESTS_NOT_RUN: lambda e: _with(_with(e, "scope", detected_langs=["TypeScript/JavaScript"]), "execution",
                                               wb_tests=[_test("WB-T-01", "javascript")], js_runner_problem="no node"),

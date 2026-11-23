@@ -541,6 +541,7 @@ class VibeHarnessCommander:
                     arbitration_applied=debate_result.arbitration_applied,
                     confirmed_findings=debate_result.confirmed_findings,
                     findings_without_model_tests=self.whitebox_test_gen.findings_without_model_tests,
+                    truncated_symbols=self.multi_reviewer.truncated_symbols(symbols, root_dir=work_dir),
                 ),
                 scope=ScopeDisclosure(
                     symbols_found=bool(symbols),

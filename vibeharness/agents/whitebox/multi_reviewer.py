@@ -1,11 +1,12 @@
 import logging
+import os
 import re
 from typing import List, Dict, Any, Mapping, Optional, Sequence, Tuple, TypeVar
 from pydantic import ValidationError
 from vibeharness.core.models import CodeSymbol, ReviewFinding, FindingSeverity, text_or
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.i18n import bi, en_only
-from vibeharness.core.codecontext import estimate_tokens, render_symbols, batch_symbols, target_root
+from vibeharness.core.codecontext import estimate_tokens, render_symbol, render_symbols, batch_symbols, target_root
 from vibeharness.core.agent_call import (
     AgentCall, AgentInput, AgentReply, CallContext, CallKind, Channel, Content, Part, PlannedCalls, Untrusted,
     ask_batch,
@@ -137,6 +138,18 @@ class HeterogeneousReviewerEnsemble:
         One entry per review call: one per reviewer and batch, reviewer by reviewer and then batch by batch;
         `per_batch` holds one value per batch (the batch itself when running, its code tokens when planning)."""
         return [(reviewer, item) for reviewer in self.reviewer_agents for item in per_batch]
+
+    def truncated_symbols(self, symbols: List[CodeSymbol], root_dir: Optional[str] = None) -> List[str]:
+        """光是自己就超過一個審查批次預算（BATCH_MAX_TOKENS）的符號，以 "<檔名>:<名稱>" 列出：它們的原始碼在審查
+        提示詞裡被截斷，後半段沒有任何審查者看過。沒有審查者時是空的（沒有人審查，就沒有截斷）。
+        Symbols that alone exceed one review batch's budget (BATCH_MAX_TOKENS), listed as "<file name>:<name>": their
+        source is truncated in the review prompt, and no reviewer saw the rest. Empty without reviewers (nobody
+        reviews, so nothing is truncated)."""
+        if not symbols or not self.reviewer_agents:
+            return []
+        root = target_root(root_dir, symbols[0].file_path)
+        return [f"{os.path.basename(s.file_path)}:{s.name}" for s in symbols
+                if estimate_tokens(render_symbol(s, root)) > self.BATCH_MAX_TOKENS]
 
     def _listing(self, batch: List[CodeSymbol], root: str) -> str:
         return render_symbols(batch, root, max_tokens=self.BATCH_MAX_TOKENS)
