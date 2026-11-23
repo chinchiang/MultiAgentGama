@@ -1094,7 +1094,10 @@ def test_local_sandbox_memory_cap_stops_a_runaway_allocation(tmp_path):
         "    assert len(blob) > 0\n"
     )
     capped = LocalSubprocessSandbox(timeout_seconds=60, memory_mb=512)
-    assert capped._limits(60) == {"cpu_seconds": 70, "memory_bytes": 512 * 1024 * 1024}
+    # Linux 另有行程數上限（#183 第 18 項），這裡只比對記憶體與 CPU ／ Linux also caps the process count (#183 item 18);
+    # only memory and CPU are compared here
+    limits = capped._limits(60)
+    assert {k: limits[k] for k in ("cpu_seconds", "memory_bytes")} == {"cpu_seconds": 70, "memory_bytes": 512 * 1024 * 1024}
     run = capped.execute_pytest_files({"test_mem.py": code}, working_dir=str(tmp_path))
     assert run.exit_code != 0 and "MemoryError" in (run.stdout + run.stderr + (run.junit_xml or ""))
     uncapped = LocalSubprocessSandbox(timeout_seconds=60, memory_mb=0)
