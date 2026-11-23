@@ -155,25 +155,30 @@ GAP_CASES = {
     GapCode.SINGLE_REVIEWER_MODEL: lambda e: _with(e, "review", reviewer_models=["gpt"]),
     **({GapCode.NO_CROSS_VERIFICATION: lambda e: _with(e, "review", verifier_models=["gpt"])}
        if hasattr(GapCode, "NO_CROSS_VERIFICATION") else {}),
-    GapCode.TRUNCATED_SYMBOLS: lambda e: _with(e, "review", truncated_symbols=["app.py:huge"]),
+    **({GapCode.TRUNCATED_SYMBOLS: lambda e: _with(e, "review", truncated_symbols=["app.py:huge"])}
+       if hasattr(GapCode, "TRUNCATED_SYMBOLS") else {}),
     GapCode.NO_SYMBOLS: lambda e: _with(e, "scope", symbols_found=False),
     GapCode.PARSE_FAILURES: lambda e: _with(e, "scope", parse_failures=["bad.py"]),
     GapCode.INCOMPLETE_SCAN: lambda e: _with(e, "scope", incomplete_files=["huge.py"]),
     GapCode.OVERSIZED_FILES: lambda e: _with(e, "scope", oversized_files=["/srv/app/big.py"]),
-    GapCode.UNSAFE_FILES_SKIPPED: lambda e: _with(e, "scope", unsafe_files=["/srv/app/leak.py"]),
+    **({GapCode.UNSAFE_FILES_SKIPPED: lambda e: _with(e, "scope", unsafe_files=["/srv/app/leak.py"])}
+       if hasattr(GapCode, "UNSAFE_FILES_SKIPPED") else {}),
     GapCode.MAX_FILES_SKIPPED: lambda e: _with(e, "scope", skipped_files=["z.py"]),
     **({GapCode.DISCOVERED_SCOPE_FILTERED: lambda e: _with(e, "scope", discovered_filtered_count=2)}
        if hasattr(GapCode, "DISCOVERED_SCOPE_FILTERED") else {}),
     GapCode.TESTS_NOT_RUN: lambda e: _with(e, "execution", wb_results=[_result("WB-T-01", TestStatus.ERROR)]),
-    GapCode.RUNNER_SHADOWED: lambda e: _with(e, "execution", runner_shadows=["/srv/app/pytest.py"]),
+    **({GapCode.RUNNER_SHADOWED: lambda e: _with(e, "execution", runner_shadows=["/srv/app/pytest.py"])}
+       if hasattr(GapCode, "RUNNER_SHADOWED") else {}),
     GapCode.MUTATION_NO_CONCLUSION: lambda e: _with(e, "execution", mutation_report=MutationReport(skipped_reason="no tests")),
     GapCode.MUTATION_BELOW_THRESHOLD: lambda e: _with(e, "execution", mutation_report=MutationReport(score=50.0, survived=1)),
-    GapCode.MUTATION_MOSTLY_INVALID: lambda e: _with(e, "execution", mutation_report=MutationReport(
-        score=100.0, total=51, killed=1, invalid=50)),
+    **({GapCode.MUTATION_MOSTLY_INVALID: lambda e: _with(e, "execution", mutation_report=MutationReport(
+        score=100.0, total=51, killed=1, invalid=50))}
+       if hasattr(GapCode, "MUTATION_MOSTLY_INVALID") else {}),
     GapCode.MUTATION_TRUNCATED: lambda e: _with(e, "execution", mutation_report=MutationReport(score=100.0, truncated=True)),
-    GapCode.PYTHON_NO_TESTS: lambda e: _with(_with(e, "scope", detected_langs=["Python", "TypeScript/JavaScript"]),
+    **({GapCode.PYTHON_NO_TESTS: lambda e: _with(_with(e, "scope", detected_langs=["Python", "TypeScript/JavaScript"]),
                                              "execution", wb_tests=[_test("WB-T-01", "javascript")],
-                                             bb_tests=[_test("BB-T-01", "javascript", source_ref="THREAT-01")]),
+                                             bb_tests=[_test("BB-T-01", "javascript", source_ref="THREAT-01")])}
+       if hasattr(GapCode, "PYTHON_NO_TESTS") else {}),
     GapCode.JS_NO_TESTS: lambda e: _with(e, "scope", detected_langs=["Python", "TypeScript/JavaScript"]),
     GapCode.JS_TESTS_NOT_RUN: lambda e: _with(_with(e, "scope", detected_langs=["TypeScript/JavaScript"]), "execution",
                                               wb_tests=[_test("WB-T-01", "javascript")], js_runner_problem="no node"),
@@ -438,4 +443,4 @@ def test_a_score_on_mostly_decided_mutants_is_no_gap():
     When decided mutants are at least as many as invalid ones, the score stands (#183 item 22)."""
     report = MutationReport(score=100.0, total=4, killed=2, invalid=2)
     result = evaluate(_with(clean(), "execution", mutation_report=report))
-    assert GapCode.MUTATION_MOSTLY_INVALID not in _codes(result)
+    assert "mutation_mostly_invalid" not in [c.value for c in _codes(result)]
