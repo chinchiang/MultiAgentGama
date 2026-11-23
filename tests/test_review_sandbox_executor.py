@@ -406,3 +406,19 @@ def test_breach_attribution_follows_the_innermost_js_frame(frame, breach):
     case = {"name": "a", "time": 0.0, "outcome": "failure", "message": "x",
             "details": f"AssertionError [ERR_ASSERTION]: no\n{frame}\n", "stdout": "", "stderr": ""}
     assert attribute(test, "T", [case]).is_security_exploit_confirmed is breach
+
+
+# --- 本機沙盒限制行程數（#183 第 18 項） ---------------------------------------------------------
+# --- The local sandbox caps the process count (#183 item 18) ----------------------------------------
+
+@linux_only
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="RLIMIT_NPROC does not bind root")
+def test_the_local_sandbox_caps_the_process_count():
+    from vibeharness.core.sandbox import SANDBOX_PROCESS_HEADROOM, _user_process_count
+
+    bound = _user_process_count() + SANDBOX_PROCESS_HEADROOM + 256
+    code = ("import resource\n\ndef test_nproc():\n"
+            "    soft = resource.getrlimit(resource.RLIMIT_NPROC)[0]\n"
+            f"    assert soft != resource.RLIM_INFINITY and soft <= {bound}, soft\n")
+    run = LocalSubprocessSandbox(timeout_seconds=60).execute_pytest_files({"test_vh_nproc.py": code})
+    assert run.exit_code == 0, run.stdout

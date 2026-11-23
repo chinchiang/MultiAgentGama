@@ -325,6 +325,34 @@ RUNNER_MODULES = (
 _EXTENSION_SUFFIXES = (".so", ".pyd")
 
 
+# 本機沙盒的測試行程最多能比啟動時多開幾個行程（同一使用者的全部行程一起算）
+# How many more processes than at start-up the local sandbox's test process may have (all of the user's processes
+# count together)
+SANDBOX_PROCESS_HEADROOM = 1024
+
+
+def _user_process_count() -> Optional[int]:
+    """目前這個使用者（real uid）有幾個執行緒：Linux 的 RLIMIT_NPROC 計的是執行緒（task），不是行程。只在 Linux 從
+    /proc/<pid>/task 數，其他平台或 root（不受 RLIMIT_NPROC 限制）為 None。
+    How many threads the current user (real uid) has: Linux's RLIMIT_NPROC counts threads (tasks), not processes.
+    Counted from /proc/<pid>/task on Linux only, None elsewhere or for root (RLIMIT_NPROC does not bind root)."""
+    if not sys.platform.startswith("linux") or not hasattr(os, "getuid") or os.getuid() == 0:
+        return None
+    uid, count = os.getuid(), 0
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return None
+    for entry in entries:
+        if entry.isdigit():
+            try:
+                if os.stat(f"/proc/{entry}").st_uid == uid:
+                    count += len(os.listdir(f"/proc/{entry}/task"))
+            except OSError:
+                continue
+    return count
+
+
 def shadowed_runner_modules(base_dir: str, include_parent: bool = True) -> List[str]:
     """`base_dir`（以及 include_parent 時它的父目錄，本機沙盒把兩者都放進 PYTHONPATH）頂層與 RUNNER_MODULES 同名的模組，
     以 "<目錄>/<項目>" 列出並排序：`name.py`、`name.pyc`、含 `__init__.py` 的目錄，或 `name.*.so`／`.pyd` 擴充模組
@@ -597,6 +625,12 @@ class LocalSubprocessSandbox:
         limits: Dict[str, int] = {"cpu_seconds": int(timeout) + 10}
         if self.memory_mb > 0:
             limits["memory_bytes"] = self.memory_mb * 1024 * 1024
+        processes = _user_process_count()
+        if processes is not None:
+            # RLIMIT_NPROC 計的是這個使用者的全部行程：上限是目前的數量加上寬裕量，擋住 fork bomb 而不搶走其他工作
+            # RLIMIT_NPROC counts all of this user's processes: the cap is today's count plus headroom, which stops a
+            # fork bomb without starving other work
+            limits["processes"] = processes + SANDBOX_PROCESS_HEADROOM
         return limits
 
     @staticmethod
@@ -627,7 +661,7 @@ class LocalSubprocessSandbox:
                     except (ValueError, OSError, AttributeError):
                         pass
             for name, value in (("RLIMIT_AS", limits.get("memory_bytes")), ("RLIMIT_CPU", limits.get("cpu_seconds")),
-                                ("RLIMIT_FSIZE", file_bytes)):
+                                ("RLIMIT_FSIZE", file_bytes), ("RLIMIT_NPROC", limits.get("processes"))):
                 if not value or not hasattr(resource, name):
                     continue
                 try:
