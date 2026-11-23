@@ -319,7 +319,6 @@ def test_generated_tests_the_install_check_cannot_read_are_refused(call):
 
 
 @pytest.mark.parametrize("call", [
-    "subprocess.run([sys.executable, '-c', 'print(1)'], capture_output=True)",
     "asyncio.run(main())",
     "re.compile(pattern)",
     "mock.call(1)",
@@ -327,7 +326,40 @@ def test_generated_tests_the_install_check_cannot_read_are_refused(call):
     "os.path.join(a, b)",
 ])
 def test_ordinary_calls_still_pass_the_install_check(call):
-    code = f"import asyncio, os, re, subprocess, sys\nfrom unittest import mock\n\ndef test_x():\n    {call}\n    assert True\n"
+    code = f"import asyncio, os, re, sys\nfrom unittest import mock\n\ndef test_x():\n    {call}\n    assert True\n"
+    assert check_test_code(code) == (True, None)
+
+
+# 粗規則：啟動行程、動態執行、把模組物件當值傳遞，不論命令是不是字面值都以「無法檢查」拒絕（#183 審查第 2 輪）
+# The coarse rule: starting a process, dynamic execution and passing a module object around as a value are refused as
+# "could not check", literal command or not (#183 review round 2)
+@pytest.mark.parametrize("code", [
+    "import subprocess, sys\n\ndef test_x():\n    subprocess.run([sys.executable, '-c', 'print(1)'])\n    assert True\n",
+    "import subprocess\n\ndef test_x():\n    r = subprocess.run\n    r(['ls'])\n    assert True\n",
+    "import os\n\ndef test_x():\n    r = os.system\n    r('ls')\n    assert True\n",
+    "from subprocess import *\n\ndef test_x():\n    run(['ls'])\n    assert True\n",
+    "import builtins\n\ndef test_x():\n    builtins.exec('x = 1')\n    assert True\n",
+    "import importlib\n\ndef test_x():\n    importlib.__import__(name)\n    assert True\n",
+    "import runpy\n\ndef test_x():\n    runpy.run_module(name)\n    assert True\n",
+    "def test_x():\n    e = eval\n    assert e('1')\n",
+    "import os\n\ndef test_x():\n    x = os\n    assert x\n",
+    "import os\n\ndef test_x():\n    assert helper(os)\n",
+    "import app\n\ndef test_x():\n    app.os.system('ls')\n    assert True\n",
+    "import sys\n\ndef test_x():\n    sys.modules['os'].system('ls')\n    assert True\n",
+    "import app\n\ndef test_x():\n    getattr(app, 'os').system('ls')\n    assert True\n",
+])
+def test_the_coarse_rule_refuses_processes_dynamic_execution_and_module_values(code):
+    ok, problem = check_test_code(code)
+    assert not ok and "could not check whether the test installs packages" in problem
+
+
+def test_the_coarse_rule_keeps_loading_the_target_from_literals():
+    """提示詞與探針用字面值以 importlib 載入目標：照常放行 ／ The prompts and probes load the target with importlib from
+    literals: still accepted."""
+    code = ("import importlib\nimport importlib.util\nmod = importlib.import_module('shop.app')\n"
+            "_spec = importlib.util.spec_from_file_location('vh', '/srv/app/app.py')\n"
+            "_target = importlib.util.module_from_spec(_spec)\n_spec.loader.exec_module(_target)\n\n"
+            "def test_x():\n    assert getattr(_target, 'f') and mod\n")
     assert check_test_code(code) == (True, None)
 
 

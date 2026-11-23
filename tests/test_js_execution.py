@@ -74,9 +74,9 @@ GOOD = textwrap.dedent('''
 
 def test_gate_accepts_a_node_test_module():
     assert check_js_test_code(GOOD) == (True, None)
-    # 字面值的模組名稱與命令讀得懂，照常放行 ／ literal module names and commands are readable and pass
-    literal = ("const { execSync } = require('node:child_process');\nconst app = require('./app.js');\n"
-               "test('x', async () => { const m = await import('./app.mjs'); execSync('node --version'); assert.ok(m); });")
+    # 字面值的模組名稱讀得懂，照常放行 ／ literal module names are readable and pass
+    literal = ("const app = require('./app.js');\n"
+               "test('x', async () => { const m = await import('./app.mjs'); assert.equal(m.type, 'module'); });")
     assert check_js_test_code(literal) == (True, None)
     assert check_test_code_for(GOOD, "typescript") == (True, None)
 
@@ -104,6 +104,14 @@ def test_gate_accepts_a_node_test_module():
      "test('x', () => { execSync('np' + 'm i x'); assert.ok(1); });", "could not check"),
     ("test('x', async () => { const m = await import(name); assert.ok(m); });", "could not check"),
     ("const m = require(path);\ntest('x', () => { assert.ok(m); });", "could not check"),
+    # 粗規則：child_process、vm 與動態執行不論寫法都拒絕（#183 審查第 2 輪）
+    # The coarse rule: child_process, vm and dynamic execution are refused in any spelling (#183 review round 2)
+    ("import { execSync } from 'node:child_process';\ntest('x', () => { execSync('node --version'); assert.ok(1); });",
+     "could not check"),
+    ("test('x', () => { assert.ok(eval('1')); });", "could not check"),
+    ("test('x', () => { assert.ok(new Function('return 1')()); });", "could not check"),
+    ("import vm from 'node:vm';\ntest('x', () => { assert.ok(vm); });", "could not check"),
+    ("import { createRequire } from 'node:module';\ntest('x', () => { assert.ok(createRequire); });", "could not check"),
 ])
 def test_gate_rejects(code, problem):
     ok, reason = check_js_test_code(code)
