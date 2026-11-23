@@ -49,6 +49,7 @@
 - 數值設定拒絕 NaN 與 ±Inf（YAML 的 `.nan`／`.inf`；NaN 過去能通過所有上下限），`--base-url` 拒絕不在 1–65535 的連接埠（過去接受 `http://localhost:99999`），`load_settings` 也以 `ConfigError` 驗證程式自行建構的 `Overrides`（`max_files`、`max_model_calls`、`mutation_max_mutants`）。CLI 在載入設定之前先檢查這三個旗標，所以旗標錯誤現在比設定檔錯誤先回報，仍是 exit 5 並指出旗標名稱（#182）。
 - `--changed-since` 拒絕空的或以 `-` 開頭的 ref（目前是 rev-parse 的 `^{commit}` 碰巧擋下 `--output=<路徑>`），`git diff`／`git ls-files` 失敗時是 exit 5，不再當成沒有檔案改變。原始碼或設定類的單檔 `--target` 也像目錄裡的檔案一樣套用 `only_files`、`include`／`exclude` 與自動發現設定檔的篩選揭露（#182）。
 - 主控台印證據缺口原因與輸出路徑時不再解讀 rich 標記；報告的 PoC 先經過 `clean_model_text`；PoC 的測試函式那一行去除控制字元與換行（`header_field`）；當掉的呼叫的錯誤字串先以 `redact_secrets` 遮蔽，再寫進日誌與 call_log（#182）。
+- 確定性規則因每檔上限（每個檔案每條規則 20 筆）略過的命中，現在記成 `static_hits_capped` 證據缺口，不再只寫進日誌警告：`ScanResult.capped_hits` 記下（檔案, 規則, 略過筆數），閘門寫出略過的筆數、（規則, 檔案）組數與前五個檔名，判定最高只到 `INCONCLUSIVE`。在 `--baseline` 底下，一個檔案的 20 筆已知 HIGH 佔滿上限時，排在後面的新 HIGH 命中會被悄悄略過，新的阻擋命中是 0，live 模式可能判成 `READY_TO_SHIP`（#195）。
 
 ### 測試
 
