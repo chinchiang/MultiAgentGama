@@ -719,31 +719,3 @@ def test_is_unsafe_file_refuses_special_files_and_links_out_of_the_root(tmp_path
                 for name in ("real.py", "inside_link.py", "outside_link.py", "zero.py", "dangling.py", "pipe.py")}
     assert verdicts == {"real.py": False, "inside_link.py": False, "outside_link.py": True,
                         "zero.py": True, "dangling.py": True, "pipe.py": True}
-
-
-# --- 單檔目標也套用篩選條件（#182 第 5 組） -----------------------------------------------------
-# --- A single-file target honours the filters too (#182 group 5) --------------------------------
-
-@pytest.mark.parametrize("kwargs, filtered_out, discovered", [
-    ({"exclude": ["app.py"]}, 1, 0),
-    ({"include": ["src/*"]}, 1, 0),
-    ({"only_files": ["/elsewhere/other.py"]}, 1, 0),
-    ({"exclude": ["app.py"], "trusted_baseline": ((), ())}, 1, 1),
-])
-def test_a_single_file_target_is_filtered_like_a_directory(tmp_path, kwargs, filtered_out, discovered):
-    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
-
-    target = tmp_path / "app.py"
-    target.write_text("def handler():\n    return 1\n", encoding="utf-8")
-    symbols, scope = ASTExtractor().scan_directory(str(target), **kwargs)
-    assert symbols == []
-    assert (scope.analyzed_files, scope.filtered_out, scope.discovered_filtered) == ((), filtered_out, discovered)
-
-
-def test_a_single_file_target_without_filters_is_still_analyzed(tmp_path):
-    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
-
-    target = tmp_path / "app.py"
-    target.write_text("def handler():\n    return 1\n", encoding="utf-8")
-    symbols, scope = ASTExtractor().scan_directory(str(target), only_files=[str(target)])
-    assert [s.name for s in symbols] == ["handler"] and scope.analyzed_files == (str(target),)

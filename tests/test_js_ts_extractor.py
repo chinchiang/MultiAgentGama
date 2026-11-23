@@ -2,6 +2,8 @@
 JS/TS extractor: real brace matching, literal/comment masking, arrows, class methods, routes."""
 import os
 
+import pytest
+
 from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -300,3 +302,31 @@ def test_a_string_glued_to_as_is_masked(tmp_path):
         "}\n"
     ))
     assert sorted(_by_name(symbols)) == ["real"]
+
+
+# --- 單檔目標也套用篩選條件（#182 第 5 組） -----------------------------------------------------
+# --- A single-file target honours the filters too (#182 group 5) --------------------------------
+
+@pytest.mark.parametrize("kwargs, filtered_out, discovered", [
+    ({"exclude": ["app.py"]}, 1, 0),
+    ({"include": ["src/*"]}, 1, 0),
+    ({"only_files": ["/elsewhere/other.py"]}, 1, 0),
+    ({"exclude": ["app.py"], "trusted_baseline": ((), ())}, 1, 1),
+])
+def test_a_single_file_target_is_filtered_like_a_directory(tmp_path, kwargs, filtered_out, discovered):
+    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
+
+    target = tmp_path / "app.py"
+    target.write_text("def handler():\n    return 1\n", encoding="utf-8")
+    symbols, scope = ASTExtractor().scan_directory(str(target), **kwargs)
+    assert symbols == []
+    assert (scope.analyzed_files, scope.filtered_out, scope.discovered_filtered) == ((), filtered_out, discovered)
+
+
+def test_a_single_file_target_without_filters_is_still_analyzed(tmp_path):
+    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
+
+    target = tmp_path / "app.py"
+    target.write_text("def handler():\n    return 1\n", encoding="utf-8")
+    symbols, scope = ASTExtractor().scan_directory(str(target), only_files=[str(target)])
+    assert [s.name for s in symbols] == ["handler"] and scope.analyzed_files == (str(target),)
