@@ -366,13 +366,14 @@ def _evidence_gaps(evidence: GateEvidence) -> List[EvidenceGap]:
                 "(limited by mutation_max_mutants), so the score is a sample"
             ))
     js_tests = [t for t in list(ex.wb_tests) + list(ex.bb_tests) if t.language != "python"]
-    # 與 JS/TS 對稱：混合語言的專案裡，測試全都是 JS/TS 時 Python 程式碼只做了靜態審查
-    # Symmetric to JS/TS: in a mixed-language project whose tests are all JS/TS, the Python code was reviewed
-    # statically only
-    if "Python" in scope.detected_langs and js_tests and not ran_python:
+    # 混合語言的專案裡，白箱測試全都是 JS/TS 時 Python 程式碼沒有任何白箱測試。只看白箱：黑箱的 HTTP 攻擊測試一律用
+    # Python 寫，算進來就會把這個缺口遮掉
+    # In a mixed-language project whose white-box tests are all JS/TS, the Python code got no white-box test. White-box
+    # only: black-box HTTP attack tests are always written in Python, and counting them would mask this gap
+    if "Python" in scope.detected_langs and ex.wb_tests and not any(t.language == "python" for t in ex.wb_tests):
         gap(GapCode.PYTHON_NO_TESTS, bi(
-            "Python 程式碼只做了靜態審查：產生的測試全都是 JS/TS，沒有任何 Python 測試",
-            "Python code was reviewed statically only: every generated test is JS/TS, none is Python"
+            "Python 程式碼沒有任何白箱測試：產生的白箱測試全都是 JS/TS",
+            "Python code got no white-box test: every generated white-box test is JS/TS"
         ))
     if "TypeScript/JavaScript" in scope.detected_langs:
         if not js_tests:

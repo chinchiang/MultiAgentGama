@@ -176,8 +176,7 @@ GAP_CASES = {
        if hasattr(GapCode, "MUTATION_MOSTLY_INVALID") else {}),
     GapCode.MUTATION_TRUNCATED: lambda e: _with(e, "execution", mutation_report=MutationReport(score=100.0, truncated=True)),
     **({GapCode.PYTHON_NO_TESTS: lambda e: _with(_with(e, "scope", detected_langs=["Python", "TypeScript/JavaScript"]),
-                                             "execution", wb_tests=[_test("WB-T-01", "javascript")],
-                                             bb_tests=[_test("BB-T-01", "javascript", source_ref="THREAT-01")])}
+                                             "execution", wb_tests=[_test("WB-T-01", "javascript")])}
        if hasattr(GapCode, "PYTHON_NO_TESTS") else {}),
     GapCode.JS_NO_TESTS: lambda e: _with(e, "scope", detected_langs=["Python", "TypeScript/JavaScript"]),
     GapCode.JS_TESTS_NOT_RUN: lambda e: _with(_with(e, "scope", detected_langs=["TypeScript/JavaScript"]), "execution",
@@ -444,3 +443,14 @@ def test_a_score_on_mostly_decided_mutants_is_no_gap():
     report = MutationReport(score=100.0, total=4, killed=2, invalid=2)
     result = evaluate(_with(clean(), "execution", mutation_report=report))
     assert "mutation_mostly_invalid" not in [c.value for c in _codes(result)]
+
+
+def test_python_black_box_tests_do_not_mask_python_without_white_box_tests():
+    """黑箱的 HTTP 攻擊測試一律是 Python：白箱全是 JS/TS 時仍要記 python_no_tests（#183 審查第 2 輪）。
+    Black-box HTTP attack tests are always Python: with all-JS/TS white-box tests, python_no_tests is still recorded
+    (#183 review round 2)."""
+    evidence = _with(_with(clean(), "scope", detected_langs=["Python", "TypeScript/JavaScript"]), "execution",
+                     wb_tests=[_test("WB-T-01", "javascript")])
+    result = evaluate(evidence)
+    assert "python_no_tests" in [c.value for c in _codes(result)]
+    assert result.verdict is Verdict.INCONCLUSIVE
