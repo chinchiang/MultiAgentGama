@@ -3,7 +3,7 @@ import math
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 from vibeharness.core.models import ReviewFinding, MultiModelDebateResult, VerificationVote, CodeSymbol
 from vibeharness.core.llm_gateway import LLMGateway
-from vibeharness.core.i18n import bi, en_only
+from vibeharness.core.i18n import bi, prompt_text
 from vibeharness.core.codecontext import render_symbols, truncate_to_tokens, target_root
 from vibeharness.core.agent_call import (
     AgentCall, AgentInput, AgentReply, CallContext, CallKind, Channel, Content, Part, PlannedCalls, Untrusted,
@@ -294,10 +294,10 @@ class MultiModelDebater:
                 # 模擬引擎與預設值產生的雙語欄位只送英文半，提示詞維持英文；真實模型的文字（即使含有 " ／ "）原樣通過
                 # Bilingual fields from the simulation engine or defaults contribute their English half only, so the
                 # prompt stays English; real model text (even one containing " ／ ") passes through unchanged
-                f"    Title: {truncate_to_tokens(en_only(f.title), per_field, marker=' (truncated)')}\n"
-                f"    Description: {truncate_to_tokens(en_only(f.description), per_field, marker=' (truncated)')}\n"
-                f"    Cause: {truncate_to_tokens(en_only(f.root_cause), per_field, marker=' (truncated)')}\n"
-                f"    Scenario: {truncate_to_tokens(en_only(f.suggested_test_scenario), per_field, marker=' (truncated)')}"
+                f"    Title: {truncate_to_tokens(prompt_text(f.title, f.is_simulated), per_field, marker=' (truncated)')}\n"
+                f"    Description: {truncate_to_tokens(prompt_text(f.description, f.is_simulated), per_field, marker=' (truncated)')}\n"
+                f"    Cause: {truncate_to_tokens(prompt_text(f.root_cause, f.is_simulated), per_field, marker=' (truncated)')}\n"
+                f"    Scenario: {truncate_to_tokens(prompt_text(f.suggested_test_scenario, f.is_simulated), per_field, marker=' (truncated)')}"
             )
         return "\n".join(blocks)
 

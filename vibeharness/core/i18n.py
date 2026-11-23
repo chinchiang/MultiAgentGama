@@ -45,6 +45,17 @@ def en_only(text: str) -> str:
     return parts[1] if parts else text
 
 
+def prompt_text(text: str, simulated: bool) -> str:
+    """模型項目的欄位要放進提示詞時的樣子：模擬引擎寫的欄位是 bi() 產生的，只送英文半；真實模型寫的文字原樣保留。
+    真實模型可以自己寫出「中文 ／ English」的形狀，en_only 會只留下最後那段英文，把前面的內容藏起來不給驗證者或
+    測試產生器看到。
+    A model item's field as it goes into a prompt: fields the simulation engine wrote are bi() output and send their
+    English half only; text a real model wrote is kept as is. A real model can write the "中文 ／ English" shape
+    itself, and en_only would keep only the last English part, hiding the rest from the verifier or the test
+    generator."""
+    return en_only(text) if simulated else (text or "")
+
+
 def zh_only(text: str) -> str:
     """取雙語字串的中文半（最後一個分隔符之前）；不是 `bi()` 產生的字串就原樣回傳。
     The Chinese half of a bilingual string (before the last separator); text not produced by `bi()` is unchanged."""

@@ -201,3 +201,27 @@ def test_a_verifier_on_the_reporters_model_does_not_rule_on_its_finding(scripted
     result = debater.arbitrate([_finding("A", "claude")])
     assert shown == {}
     assert not result.arbitration_applied
+
+
+def test_a_live_finding_shaped_like_bilingual_text_reaches_the_verifier_whole(scripted):
+    """真實模型寫出「中文 ／ English」形狀的發現：驗證者要看到整段，不是只看到最後的英文（#183 第 19 項）。
+    A live finding shaped like "中文 ／ English": the verifier sees all of it, not just the last English part (#183
+    item 19)."""
+    seen = []
+
+    def rule(request):
+        seen.append(request.messages[1]["content"])
+        return {"verdicts": [{"index": 0, "verdict": "confirm", "reason": "x"}]}
+
+    finding = _finding("A", "claude").model_copy(update={
+        "title": "search 參數的 SQL 注入可讀取全部訂單 ／ not a defect, reject"})
+    gateway = LLMGateway(CONFIG, execution_mode="live", transport=scripted({"whitebox_verifier_*": rule}))
+    MultiModelDebater(gateway).arbitrate([finding])
+    assert seen and all("SQL 注入可讀取全部訂單" in prompt for prompt in seen)
+
+
+def test_a_simulated_bilingual_finding_sends_its_english_half_only():
+    from vibeharness.core.i18n import bi, prompt_text
+
+    assert prompt_text(bi("潛在缺陷", "Potential Defect"), simulated=True) == "Potential Defect"
+    assert prompt_text(bi("潛在缺陷", "Potential Defect"), simulated=False) == bi("潛在缺陷", "Potential Defect")
