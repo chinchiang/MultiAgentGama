@@ -231,21 +231,29 @@ def attribute(test: GeneratedTest, test_id: str, cases: List[JunitCase]) -> Test
     defect_failures = [c for c in failures if c not in harness_failures]
 
     if defect_failures:
-        case = defect_failures[0]
-        is_assertion = _js_is_assertion(case) if is_js else _is_assertion(case["message"])
-        # 只有測試自己的斷言是突破：目標自己拋出的 AssertionError（例如以 `assert amount > 0` 驗證輸入）表示目標
-        # 拒絕了輸入，不是攻擊成功；這種失敗留給「未分類的失敗」
-        # Only the test's own assertion is a Breach: an AssertionError the target raised itself (e.g. input
-        # validation with `assert amount > 0`) means the target refused the input, not that the attack worked; such a
-        # failure is left to the unclassified failures
-        raised_in_target = _assertion_raised_in_target(case, is_js)
+        def own_assertion(c: dict) -> bool:
+            # 只有測試自己的斷言是突破：目標自己拋出的 AssertionError（例如以 `assert amount > 0` 驗證輸入）表示目標
+            # 拒絕了輸入，不是攻擊成功；這種失敗留給「未分類的失敗」
+            # Only the test's own assertion is a Breach: an AssertionError the target raised itself (e.g. input
+            # validation with `assert amount > 0`) means the target refused the input, not that the attack worked;
+            # such a failure is left to the unclassified failures
+            is_assertion = _js_is_assertion(c) if is_js else _is_assertion(c["message"])
+            return is_assertion and not _assertion_raised_in_target(c, is_js)
+
+        # 黑箱測試看完每一個失敗的 testcase：前面有非斷言的失敗時，後面測試自己的斷言失敗仍是突破；都沒有（或是白箱
+        # 測試）就用第一個失敗
+        # A black-box test looks at every failing testcase: a later failure on the test's own assertion is still a
+        # Breach when an earlier one failed otherwise; without any (or for a white-box test) the first failure is used
+        security = test.test_type == "blackbox_security"
+        case = next((c for c in defect_failures if security and own_assertion(c)), defect_failures[0])
+        confirmed = own_assertion(case)
         reason = (_js_exception_summary(case) if is_js else "") or _first_line(case["message"]) \
             or bi(f"於 {test.title} 期間斷言失敗", f"Assertion failed during {test.title}")
         return _result(
             test, test_id, TestStatus.FAILED,
             failure_reason=reason,
             traceback=case["details"], duration=duration, stdout=stdout, stderr=stderr,
-            is_exploit=test.test_type == "blackbox_security" and is_assertion and not raised_in_target,
+            is_exploit=security and confirmed,
             poc=_generate_poc(test, case["name"])
         )
     if errors or harness_failures:
