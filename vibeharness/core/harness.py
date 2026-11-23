@@ -200,6 +200,13 @@ class VibeHarnessCommander:
         未暫存與未追蹤），供 --changed-since 使用。ref 無法解析時拋出 ValueError。
         Absolute paths of files under the target that differ from `since_ref` (committed, staged,
         unstaged and untracked), for --changed-since. Raises ValueError when the ref cannot be resolved."""
+        # 以 "-" 開頭的 ref 會被 git 當成選項（`--output=<路徑>` 讓 git diff 寫檔）；目前是 rev-parse 的
+        # `^{commit}` 碰巧擋下它，這裡明確拒絕，不依賴那個巧合
+        # A ref starting with "-" is taken by git as an option (`--output=<path>` makes git diff write a file); today
+        # rev-parse's `^{commit}` happens to stop it, and this refuses it explicitly instead of relying on that
+        if not since_ref.strip() or since_ref.lstrip().startswith("-"):
+            raise ValueError(bi(f"--changed-since：git ref {since_ref!r} 不可為空或以 '-' 開頭",
+                                f"--changed-since: git ref {since_ref!r} must not be empty or start with '-'"))
         cwd = self.work_dir_for(target_dir)
         top = self._git(["rev-parse", "--show-toplevel"], cwd)
         if top is None:
@@ -214,8 +221,15 @@ class VibeHarnessCommander:
         # 兩個指令都在版本庫根目錄執行，因此其輸出路徑相對於根目錄；-z 讓非 ASCII 檔名原樣輸出，不被 C 風格加引號
         # Both commands run from the repository root so their output paths are root-relative; -z keeps non-ASCII
         # names verbatim instead of C-quoting them
-        diff = self._git(["diff", "--name-only", "-z", "--diff-filter=ACMR", since_ref, "--", spec], root) or ""
-        untracked = self._git(["ls-files", "-z", "--others", "--exclude-standard", "--", spec], root) or ""
+        # git 失敗（None）不能當成「沒有檔案改變」：--changed-since 會安靜地什麼都不審
+        # A git failure (None) must not read as "no file changed": --changed-since would quietly review nothing
+        diff = self._git(["diff", "--name-only", "-z", "--diff-filter=ACMR", since_ref, "--", spec], root)
+        untracked = self._git(["ls-files", "-z", "--others", "--exclude-standard", "--", spec], root)
+        for command, output in (("git diff", diff), ("git ls-files", untracked)):
+            if output is None:
+                raise ValueError(bi(f"--changed-since：{command} 在 {root} 失敗，無法得知哪些檔案改變",
+                                    f"--changed-since: {command} failed in {root}, so the changed files are unknown"))
+        assert diff is not None and untracked is not None
         paths = set()
         for name in (diff + untracked).split("\0"):
             if not name:

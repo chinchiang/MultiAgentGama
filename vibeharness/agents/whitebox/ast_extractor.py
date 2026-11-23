@@ -203,6 +203,24 @@ class ASTExtractor:
         self.unsafe_files = []
         if os.path.isfile(dir_path):
             kind = self._file_kind(os.path.basename(dir_path))
+            name = os.path.basename(dir_path)
+            # 單檔目標也套用目錄走訪的篩選條件（only_files、include／exclude、自動發現設定檔的篩選揭露）與
+            # is_unsafe_file；相對路徑就是檔名
+            # A single-file target gets the walk's filters too (only_files, include / exclude, the disclosure of a
+            # discovered config's filter) and is_unsafe_file; its relative path is its name
+            if kind is not None and not kind.startswith("unsupported:"):
+                if only_files is not None and os.path.normcase(os.path.abspath(dir_path)) not in {
+                        os.path.normcase(os.path.abspath(p)) for p in only_files}:
+                    self.filtered_out += kind == "source"
+                    return []
+                if not self._selected(name, include, exclude):
+                    self.filtered_out += kind == "source"
+                    if trusted_baseline is not None and self._selected(name, *trusted_baseline):
+                        self.discovered_filtered += 1
+                    return []
+                if is_unsafe_file(dir_path, os.path.dirname(os.path.realpath(dir_path))):
+                    self.unsafe_files.append(dir_path)
+                    return []
             if kind == "source":
                 if self._too_large(dir_path, max_file_bytes):
                     self.oversized_files = [dir_path]

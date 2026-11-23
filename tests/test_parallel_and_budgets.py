@@ -648,3 +648,44 @@ def test_null_retry_invalid_output_keeps_the_default(tmp_path):
     from vibeharness.core.settings import DEFAULT_RETRY_INVALID_OUTPUT
     assert LLMGateway(_config(tmp_path, retry_invalid_output=None), execution_mode="hybrid").retry_invalid_output \
         == DEFAULT_RETRY_INVALID_OUTPUT
+
+
+# --- --changed-since 的 ref 與 git 失敗（#182 第 5 組） -------------------------------------------
+# --- --changed-since refs and git failures (#182 group 5) ------------------------------------------
+
+def test_a_changed_since_ref_starting_with_a_dash_is_refused(git_repo, tmp_path):
+    """`--output=<路徑>` 這種 ref 會被 git 當成選項（git diff 會把差異寫到那個路徑）。
+    A ref like `--output=<path>` is taken by git as an option (git diff would write the diff to that path)."""
+    from vibeharness.core.harness import VibeHarnessCommander
+
+    root = _tree(tmp_path)
+    git_repo(root)
+    written = tmp_path / "written-by-git.txt"
+    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
+    with pytest.raises(ValueError, match="must not be empty or start with"):
+        commander.changed_files(str(root / "src"), f"--output={written}")
+    assert not written.exists()
+
+
+def test_a_failing_git_diff_is_an_error_not_zero_changed_files(git_repo, tmp_path):
+    """git diff 失敗時不能當成「沒有檔案改變」：那會讓 --changed-since 安靜地什麼都不審。
+    A failing git diff must not read as "no file changed": --changed-since would then quietly review nothing."""
+    from vibeharness.core.harness import VibeHarnessCommander
+
+    root = _tree(tmp_path)
+    git_repo(root)
+    (root / "src" / "app.py").write_text("def f_app(x, y):\n    return x - y\n")
+    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
+    real_git = commander._git
+    injected = []
+
+    def git(args, cwd):
+        if args and args[0] == "diff":
+            injected.append(args)
+            return None
+        return real_git(args, cwd)
+
+    commander._git = git  # type: ignore[method-assign]
+    with pytest.raises(ValueError, match="git diff failed"):
+        commander.changed_files(str(root / "src"), "HEAD")
+    assert injected, "the fault was never injected"
