@@ -89,13 +89,13 @@ def test_load_skips_bad_items(tmp_path):
     }
     base = bl.load_baseline(_write(tmp_path, payload))
     assert base.generated_at is None
-    assert base.static == {bl.static_key(_static(), "/t")}
+    assert base.static == {bl.static_key(_static(), "/t"): 1}
     # 容器層級的 is_simulated 補到項目上，重算的鍵只取雙語字串的英文半
     # The container-level is_simulated is propagated to the items; recomputed keys use the English half only
-    assert base.findings == {bl.finding_key(sim_finding, "/t")}
-    assert base.findings == {bl.finding_key(_finding("X", "Unchecked null"), "/t")}
+    assert base.findings == {bl.finding_key(sim_finding, "/t"): 1}
+    assert base.findings == {bl.finding_key(_finding("X", "Unchecked null"), "/t"): 1}
     breach = bl.breach_key(_result("BB-1", ref="THREAT-07", exploit=True), sim_threat)
-    assert base.breaches == {breach}
+    assert base.breaches == {breach: 1}
     assert base.size == 3
 
 
