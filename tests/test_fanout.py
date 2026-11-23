@@ -145,3 +145,23 @@ def test_a_crashed_calls_error_is_redacted_in_the_log_and_the_call_log(caplog):
     assert key not in caplog.text and "<REDACTED:anthropic-key>" in caplog.text
     reasons = [r.reason or "" for r in gateway.call_log]
     assert reasons and all(key not in r for r in reasons) and any("<REDACTED:anthropic-key>" in r for r in reasons)
+
+
+def test_a_crashed_calls_error_reaches_the_log_and_call_log_without_control_characters(caplog):
+    """不靠 CLI 的 SafeLogFormatter：函式庫呼叫端自己的 logger 與會寫進報告的 call_log 也不能帶跳脫序列（#182 審查）。
+    Without the CLI's SafeLogFormatter: a library caller's own logger and the call_log that reaches the report carry
+    no escape sequence either (#182 review)."""
+    fired = []
+
+    def boom():
+        fired.append(True)
+        raise RuntimeError("bad answer \x1b]52;c;SGk=\x07\x1b[31m red")
+
+    gateway = _gateway()
+    with caplog.at_level(logging.ERROR):
+        fan_out(gateway, [_call(boom)], fallback=None, logger=LOGGER)
+    assert fired, "the fault was never injected"
+    reasons = [r.reason or "" for r in gateway.call_log]
+    assert reasons and "bad answer" in reasons[0]
+    for text in (caplog.text, *reasons):
+        assert "\x1b" not in text and "\x07" not in text
