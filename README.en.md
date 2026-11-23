@@ -279,7 +279,7 @@ MultiAgentGama/
 │   ├── test_call_kinds.py              # Every call record, request sent and report carries its call's kind (heals and crashed calls included)
 │   ├── test_call_plans.py              # Each agent's call plan (plan) equals the calls it actually makes
 │   ├── test_check_all.py               # check_all.py: the summary keeps the TOTAL coverage, the counts and every red-on-base line, names failures, timeouts and --skip; a timed-out command is stopped
-│   ├── test_check_new_tests_red_on_base.py # New tests red on the base: which tests (classes, subdirectories), red / green / skipped (whole files too) / xfail, parametrized, uncollected tests, syntax and encoding errors, rootdir and -x, exit codes, cleanup
+│   ├── test_check_new_tests_red_on_base.py # New tests red on the base: which tests (classes, subdirectories), red / green / skipped (whole files too) / xfail, parametrized, uncollected tests, syntax and encoding errors, rootdir and -x, exit codes, cleanup, a collection error blocking no other file and named, a timeout listed as hang with the process tree stopped
 │   ├── test_check_reversions.py        # A reversion lists the tests it turns red, exit 1 when none, collection errors count, a dirty tree or a non-unique old text is refused, written back when pytest cannot run
 │   ├── test_cross_verification.py      # Cross-verification: models never judge their own findings, vote tallies
 │   ├── test_dedup_and_budget.py        # Duplicate-finding merge and prompt context within the token budget

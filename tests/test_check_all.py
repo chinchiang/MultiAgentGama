@@ -58,8 +58,18 @@ def test_red_on_base_keeps_its_counts_and_every_result_line():
     lines += [f"green  tests/test_b.py::test_{i}" for i in range(7)]
     lines += ["skipped tests/test_c.py::test_win  only on Windows"]
     kept = tool.key_lines("red_on_base", "\n".join(lines) + "\n", failed=True)
-    assert kept[0] == "red=40 green=7 skipped=1"
+    assert kept[0] == "red=40 green=7 skipped=1 hang=0"
     assert kept[1:] == lines
+
+
+def test_red_on_base_counts_and_keeps_its_hang_lines():
+    """red-on-base 逾時列出的 `hang` 行也算進數量並留在摘要裡（#186），不會被當成沒有結果。
+    red-on-base's `hang` lines after a timeout are counted and kept in the summary too (#186), not dropped as no
+    result."""
+    lines = ["red    tests/test_a.py::test_one  assert 0 == 1", "hang   tests/test_a.py::test_two"]
+    kept = tool.key_lines("red_on_base", "\n".join(lines) + "\ncould not compare: did not finish\n", failed=True)
+    assert kept[0] == "red=1 green=0 skipped=0 hang=1"
+    assert kept[1:3] == lines
 
 
 def test_a_failed_step_without_key_lines_keeps_its_last_lines():
@@ -75,7 +85,7 @@ def test_red_on_base_that_could_not_compare_keeps_its_error():
     """red-on-base 無法比對（沒有任何結果行）時，摘要留下它的錯誤訊息。
     When red-on-base could not compare (no result line), the summary keeps its error message."""
     kept = tool.key_lines("red_on_base", "could not compare: no merge-base\n", failed=True)
-    assert kept == ["red=0 green=0 skipped=0", "could not compare: no merge-base"]
+    assert kept == ["red=0 green=0 skipped=0 hang=0", "could not compare: no merge-base"]
 
 
 def test_every_step_passing_exits_zero(tmp_path):
