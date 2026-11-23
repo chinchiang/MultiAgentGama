@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, NamedTuple, Optional, Sequence
 from pydantic import BaseModel, Field
 from enum import Enum
 
@@ -234,6 +234,15 @@ class AgentCallRecord(BaseModel):
     # 這次呼叫的種類（代理宣告的）；直接呼叫 generate 而沒有給 kind 時為 None
     # This call's kind (as the agent declared it); None when generate is called directly without one
     kind: Optional[CallKind] = None
+
+
+class CappedHits(NamedTuple):
+    """每檔上限在一個檔案、一條規則略過了幾筆確定性規則命中（證據缺口 static_hits_capped，#195）。
+    How many deterministic rule hits the per-file cap dropped for one rule in one file (evidence gap
+    static_hits_capped, #195)."""
+    file: str
+    rule: str
+    dropped: int
 
 
 class StaticFinding(BaseModel):

@@ -28,7 +28,7 @@ import time
 from dataclasses import dataclass
 from typing import Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
-from vibeharness.core.models import FindingSeverity, StaticFinding
+from vibeharness.core.models import CappedHits, FindingSeverity, StaticFinding
 from vibeharness.core.i18n import bi
 from vibeharness.core.sanitize import clean_model_text, find_injection_markers, find_invisible, find_secrets
 from vibeharness.core.identity import severity_rank
@@ -593,6 +593,9 @@ class ScanResult:
     ai_components: Tuple[str, ...] = ()  # 已排序 ／ sorted
     incomplete_files: Tuple[str, ...] = ()
     incomplete_config_files: Tuple[str, ...] = ()
+    # 每檔上限略過命中的（檔案, 規則, 略過筆數）：閘門揭露為證據缺口（#195）
+    # (file, rule, hits dropped) wherever the per-file cap dropped hits: the gate discloses them as an evidence gap (#195)
+    capped_hits: Tuple[CappedHits, ...] = ()
 
 
 class AISecurityStaticScanner:
@@ -619,6 +622,10 @@ class AISecurityStaticScanner:
         self.incomplete_files: List[str] = []
         # 設定類檔案中密鑰掃描超過時間上限而未完成的檔案 ／ Configuration-like files whose secret scan hit the time cap
         self.incomplete_config_files: List[str] = []
+        # 上一次 scan_files／scan_config_files 的每檔上限略過了哪些命中：（檔案, 規則, 略過筆數）
+        # Where the last scan_files / scan_config_files call's per-file cap dropped hits: (file, rule, hits dropped)
+        self.capped_hits: List[CappedHits] = []
+        self.capped_config_hits: List[CappedHits] = []
         # 目前檔案的分析期限（time.monotonic()）與工作計數；`_receiver_is_ai` 的備忘表（節點 id -> 結果）
         # The current file's analysis deadline (time.monotonic()) and work counter; `_receiver_is_ai`'s memo (node id -> result)
         self._deadline: Optional[float] = None
@@ -662,7 +669,8 @@ class AISecurityStaticScanner:
             else:
                 components |= set(_AI_JS_PACKAGE_RE.findall(text))
         self.ai_components = sorted(components)
-        return self._dedupe(findings)
+        self.capped_hits = []
+        return self._dedupe(findings, self.capped_hits)
 
     def scan(self, source_files: Iterable[str], config_files: Iterable[str]) -> ScanResult:
         """原始碼檔案的全部規則（scan_files）加上設定類檔案的密鑰規則（scan_config_files），一次回傳不可變的結果；
@@ -674,7 +682,8 @@ class AISecurityStaticScanner:
         findings += self.scan_config_files(config_files)
         return ScanResult(findings=tuple(findings), ai_components=tuple(self.ai_components),
                           incomplete_files=tuple(self.incomplete_files),
-                          incomplete_config_files=tuple(self.incomplete_config_files))
+                          incomplete_config_files=tuple(self.incomplete_config_files),
+                          capped_hits=tuple(self.capped_hits + self.capped_config_hits))
 
     def scan_config_files(self, files: Iterable[str]) -> List[StaticFinding]:
         """只對設定類檔案（.env、YAML、JSON、TOML、Dockerfile、Terraform …）執行確定性的密鑰規則 VH-AI-007。
@@ -703,7 +712,8 @@ class AISecurityStaticScanner:
                                       "the rest of that file was skipped"))
                     self.incomplete_config_files.append(path)
                     break
-        return self._dedupe(findings)
+        self.capped_config_hits = []
+        return self._dedupe(findings, self.capped_config_hits)
 
     @staticmethod
     def _config_chunks(text: str) -> Iterator[Tuple[int, str, bool]]:
@@ -1947,14 +1957,16 @@ class AISecurityStaticScanner:
         return refs, calls
 
     @staticmethod
-    def _dedupe(findings: List[StaticFinding]) -> List[StaticFinding]:
+    def _dedupe(findings: List[StaticFinding],
+                capped: Optional[List[CappedHits]] = None) -> List[StaticFinding]:
         """同一規則、檔案與行只留一筆；每個（規則, 檔案）最多 _MAX_HITS_PER_RULE_PER_FILE 筆，先留最嚴重的（同嚴重度依行號），
-        依（檔案, 行, 規則）排序回傳。超過上限而略過的筆數會記在警告裡：過去依行號截斷，前面的 MEDIUM 命中會把後面的 HIGH
-        擠掉，閘門就不再阻擋。
+        依（檔案, 行, 規則）排序回傳。超過上限而略過的筆數會記在警告裡，並以（檔案, 規則, 略過筆數）加進 capped：過去依行號
+        截斷，前面的 MEDIUM 命中會把後面的 HIGH 擠掉，閘門就不再阻擋；略過的命中也沒人看過，閘門要揭露成證據缺口（#195）。
         One hit per rule, file and line; at most _MAX_HITS_PER_RULE_PER_FILE per (rule, file), the most severe kept
         first (line order within a severity), returned sorted by (file, line, rule). The count dropped by the cap is
-        logged as a warning: truncating in line order used to let earlier MEDIUM hits push a later HIGH out, and the
-        gate stopped blocking."""
+        logged as a warning and appended to capped as (file, rule, hits dropped): truncating in line order used to let
+        earlier MEDIUM hits push a later HIGH out, and the gate stopped blocking; the dropped hits are never looked at
+        either, so the gate discloses them as an evidence gap (#195)."""
         unique: Dict[tuple, StaticFinding] = {}
         for f in sorted(findings, key=lambda f: (f.file_path, f.line_number, f.rule_id)):
             unique.setdefault((f.rule_id, f.file_path, f.line_number), f)
@@ -1967,6 +1979,8 @@ class AISecurityStaticScanner:
             out.extend(hits[:_MAX_HITS_PER_RULE_PER_FILE])
             dropped = len(hits) - _MAX_HITS_PER_RULE_PER_FILE
             if dropped > 0:
+                if capped is not None:
+                    capped.append(CappedHits(file_path, rule_id, dropped))
                 logger.warning(bi(
                     f"{file_path} 的 {rule_id} 命中超過每檔 {_MAX_HITS_PER_RULE_PER_FILE} 筆的上限：只列出最嚴重的 "
                     f"{_MAX_HITS_PER_RULE_PER_FILE} 筆，另有 {dropped} 筆未列出",

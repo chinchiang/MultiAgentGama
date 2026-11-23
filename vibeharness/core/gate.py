@@ -17,7 +17,7 @@ from vibeharness.core.i18n import bi
 from vibeharness.core.llm_gateway import budget_exhausted_calls, cache_miss_calls, invalid_calls, simulated_calls
 from vibeharness.core.settings import UNCONFIGURED_ALIAS
 from vibeharness.core.models import (
-    AgentCallRecord, MutationReport, ReviewFinding, StaticFinding,
+    AgentCallRecord, CappedHits, MutationReport, ReviewFinding, StaticFinding,
     GeneratedTest, TestExecutionResult, ThreatModelReport,
 )
 from vibeharness.core.tally import EvidenceTally
@@ -40,6 +40,7 @@ class GapCode(str, Enum):
     NO_SYMBOLS = "no_symbols"
     PARSE_FAILURES = "parse_failures"
     INCOMPLETE_SCAN = "incomplete_scan"
+    STATIC_HITS_CAPPED = "static_hits_capped"
     OVERSIZED_FILES = "oversized_files"
     UNSAFE_FILES_SKIPPED = "unsafe_files_skipped"
     MAX_FILES_SKIPPED = "max_files_skipped"
@@ -111,6 +112,8 @@ class ScopeDisclosure:
     unsupported_languages: Dict[str, int] = field(default_factory=dict)
     unsupported_files: Sequence[str] = ()  # 樣本 ／ a sample
     incomplete_files: Sequence[str] = ()
+    # 每檔上限略過命中的（檔案, 規則, 略過筆數） ／ (file, rule, hits dropped) wherever the per-file cap dropped hits
+    capped_hits: Sequence[CappedHits] = ()
     config_files_not_fully_scanned: Sequence[str] = ()
     discovered_filtered_count: int = 0
 
@@ -297,6 +300,17 @@ def _evidence_gaps(evidence: GateEvidence) -> List[EvidenceGap]:
             f"{n_inc} 個原始碼檔案的確定性 AI 安全規則未能完整掃描（逾時或出錯）",
             f"The deterministic AI security rules could not fully scan {n_inc} source file(s) (time cap or error)"
         ))
+    if scope.capped_hits:
+        # 每檔上限略過的命中沒人看過：在 --baseline 底下，已知命中佔滿上限時，新的命中會被略過而不是被算成新的（#195）
+        # Hits dropped by the per-file cap were never looked at: under --baseline, known hits filling the cap leave a
+        # new hit dropped instead of counted as new (#195)
+        n_dropped = sum(capped.dropped for capped in scope.capped_hits)
+        where = ", ".join(f"{os.path.basename(capped.file)} ({capped.rule})" for capped in list(scope.capped_hits)[:5])
+        gap(GapCode.STATIC_HITS_CAPPED, bi(
+            f"{len(scope.capped_hits)} 組（規則, 檔案）超過每檔命中上限，{n_dropped} 筆確定性規則命中未列出也未評估",
+            f"{n_dropped} deterministic rule hit(s) over the per-file cap in {len(scope.capped_hits)} rule/file "
+            f"pair(s) were neither listed nor evaluated"
+        ) + f": {where}")
     if scope.oversized_files:
         n_big = len(scope.oversized_files)
         gap(GapCode.OVERSIZED_FILES, bi(
