@@ -34,6 +34,49 @@ _GENERIC_TERMS = {
     "weak", "security", "vulnerability", "vulnerable", "risk", "data", "user", "incorrect", "invalid", "bad",
     "logic", "edge", "case", "unchecked", "untrusted", "parameter", "argument", "output", "control",
 }
+# 指名缺陷類別的詞：兩個標題各有一個對方沒有的這種詞（或識別碼），就是不同的缺陷，即使其餘的詞重疊
+# （"Missing authentication" 與 "Missing authorization"、"Race condition" 與 "Missing rollback"）
+# Words naming a defect class: when each of two titles has one the other lacks (or an identifier), they are distinct
+# defects even if the other words overlap ("Missing authentication" vs "Missing authorization", "Race condition" vs
+# "Missing rollback")
+_DEFECT_CLASS_TERMS = {
+    "authentication", "authenticate", "authorization", "authorize", "permission", "privilege", "role", "admin",
+    "csrf", "xss", "ssrf", "xxe", "injection", "sql", "sqli", "command", "shell", "template", "ssti", "traversal",
+    "path", "redirect", "deserialization", "pickle", "eval", "exec", "idor", "bola", "mass", "assignment",
+    "overflow", "underflow", "truncation", "precision", "rounding", "division", "zero", "negative", "race",
+    "deadlock", "lock", "rollback", "transaction", "atomic", "concurrency", "leak", "disclosure", "exposure",
+    "secret", "password", "token", "session", "cookie", "cors", "timeout", "dos", "redos", "recursion", "limit",
+    "replay", "nonce", "random", "hash", "encryption", "crypto", "upload", "download", "file", "log", "logging",
+    "null", "none", "keyerror", "typeerror", "valueerror", "indexerror", "attributeerror", "unicode", "encoding",
+    "prompt", "jailbreak", "cache", "rate", "email", "phone", "date", "time", "timezone", "currency", "price",
+}
+# 程式識別碼：含底線或數字，或是駝峰式（`order_by`、`user_id`、`userId`）
+# Code identifiers: with an underscore or a digit, or camelCase (`order_by`, `user_id`, `userId`)
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
+
+
+def _anchors(title: str) -> Set[str]:
+    """標題中指名具體缺陷的詞：缺陷類別詞（還原詞幹後）與程式識別碼（小寫）。
+    The words of a title that name a specific defect: defect-class words (stemmed) and code identifiers (lowercased)."""
+    found: Set[str] = set()
+    for token in _IDENTIFIER_RE.findall(title):
+        if "_" in token or any(c.isdigit() for c in token) or any(c.isupper() for c in token[1:]):
+            if not token.isupper():
+                found.add(token.lower())
+                continue
+        stem = _stem(token.lower())
+        if stem in _DEFECT_CLASS_TERMS:
+            found.add(stem)
+    return found
+
+
+def _distinct_anchors(a: ReviewFinding, b: ReviewFinding) -> bool:
+    """兩個標題各有一個對方沒有的錨點詞（見 _anchors）：它們指名不同的缺陷，不可合併。
+    Each title has an anchor (see _anchors) the other lacks: they name different defects and must not merge."""
+    anchors_a, anchors_b = _anchors(a.title), _anchors(b.title)
+    return bool(anchors_a - anchors_b) and bool(anchors_b - anchors_a)
+
+
 # 中日韓文字的連續段（漢字、假名、諺文）：這些文字不以空格分詞
 # Runs of CJK script (Han, kana, Hangul): these scripts do not separate words with spaces
 _CJK_RUN = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]+")
@@ -72,6 +115,8 @@ def _terms(finding: ReviewFinding) -> Set[str]:
 
 
 def _similar(a: ReviewFinding, b: ReviewFinding) -> bool:
+    if _distinct_anchors(a, b):
+        return False
     ta, tb = _terms(a), _terms(b)
     if not ta or not tb:
         return a.title.strip().lower() == b.title.strip().lower()

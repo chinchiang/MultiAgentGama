@@ -3,6 +3,8 @@ Duplicate-finding merging and token-budgeted prompt context."""
 import os
 import re
 
+import pytest
+
 from vibeharness.core.codecontext import (
     estimate_tokens, truncate_to_tokens, class_skeleton, render_symbols, batch_symbols
 )
@@ -262,3 +264,17 @@ def test_render_symbols_truncates_instead_of_omitting_when_it_fits(tmp_path):
     assert "(truncated)" in rendered
     assert "omitted" not in rendered
     assert estimate_tokens(rendered) <= budget
+
+
+# 同一符號上的不同缺陷：共用的泛用詞不能讓它們合併（#183 第 7 項）
+# Distinct defects on one symbol: shared generic words must not merge them (#183 item 7)
+@pytest.mark.parametrize("first, second", [
+    ("Missing authentication check on admin endpoint", "Missing authorization check on admin endpoint"),
+    ("SQL injection in order_by parameter", "SQL injection in user_id parameter"),
+    ("Integer overflow in balance update", "Integer underflow in balance update"),
+    ("Race condition on balance update", "Missing rollback on balance update"),
+])
+def test_titles_naming_different_defects_are_kept_apart(first, second):
+    merged = deduplicate_findings([_finding("A", "Claude", first), _finding("B", "DeepSeek", second)])
+    assert [f.finding_id for f in merged] == ["A", "B"]
+    assert all(f.corroborating_models == [] for f in merged)
