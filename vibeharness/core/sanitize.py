@@ -179,8 +179,8 @@ def find_invisible(text: str) -> List[Tuple[int, str, str]]:
 # character" look-behind instead of \b, so a long "eyJ-eyJ-..." run has a single starting point, and a
 # private-key block never runs past the next BEGIN line
 _SECRET_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
-    ("private-key", re.compile(r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----(?:(?!-----BEGIN )[\s\S])*?"
-                               r"-----END (?:[A-Z]+ )?PRIVATE KEY-----")),
+    ("private-key", re.compile(r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY(?: BLOCK)?-----(?:(?!-----BEGIN )[\s\S])*?"
+                               r"-----END (?:[A-Z]+ )?PRIVATE KEY(?: BLOCK)?-----")),
     ("anthropic-key", re.compile(r"(?<![A-Za-z0-9_\-])sk-ant-[A-Za-z0-9_\-]{20,}")),
     ("openai-key", re.compile(r"(?<![A-Za-z0-9_\-])sk-(?:proj-|svcacct-)?[A-Za-z0-9_\-]{32,}")),
     ("aws-access-key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
@@ -196,6 +196,31 @@ _SECRET_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     ("aws-secret-key", re.compile(r"(?i)(?:secret_access_key|secretaccesskey)[\"']?\s*[:=]\s*[\"']?"
                                   r"(?P<v>[A-Za-z0-9/+=]{40})(?![A-Za-z0-9/+=])")),
     ("azure-storage-key", re.compile(r"(?i)(?<=AccountKey=)[A-Za-z0-9+/]{86}==")),
+    ("gitlab-token", re.compile(r"(?<![A-Za-z0-9_\-])glpat-[A-Za-z0-9_\-]{20,}")),
+    ("npm-token", re.compile(r"\bnpm_[A-Za-z0-9]{36}\b")),
+    ("sendgrid-key", re.compile(r"(?<![A-Za-z0-9_\-])SG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}(?![A-Za-z0-9_\-])")),
+    ("slack-webhook", re.compile(r"https://hooks\.slack\.com/services/T[A-Z0-9]{6,}/B[A-Z0-9]{6,}/[A-Za-z0-9]{16,}")),
+]
+
+# 只遮蔽、不回報（不成為 VH-AI-007 命中）的寬鬆形狀：誤判的代價只是模型少看一個值，而漏遮的代價是憑證送到外部供應商。
+# 回報維持上面低誤判的形狀。每條樣式從固定的關鍵字或前綴開始、數量都有上限，在惡意輸入上仍是線性時間
+# Broad shapes that are redacted but not reported (they never become VH-AI-007 hits): a false match only costs the
+# model one value, while a miss sends a credential to an external provider. Reporting keeps the low-false-positive
+# shapes above. Every pattern starts at a fixed keyword or prefix with bounded repeats, so it stays linear on
+# adversarial input
+_REDACT_ONLY_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
+    # 名稱像憑證的變數或鍵，被指定為字串字面值（`DB_PASSWORD = "..."`、`"api_key": "..."`）：只遮蔽值
+    # A credential-like variable or key assigned a string literal (`DB_PASSWORD = "..."`, `"api_key": "..."`): only
+    # the value is redacted
+    ("credential-assignment", re.compile(
+        r"(?i)(?:password|passwd|passphrase|pwd|secret|token|api_?key|access_?key|private_?key|credential|auth)"
+        r"[\w.\-]{0,40}[\"']?\s{0,5}(?::\s{0,5}[A-Za-z_][\w\[\]., ]{0,40}?\s{0,5})?[:=]\s{0,5}[\"']"
+        r"(?P<v>[^\"'\s]{8,500})[\"']")),
+    ("authorization-header", re.compile(r"(?i)(?<![A-Za-z0-9])(?:Bearer|Basic)\s{1,5}(?P<v>[A-Za-z0-9._~+/\-]{16,2000}=*)")),
+    ("api-key", re.compile(r"(?<![A-Za-z0-9_\-])sk-[A-Za-z0-9_\-]{16,31}(?![A-Za-z0-9_\-])")),
+    # URL 密碼含有未編碼的 "/"（`postgres://admin:ab/cd@host`）：上面逐段掃描的規則在 "/" 停下
+    # A URL password holding an unencoded "/" (`postgres://admin:ab/cd@host`): the per-segment scan above stops at "/"
+    ("url-credentials", re.compile(r"://[^\s/:@\"'`?#<>]{1,200}:(?P<v>[^\s@\"'`?#<>]{1,200})@")),
 ]
 
 # URL 中的 [user]:password@（資料庫 DSN、訊息佇列 URL，含 redis://:pass@ 這種空使用者名稱）不用單一樣式比對，
@@ -421,7 +446,15 @@ def redact_secrets(text: str) -> str:
         if spans:
             text = _replace_spans(text, spans, f"<REDACTED:{kind}>")
     spans = [(cred.start, cred.end) for cred in _url_credentials(text)]
-    return _replace_spans(text, spans, "<REDACTED:url-credentials>") if spans else text
+    text = _replace_spans(text, spans, "<REDACTED:url-credentials>") if spans else text
+    for kind, pattern in _REDACT_ONLY_PATTERNS:
+        spans = [(m.start("v"), m.end("v")) if "v" in pattern.groupindex else (m.start(), m.end())
+                 for m in pattern.finditer(text)]
+        # 已經遮蔽過的值（<REDACTED:…>）不再遮一次 ／ a value already redacted (<REDACTED:...>) is not redacted again
+        spans = [(a, b) for a, b in spans if not text.startswith("<REDACTED:", a)]
+        if spans:
+            text = _replace_spans(text, spans, f"<REDACTED:{kind}>")
+    return text
 
 
 # 對象是 AI 審查者或稽核者、而非人類讀者的指令：目標程式碼
