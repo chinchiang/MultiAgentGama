@@ -16,7 +16,7 @@ import re
 import stat
 import urllib.parse
 from dataclasses import dataclass, field, replace
-from typing import Any, Dict, FrozenSet, List, Literal, Mapping, NoReturn, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Literal, Mapping, NoReturn, Optional, Sequence, Tuple
 
 from vibeharness.core.i18n import bi
 from vibeharness.core.jscoverage import read_untrusted_bytes
@@ -701,6 +701,25 @@ class GatewaySettings:
         meta = self.agents.get(agent_id)
         alias = meta.get("model_alias") if isinstance(meta, dict) else None
         return str(alias or UNCONFIGURED_ALIAS)
+
+    def model_for(self, alias: str) -> str:
+        """別名實際呼叫的模型（`models.<alias>.model`）；沒有這個別名或沒有模型字串時就是別名本身。兩個指向同一個
+        模型的別名是同一個模型：多樣性與「不裁決自家發現」都依它判斷，而不是依別名。
+        The model an alias actually calls (`models.<alias>.model`); the alias itself when there is no such alias or no
+        model string. Two aliases pointing at one model are one model: diversity and "never rule on your own finding"
+        go by it, not by the alias."""
+        info = self.models.get(alias)
+        model = info.get("model") if isinstance(info, dict) else None
+        return model if isinstance(model, str) and model.strip() else alias
+
+    def distinct_model_labels(self, aliases: Sequence[str]) -> List[str]:
+        """每個不同的模型一個標籤（已排序）：指向同一模型的別名以 "/" 併成一個，例如 "claude/claude_alt"。
+        One label per distinct model (sorted): aliases pointing at the same model join with "/", e.g.
+        "claude/claude_alt"."""
+        groups: Dict[str, List[str]] = {}
+        for alias in dict.fromkeys(aliases):
+            groups.setdefault(self.model_for(alias), []).append(alias)
+        return sorted("/".join(sorted(group)) for group in groups.values())
 
 
 @dataclass(frozen=True)

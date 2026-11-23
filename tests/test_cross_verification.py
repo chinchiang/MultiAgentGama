@@ -156,3 +156,48 @@ def test_a_reject_majority_of_the_verifiers_asked_disputes(scripted):
     gateway, _ = _gateway(scripted, {"deepseek": {"A": "reject"}, "glm": {"A": "reject"}, "gemini": {"A": "confirm"}})
     result = MultiModelDebater(gateway).arbitrate([_finding("A", "claude")])
     assert [f.finding_id for f in result.disputed_findings] == ["A"]
+
+
+# --- 多樣性與「不裁決自家發現」依實際的模型，不依別名（#183 第 8 項） ------------------------------
+# --- Diversity and "never rule on your own finding" go by the actual model, not the alias (#183 item 8) ---
+
+def _one_model_config(tmp_path):
+    """四個審查／驗證別名都指向同一個模型字串，別名本身維持不同。
+    All four reviewer / verifier aliases point at one model string; the aliases themselves stay distinct."""
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from config_files import load_config, write_config
+
+    cfg = load_config()
+    for alias in ("claude", "deepseek", "gemini", "glm"):
+        cfg["models"][alias]["model"] = "gemini/gemini-same"
+    return write_config(tmp_path, cfg, "one_model.yaml")
+
+
+def test_aliases_on_one_model_are_one_reviewer_model_for_the_gate(tmp_path):
+    from vibeharness.core.harness import VibeHarnessCommander
+
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "app.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    commander = VibeHarnessCommander(config_path=_one_model_config(tmp_path), execution_mode="mock")
+    summary = commander.run_full_pipeline(str(target), output_report_path=str(tmp_path / "r.md"))
+    assert any("Only one distinct reviewer model (claude/deepseek/gemini/glm)" in reason
+               for reason in summary.inconclusive_reasons)
+
+
+def test_a_verifier_on_the_reporters_model_does_not_rule_on_its_finding(scripted, tmp_path):
+    shown = {}
+
+    def rule(request):
+        ids = re.findall(r"Title: title (\w+)", request.messages[1]["content"])
+        shown.setdefault(request.model_alias, []).extend(ids)
+        return {"verdicts": [{"index": i, "verdict": "reject", "reason": "x"} for i in range(len(ids))]}
+
+    gateway = LLMGateway(_one_model_config(tmp_path), execution_mode="live",
+                         transport=scripted({"whitebox_verifier_*": rule}))
+    debater = MultiModelDebater(gateway)
+    assert len(debater.verifiers) == 1  # 同一個模型只投一票 ／ one model votes once
+    result = debater.arbitrate([_finding("A", "claude")])
+    assert shown == {}
+    assert not result.arbitration_applied

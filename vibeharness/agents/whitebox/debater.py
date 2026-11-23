@@ -60,7 +60,10 @@ class MultiModelDebater:
             if not agent_id.startswith(VERIFIER_PREFIX):
                 continue
             alias = gateway.settings.alias_for(agent_id)
-            duplicate_of = next((a for a, m in self.verifiers.items() if m == alias), None)
+            # 依實際的模型比較：兩個別名指向同一模型也只投一票 ／ Compared by the actual model: two aliases pointing
+            # at one model also vote once
+            model = gateway.settings.model_for(alias)
+            duplicate_of = next((a for a, m in self.verifiers.items() if gateway.settings.model_for(m) == model), None)
             if duplicate_of:
                 logger.warning(bi(f"驗證者 {agent_id} 與 {duplicate_of} 使用同一模型「{alias}」；已略過，讓該模型只投一票。",
                                   f"Verifier {agent_id} uses model '{alias}' like {duplicate_of}; skipped so the model votes once."))
@@ -82,22 +85,22 @@ class MultiModelDebater:
                                       assigned=assigned, per_call=self.FINDINGS_PER_CALL))
         return plans
 
-    @staticmethod
-    def _assigned_findings(findings_by_alias: Mapping[str, float], alias: str) -> float:
+    def _assigned_findings(self, findings_by_alias: Mapping[str, float], alias: str) -> float:
         """計畫裡模型別名 `alias` 的驗證者分到幾筆發現：其他模型回報的總和（絕不裁決自家模型的發現）。這是計畫的
         算式；arbitrate 實際執行時還會略過該驗證者已佐證的發現。
         How many findings the plan assigns to the verifier of model alias `alias`: the sum of what the other models
         reported (it never rules on its own model's). This is the plan's arithmetic; at run time arbitrate also skips
         the findings that verifier already corroborated."""
-        return sum(n for reporter, n in findings_by_alias.items() if MultiModelDebater._rules_on(alias, reporter))
+        return sum(n for reporter, n in findings_by_alias.items() if self._rules_on(alias, reporter))
 
-    @staticmethod
-    def _rules_on(alias: str, reporter_alias: str) -> bool:
-        """模型別名 `alias` 的驗證者會不會裁決 `reporter_alias` 回報的發現：絕不裁決自家模型的發現。計畫與
-        arbitrate 都以此為準（arbitrate 另外略過已佐證的發現）。
+    def _rules_on(self, alias: str, reporter_alias: str) -> bool:
+        """模型別名 `alias` 的驗證者會不會裁決 `reporter_alias` 回報的發現：絕不裁決自家模型的發現。「自家」依實際的
+        模型判斷，指向同一模型的另一個別名也不裁決。計畫與 arbitrate 都以此為準（arbitrate 另外略過已佐證的發現）。
         Whether the verifier of model alias `alias` rules on findings reported by `reporter_alias`: never on its
-        own model's. The plan and arbitrate both go by it (arbitrate also skips the findings already corroborated)."""
-        return alias != reporter_alias
+        own model's. "Own" goes by the actual model, so another alias pointing at the same model does not rule either.
+        The plan and arbitrate both go by it (arbitrate also skips the findings already corroborated)."""
+        model_for = self.gateway.settings.model_for
+        return model_for(alias) != model_for(reporter_alias)
 
     def _chunks(self, idxs: List[int]) -> List[List[int]]:
         """一次驗證呼叫列出的發現：每 FINDINGS_PER_CALL 筆一次。計畫的呼叫數（_call_count）以同一個批次大小算出。
@@ -130,8 +133,10 @@ class MultiModelDebater:
         # Which findings each verifier must rule on: never its own, never ones it already corroborated
         assignments: Dict[str, List[int]] = {}
         for agent_id, alias in self.verifiers.items():
+            model = self.gateway.settings.model_for(alias)
             idxs = [i for i, f in enumerate(findings)
-                    if self._rules_on(alias, f.model_alias) and alias not in f.corroborating_models]
+                    if self._rules_on(alias, f.model_alias)
+                    and model not in {self.gateway.settings.model_for(m) for m in f.corroborating_models}]
             if idxs:
                 assignments[agent_id] = idxs
         jobs = [(agent_id, chunk) for agent_id, idxs in assignments.items() for chunk in self._chunks(idxs)]

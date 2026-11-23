@@ -281,6 +281,10 @@ class VibeHarnessCommander:
             raise ValueError(bi(f"未知的 output_format '{output_format}'（應為 'md' 或 'json'）",
                                 f"Unknown output_format '{output_format}' (expected 'md' or 'json')"))
         reviewer_models = self.multi_reviewer.distinct_models
+        # 多樣性依實際的模型計算：指向同一模型的別名只算一個（見 GatewaySettings.distinct_model_labels）
+        # Diversity counts actual models: aliases pointing at one model count once (see
+        # GatewaySettings.distinct_model_labels)
+        distinct_reviewer_models = self.settings.gateway.distinct_model_labels(reviewer_models)
         ensemble_label = " | ".join(r["model_alias"] for r in self.multi_reviewer.reviewer_agents) or "none configured"
         self.console.print(Panel.fit(
             f"[bold cyan][VibeHarness-MAS] {bi('Commander Harness 已啟動', 'Commander Harness Active')}[/bold cyan]\n"
@@ -348,7 +352,7 @@ class VibeHarnessCommander:
             self.console.print(f"\n[bold blue]=== {bi('第 2 階段：異質多模型白箱審查', 'Phase 2: Heterogeneous Multi-Model White-Box Review')} ===[/bold blue]")
             raw_findings = self.multi_reviewer.review_symbols(symbols, root_dir=work_dir)
             self.console.print(f"[+] {bi(f'已從 {escape(ensemble_label)} 收到 [bold]{len(raw_findings)}[/bold] 筆原始審查發現。', f'Received [bold]{len(raw_findings)}[/bold] raw review findings from {escape(ensemble_label)}.')}")
-            if len(reviewer_models) < 2:
+            if len(distinct_reviewer_models) < 2:
                 # 同一模型的多個副本意見一致只是一致性，而非交叉佐證（OWASP LLM07:2026）
                 # Agreement among copies of one model is consistency, not corroboration (OWASP LLM07:2026)
                 self.console.print(f"[yellow][!] {bi('不同的審查模型少於兩個：跨模型驗證無法執行。', 'Fewer than two distinct reviewer models: cross-model verification cannot run.')}[/yellow]")
@@ -531,8 +535,9 @@ class VibeHarnessCommander:
                 call_log=self.gateway.call_log,
                 review=ReviewEvidence(
                     reviewers_configured=bool(self.multi_reviewer.reviewer_agents),
-                    reviewer_models=reviewer_models,
-                    verifier_models=sorted(set(self.debater.verifiers.values())),
+                    reviewer_models=distinct_reviewer_models,
+                    verifier_models=self.settings.gateway.distinct_model_labels(
+                        sorted(set(self.debater.verifiers.values()))),
                     arbitration_applied=debate_result.arbitration_applied,
                     confirmed_findings=debate_result.confirmed_findings,
                     findings_without_model_tests=self.whitebox_test_gen.findings_without_model_tests,
