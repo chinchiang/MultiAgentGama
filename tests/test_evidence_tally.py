@@ -200,3 +200,41 @@ def test_tally_and_json_report_fingerprints():
     bb = payload["blackbox_test_results"]
     assert bb[0]["fingerprint"] == breach_key(bb_known, threat) and "fingerprint" not in bb[1]
 
+
+
+# --- 已知問題依次數抵扣（#182 第 3 組） ---------------------------------------------------------
+# --- Known problems are offset by count (#182 group 3) ------------------------------------------
+
+def _secret_hit(line=3):
+    from vibeharness.core.models import FindingSeverity, StaticFinding
+
+    return StaticFinding(rule_id="VH-AI-007", title="Hard-coded secret", severity=FindingSeverity.HIGH,
+                         file_path=f"{TARGET}/settings.py", line_number=line, evidence="aws-access-key literal")
+
+
+def test_one_known_hit_offsets_only_one_matching_hit():
+    """基準線裡有 1 筆，這次同一指紋有 2 筆：1 筆已知、1 筆是新的，而不是 2 筆都被抵掉。
+    One in the baseline, two with the same fingerprint now: one known and one new, not both suppressed."""
+    hit = _secret_hit()
+    tally = tally_evidence(static_findings=[hit, hit.model_copy()], target_dir=TARGET,
+                           baseline=Baseline(path="old.json", static={static_key(hit, TARGET)}))
+    assert (len(tally.blocking_rule_hits.new), len(tally.blocking_rule_hits.known)) == (1, 1)
+    assert len(tally.known_problems) == 1
+
+
+def test_a_baseline_loaded_from_a_report_keeps_each_fingerprints_count(tmp_path):
+    """前一份報告裡同一指紋有 2 筆：這次 3 筆時 2 筆已知、1 筆新的。
+    Two items with one fingerprint in the previous report: with three now, two are known and one is new."""
+    import json
+
+    from vibeharness.core.baseline import load_baseline
+
+    hit = _secret_hit()
+    payload = {"tool": "vibeharness-mas", "schema_version": "3", "target_path": TARGET,
+               "summary": {"static_findings": [hit.model_dump(), hit.model_dump()], "run": {"generated_at": "x"}}}
+    path = tmp_path / "old.json"
+    path.write_text(json.dumps(payload, default=str), encoding="utf-8")
+    baseline = load_baseline(str(path))
+    tally = tally_evidence(static_findings=[hit, hit.model_copy(), hit.model_copy()], target_dir=TARGET,
+                           baseline=baseline)
+    assert (len(tally.blocking_rule_hits.new), len(tally.blocking_rule_hits.known)) == (1, 2)

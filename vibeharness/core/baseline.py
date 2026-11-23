@@ -19,9 +19,10 @@ from older reports that lack them.
 """
 import json
 import os
-from typing import Any, Dict, Iterable, List, Optional, Set
+from collections import Counter
+from typing import Any, Dict, Iterable, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from vibeharness.core.i18n import bi
 # 鍵與其組成（正規化、位置、雜湊）在 core/identity.py；以舊名稱重新匯出
@@ -38,17 +39,34 @@ TOOL_NAME = "vibeharness-mas"
 
 
 class Baseline(BaseModel):
-    """從先前 JSON 報告載入的鍵。
-    The keys loaded from a previous JSON report."""
+    """從先前 JSON 報告載入的鍵，每個鍵記著它在那份報告裡出現幾次：K 筆已知問題最多抵掉 K 筆同指紋的項目，
+    第 K+1 筆算新問題（有些指紋不含行號，例如 VH-AI-007，一筆舊命中過去能壓下同檔任意多筆新命中）。
+    給集合或 list 時每次出現算一筆。
+    The keys loaded from a previous JSON report, each with how often it appeared there: K known problems offset at
+    most K items of that fingerprint, and a (K+1)-th counts as new (some fingerprints carry no line number, e.g.
+    VH-AI-007, so one old hit used to suppress any number of new hits in the same file). A set or list counts each
+    occurrence once."""
     path: str
     generated_at: Optional[str] = None
-    static: Set[str] = Field(default_factory=set)
-    findings: Set[str] = Field(default_factory=set)
-    breaches: Set[str] = Field(default_factory=set)
+    static: Dict[str, int] = Field(default_factory=dict)
+    findings: Dict[str, int] = Field(default_factory=dict)
+    breaches: Dict[str, int] = Field(default_factory=dict)
+
+    @field_validator("static", "findings", "breaches", mode="before")
+    @classmethod
+    def _counts(cls, value: Any) -> Any:
+        if isinstance(value, (set, frozenset, list, tuple)):
+            return dict(Counter(value))
+        return value
 
     @property
     def size(self) -> int:
-        return len(self.static) + len(self.findings) + len(self.breaches)
+        return sum(self.static.values()) + sum(self.findings.values()) + sum(self.breaches.values())
+
+    @staticmethod
+    def add(counts: Dict[str, int], key: str) -> None:
+        """在 `counts` 記下 `key` 又出現一次 ／ Records one more occurrence of `key` in `counts`."""
+        counts[key] = counts.get(key, 0) + 1
 
 
 def _dicts(value: Any) -> List[Dict[str, Any]]:
@@ -72,7 +90,7 @@ def _keys_from_report(payload: Dict[str, Any]) -> Baseline:
                 key = static_key(StaticFinding(**item), target)
             except Exception:
                 continue
-        baseline.static.add(key)
+        Baseline.add(baseline.static, key)
     # 已確認的發現本身不會決定判定，只有「其測試失敗」才會：所以只有 FAILED 的白箱結果（經其發現識別）
     # 進基準線；上次通過（防線守住）的發現這次失敗就是新問題，不能被壓下
     # A confirmed finding never decides the verdict on its own, only a FAILED test for it does: so only FAILED
@@ -109,7 +127,7 @@ def _keys_from_report(payload: Dict[str, Any]) -> Baseline:
                 continue
             key = whitebox_failure_key(result, findings_by_id.get(result.source_ref or ""), target)
         if key:
-            baseline.findings.add(key)
+            Baseline.add(baseline.findings, key)
     threats: Dict[str, ThreatItem] = {}
     threat_model = payload.get("threat_model") if isinstance(payload.get("threat_model"), dict) else {}
     model_simulated = bool((threat_model or {}).get("is_simulated"))
@@ -131,7 +149,7 @@ def _keys_from_report(payload: Dict[str, Any]) -> Baseline:
             except Exception:
                 continue
             key = breach_key(result, threats.get(result.source_ref or ""))
-        baseline.breaches.add(key)
+        Baseline.add(baseline.breaches, key)
     return baseline
 
 
