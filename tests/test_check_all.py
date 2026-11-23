@@ -128,3 +128,22 @@ def test_a_command_past_its_timeout_is_stopped_and_reported_as_a_timeout(tmp_pat
     A real command past its time limit is stopped and its exit code is None (a timeout), never a pass."""
     code, _ = tool.run_command([sys.executable, "-c", "import time; time.sleep(60)"], str(tmp_path), 0.5)
     assert code is None
+
+
+def test_the_log_header_is_written_before_the_first_step_runs(tmp_path):
+    """第一步開始跑的時候，摘要 log 與 `.full.log` 已經有檔頭那一行，跑很久的 pytest 期間 log 不是空的；原本檔頭等到
+    第一步跑完才寫進檔案（#191）。
+    When the first step starts, the summary log and the `.full.log` already hold the header line, so the log is not
+    empty during a long pytest run; the header used to reach the files only once the first step finished (#191)."""
+    log = tmp_path / "checks.log"
+    seen = {}
+
+    def run(cmd, cwd, timeout):
+        if not seen:
+            seen["summary"] = log.read_text(encoding="utf-8")
+            seen["full"] = (tmp_path / "checks.full.log").read_text(encoding="utf-8")
+        return 0, "ok\n"
+
+    assert tool.main(["--log", str(log)], repo=str(tmp_path), run=run) == 0
+    assert seen["summary"].startswith("== HEAD "), seen
+    assert seen["full"].startswith("== HEAD "), seen

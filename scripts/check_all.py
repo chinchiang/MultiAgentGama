@@ -175,8 +175,12 @@ def main(argv: Optional[List[str]] = None, repo: str = _REPO, run: Runner = run_
                                                           if _dirty(repo) else "")
     failed_steps: List[str] = []
     with open(log, "w", encoding="utf-8") as summary, open(full, "w", encoding="utf-8") as everything:
+        # 檔頭立刻寫進檔案：第一步（pytest）要跑好幾分鐘，這段時間 log 不能看起來是空的（#191）
+        # The header reaches the files at once: the first step (pytest) runs for minutes, and the log must not look
+        # empty meanwhile (#191)
         for f in (summary, everything):
             f.write(header + "\n")
+            f.flush()
         print(header, flush=True)
         for name, cmd in steps(sys.executable, args.against):
             if name in args.skip:
