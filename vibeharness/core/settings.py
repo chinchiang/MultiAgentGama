@@ -636,7 +636,11 @@ def positive_int(value: Any, key: str) -> Optional[int]:
 
 
 def number(value: Any, key: str, minimum: float, maximum: Optional[float] = None, integer: bool = False) -> None:
-    ok = isinstance(value, (int, float)) and not isinstance(value, bool) and (not integer or isinstance(value, int))
+    # NaN 與任何上下限比較都是 False、Inf 在沒有上限時也過得去：兩者都不是有限的數值，一律拒絕（YAML 的 .nan／.inf）
+    # NaN compares False against any bound and Inf passes when there is no maximum: neither is a finite number, so
+    # both are refused (YAML .nan / .inf)
+    ok = isinstance(value, (int, float)) and not isinstance(value, bool) and (not integer or isinstance(value, int)) \
+        and math.isfinite(value)
     if not ok or value < minimum or (maximum is not None and value > maximum):
         kind = "an integer" if integer else "a number"
         kind_zh = "整數" if integer else "數值"
@@ -855,8 +859,15 @@ def load_settings(path: str, *, origin: Origin, overrides: Optional[Overrides] =
         exclude=_pattern_list(g.get("exclude"), "exclude"),
     )
 
-    # 覆寫值在檔案的值都驗證之後才套用，順序與 CLI 過去在建構之後設定的順序相同
-    # Overrides apply after every file value is validated, in the order the CLI used to set them after construction
+    # 覆寫值在檔案的值都驗證之後才套用，順序與 CLI 過去在建構之後設定的順序相同。CLI 已經檢查過自己的旗標，
+    # 但函式庫呼叫端可以直接建構 Overrides：數值欄位在這裡依同樣的規則再驗證一次
+    # Overrides apply after every file value is validated, in the order the CLI used to set them after construction.
+    # The CLI has checked its own flags, but a library caller can build Overrides directly: the numeric fields are
+    # validated here again by the same rules
+    for name, minimum in (("max_files", 1), ("max_model_calls", 0), ("mutation_max_mutants", 1)):
+        value = getattr(overrides, name)
+        if value is not None:
+            number(value, name, minimum=minimum, integer=True)
     if overrides.max_files is not None:
         scope = replace(scope, max_files=overrides.max_files)
     if overrides.max_model_calls is not None:

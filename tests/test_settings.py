@@ -482,3 +482,50 @@ def test_endpoint_and_credential_fields_must_be_strings(tmp_path, key, value):
     path.write_text(yaml.safe_dump({"models": {"m": {"model": "openai/x", key: value}}}), encoding="utf-8")
     with pytest.raises(ConfigError, match=f"models.m.{key} must be a non-empty string or null"):
         load_settings(str(path), origin="explicit")
+
+
+# --- 非有限數值、連接埠範圍與 Overrides 的驗證（#182 第 4 組） ----------------------------------------
+# --- Non-finite numbers, port range and Overrides validation (#182 group 4) ------------------------
+
+@pytest.mark.parametrize("key, value", [
+    ("timeout_seconds", ".nan"), ("timeout_seconds", ".inf"), ("sandbox_timeout_seconds", ".nan"),
+    ("mutation_min_score", ".nan"), ("max_concurrent_calls", ".inf"),
+])
+def test_non_finite_numbers_are_config_errors(tmp_path, key, value):
+    """YAML 的 `.nan`／`.inf` 是浮點數：NaN 與任何上下限比較都是 False，所以過去能通過範圍檢查。
+    YAML `.nan` / `.inf` are floats: NaN compares False against any bound, so it used to pass the range check."""
+    from vibeharness.core.settings import ConfigError, load_settings
+
+    path = tmp_path / "c.yaml"
+    path.write_text(f"global:\n  {key}: {value}\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match=key):
+        load_settings(str(path), origin="explicit")
+
+
+@pytest.mark.parametrize("url", ["http://localhost:99999", "http://localhost:65536", "http://localhost:0",
+                                 "http://localhost:abc"])
+def test_a_base_url_with_an_invalid_port_is_refused(url):
+    from vibeharness.agents.blackbox.scenario_builder import validate_base_url
+
+    with pytest.raises(ValueError, match="port"):
+        validate_base_url(url)
+
+
+def test_a_base_url_with_a_valid_port_is_accepted():
+    from vibeharness.agents.blackbox.scenario_builder import validate_base_url
+
+    assert validate_base_url(" http://localhost:8080/api ") == "http://localhost:8080/api"
+
+
+@pytest.mark.parametrize("field, value", [
+    ("max_files", 0), ("max_files", -3), ("max_files", "5"), ("max_files", True), ("max_model_calls", -1),
+    ("max_model_calls", 1.5), ("mutation_max_mutants", 0),
+])
+def test_programmatic_overrides_are_validated(field, value):
+    """函式庫呼叫端自己建構的 Overrides 也要符合 CLI 旗標的型別與範圍，否則錯誤要到執行中才出現。
+    Overrides a library caller builds itself must meet the CLI flags' type and range too, or the error surfaces
+    mid-run."""
+    from vibeharness.core.settings import DEFAULT_CONFIG_PATH, ConfigError, Overrides, load_settings
+
+    with pytest.raises(ConfigError, match=field):
+        load_settings(DEFAULT_CONFIG_PATH, origin="bundled", overrides=Overrides(**{field: value}))
