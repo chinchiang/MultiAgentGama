@@ -313,6 +313,75 @@ def _read_capture(stream: Any) -> str:
     return data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
 
 
+# 測試執行器本身在目標之後才匯入、目標卻排在 sys.path 前面的模組：pytest 與它的相依和外掛、涵蓋率，以及 Python
+# 啟動時自動匯入的 sitecustomize／usercustomize。目標頂層有同名模組時，它就取代了執行器，能自己寫出 JUnit 報告
+# Modules the test runner imports while the target sits ahead of them on sys.path: pytest with its dependencies and
+# plugins, coverage, and the sitecustomize / usercustomize Python imports at start-up. A top-level module of the same
+# name in the target replaces the runner and can write its own JUnit report
+RUNNER_MODULES = (
+    "pytest", "_pytest", "pluggy", "iniconfig", "packaging", "py", "coverage", "pytest_cov",
+    "hypothesis", "_hypothesis_pytestplugin", "sitecustomize", "usercustomize",
+)
+_EXTENSION_SUFFIXES = (".so", ".pyd")
+
+
+# 本機沙盒的測試行程最多能比啟動時多開幾個行程（同一使用者的全部行程一起算）
+# How many more processes than at start-up the local sandbox's test process may have (all of the user's processes
+# count together)
+SANDBOX_PROCESS_HEADROOM = 1024
+
+
+def _user_process_count() -> Optional[int]:
+    """目前這個使用者（real uid）有幾個執行緒：Linux 的 RLIMIT_NPROC 計的是執行緒（task），不是行程。只在 Linux 從
+    /proc/<pid>/task 數，其他平台或 root（不受 RLIMIT_NPROC 限制）為 None。
+    How many threads the current user (real uid) has: Linux's RLIMIT_NPROC counts threads (tasks), not processes.
+    Counted from /proc/<pid>/task on Linux only, None elsewhere or for root (RLIMIT_NPROC does not bind root)."""
+    if not sys.platform.startswith("linux") or not hasattr(os, "getuid") or os.getuid() == 0:
+        return None
+    uid, count = os.getuid(), 0
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return None
+    for entry in entries:
+        if entry.isdigit():
+            try:
+                if os.stat(f"/proc/{entry}").st_uid == uid:
+                    count += len(os.listdir(f"/proc/{entry}/task"))
+            except OSError:
+                continue
+    return count
+
+
+def shadowed_runner_modules(base_dir: str, include_parent: bool = True) -> List[str]:
+    """`base_dir`（以及 include_parent 時它的父目錄，本機沙盒把兩者都放進 PYTHONPATH）頂層與 RUNNER_MODULES 同名的模組，
+    以 "<目錄>/<項目>" 列出並排序：`name.py`、`name.pyc`、含 `__init__.py` 的目錄，或 `name.*.so`／`.pyd` 擴充模組
+    （沒有 `__init__.py` 的目錄是命名空間套件，敵不過已安裝的一般套件）。讀不到的目錄略過。
+    The top-level modules of `base_dir` (and, with include_parent, its parent: the local sandbox puts both on
+    PYTHONPATH) named like RUNNER_MODULES, listed sorted as "<dir>/<entry>": `name.py`, `name.pyc`, a directory with
+    `__init__.py`, or a `name.*.so` / `.pyd` extension (a directory without `__init__.py` is a namespace package,
+    which loses to an installed regular package). An unreadable directory is skipped."""
+    dirs = [os.path.abspath(base_dir)]
+    if include_parent:
+        dirs.append(os.path.dirname(dirs[0]))
+    found = set()
+    for directory in dict.fromkeys(dirs):
+        try:
+            entries = os.listdir(directory)
+        except OSError:
+            continue
+        for entry in entries:
+            path = os.path.join(directory, entry)
+            stem, ext = os.path.splitext(entry)
+            if ext in (".py", ".pyc") and stem in RUNNER_MODULES and os.path.isfile(path):
+                found.add(path)
+            elif ext in _EXTENSION_SUFFIXES and entry.split(".", 1)[0] in RUNNER_MODULES:
+                found.add(path)
+            elif entry in RUNNER_MODULES and os.path.isfile(os.path.join(path, "__init__.py")):
+                found.add(path)
+    return sorted(found)
+
+
 class LocalSubprocessSandbox:
     """
     用來執行測試腳本與動態酬載的子行程沙盒。
@@ -536,6 +605,12 @@ class LocalSubprocessSandbox:
             "-o", "junit_logging=all",
             "-c", config_path,
             f"--rootdir={rootdir}",
+            # 只載入執行目錄裡的 conftest.py：`-c /dev/null` 讓 confcutdir 落在 /dev，於是執行目錄的任何上層目錄
+            # （例如 /tmp，主機上的其他使用者或前一批目標都能寫入）裡的 conftest.py 都會被載入並改寫結果
+            # Load conftest.py from the run directory only: `-c /dev/null` puts confcutdir at /dev, so a conftest.py
+            # in any ancestor of the run directory (e.g. /tmp, writable by other users on the host or by an earlier
+            # target) would be loaded and could rewrite outcomes
+            f"--confcutdir={rootdir}",
             f"--junitxml={junit_path}",
         ]
 
@@ -550,6 +625,12 @@ class LocalSubprocessSandbox:
         limits: Dict[str, int] = {"cpu_seconds": int(timeout) + 10}
         if self.memory_mb > 0:
             limits["memory_bytes"] = self.memory_mb * 1024 * 1024
+        processes = _user_process_count()
+        if processes is not None:
+            # RLIMIT_NPROC 計的是這個使用者的全部行程：上限是目前的數量加上寬裕量，擋住 fork bomb 而不搶走其他工作
+            # RLIMIT_NPROC counts all of this user's processes: the cap is today's count plus headroom, which stops a
+            # fork bomb without starving other work
+            limits["processes"] = processes + SANDBOX_PROCESS_HEADROOM
         return limits
 
     @staticmethod
@@ -580,7 +661,7 @@ class LocalSubprocessSandbox:
                     except (ValueError, OSError, AttributeError):
                         pass
             for name, value in (("RLIMIT_AS", limits.get("memory_bytes")), ("RLIMIT_CPU", limits.get("cpu_seconds")),
-                                ("RLIMIT_FSIZE", file_bytes)):
+                                ("RLIMIT_FSIZE", file_bytes), ("RLIMIT_NPROC", limits.get("processes"))):
                 if not value or not hasattr(resource, name):
                     continue
                 try:

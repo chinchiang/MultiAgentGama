@@ -3,7 +3,7 @@ import math
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 from vibeharness.core.models import ReviewFinding, MultiModelDebateResult, VerificationVote, CodeSymbol
 from vibeharness.core.llm_gateway import LLMGateway
-from vibeharness.core.i18n import bi, en_only
+from vibeharness.core.i18n import bi, prompt_text
 from vibeharness.core.codecontext import render_symbols, truncate_to_tokens, target_root
 from vibeharness.core.agent_call import (
     AgentCall, AgentInput, AgentReply, CallContext, CallKind, Channel, Content, Part, PlannedCalls, Untrusted,
@@ -60,7 +60,10 @@ class MultiModelDebater:
             if not agent_id.startswith(VERIFIER_PREFIX):
                 continue
             alias = gateway.settings.alias_for(agent_id)
-            duplicate_of = next((a for a, m in self.verifiers.items() if m == alias), None)
+            # 依實際的模型比較：兩個別名指向同一模型也只投一票 ／ Compared by the actual model: two aliases pointing
+            # at one model also vote once
+            model = gateway.settings.model_for(alias)
+            duplicate_of = next((a for a, m in self.verifiers.items() if gateway.settings.model_for(m) == model), None)
             if duplicate_of:
                 logger.warning(bi(f"驗證者 {agent_id} 與 {duplicate_of} 使用同一模型「{alias}」；已略過，讓該模型只投一票。",
                                   f"Verifier {agent_id} uses model '{alias}' like {duplicate_of}; skipped so the model votes once."))
@@ -82,22 +85,22 @@ class MultiModelDebater:
                                       assigned=assigned, per_call=self.FINDINGS_PER_CALL))
         return plans
 
-    @staticmethod
-    def _assigned_findings(findings_by_alias: Mapping[str, float], alias: str) -> float:
+    def _assigned_findings(self, findings_by_alias: Mapping[str, float], alias: str) -> float:
         """計畫裡模型別名 `alias` 的驗證者分到幾筆發現：其他模型回報的總和（絕不裁決自家模型的發現）。這是計畫的
         算式；arbitrate 實際執行時還會略過該驗證者已佐證的發現。
         How many findings the plan assigns to the verifier of model alias `alias`: the sum of what the other models
         reported (it never rules on its own model's). This is the plan's arithmetic; at run time arbitrate also skips
         the findings that verifier already corroborated."""
-        return sum(n for reporter, n in findings_by_alias.items() if MultiModelDebater._rules_on(alias, reporter))
+        return sum(n for reporter, n in findings_by_alias.items() if self._rules_on(alias, reporter))
 
-    @staticmethod
-    def _rules_on(alias: str, reporter_alias: str) -> bool:
-        """模型別名 `alias` 的驗證者會不會裁決 `reporter_alias` 回報的發現：絕不裁決自家模型的發現。計畫與
-        arbitrate 都以此為準（arbitrate 另外略過已佐證的發現）。
+    def _rules_on(self, alias: str, reporter_alias: str) -> bool:
+        """模型別名 `alias` 的驗證者會不會裁決 `reporter_alias` 回報的發現：絕不裁決自家模型的發現。「自家」依實際的
+        模型判斷，指向同一模型的另一個別名也不裁決。計畫與 arbitrate 都以此為準（arbitrate 另外略過已佐證的發現）。
         Whether the verifier of model alias `alias` rules on findings reported by `reporter_alias`: never on its
-        own model's. The plan and arbitrate both go by it (arbitrate also skips the findings already corroborated)."""
-        return alias != reporter_alias
+        own model's. "Own" goes by the actual model, so another alias pointing at the same model does not rule either.
+        The plan and arbitrate both go by it (arbitrate also skips the findings already corroborated)."""
+        model_for = self.gateway.settings.model_for
+        return model_for(alias) != model_for(reporter_alias)
 
     def _chunks(self, idxs: List[int]) -> List[List[int]]:
         """一次驗證呼叫列出的發現：每 FINDINGS_PER_CALL 筆一次。計畫的呼叫數（_call_count）以同一個批次大小算出。
@@ -130,8 +133,10 @@ class MultiModelDebater:
         # Which findings each verifier must rule on: never its own, never ones it already corroborated
         assignments: Dict[str, List[int]] = {}
         for agent_id, alias in self.verifiers.items():
+            model = self.gateway.settings.model_for(alias)
             idxs = [i for i, f in enumerate(findings)
-                    if self._rules_on(alias, f.model_alias) and alias not in f.corroborating_models]
+                    if self._rules_on(alias, f.model_alias)
+                    and model not in {self.gateway.settings.model_for(m) for m in f.corroborating_models}]
             if idxs:
                 assignments[agent_id] = idxs
         jobs = [(agent_id, chunk) for agent_id, idxs in assignments.items() for chunk in self._chunks(idxs)]
@@ -179,6 +184,13 @@ class MultiModelDebater:
                 is_simulated=reason == "simulated"
             )
 
+        # 每筆發現應投票的模型數：被分派裁決它的驗證者，加上已佐證它的模型。駁回必須過半數才算有爭議（不產生測試）：
+        # 以「回來的票」為分母時，一張 reject 配上一個 unsure 或一個失敗的驗證批次就夠了，只要說服一個模型就能讓缺陷不被測試
+        # The models that should vote on each finding: the verifiers assigned to rule on it plus the models that already
+        # corroborated it. Rejects must be a strict majority of them to dispute it (no test is generated): counting
+        # only the votes that came back, one reject beside an unsure or a failed verifier batch was enough, so
+        # convincing a single model kept a defect from being tested
+        asked = {i: sum(1 for idxs in assignments.values() if i in idxs) for i in range(len(findings))}
         confirmed: List[ReviewFinding] = []
         disputed: List[ReviewFinding] = []
         agreeing = decisive = undecided = 0
@@ -186,8 +198,9 @@ class MultiModelDebater:
             vs = votes[idx]
             yes = sum(1 for v in vs if v.verdict in ("confirm", "corroborated"))
             no = sum(1 for v in vs if v.verdict == "reject")
+            eligible = asked[idx] + sum(1 for v in vs if v.verdict == "corroborated")
             ruled = f.model_copy(update={"verification_votes": vs})
-            if no > yes:
+            if 2 * no > eligible:
                 disputed.append(ruled)
                 agreeing += no
             else:
@@ -281,10 +294,10 @@ class MultiModelDebater:
                 # 模擬引擎與預設值產生的雙語欄位只送英文半，提示詞維持英文；真實模型的文字（即使含有 " ／ "）原樣通過
                 # Bilingual fields from the simulation engine or defaults contribute their English half only, so the
                 # prompt stays English; real model text (even one containing " ／ ") passes through unchanged
-                f"    Title: {truncate_to_tokens(en_only(f.title), per_field, marker=' (truncated)')}\n"
-                f"    Description: {truncate_to_tokens(en_only(f.description), per_field, marker=' (truncated)')}\n"
-                f"    Cause: {truncate_to_tokens(en_only(f.root_cause), per_field, marker=' (truncated)')}\n"
-                f"    Scenario: {truncate_to_tokens(en_only(f.suggested_test_scenario), per_field, marker=' (truncated)')}"
+                f"    Title: {truncate_to_tokens(prompt_text(f.title, f.is_simulated), per_field, marker=' (truncated)')}\n"
+                f"    Description: {truncate_to_tokens(prompt_text(f.description, f.is_simulated), per_field, marker=' (truncated)')}\n"
+                f"    Cause: {truncate_to_tokens(prompt_text(f.root_cause, f.is_simulated), per_field, marker=' (truncated)')}\n"
+                f"    Scenario: {truncate_to_tokens(prompt_text(f.suggested_test_scenario, f.is_simulated), per_field, marker=' (truncated)')}"
             )
         return "\n".join(blocks)
 

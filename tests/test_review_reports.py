@@ -275,3 +275,21 @@ def test_sarif_uri_escaping_path_is_omitted_whatever_the_working_directory(tmp_p
     (tmp_path / "secret.txt").write_text("x", encoding="utf-8")
     monkeypatch.chdir(tmp_path / "a" / "b")
     assert ReportGenerator._sarif_uri("../../secret.txt", str(root)) is None
+
+
+
+def test_config_sourced_names_are_escaped_in_markdown():
+    """reviewer_name、corroborated_by 與驗證者別名來自設定檔，也不能在 Markdown 裡開新區塊或插入圖片（#183 第 21 項）。
+    reviewer_name, corroborated_by and verifier aliases come from the config and must not open a block or insert an
+    image in Markdown either (#183 item 21)."""
+    from vibeharness.core.models import VerificationVote
+
+    hostile = SPOOF + " ![x](https://evil.example/p.png)"
+    finding = _finding(reviewer_name=hostile, corroborated_by=[hostile],
+                       verification_votes=[VerificationVote(model_alias=hostile, verdict="confirm", reason="ok")])
+    debate = MultiModelDebateResult(consensus_summary="c", arbitration_applied=True,
+                                    confirmed_findings=[finding], disputed_findings=[finding])
+    md = _report(summary=_summary(reviewer_models=[hostile, "glm"]), debate=debate)
+    _no_spoofed_blocks(md)
+    # 程式碼區段裡的 "![x]" 只是文字，不會變成圖片 ／ "![x]" inside a code span is text, never an image
+    assert "![x]" not in re.sub(r"`+[^`]*`+", "", md)

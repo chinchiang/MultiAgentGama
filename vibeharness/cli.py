@@ -12,7 +12,7 @@ import logging
 import sys
 import os
 import traceback
-from typing import TYPE_CHECKING, Any, List, NoReturn
+from typing import TYPE_CHECKING, Any, List, NoReturn, Optional
 from vibeharness.core.settings import DEFAULT_CONFIG_PATH, DISCOVERED_CONFIG_NAMES, resolve_config
 from vibeharness import __version__
 from vibeharness.core.i18n import bi
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     # Type checkers see these names; at run time _load_dependencies() puts them into the module namespace
     from vibeharness.core.harness import VibeHarnessCommander
     from vibeharness.core.llm_gateway import LLMGatewayError
-    from vibeharness.core.settings import ConfigError, Overrides, load_settings
+    from vibeharness.core.settings import ConfigError, Overrides, check_cache_dir_location, load_settings
     from vibeharness.core.sandbox import SandboxUnavailableError
     from vibeharness.agents.blackbox.scenario_builder import validate_base_url
     from vibeharness.core.baseline import load_baseline
@@ -38,6 +38,7 @@ _LAZY_IMPORTS = {
     "ConfigError": ("vibeharness.core.settings", "ConfigError"),
     "Overrides": ("vibeharness.core.settings", "Overrides"),
     "load_settings": ("vibeharness.core.settings", "load_settings"),
+    "check_cache_dir_location": ("vibeharness.core.settings", "check_cache_dir_location"),
     "SandboxUnavailableError": ("vibeharness.core.sandbox", "SandboxUnavailableError"),
     "validate_base_url": ("vibeharness.agents.blackbox.scenario_builder", "validate_base_url"),
     "load_baseline": ("vibeharness.core.baseline", "load_baseline"),
@@ -99,13 +100,31 @@ class _UsageErrorParser(argparse.ArgumentParser):
 
 
 
+class SafeLogFormatter(logging.Formatter):
+    """每筆日誌都是一行乾淨的文字（見 sanitize.log_safe）：日誌常插入模型回答的片段（嚴重度、威脅 id、STRIDE 類別、
+    失敗原因），在這裡統一清理，不必逐一呼叫端處理。回溯保留換行，但每行去除控制字元並縮排，不能以 `::` 開頭。
+    Every log record is one clean line (see sanitize.log_safe): logs often interpolate pieces of model answers
+    (severities, threat ids, STRIDE categories, failure reasons), cleaned here once instead of at every call site.
+    A traceback keeps its line breaks, but each line is stripped of control characters and indented, so none starts
+    with `::`."""
+
+    def formatMessage(self, record: logging.LogRecord) -> str:
+        from vibeharness.core.sanitize import log_safe
+
+        record.message = log_safe(record.message)
+        return super().formatMessage(record)
+
+    def formatException(self, ei) -> str:
+        from vibeharness.core.sanitize import clean_model_text
+
+        return "\n".join("  " + clean_model_text(line) for line in super().formatException(ei).split("\n"))
+
+
 def setup_logging(verbose: bool = False):
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S"
-    )
+    handler = logging.StreamHandler()
+    handler.setFormatter(SafeLogFormatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S"))
+    logging.basicConfig(level=level, handlers=[handler])
 
 
 def verdict_exit_code(overall_status: str) -> int:
@@ -475,12 +494,13 @@ def parse_args_for_inspection(argv: List[str]) -> argparse.Namespace:
     return _build_parser(inspection=True).parse_args(argv)
 
 
-def _summary_json(summary: Any, execution_mode: str) -> str:
+def _summary_json(summary: Any, execution_mode: str, sandbox_provider: Optional[str] = None) -> str:
     """--summary-json 的內容：判定、exit code、執行模式與每種模式的模型呼叫數（"retried" 是同一次呼叫的中間詢問，不計入 total）。
     all_simulated 為 True 表示有模型呼叫、而且每一次都是模擬的（例如 hybrid 模式下沒有任何供應商金鑰）。
     The --summary-json content: verdict, exit code, execution mode and the model calls per mode ("retried" entries
     are intermediate asks of one call and are not counted in total). all_simulated is True when there were model
-    calls and every one was simulated (e.g. hybrid mode without any provider key)."""
+    calls and every one was simulated (e.g. hybrid mode without any provider key). sandbox_provider is the Python
+    sandbox the tests ran in (`local_subprocess` is not an isolation boundary; the Action warns about it)."""
     import json
     calls = [c for c in summary.agent_calls if c.mode != "retried"]
     counts = {mode: sum(1 for c in calls if c.mode == mode) for mode in ("live", "simulated", "invalid")}
@@ -490,6 +510,7 @@ def _summary_json(summary: Any, execution_mode: str) -> str:
         "verdict": summary.overall_status,
         "exit_code": verdict_exit_code(summary.overall_status),
         "execution_mode": execution_mode,
+        "sandbox_provider": sandbox_provider,
         "model_calls": {"total": len(calls), **counts, "cached": sum(1 for c in calls if c.cached)},
         "all_simulated": bool(calls) and counts["simulated"] == len(calls),
         "inconclusive_reasons": list(summary.inconclusive_reasons),
@@ -515,6 +536,15 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     # 設定檔只載入、驗證一次，連同 CLI 旗標的覆寫值；任何設定問題都在檢查目標與旗標之前回報
     # The config is loaded and validated once, together with the CLI flags' overrides; every config problem is
     # reported before the target and the flags are checked
+    # --cache-dir 在載入設定（它會建立目錄）之前就先檢查位置：目錄不能先在目標裡被建立出來
+    # --cache-dir's location is checked before the settings load (which creates the directory): the directory must
+    # not be created inside the target first
+    if args.cache_dir:
+        try:
+            check_cache_dir_location(args.cache_dir, os.path.abspath(args.target))
+        except ConfigError as e:
+            print(f"{bi('錯誤', 'Error')}: {bi('harness 設定問題', 'harness configuration problem')}: {e}", file=sys.stderr)
+            sys.exit(USAGE_ERROR_EXIT_CODE)
     try:
         settings = load_settings(args.config, origin=origin, overrides=Overrides(
             execution_mode=args.mode, max_files=args.max_files, max_model_calls=args.max_model_calls,
@@ -557,6 +587,9 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             parser.error(f"{flag}: " + bi(f"無法寫入 '{path}'（目錄不存在或不可寫入）",
                                            f"cannot write to '{path}' (directory missing or not writable)"))
     try:
+        # 快取目錄不可在目標（或 Actions 的 checkout）之內，見 check_cache_dir_location
+        # The cache directory must not be inside the target (or the Actions checkout), see check_cache_dir_location
+        check_cache_dir_location(settings.gateway.cache_dir, target_path)
         commander = VibeHarnessCommander(settings=settings)
         # --cache-only 搭配 mock 模式的雙語警告已由 load_settings 收進 settings.warnings，
         # 並於上方啟動檢查階段統一印出（mock 模式根本不讀快取：--cache-only 不會有任何作用）。
@@ -624,7 +657,7 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     if args.summary_json:
         try:
             with open(args.summary_json, "w", encoding="utf-8") as f:
-                f.write(_summary_json(summary, commander.gateway.execution_mode))
+                f.write(_summary_json(summary, commander.gateway.execution_mode, commander.sandbox_provider))
         except OSError as e:
             # 報告已經寫好：摘要寫不出來只是警告，不改變判定的 exit code
             # The report is already written: a summary that cannot be written is only a warning and keeps the verdict's exit code

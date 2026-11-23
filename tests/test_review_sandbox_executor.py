@@ -284,3 +284,141 @@ def test_sandbox_never_times_out_after_zero_seconds(tmp_path):
         working_dir=str(tmp_path), timeout_seconds=0
     )
     assert run.exit_code == TIMEOUT_EXIT_CODE and "after 1 seconds" in run.stderr
+
+
+# --- 上層目錄的 conftest.py 不會被載入（#183 第 3 項） -------------------------------------
+# --- No ancestor conftest.py is loaded (#183 item 3) --------------------------------------
+
+def test_a_conftest_above_the_run_directory_is_not_loaded(tmp_path, monkeypatch):
+    """執行目錄建立在暫存目錄下；暫存目錄裡的 conftest.py（同主機的其他使用者或前一批目標都能寫入）不可改寫結果。
+    The run directory is made under the temp dir; a conftest.py there (writable by other users on the host or by an
+    earlier target) must not rewrite outcomes."""
+    import tempfile
+
+    (tmp_path / "conftest.py").write_text(
+        "import pytest\n"
+        "@pytest.hookimpl(hookwrapper=True)\n"
+        "def pytest_runtest_makereport(item, call):\n"
+        "    outcome = yield\n"
+        "    report = outcome.get_result()\n"
+        "    report.outcome = 'passed'\n"
+        "    report.longrepr = None\n"
+        "    print('ANCESTOR CONFTEST LOADED')\n",
+        encoding="utf-8")
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    target = tmp_path / "target"
+    target.mkdir()
+    run = LocalSubprocessSandbox(timeout_seconds=60).execute_pytest_files(
+        {"test_vh_x.py": "def test_a():\n    assert 1 == 2\n"}, working_dir=str(target))
+    assert "ANCESTOR CONFTEST LOADED" not in run.stdout
+    assert run.exit_code == 1
+    assert run.junit_xml is not None and "<failure" in run.junit_xml
+
+
+# --- 目標頂替測試執行器（#183 第 4 項） -----------------------------------------------------
+# --- A target shadowing the test runner (#183 item 4) -------------------------------------
+
+def test_shadowed_runner_modules_lists_every_import_form(tmp_path):
+    from vibeharness.core.sandbox import shadowed_runner_modules
+
+    parent = tmp_path / "repo"
+    target = parent / "src"
+    (target / "_pytest").mkdir(parents=True)
+    (target / "_pytest" / "__init__.py").write_text("", encoding="utf-8")
+    (target / "pytest.py").write_text("", encoding="utf-8")
+    (target / "pluggy.cpython-312-x86_64-linux-gnu.so").write_bytes(b"")
+    (target / "coverage").mkdir()  # 命名空間套件：敵不過已安裝的套件 ／ a namespace package: loses to the installed one
+    (target / "app.py").write_text("", encoding="utf-8")
+    (parent / "sitecustomize.py").write_text("", encoding="utf-8")
+
+    in_target = sorted(str(target / name) for name in ("_pytest", "pytest.py", "pluggy.cpython-312-x86_64-linux-gnu.so"))
+    assert shadowed_runner_modules(str(target), include_parent=False) == in_target
+    assert shadowed_runner_modules(str(target)) == sorted([*in_target, str(parent / "sitecustomize.py")])
+
+
+def test_a_target_shadowing_pytest_is_an_evidence_gap(tmp_path):
+    """目標的 pytest.py 自己寫出全部通過的 JUnit 報告；判定不可以是 READY_TO_SHIP，並且要說出原因。
+    The target's pytest.py writes an all-passed JUnit report itself; the verdict must not be READY_TO_SHIP, and the
+    reason must say why."""
+    from vibeharness.core.harness import VibeHarnessCommander
+
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "app.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    (target / "pytest.py").write_text(
+        "import sys\n"
+        "junit = next(a.split('=', 1)[1] for a in sys.argv if a.startswith('--junitxml='))\n"
+        "open(junit, 'w').write('<testsuites><testsuite name=\"pytest\" tests=\"0\"></testsuite></testsuites>')\n",
+        encoding="utf-8")
+    commander = VibeHarnessCommander(execution_mode="mock")
+    summary = commander.run_full_pipeline(str(target), output_report_path=str(tmp_path / "r.md"))
+    assert summary.overall_status != "READY_TO_SHIP"
+    assert any("named like the test runner's" in reason and "pytest.py" in reason
+               for reason in summary.inconclusive_reasons)
+
+
+# --- 目標自己拋出的 AssertionError 不是突破（#183 第 10 項） ------------------------------------------
+# --- An AssertionError the target raised itself is not a Breach (#183 item 10) -----------------------
+
+def test_a_targets_own_assert_validation_is_not_a_breach(tmp_path):
+    """目標以 `assert` 驗證輸入；黑箱測試預期 ValueError，結果得到目標的 AssertionError：目標拒絕了輸入，不是被攻破。
+    The target validates input with `assert`; the black-box test expects ValueError and gets the target's
+    AssertionError: the target refused the input, it was not breached."""
+    (tmp_path / "bank.py").write_text(
+        "def withdraw(amount):\n    assert amount > 0, 'amount must be positive'\n    return amount\n", encoding="utf-8")
+    test = _test("BB-T-01", "import pytest\nfrom bank import withdraw\n\n"
+                            "def test_negative_withdrawal_is_rejected():\n"
+                            "    with pytest.raises(ValueError):\n        withdraw(-5)\n")
+    result = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60)).execute_test_suite(
+        [test], working_dir=str(tmp_path)).results[0]
+    assert result.status == TestStatus.FAILED, result.failure_reason
+    assert result.is_security_exploit_confirmed is False
+
+
+def test_the_tests_own_assertion_is_still_a_breach(tmp_path):
+    (tmp_path / "bank.py").write_text("def withdraw(amount):\n    return amount\n", encoding="utf-8")
+    test = _test("BB-T-01", "from bank import withdraw\n\n"
+                            "def test_negative_withdrawal_is_rejected():\n    assert withdraw(-5) is None\n")
+    result = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60)).execute_test_suite(
+        [test], working_dir=str(tmp_path)).results[0]
+    assert result.is_security_exploit_confirmed is True
+
+
+@pytest.mark.parametrize("frame, breach", [
+    ("/srv/app/bank.py:2: AssertionError", False),
+    ("/tmp/vibe_sandbox_x/test_vh_001.py:5: AssertionError", True),
+    ("/usr/lib/python3/site-packages/numpy/testing/_private/utils.py:9: AssertionError", True),
+])
+def test_breach_attribution_follows_the_innermost_python_frame(frame, breach):
+    details = f"def test_a():\n>       check()\n\n{frame}"
+    assert _attributed("AssertionError: no", details, "blackbox_security").is_security_exploit_confirmed is breach
+
+
+@pytest.mark.parametrize("frame, breach", [
+    ("    at withdraw (file:///srv/app/bank.mjs:2:3)", False),
+    ("    at TestContext.<anonymous> (file:///tmp/run/test_vh_001.mjs:5:10)", True),
+    ("    at Proxy.assertEqual (file:///srv/app/node_modules/chai/lib/assert.js:9:3)", True),
+])
+def test_breach_attribution_follows_the_innermost_js_frame(frame, breach):
+    test = GeneratedTest(test_id="T", test_type="blackbox_security", target_component="m", title="t",
+                         code="test('a', () => { assert.ok(1); });", rationale="", expected_outcome="",
+                         language="javascript")
+    case = {"name": "a", "time": 0.0, "outcome": "failure", "message": "x",
+            "details": f"AssertionError [ERR_ASSERTION]: no\n{frame}\n", "stdout": "", "stderr": ""}
+    assert attribute(test, "T", [case]).is_security_exploit_confirmed is breach
+
+
+# --- 本機沙盒限制行程數（#183 第 18 項） ---------------------------------------------------------
+# --- The local sandbox caps the process count (#183 item 18) ----------------------------------------
+
+@linux_only
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="RLIMIT_NPROC does not bind root")
+def test_the_local_sandbox_caps_the_process_count():
+    from vibeharness.core.sandbox import SANDBOX_PROCESS_HEADROOM, _user_process_count
+
+    bound = _user_process_count() + SANDBOX_PROCESS_HEADROOM + 256
+    code = ("import resource\n\ndef test_nproc():\n"
+            "    soft = resource.getrlimit(resource.RLIMIT_NPROC)[0]\n"
+            f"    assert soft != resource.RLIM_INFINITY and soft <= {bound}, soft\n")
+    run = LocalSubprocessSandbox(timeout_seconds=60).execute_pytest_files({"test_vh_nproc.py": code})
+    assert run.exit_code == 0, run.stdout

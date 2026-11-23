@@ -23,7 +23,7 @@ from vibeharness.core.models import (
     CodeSymbol, GeneratedTest, MutantResult, MutationReport, ReviewFinding, TestExecutionResult, TestStatus,
 )
 from vibeharness.core.sandbox import rewrite_host_paths
-from vibeharness.core.settings import DEFAULT_MAX_COPY_MB as DEFAULT_MAX_COPY_MB, SKIPPED_DIRS
+from vibeharness.core.settings import DEFAULT_MAX_COPY_MB as DEFAULT_MAX_COPY_MB, SKIPPED_DIRS, is_unsafe_file
 
 logger = logging.getLogger("VibeHarness.Mutation")
 
@@ -201,28 +201,36 @@ def _write(path: str, text: str) -> None:
         f.write(text)
 
 
-def _copy_ignore(directory: str, names: List[str]) -> List[str]:
-    """複製時略過的項目：與符號擷取相同的目錄（`SKIPPED_DIRS`、點開頭）、指向目錄的符號連結、位元組碼。
-    指向目錄的連結若被展開，可能複製到目標以外的內容，甚至無限迴圈。
-    What the copy leaves out: the directories symbol extraction skips (`SKIPPED_DIRS`, dot-names), symlinks
-    to directories and bytecode. A followed directory link could pull in content outside the target or loop forever."""
-    skipped = []
-    for name in names:
-        path = os.path.join(directory, name)
-        if os.path.isdir(path):
-            if name.startswith(".") or name in SKIPPED_DIRS or os.path.islink(path):
+def _copy_ignore(real_root: str) -> Callable[[str, List[str]], List[str]]:
+    """複製 `real_root`（已 realpath 的目標）時略過的項目：與符號擷取相同的目錄（`SKIPPED_DIRS`、點開頭）、指向目錄的
+    符號連結、位元組碼，以及目錄走訪也不讀的檔案（`is_unsafe_file`：不是一般檔案，或解析到目標之外的連結）。
+    指向目錄的連結若被展開，可能複製到目標以外的內容，甚至無限迴圈；`leak -> /proc/self/environ` 會把 harness 的
+    環境（金鑰）複製進沙盒，`-> /dev/zero` 會寫滿磁碟，FIFO 會讓 copytree 失敗。
+    What copying `real_root` (the realpath'd target) leaves out: the directories symbol extraction skips
+    (`SKIPPED_DIRS`, dot-names), symlinks to directories, bytecode, and the files the directory walk does not read
+    either (`is_unsafe_file`: not a regular file, or a link resolving outside the target). A followed directory link
+    could pull in content outside the target or loop forever; `leak -> /proc/self/environ` would copy the harness's
+    environment (its keys) into the sandbox, `-> /dev/zero` would fill the disk and a FIFO would make copytree fail."""
+    def ignore(directory: str, names: List[str]) -> List[str]:
+        skipped = []
+        for name in names:
+            path = os.path.join(directory, name)
+            if os.path.isdir(path):
+                if name.startswith(".") or name in SKIPPED_DIRS or os.path.islink(path):
+                    skipped.append(name)
+            elif name.endswith((".pyc", ".pyo")) or is_unsafe_file(path, real_root):
                 skipped.append(name)
-        elif name.endswith((".pyc", ".pyo")):
-            skipped.append(name)
-    return skipped
+        return skipped
+    return ignore
 
 
 def _copy_size(root: str, limit: int) -> int:
     """依 `_copy_ignore` 的規則估計複本大小（位元組）；超過 `limit` 就提早停止並回傳目前累計值。
     The size (bytes) the copy would have under `_copy_ignore`; stops early once it passes `limit`."""
     total = 0
+    ignore = _copy_ignore(os.path.realpath(root))
     for directory, dirs, files in os.walk(root):
-        ignored = set(_copy_ignore(directory, dirs + files))
+        ignored = set(ignore(directory, dirs + files))
         dirs[:] = [d for d in dirs if d not in ignored]
         for name in files:
             if name in ignored:
@@ -293,7 +301,7 @@ def run_mutation_testing(
                             truncated=candidates > len(selected))
     try:
         copy_dir = os.path.join(scratch, os.path.basename(root.rstrip("/\\")) or "target")
-        shutil.copytree(root, copy_dir, ignore=_copy_ignore)
+        shutil.copytree(root, copy_dir, ignore=_copy_ignore(os.path.realpath(root)))
         rewritten = [t.model_copy(update={"code": rewrite_host_paths(t.code, [(root, copy_dir)])}) for t in usable]
         # 先確認測試在未變異的複本上全部通過：否則複本或路徑改寫有問題，之後的「殺死」都不可信
         # First confirm the tests all pass on the unmutated copy: otherwise the copy or the path rewrite is off

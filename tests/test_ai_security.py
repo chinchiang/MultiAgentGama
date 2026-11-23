@@ -296,6 +296,73 @@ def test_ordinary_generated_test_still_passes_the_gate():
     assert check_test_code("def test_x():\n    assert 'install' != 'pip'\n") == (True, None)
 
 
+# 檢查讀不懂的寫法以「無法檢查」拒絕，而不是放行（#183 第 9 項，CODING_STANDARDS 第 8 條）
+# Forms the check cannot read are refused as "could not check", not let through (#183 item 9, CODING_STANDARDS rule 8)
+@pytest.mark.parametrize("call", [
+    "subprocess.run([sys.executable, '-m', 'p' + 'ip', 'install', 'x'])",
+    "subprocess.check_call(command)",
+    "sp.Popen(f'{tool} install x', shell=True)",
+    "run(cmd)",
+    "os.system(' '.join(parts))",
+    "asyncio.create_subprocess_shell(cmd)",
+    "__import__('p' + 'ip')",
+    "importlib.import_module(name)",
+    "exec(source)",
+    "getattr(os, 'sys' + 'tem')('ls')",
+    "vars(os)['system']('ls')",
+])
+def test_generated_tests_the_install_check_cannot_read_are_refused(call):
+    code = ("import asyncio, importlib, os, subprocess, sys\nimport subprocess as sp\nfrom subprocess import run\n\n"
+            f"def test_x():\n    {call}\n    assert True\n")
+    ok, problem = check_test_code(code)
+    assert not ok and "could not check whether the test installs packages" in problem
+
+
+@pytest.mark.parametrize("call", [
+    "asyncio.run(main())",
+    "re.compile(pattern)",
+    "mock.call(1)",
+    "getattr(response, 'status_code')",
+    "os.path.join(a, b)",
+])
+def test_ordinary_calls_still_pass_the_install_check(call):
+    code = f"import asyncio, os, re, sys\nfrom unittest import mock\n\ndef test_x():\n    {call}\n    assert True\n"
+    assert check_test_code(code) == (True, None)
+
+
+# 粗規則：啟動行程、動態執行、把模組物件當值傳遞，不論命令是不是字面值都以「無法檢查」拒絕（#183 審查第 2 輪）
+# The coarse rule: starting a process, dynamic execution and passing a module object around as a value are refused as
+# "could not check", literal command or not (#183 review round 2)
+@pytest.mark.parametrize("code", [
+    "import subprocess, sys\n\ndef test_x():\n    subprocess.run([sys.executable, '-c', 'print(1)'])\n    assert True\n",
+    "import subprocess\n\ndef test_x():\n    r = subprocess.run\n    r(['ls'])\n    assert True\n",
+    "import os\n\ndef test_x():\n    r = os.system\n    r('ls')\n    assert True\n",
+    "from subprocess import *\n\ndef test_x():\n    run(['ls'])\n    assert True\n",
+    "import builtins\n\ndef test_x():\n    builtins.exec('x = 1')\n    assert True\n",
+    "import importlib\n\ndef test_x():\n    importlib.__import__(name)\n    assert True\n",
+    "import runpy\n\ndef test_x():\n    runpy.run_module(name)\n    assert True\n",
+    "def test_x():\n    e = eval\n    assert e('1')\n",
+    "import os\n\ndef test_x():\n    x = os\n    assert x\n",
+    "import os\n\ndef test_x():\n    assert helper(os)\n",
+    "import app\n\ndef test_x():\n    app.os.system('ls')\n    assert True\n",
+    "import sys\n\ndef test_x():\n    sys.modules['os'].system('ls')\n    assert True\n",
+    "import app\n\ndef test_x():\n    getattr(app, 'os').system('ls')\n    assert True\n",
+])
+def test_the_coarse_rule_refuses_processes_dynamic_execution_and_module_values(code):
+    ok, problem = check_test_code(code)
+    assert not ok and "could not check whether the test installs packages" in problem
+
+
+def test_the_coarse_rule_keeps_loading_the_target_from_literals():
+    """提示詞與探針用字面值以 importlib 載入目標：照常放行 ／ The prompts and probes load the target with importlib from
+    literals: still accepted."""
+    code = ("import importlib\nimport importlib.util\nmod = importlib.import_module('shop.app')\n"
+            "_spec = importlib.util.spec_from_file_location('vh', '/srv/app/app.py')\n"
+            "_target = importlib.util.module_from_spec(_spec)\n_spec.loader.exec_module(_target)\n\n"
+            "def test_x():\n    assert getattr(_target, 'f') and mod\n")
+    assert check_test_code(code) == (True, None)
+
+
 # --- 確定性的 AI 安全規則 ---------------------------------------------------------------------------
 # --- Deterministic AI-security rules ------------------------------------------------------------------
 
@@ -699,3 +766,34 @@ def test_chinese_reviewer_directed_injection_is_detected(text):
 ])
 def test_ordinary_chinese_text_is_not_flagged(text):
     assert find_injection_markers(text) == []
+
+
+def test_the_per_file_cap_keeps_the_most_severe_hits(tmp_path, caplog):
+    """每檔上限先留最嚴重的命中：前面 25 行的 MEDIUM 不能把後面的 HIGH 擠掉，被略過的筆數要記在警告裡（#183 第 11 項）。
+    The per-file cap keeps the most severe hits first: 25 earlier MEDIUM lines must not push a later HIGH out, and the
+    dropped count is logged (#183 item 11)."""
+    code = "".join(f"x{i} = 'a\u200bb'\n" for i in range(25)) + "y = 'a\u202eb'\n"
+    _, hits = _scan(tmp_path, code)
+    vh008 = [h for h in hits if h.rule_id == "VH-AI-008"]
+    assert len(vh008) == 20
+    assert any(h.severity == FindingSeverity.HIGH and h.line_number == 26 for h in vh008)
+    assert [h.line_number for h in hits] == sorted(h.line_number for h in hits)
+    assert "6 more are not" in caplog.text
+
+
+@pytest.mark.parametrize("call", [
+    "AutoModel.from_pretrained('acme/m', revision='abc', trust_remote_code='yes')",
+    "AutoModel.from_pretrained('acme/m', revision='abc', trust_remote_code=1)",
+    "AutoModel.from_pretrained('acme/m', revision='abc', **{'trust_remote_code': True})",
+])
+def test_trust_remote_code_is_caught_in_every_truthy_spelling(tmp_path, call):
+    """`trust_remote_code` 依 Python 真值判斷，字面值字典展開的寫法也算（#183 第 20 項）。
+    `trust_remote_code` is judged by Python truthiness, the literal-dict unpacking included (#183 item 20)."""
+    _, hits = _scan(tmp_path, f"from transformers import AutoModel\n\ndef load():\n    return {call}\n")
+    assert [h.rule_id for h in hits] == ["VH-AI-001"]
+
+
+def test_trust_remote_code_false_is_not_a_hit(tmp_path):
+    _, hits = _scan(tmp_path, "from transformers import AutoModel\n\ndef load():\n"
+                              "    return AutoModel.from_pretrained('acme/m', revision='abc', **{'trust_remote_code': False})\n")
+    assert hits == []

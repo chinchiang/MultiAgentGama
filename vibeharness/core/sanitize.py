@@ -150,7 +150,8 @@ def find_invisible(text: str) -> List[Tuple[int, str, str]]:
     if text.isascii():
         return []
     hits: List[Tuple[int, str, str]] = []
-    for lineno, line in enumerate(text.splitlines(), start=1):
+    # 行號只依 "\n" 計算，與符號擷取和 ast 一致 ／ Line numbers count "\n" only, like symbol extraction and ast
+    for lineno, line in enumerate(text.split("\n"), start=1):
         if lineno == 1 and line.startswith("\ufeff"):
             line = line[1:]
         if line.isascii() or not _INVISIBLE_RE.search(line):
@@ -178,8 +179,8 @@ def find_invisible(text: str) -> List[Tuple[int, str, str]]:
 # character" look-behind instead of \b, so a long "eyJ-eyJ-..." run has a single starting point, and a
 # private-key block never runs past the next BEGIN line
 _SECRET_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
-    ("private-key", re.compile(r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----(?:(?!-----BEGIN )[\s\S])*?"
-                               r"-----END (?:[A-Z]+ )?PRIVATE KEY-----")),
+    ("private-key", re.compile(r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY(?: BLOCK)?-----(?:(?!-----BEGIN )[\s\S])*?"
+                               r"-----END (?:[A-Z]+ )?PRIVATE KEY(?: BLOCK)?-----")),
     ("anthropic-key", re.compile(r"(?<![A-Za-z0-9_\-])sk-ant-[A-Za-z0-9_\-]{20,}")),
     ("openai-key", re.compile(r"(?<![A-Za-z0-9_\-])sk-(?:proj-|svcacct-)?[A-Za-z0-9_\-]{32,}")),
     ("aws-access-key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
@@ -195,6 +196,31 @@ _SECRET_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     ("aws-secret-key", re.compile(r"(?i)(?:secret_access_key|secretaccesskey)[\"']?\s*[:=]\s*[\"']?"
                                   r"(?P<v>[A-Za-z0-9/+=]{40})(?![A-Za-z0-9/+=])")),
     ("azure-storage-key", re.compile(r"(?i)(?<=AccountKey=)[A-Za-z0-9+/]{86}==")),
+    ("gitlab-token", re.compile(r"(?<![A-Za-z0-9_\-])glpat-[A-Za-z0-9_\-]{20,}")),
+    ("npm-token", re.compile(r"\bnpm_[A-Za-z0-9]{36}\b")),
+    ("sendgrid-key", re.compile(r"(?<![A-Za-z0-9_\-])SG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}(?![A-Za-z0-9_\-])")),
+    ("slack-webhook", re.compile(r"https://hooks\.slack\.com/services/T[A-Z0-9]{6,}/B[A-Z0-9]{6,}/[A-Za-z0-9]{16,}")),
+]
+
+# 只遮蔽、不回報（不成為 VH-AI-007 命中）的寬鬆形狀：誤判的代價只是模型少看一個值，而漏遮的代價是憑證送到外部供應商。
+# 回報維持上面低誤判的形狀。每條樣式從固定的關鍵字或前綴開始、數量都有上限，在惡意輸入上仍是線性時間
+# Broad shapes that are redacted but not reported (they never become VH-AI-007 hits): a false match only costs the
+# model one value, while a miss sends a credential to an external provider. Reporting keeps the low-false-positive
+# shapes above. Every pattern starts at a fixed keyword or prefix with bounded repeats, so it stays linear on
+# adversarial input
+_REDACT_ONLY_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
+    # 名稱像憑證的變數或鍵，被指定為字串字面值（`DB_PASSWORD = "..."`、`"api_key": "..."`）：只遮蔽值
+    # A credential-like variable or key assigned a string literal (`DB_PASSWORD = "..."`, `"api_key": "..."`): only
+    # the value is redacted
+    ("credential-assignment", re.compile(
+        r"(?i)(?:password|passwd|passphrase|pwd|secret|token|api_?key|access_?key|private_?key|credential|auth)"
+        r"[\w.\-]{0,40}[\"']?\s{0,5}(?::\s{0,5}[A-Za-z_][\w\[\]., ]{0,40}?\s{0,5})?[:=]\s{0,5}[\"']"
+        r"(?P<v>[^\"'\s]{8,500})[\"']")),
+    ("authorization-header", re.compile(r"(?i)(?<![A-Za-z0-9])(?:Bearer|Basic)\s{1,5}(?P<v>[A-Za-z0-9._~+/\-]{16,2000}=*)")),
+    ("api-key", re.compile(r"(?<![A-Za-z0-9_\-])sk-[A-Za-z0-9_\-]{16,31}(?![A-Za-z0-9_\-])")),
+    # URL 密碼含有未編碼的 "/"（`postgres://admin:ab/cd@host`）：上面逐段掃描的規則在 "/" 停下
+    # A URL password holding an unencoded "/" (`postgres://admin:ab/cd@host`): the per-segment scan above stops at "/"
+    ("url-credentials", re.compile(r"://[^\s/:@\"'`?#<>]{1,200}:(?P<v>[^\s@\"'`?#<>]{1,200})@")),
 ]
 
 # URL 中的 [user]:password@（資料庫 DSN、訊息佇列 URL，含 redis://:pass@ 這種空使用者名稱）不用單一樣式比對，
@@ -420,7 +446,15 @@ def redact_secrets(text: str) -> str:
         if spans:
             text = _replace_spans(text, spans, f"<REDACTED:{kind}>")
     spans = [(cred.start, cred.end) for cred in _url_credentials(text)]
-    return _replace_spans(text, spans, "<REDACTED:url-credentials>") if spans else text
+    text = _replace_spans(text, spans, "<REDACTED:url-credentials>") if spans else text
+    for kind, pattern in _REDACT_ONLY_PATTERNS:
+        spans = [(m.start("v"), m.end("v")) if "v" in pattern.groupindex else (m.start(), m.end())
+                 for m in pattern.finditer(text)]
+        # 已經遮蔽過的值（<REDACTED:…>）不再遮一次 ／ a value already redacted (<REDACTED:...>) is not redacted again
+        spans = [(a, b) for a, b in spans if not text.startswith("<REDACTED:", a)]
+        if spans:
+            text = _replace_spans(text, spans, f"<REDACTED:{kind}>")
+    return text
 
 
 # 對象是 AI 審查者或稽核者、而非人類讀者的指令：目標程式碼
@@ -1068,7 +1102,8 @@ def _hot_lines(text: str, lines: List[str]) -> Dict[int, _Roles]:
     {line index: the trigger and required words of that line}, only for lines holding any such word. Words are
     scanned once over the whole text and a hit jumps straight to the next line start, so the loop runs at most
     once per line holding a word."""
-    starts = [0, *accumulate(len(ln) for ln in text.splitlines(keepends=True))]
+    # 與呼叫端的 lines 一樣只依 "\n" 切行 ／ Split on "\n" only, like the caller's lines
+    starts = [0, *accumulate(len(ln) + 1 for ln in text.split("\n"))]
     hot: Dict[int, _Roles] = {}
     # 重複的行（大量相同的行是常見的惡意輸入）只分析一次 ／ repeated lines (a common adversarial input) are analysed once
     seen: Dict[str, _Roles] = {}
@@ -1102,7 +1137,8 @@ def find_injection_markers(text: str) -> List[Tuple[int, str]]:
     clean = strip_invisible(text)
     if not clean.isascii():
         clean = unicodedata.normalize("NFKC", clean)
-    raw = clean.splitlines()
+    # 行號只依 "\n" 計算（見 find_invisible） ／ Line numbers count "\n" only (see find_invisible)
+    raw = clean.split("\n")
     hot = _hot_lines(clean, raw)
     normalized: Dict[int, str] = {}
     alone_seen: Dict[Tuple[str, FrozenSet[int], int], Optional[str]] = {}
@@ -1161,13 +1197,30 @@ UNTRUSTED_CODE_POLICY = (
 # Any opening/closing variant of a channel tag: attributes, inner whitespace ("< /tag >"), any case, and a truncated
 # tag without its closing ">"; the tags of both channels are neutralized inside both channels. Attributes only run
 # to the next "<" or ">", so a long run of repeated truncated tags or of whitespace stays linear
-_CHANNEL_TAG_RE = re.compile(r"<\s*(?:/\s*)?untrusted_(?:target_code|model_output)\b[^<>]*>?", re.I)
+# 通道標籤與它的變形：全形或小寫的角括號與斜線（＜／…＞）、底線換成連字號、空白或全形底線（untrusted-target-code）。
+# 不可見字元在比對前就已經剔除（見 _neutralized），所以 `untrusted_\u200btarget_code` 也對得上
+# The channel tags and their variants: fullwidth or small angle brackets and slashes (＜／...＞), the underscores as
+# hyphens, spaces or fullwidth underscores (untrusted-target-code). Invisible characters are stripped before matching
+# (see _neutralized), so `untrusted_\u200btarget_code` matches too
+_TAG_SEP = r"[_\-\s\uff3f\uff0d]*"
+_CHANNEL_TAG_RE = re.compile(
+    r"[<\uff1c\ufe64]\s*(?:[/\uff0f]\s*)?untrusted" + _TAG_SEP + r"(?:target" + _TAG_SEP + r"code|model" + _TAG_SEP
+    + r"output)\b[^<>\uff1c\uff1e\ufe64\ufe65]*[>\uff1e\ufe65]?", re.I)
+
+
+def _neutralized(content: str) -> str:
+    """通道內容：先剔除不可見字元（模型寫的內容不像目標程式碼那樣事先經過 prepare_untrusted_code），再中和偽造的
+    通道標籤，讓夾帶零寬字元或全形字元的標籤也逃不出通道。
+    A channel's content: invisible characters stripped first (model-written content, unlike target code, has not
+    been through prepare_untrusted_code), then forged channel tags neutralized, so a tag smuggling zero-width or
+    fullwidth characters cannot leave the channel either."""
+    return _CHANNEL_TAG_RE.sub("<!-- tag removed -->", strip_invisible(content))
 
 
 def untrusted_block(content: str) -> str:
     """把目標程式碼包進標示來源的通道；其中偽造的開頭／結尾標籤會被中和。
     Wraps target code in the provenance-labeled channel; a forged opening/closing tag inside it is neutralized."""
-    neutralized = _CHANNEL_TAG_RE.sub("<!-- tag removed -->", content)
+    neutralized = _neutralized(content)
     return f"{UNTRUSTED_CODE_OPEN}\n{neutralized}\n{UNTRUSTED_CODE_CLOSE}"
 
 
@@ -1189,7 +1242,7 @@ def untrusted_model_block(content: str) -> str:
     """把模型撰寫的文字包進 <untrusted_model_output> 通道；其中偽造的任一種通道標籤都會被中和。
     Wraps model-written text in the <untrusted_model_output> channel; a forged tag of either channel inside it
     is neutralized."""
-    neutralized = _CHANNEL_TAG_RE.sub("<!-- tag removed -->", content)
+    neutralized = _neutralized(content)
     return f"{UNTRUSTED_MODEL_OPEN}\n{neutralized}\n{UNTRUSTED_MODEL_CLOSE}"
 
 
@@ -1205,6 +1258,17 @@ def clean_model_text(text: str) -> str:
     if not text:
         return text
     return strip_invisible(_CONTROL_RE.sub("", _ANSI_RE.sub("", text.replace("\r\n", "\n"))))
+
+
+def log_safe(text: str) -> str:
+    """寫進主控台或日誌的一行文字：先照 clean_model_text 移除跳脫序列、控制字元與不可見字元，再把換行寫成 `\\n`，
+    所以模型文字不能在終端機裡注入 ANSI／OSC 序列，也不能另起一行偽造 GitHub Actions 的 workflow command（`::error::`）。
+    One line of text for the console or a log: escapes, control and invisible characters removed as clean_model_text
+    does, then line breaks written as `\\n`, so model text can neither inject ANSI / OSC sequences into a terminal nor
+    start a new line forging a GitHub Actions workflow command (`::error::`)."""
+    if not text:
+        return text
+    return clean_model_text(text).replace("\r", "\\r").replace("\n", "\\n")
 
 
 def sanitize_prompt_field(text: str) -> str:

@@ -282,7 +282,8 @@ def class_skeleton(source: str) -> str:
     cls = next((n for n in tree.body if isinstance(n, ast.ClassDef)), None)
     if cls is None:
         return source
-    lines = dedented.splitlines()
+    # 與 ast 的行號一致：只依 "\n" 切行 ／ Matches ast's line numbers: split on "\n" only
+    lines = dedented.split("\n")
     # 由下往上替換，讓前面的行號維持有效
     # Replace bottom-up so earlier line numbers stay valid
     methods = [n for n in cls.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]

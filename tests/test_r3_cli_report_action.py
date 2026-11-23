@@ -131,7 +131,11 @@ def test_an_explicit_config_may_set_sensitive_keys_but_warns_about_relative_exec
     """--config 明確指定的檔案可以設定敏感鍵（使用者信任它），但相對路徑的可執行檔會印出警告。
     A file passed with --config may set sensitive keys (the user trusts it), but a relative executable path warns."""
     config = tmp_path / "trusted.yaml"
-    config.write_text("global:\n  node_bin: ./tools/node\n  cache_dir: " + str(tmp_path / "c") + "\n", encoding="utf-8")
+    # 快取目錄不可在目標（這裡是目前目錄 tmp_path）之內（#183 第 2 項），所以放在它旁邊
+    # The cache directory may not be inside the target (here the current directory, tmp_path; #183 item 2), so it
+    # sits next to it
+    config.write_text("global:\n  node_bin: ./tools/node\n  cache_dir: " + str(tmp_path.parent / f"{tmp_path.name}-c")
+                      + "\n", encoding="utf-8")
     (tmp_path / "vibeharness.yaml").write_text("global:\n  node_bin: ./evil\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     seen = _capture_run(monkeypatch)
@@ -203,6 +207,7 @@ def test_summary_json_reports_the_verdict_and_whether_every_call_was_simulated(m
     data = json.loads(out.read_text(encoding="utf-8"))
     assert data["exit_code"] == code and data["verdict"] == Verdict.from_exit_code(code)
     assert data["execution_mode"] == "mock" and data["all_simulated"] is True
+    assert data["sandbox_provider"] == "local_subprocess"
     assert data["model_calls"]["total"] == data["model_calls"]["simulated"] > 0 and data["model_calls"]["live"] == 0
     # 6. 沒有套用跨模型驗證：證據缺口說「未經驗證」，不是「已確認」
     # 6. Cross-model verification was not applied: the evidence gap says "unverified", not "confirmed"
@@ -450,6 +455,23 @@ def test_runner_warns_when_every_model_call_was_simulated_in_hybrid_mode(monkeyp
 def test_runner_does_not_warn_about_simulation_in_mock_mode(monkeypatch, tmp_path, capsys):
     """mock 模式本來就全部模擬，不發出模擬警告 ／ Mock mode is all simulated by design: no simulation warning."""
     code, _, _ = _run_runner(monkeypatch, tmp_path, 0, {"execution_mode": "mock", "all_simulated": True})
+    assert code == 0 and "::warning::" not in capsys.readouterr().out
+
+
+def test_runner_warns_when_the_tests_ran_in_the_local_subprocess_sandbox(monkeypatch, tmp_path, capsys):
+    """local_subprocess 不是隔離邊界：Action 跑的是 PR 的程式碼，所以發出 ::warning::（#183 第 23 項）。
+    local_subprocess is not an isolation boundary: the Action runs a PR's code, so it emits a ::warning:: (#183
+    item 23)."""
+    summary = {"execution_mode": "hybrid", "all_simulated": False, "sandbox_provider": "local_subprocess"}
+    code, _, _ = _run_runner(monkeypatch, tmp_path, 0, summary)
+    assert code == 0
+    warnings = [line for line in capsys.readouterr().out.splitlines() if line.startswith("::warning::")]
+    assert len(warnings) == 1 and "not an isolation boundary" in warnings[0] and "sandbox_provider: docker" in warnings[0]
+
+
+def test_runner_does_not_warn_about_the_docker_sandbox(monkeypatch, tmp_path, capsys):
+    summary = {"execution_mode": "hybrid", "all_simulated": False, "sandbox_provider": "docker"}
+    code, _, _ = _run_runner(monkeypatch, tmp_path, 0, summary)
     assert code == 0 and "::warning::" not in capsys.readouterr().out
 
 

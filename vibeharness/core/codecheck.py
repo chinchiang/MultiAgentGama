@@ -1,6 +1,6 @@
 import ast
 import re
-from typing import List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 from vibeharness.core.js_lex import mask_js_source, match_delim
 
@@ -95,6 +95,10 @@ def _parse_and_check_python(code: str) -> Tuple[Optional[ast.Module], Optional[s
     installer = _package_install_call(tree)
     if installer:
         return None, f"test installs packages at run time ({installer}); refused (slopsquatting / OWASP LLM04:2026)"
+    unreadable = _unreadable_call(tree)
+    if unreadable:
+        return None, (f"could not check whether the test installs packages: {unreadable}; refused "
+                      "(slopsquatting / OWASP LLM04:2026)")
     tests = _top_level_test_nodes(tree)
     if not tests:
         return None, "no top-level test_ function defined"
@@ -125,6 +129,125 @@ _INSTALLER_RE = re.compile(r"\b(?:pip3?|uv|poetry|conda|mamba|npm|pnpm|yarn|bun|
 _INSTALL_VERB_RE = re.compile(r"\b(?:install|add)\b")
 
 
+def _call_name(node: ast.Call) -> Optional[str]:
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+# 粗規則（CODING_STANDARDS 第 8 條）：檢查只接受它完整讀得懂的形式。啟動行程、動態執行、把模組物件當值傳遞，
+# 一律算「無法檢查」而拒絕，不論命令是不是字面值：逐一比對已知拼法的做法連兩輪審查都被繞過
+# The coarse rule (CODING_STANDARDS rule 8): the check accepts only forms it fully reads. Starting a process, dynamic
+# execution and passing a module object around as a value are all refused as "could not check", whether or not the
+# command is a literal: matching known spellings was bypassed in two review rounds in a row
+#
+# 匯入就拒絕的模組：啟動行程、動態執行，或直接取得行程與直譯器能力 ／ Modules refused on import: they start
+# processes, execute code dynamically, or reach process and interpreter capabilities directly
+_REFUSED_MODULES = frozenset({
+    "subprocess", "pty", "multiprocessing", "concurrent", "runpy", "ctypes", "cffi", "builtins", "code", "codeop",
+    "pip", "ensurepip", "_posixsubprocess", "posix", "nt", "signal", "pdb", "imp", "zipimport", "pkgutil",
+})
+# 屬於「能力模組」的名稱：它們的模組物件不能當值傳遞，也不能從其他物件的屬性取得（`app.os.system`）
+# "Capability modules": their module objects may not be passed around as values, nor reached as an attribute of
+# another object (`app.os.system`)
+_CAPABILITY_MODULES = frozenset({"os", "sys", "importlib", "asyncio", "shutil", "io", "socket", *_REFUSED_MODULES})
+# 從其他物件的屬性取得就拒絕的模組名稱：只收不會和常見屬性撞名的（`.code`、`.io`、`.signal` 是常見的屬性名稱）
+# Module names refused when reached as another object's attribute: only those that do not collide with common
+# attribute names (`.code`, `.io`, `.signal` are common attributes)
+_REACHABLE_MODULE_ATTRS = frozenset({"os", "sys", "subprocess", "importlib", "builtins", "ctypes", "pty", "runpy",
+                                     "shutil", "multiprocessing", "__builtins__"})
+# os 與 asyncio 中啟動行程的屬性（不只呼叫：`r = os.system` 也算） ／ Process-starting attributes of os and asyncio
+# (not only calls: `r = os.system` counts too)
+_PROCESS_ATTRS = frozenset({
+    "system", "popen", "fork", "forkpty", "startfile", "posix_spawn", "posix_spawnp", "execl", "execle", "execlp",
+    "execlpe", "execv", "execve", "execvp", "execvpe", "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv",
+    "spawnve", "spawnvp", "spawnvpe", "create_subprocess_exec", "create_subprocess_shell", "modules",
+})
+# 出現就拒絕的內建名稱（呼叫或當值都算） ／ Builtins refused on any reference (a call or a value)
+_DYNAMIC_BUILTINS = frozenset({"eval", "exec", "compile", "__import__", "globals", "locals", "vars", "breakpoint",
+                               "__builtins__", "open_code"})
+_ATTR_BUILTINS = frozenset({"getattr", "setattr", "delattr", "hasattr"})
+# importlib 唯一接受的用法：以字面值載入目標模組（提示詞與探針都這樣寫）
+# The only importlib uses accepted: loading the target module from literals (as the prompts and probes write it)
+_IMPORTLIB_LITERAL_CALLS = frozenset({"import_module", "spec_from_file_location"})
+_IMPORTLIB_ALLOWED_ATTRS = frozenset({"util", "import_module", "spec_from_file_location", "module_from_spec",
+                                      "loader", "exec_module"})
+
+
+def _literal_str(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and isinstance(node.value, str)
+
+
+def _unreadable_call(tree: ast.Module) -> Optional[str]:
+    """檢查讀不懂、因此無法確認不會安裝套件的寫法，否則為 None。依粗規則拒絕：匯入 `_REFUSED_MODULES`、
+    `from X import *`、取用 os／asyncio 啟動行程的屬性、參考 `_DYNAMIC_BUILTINS`、屬性名稱不是字面值（或是能力模組名稱）
+    的 getattr 一類、字面值以外的 importlib 用法、把能力模組物件當值使用（`x = os`、`f(os)`），以及呼叫的對象是查表
+    結果（`handlers[k]()`）。這是品質閘門（擋下模型幻想出來的套件），不是隔離：隔離是沙盒的事。
+    A form the check cannot read, so cannot confirm installs nothing, or None. Refused by the coarse rule: importing
+    `_REFUSED_MODULES`, `from X import *`, using a process-starting attribute of os / asyncio, referencing
+    `_DYNAMIC_BUILTINS`, getattr and friends with a non-literal attribute name (or the name of a capability module),
+    importlib beyond loading from literals, using a capability module object as a value (`x = os`, `f(os)`), and a
+    call whose callee is a lookup (`handlers[k]()`). This is a quality gate (it stops packages a model hallucinated),
+    not isolation: isolation is the sandbox's job."""
+    modules: Dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                root = a.name.split(".")[0]
+                if root in _REFUSED_MODULES:
+                    return f"import of {root}"
+                if root in _CAPABILITY_MODULES:
+                    modules[a.asname or root] = root
+        elif isinstance(node, ast.ImportFrom):
+            root = (node.module or "").split(".")[0]
+            if any(a.name == "*" for a in node.names):
+                return f"from {node.module} import *"
+            if root in _REFUSED_MODULES:
+                return f"import from {root}"
+            if root in _CAPABILITY_MODULES:
+                for a in node.names:
+                    if a.name in _PROCESS_ATTRS or a.name in _CAPABILITY_MODULES or (
+                            root == "importlib" and a.name not in _IMPORTLIB_ALLOWED_ATTRS):
+                        return f"from {root} import {a.name}"
+    parents: Dict[int, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[id(child)] = node
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in _DYNAMIC_BUILTINS:
+            return f"{node.id} (dynamic execution)"
+        if isinstance(node, ast.Name) and node.id in modules and isinstance(node.ctx, ast.Load):
+            parent = parents.get(id(node))
+            if not (isinstance(parent, ast.Attribute) and parent.value is node):
+                return f"the module {node.id} used as a value"
+        if isinstance(node, ast.Attribute):
+            base = node.value.id if isinstance(node.value, ast.Name) else None
+            base_module = modules.get(base or "")
+            if node.attr in _PROCESS_ATTRS and base_module in ("os", "sys", "asyncio", None):
+                return f".{node.attr} (starts a process or reaches loaded modules)"
+            if node.attr in _REACHABLE_MODULE_ATTRS and base_module is None:
+                return f".{node.attr} (a module reached as an attribute)"
+            if base_module == "importlib" and node.attr not in _IMPORTLIB_ALLOWED_ATTRS:
+                return f"importlib.{node.attr}"
+        if not isinstance(node, ast.Call):
+            continue
+        func, name = node.func, _call_name(node)
+        if isinstance(func, ast.Name) and name in _ATTR_BUILTINS:
+            attr = node.args[1] if len(node.args) >= 2 else None
+            if not (isinstance(attr, ast.Constant) and isinstance(attr.value, str)) \
+                    or attr.value in _REACHABLE_MODULE_ATTRS or attr.value in _PROCESS_ATTRS:
+                return f"{name}() with an attribute name the check cannot read"
+        if name in _IMPORTLIB_LITERAL_CALLS and isinstance(func, ast.Attribute):
+            if not node.args or not all(_literal_str(a) for a in node.args):
+                return f"{name}() of a name the check cannot read"
+        if isinstance(func, (ast.Subscript, ast.Call)):
+            return "a call through a lookup the check cannot read"
+    return None
+
+
 def _package_install_call(tree: ast.Module) -> Optional[str]:
     """會安裝套件的呼叫（`pip install`、`subprocess.run([sys.executable, '-m', 'pip', 'install', ...])`、
     `pip.main(['install', ...])`），否則為 None。產生的程式碼不得拉取模型可能幻想出來的套件
@@ -139,6 +262,9 @@ def _package_install_call(tree: ast.Module) -> Optional[str]:
             return f"from {node.module} import ..."
         if not isinstance(node, ast.Call):
             continue
+        if _call_name(node) in ("__import__", "import_module") and node.args and isinstance(node.args[0], ast.Constant) \
+                and str(node.args[0].value).split(".")[0] in ("pip", "ensurepip"):
+            return f"{_call_name(node)}({node.args[0].value!r})"
         words = " ".join(
             c.value for c in ast.walk(node) if isinstance(c, ast.Constant) and isinstance(c.value, str)
         ).lower()
@@ -215,6 +341,62 @@ _JS_ASSERT_RE = re.compile(r"\bassert\b\s*[.(]|\bexpect\s*\(|\bthrow\b|\.(?:thro
 _JS_INSTALL_RE = re.compile(r"\b(?:npm|pnpm|yarn|bun)\s+(?:install|add|i|exec|dlx|x)\b|\bnpx\b|\bpip3?\s+install\b", re.I)
 _JS_SHELL_RE = re.compile(r"child_process|\bexecSync\s*\(|\bspawnSync\s*\(|\bexecFileSync\s*\(")
 _JS_OPEN, _JS_CLOSE = "([{", ")]}"
+# 粗規則（見 _unreadable_call）：啟動行程、動態執行與動態取得模組物件一律拒絕。模組名稱是遮罩後的字串，所以在原文上比對
+# The coarse rule (see _unreadable_call): starting a process, dynamic execution and fetching module objects
+# dynamically are all refused. Module specifiers are masked strings, so they are matched on the original text
+# child_process 與 worker_threads 不論寫法；vm、module 一類的短名稱只在帶 `node:` 或出現在 require(／from 之後時才算，
+# 斷言裡的普通字串（`'module'`）不受影響
+# child_process and worker_threads in any spelling; short names such as vm and module only with `node:` or after
+# require( / from, so a plain string in an assertion (`'module'`) is unaffected
+_JS_REFUSED_SPECIFIER_RE = re.compile(
+    r"""["'`](?:node:)?(?:child_process|worker_threads)["'`]"""
+    r"""|["'`]node:(?:vm|cluster|module|inspector|repl|wasi)["'`]"""
+    r"""|(?:\brequire\s*\(\s*|\bfrom\s+|\bimport\s*\(\s*)["'`](?:vm|cluster|module|inspector|repl|wasi)["'`]""")
+_JS_DYNAMIC_EXEC_RE = re.compile(
+    r"(?<![\w$.])(?:eval|Function)\s*\(|\bnew\s+Function\b|\.getBuiltinModule\b|\bprocess\s*\.\s*(?:binding|dlopen|"
+    r"mainModule|_linkedBinding)\b|\bcreateRequire\b|\bmodule\s*\.\s*require\b|\bsetTimeout\s*\(\s*[\"'`]")
+# 動態載入模組：第一個參數必須是單一的字串字面值，否則檢查讀不懂 ／ Dynamic module loads: the first argument must be a
+# single string literal, or the check cannot read it
+_JS_DYNAMIC_LOAD_RE = re.compile(r"(?<![\w$.])(?:require|import)\s*\(")
+
+
+def _js_literal_argument(code: str, masked: str, open_paren: int) -> bool:
+    """`open_paren` 之後的第一個參數是單一字串字面值（沒有 `+` 串接、沒有 `${}` 插值）。遮罩把字面值內容（含結尾引號）
+    換成空白，所以字面值在遮罩後是「引號 + 空白」，接著必須是 `,` 或 `)`。
+    The first argument after `open_paren` is a single string literal (no `+` concatenation, no `${}` interpolation).
+    Masking blanks a literal's content (closing quote included), so a literal reads "quote + spaces" in the masked
+    source and must be followed by `,` or `)`."""
+    i = open_paren + 1
+    while i < len(masked) and masked[i].isspace():
+        i += 1
+    if i >= len(masked) or masked[i] not in "'\"`":
+        return False
+    start = i
+    i += 1
+    while i < len(masked) and masked[i] == " ":
+        i += 1
+    if i >= len(masked) or masked[i] not in ",)":
+        return False
+    return not (masked[start] == "`" and "${" in code[start:i])
+
+
+def _js_unreadable_call(code: str, masked: str) -> Optional[str]:
+    """檢查讀不懂的 JS/TS 寫法（CODING_STANDARDS 第 8 條的粗規則）：匯入 child_process、vm、worker_threads 一類模組、
+    eval／Function／getBuiltinModule／createRequire／process.binding 一類動態執行或取得模組，以及模組名稱不是字面值的
+    require／import()；否則為 None。
+    A JS/TS form the check cannot read (the coarse rule of CODING_STANDARDS rule 8): importing child_process, vm,
+    worker_threads and the like, dynamic execution or module fetching such as eval / Function / getBuiltinModule /
+    createRequire / process.binding, and require / import() of a non-literal module name; else None."""
+    specifier = _JS_REFUSED_SPECIFIER_RE.search(code)
+    if specifier:
+        return f"the module {specifier.group(0)} (starts processes or executes code)"
+    dynamic = _JS_DYNAMIC_EXEC_RE.search(masked)
+    if dynamic:
+        return f"{dynamic.group(0).strip(' (')} (dynamic execution)"
+    for m in _JS_DYNAMIC_LOAD_RE.finditer(masked):
+        if not _js_literal_argument(code, masked, m.end() - 1):
+            return f"{m.group(0).strip(' (.')}() of a module name the check cannot read"
+    return None
 
 
 def _js_balanced(masked: str) -> bool:
@@ -253,6 +435,10 @@ def check_js_test_code(code: str) -> Tuple[bool, Optional[str]]:
     masked = mask_js_source(code)
     if not _js_balanced(masked):
         return False, "syntax error: unbalanced delimiters"
+    unreadable = _js_unreadable_call(code, masked)
+    if unreadable:
+        return False, (f"could not check whether the test installs packages: {unreadable}; refused "
+                       "(slopsquatting / OWASP LLM04:2026)")
     tests = list(_JS_TEST_CALL_RE.finditer(masked))
     if not tests:
         return False, "no test()/it() call defined"

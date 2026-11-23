@@ -13,9 +13,10 @@ same name. This module loads no third-party package at import time (yaml is impo
 import math
 import os
 import re
+import stat
 import urllib.parse
 from dataclasses import dataclass, field, replace
-from typing import Any, Dict, FrozenSet, List, Literal, Mapping, NoReturn, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Literal, Mapping, NoReturn, Optional, Sequence, Tuple
 
 from vibeharness.core.i18n import bi
 from vibeharness.core.jscoverage import read_untrusted_bytes
@@ -69,6 +70,24 @@ DEFAULT_MAX_FILE_BYTES = 1_000_000
 # 目錄走訪與突變測試複本絕不進入的目錄名稱（再加上任何以 '.' 開頭的名稱）
 # Directory names never descended into by the directory walk or mutation scratch copies (plus any name starting with '.')
 SKIPPED_DIRS = {"venv", "__pycache__", "node_modules", "dist", "build", "site-packages"}
+
+
+def is_unsafe_file(path: str, real_root: str) -> bool:
+    """目錄走訪與突變測試複本都不讀的檔案：解析後不是一般檔案（FIFO、裝置、懸空連結），或是解析到 `real_root`
+    （已 realpath 的目標）之外的連結。後者會把目標之外的內容（例如 /proc/self/environ 裡的金鑰）送給模型或複製進
+    沙盒，前者可能永遠讀不完（/dev/zero）。
+    A file neither the directory walk nor the mutation scratch copy reads: one that does not resolve to a regular file
+    (a FIFO, a device, a dangling link), or a link resolving outside `real_root` (the realpath'd target). The latter
+    would send content from outside the target (e.g. the keys in /proc/self/environ) to the models or copy it into
+    the sandbox; the former may never finish reading (/dev/zero)."""
+    try:
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            return True
+    except OSError:
+        return True
+    if not os.path.islink(path):
+        return False
+    return not os.path.realpath(path).startswith(real_root.rstrip(os.sep) + os.sep)
 
 # 設定檔中缺少的代理會解析為此別名，它沒有模型也沒有金鑰：hybrid 模式
 # 會模擬它們，而 live 模式會明確失敗，而不是悄悄地把它們導向某個真實供應商
@@ -537,6 +556,38 @@ def relative_executable_warnings(config: Dict[str, Any]) -> List[str]:
     return warnings
 
 
+# 設定檔裡 harness 認得的鍵；其他的鍵沒有任何作用，多半是拼錯（`max_filez`），所以啟動時印出警告
+# The keys of the config file the harness knows; any other key has no effect and is most likely a typo (`max_filez`),
+# so a warning is printed at start-up
+KNOWN_TOP_LEVEL_KEYS = frozenset({"global", "models", "agents"})
+KNOWN_GLOBAL_KEYS = frozenset({
+    "cache_dir", "docker_bin", "docker_cpus", "docker_image", "docker_memory", "docker_network", "docker_node_image",
+    "docker_pids_limit", "exclude", "execution_mode", "include", "max_concurrent_calls", "max_file_bytes", "max_files",
+    "max_model_calls", "max_output_tokens", "max_retries", "mutation_max_copy_mb", "mutation_max_mutants",
+    "mutation_min_score", "mutation_testing", "mutation_timeout_seconds", "node_bin", "per_test_timeout_seconds",
+    "retry_invalid_output", "sandbox_memory_mb", "sandbox_node_provider", "sandbox_provider", "sandbox_timeout_seconds",
+    "timeout_seconds",
+})
+KNOWN_MODEL_KEYS = frozenset({
+    "model", "fallback_model", "provider", "api_key_env", "api_base", "base_url", "aws_profile_name", "aws_region_name",
+    "extra_params", "max_output_tokens", "price_per_million_input", "price_per_million_output",
+})
+KNOWN_AGENT_KEYS = frozenset({"model_alias", "name", "focus", "role", "temperature"})
+
+
+def unknown_key_warnings(config: Mapping[str, Any]) -> List[str]:
+    """設定檔中 harness 不認得的鍵（最上層、global、每個 models.<alias> 與 agents.<id>），每個一則警告，依路徑排序。
+    One warning per key the harness does not know (top level, global, each models.<alias> and agents.<id>), sorted
+    by path."""
+    unknown: List[str] = [str(k) for k in config if k not in KNOWN_TOP_LEVEL_KEYS]
+    unknown += [f"global.{k}" for k in (config.get("global") or {}) if k not in KNOWN_GLOBAL_KEYS]
+    for section, known in (("models", KNOWN_MODEL_KEYS), ("agents", KNOWN_AGENT_KEYS)):
+        for name, entry in (config.get(section) or {}).items():
+            unknown += [f"{section}.{name}.{k}" for k in (entry or {}) if k not in known]
+    return [bi(f"設定檔中未知的鍵 {key}：它沒有任何作用（拼錯了嗎？）",
+               f"Unknown config key {key}: it has no effect (a typo?)") for key in sorted(unknown)]
+
+
 # --- 唯讀的 models／agents ／ read-only models / agents --------------------------------------------
 
 def _read_only(*args: Any, **kwargs: Any) -> NoReturn:
@@ -617,6 +668,29 @@ def prepare_cache_dir(path: str) -> str:
     return target
 
 
+def check_cache_dir_location(cache_dir: Optional[str], target: str) -> None:
+    """回應快取目錄不可位於受稽核的目標之內，在 GitHub Actions 上也不可位於 GITHUB_WORKSPACE（PR 的 checkout）之內，
+    否則是 ConfigError：快取命中的回答會被當成線上回答使用、閘門不記任何缺口，所以目標或 PR 一起提交的快取檔
+    就能偽造每一個模型回答。
+    The response cache directory must not lie inside the audited target, nor on GitHub Actions inside
+    GITHUB_WORKSPACE (the PR's checkout), else a ConfigError: a cache hit is used as a live answer with no gap, so
+    cache files committed with the target or the PR could forge every model answer."""
+    if not cache_dir:
+        return
+    cache = os.path.realpath(cache_dir)
+    roots = [("target", os.path.realpath(target))]
+    workspace = os.environ.get("GITHUB_WORKSPACE")
+    if os.environ.get("GITHUB_ACTIONS") == "true" and workspace:
+        roots.append(("GITHUB_WORKSPACE", os.path.realpath(workspace)))
+    for label, root in roots:
+        if cache == root or cache.startswith(root.rstrip(os.sep) + os.sep):
+            raise ConfigError(bi(
+                f"cache_dir {cache_dir!r} 位於 {label}（{root}）之內：那裡的檔案可能來自受稽核的程式碼，"
+                "請改用目標之外的目錄（GitHub Actions 上用 $RUNNER_TEMP）",
+                f"cache_dir {cache_dir!r} is inside the {label} ({root}): files there may come from the audited "
+                "code; use a directory outside the target ($RUNNER_TEMP on GitHub Actions)"))
+
+
 # --- 設定 ／ Settings --------------------------------------------------------------------------------
 
 Origin = Literal["explicit", "discovered", "bundled"]
@@ -659,6 +733,25 @@ class GatewaySettings:
         meta = self.agents.get(agent_id)
         alias = meta.get("model_alias") if isinstance(meta, dict) else None
         return str(alias or UNCONFIGURED_ALIAS)
+
+    def model_for(self, alias: str) -> str:
+        """別名實際呼叫的模型（`models.<alias>.model`）；沒有這個別名或沒有模型字串時就是別名本身。兩個指向同一個
+        模型的別名是同一個模型：多樣性與「不裁決自家發現」都依它判斷，而不是依別名。
+        The model an alias actually calls (`models.<alias>.model`); the alias itself when there is no such alias or no
+        model string. Two aliases pointing at one model are one model: diversity and "never rule on your own finding"
+        go by it, not by the alias."""
+        info = self.models.get(alias)
+        model = info.get("model") if isinstance(info, dict) else None
+        return model if isinstance(model, str) and model.strip() else alias
+
+    def distinct_model_labels(self, aliases: Sequence[str]) -> List[str]:
+        """每個不同的模型一個標籤（已排序）：指向同一模型的別名以 "/" 併成一個，例如 "claude/claude_alt"。
+        One label per distinct model (sorted): aliases pointing at the same model join with "/", e.g.
+        "claude/claude_alt"."""
+        groups: Dict[str, List[str]] = {}
+        for alias in dict.fromkeys(aliases):
+            groups.setdefault(self.model_for(alias), []).append(alias)
+        return sorted("/".join(sorted(group)) for group in groups.values())
 
 
 @dataclass(frozen=True)
@@ -746,7 +839,7 @@ def load_settings(path: str, *, origin: Origin, overrides: Optional[Overrides] =
     config = load_config_file(path, untrusted=(origin == "discovered"))
     if origin == "discovered":
         _raise_discovered_violations(path, discovered_config_violations(config, load_config_file(reference_path)))
-    warnings = tuple(relative_executable_warnings(config))
+    warnings = tuple(relative_executable_warnings(config)) + tuple(unknown_key_warnings(config))
     # 空的 `global:` 會載入成 None：當成空對應表 ／ An empty `global:` loads as None: treat it as an empty mapping
     g: Dict[str, Any] = config.get("global") or {}
     models: Dict[str, Any] = config.get("models") or {}
@@ -897,6 +990,15 @@ def _validate_models_and_agents(models: Dict[str, Any], agents: Dict[str, Any], 
                                  f"models.{alias}.base_url is not read; use models.{alias}.api_base for a custom endpoint"))
         if info.get("max_output_tokens") is not None:
             number(info["max_output_tokens"], f"models.{alias}.max_output_tokens", minimum=1, integer=True)
+        # 端點與憑證欄位在呼叫時才被讀：型別錯誤（例如 list）過去要到第一次呼叫才失敗，aws_profile_name 只要是 truthy
+        # 就讓 live 以為已設定
+        # The endpoint and credential fields are read at call time: a wrong type (e.g. a list) used to fail only at
+        # the first call, and any truthy aws_profile_name made live think it was configured
+        for key in ("api_key_env", "aws_profile_name", "aws_region_name"):
+            value = info.get(key)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ConfigError(bi(f"models.{alias}.{key} 必須是非空字串或 null，目前為 {value!r}",
+                                     f"models.{alias}.{key} must be a non-empty string or null, got {value!r}"))
     for agent_id, meta in agents.items():
         # 打錯字的 model_alias 過去會悄悄解析成 unconfigured：hybrid 改用模擬，live 則在已付費的呼叫之後才中途失敗。
         # 省略或 null 仍是刻意的 unconfigured；明確寫出的別名必須存在於 models

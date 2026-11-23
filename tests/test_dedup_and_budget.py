@@ -3,6 +3,8 @@ Duplicate-finding merging and token-budgeted prompt context."""
 import os
 import re
 
+import pytest
+
 from vibeharness.core.codecontext import (
     estimate_tokens, truncate_to_tokens, class_skeleton, render_symbols, batch_symbols
 )
@@ -262,3 +264,35 @@ def test_render_symbols_truncates_instead_of_omitting_when_it_fits(tmp_path):
     assert "(truncated)" in rendered
     assert "omitted" not in rendered
     assert estimate_tokens(rendered) <= budget
+
+
+# 同一符號上的不同缺陷：共用的泛用詞不能讓它們合併（#183 第 7 項）
+# Distinct defects on one symbol: shared generic words must not merge them (#183 item 7)
+@pytest.mark.parametrize("first, second", [
+    ("Missing authentication check on admin endpoint", "Missing authorization check on admin endpoint"),
+    ("SQL injection in order_by parameter", "SQL injection in user_id parameter"),
+    ("Integer overflow in balance update", "Integer underflow in balance update"),
+    ("Race condition on balance update", "Missing rollback on balance update"),
+])
+def test_titles_naming_different_defects_are_kept_apart(first, second):
+    merged = deduplicate_findings([_finding("A", "Claude", first), _finding("B", "DeepSeek", second)])
+    assert [f.finding_id for f in merged] == ["A", "B"]
+    assert all(f.corroborating_models == [] for f in merged)
+
+
+def test_a_symbol_truncated_in_the_review_prompt_is_an_evidence_gap(tmp_path):
+    """超過一個審查批次預算的函式，後半段沒有模型看過：判定不可以是 READY_TO_SHIP，並列出那個符號（#183 第 16 項）。
+    A function beyond one review batch's budget had its rest seen by no model: the verdict must not be
+    READY_TO_SHIP, and the symbol is named (#183 item 16)."""
+    from vibeharness.core.harness import VibeHarnessCommander
+
+    target = tmp_path / "target"
+    target.mkdir()
+    body = "".join(f"    total_{i} = value * {i} + offset_{i % 7}\n" for i in range(2500))
+    (target / "app.py").write_text(f"def huge(value):\n{body}    return value\n\ndef small(a):\n    return a\n",
+                                   encoding="utf-8")
+    commander = VibeHarnessCommander(execution_mode="mock")
+    assert commander.multi_reviewer.truncated_symbols(
+        commander.ast_extractor.parse_directory(str(target)), root_dir=str(target)) == ["app.py:huge"]
+    summary = commander.run_full_pipeline(str(target), output_report_path=str(tmp_path / "r.md"))
+    assert any("truncated in the review prompt" in r and "app.py:huge" in r for r in summary.inconclusive_reasons)

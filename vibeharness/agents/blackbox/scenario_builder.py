@@ -10,7 +10,7 @@ from vibeharness.core.models import ThreatItem, GeneratedTest, CodeSymbol, text_
 from vibeharness.core.model_output import STRING, OutputSchema
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.codecheck import prepare_test_code
-from vibeharness.core.i18n import bi, en_only
+from vibeharness.core.i18n import bi, prompt_text
 from vibeharness.core.codecontext import render_symbols, import_instructions, language_for_file, target_root
 from vibeharness.core.threat_symbols import named_symbols
 from vibeharness.core.agent_call import (
@@ -306,14 +306,14 @@ class ThreatScenarioBuilder:
         )
 
         # 威脅模型的欄位是模型寫的（可能轉述目標程式碼中的注入文字），所以放進 <untrusted_model_output> 通道；
-        # 模擬引擎／預設值的雙語欄位只送英文半（提示詞維持英文）；en_only 只切 bi() 產生的字串，
-        # 所以真實模型剛好含「 ／ 」的中文描述會完整保留
+        # 模擬引擎寫的雙語欄位只送英文半（提示詞維持英文）；真實模型寫的文字原樣保留，即使它長得像「中文 ／ English」
+        # （見 prompt_text）
         # The threat-model fields are model-written (and may relay injected text from the target code), so they go
-        # in the <untrusted_model_output> channel; bilingual simulated / default fields send their English half only
-        # (prompts stay English), and since en_only only splits bi() output, a live model's Chinese text that
-        # happens to contain " ／ " is kept whole
+        # in the <untrusted_model_output> channel; bilingual fields the simulation engine wrote send their English half
+        # only (prompts stay English), while text a real model wrote is kept whole even when it looks like
+        # "中文 ／ English" (see prompt_text)
         def field(value: Optional[str]) -> str:
-            return en_only(value or "")
+            return prompt_text(value or "", threat.is_simulated)
 
         threat_text = (
             f"Title: {field(threat.title)}\n"

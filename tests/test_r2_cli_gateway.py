@@ -238,7 +238,10 @@ def test_cache_only_in_mock_mode_warns(monkeypatch, tmp_path, capsys):
     """--cache-only 搭配 --mode mock 沒有作用：照常執行，但在 stderr 印出雙語警告。
     --cache-only with --mode mock has no effect: the run goes ahead, with a bilingual warning on stderr."""
     _capture_run(monkeypatch)
-    code = _run_cli(monkeypatch, "-t", str(tmp_path), "-m", "mock", "--cache-only", "--cache-dir", str(tmp_path / "c"))
+    # 快取目錄不可在目標之內（#183 第 2 項），所以目標是一個子目錄
+    # The cache directory may not be inside the target (#183 item 2), so the target is a subdirectory
+    (tmp_path / "t").mkdir()
+    code = _run_cli(monkeypatch, "-t", str(tmp_path / "t"), "-m", "mock", "--cache-only", "--cache-dir", str(tmp_path / "c"))
     assert code == 3
     err = capsys.readouterr().err
     assert "--cache-only has no effect in mock mode" in err and "--cache-only 在 mock 模式下沒有作用" in err

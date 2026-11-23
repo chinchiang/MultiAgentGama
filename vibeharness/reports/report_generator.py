@@ -297,8 +297,10 @@ class ReportGenerator:
         # 2. 白箱多模型審查發現
         # 2. White-Box Multi-Model Review Findings
         md.append(HEADING_WHITEBOX)
-        models = " / ".join(summary.reviewer_models) or "the configured reviewer models"
-        models_zh = " / ".join(summary.reviewer_models) or "設定的審查模型"
+        # 別名來自設定檔，也照模型文字的規則清理（見 _inline） ／ the aliases come from the config and are cleaned like
+        # model text too (see _inline)
+        models = self._inline(" / ".join(summary.reviewer_models)) or "the configured reviewer models"
+        models_zh = self._inline(" / ".join(summary.reviewer_models)) or "設定的審查模型"
         if debate_result.is_simulated or any(f.is_simulated for f in debate_result.confirmed_findings):
             md.append(f"> **{bi('去偏差架構（模擬）', 'De-biasing Architecture (SIMULATED)')}**: "
                       + bi(f"以下的審查者與驗證者輸出是模擬範本，並非真實的 {models_zh} 稽核。",
@@ -318,9 +320,9 @@ class ReportGenerator:
                 md.append(f"{HEADING_UNVERIFIED_FINDINGS}:")
             for f in debate_result.confirmed_findings:
                 tag = " `[SIMULATED]`" if f.is_simulated else ""
-                also = f"; {bi('亦見於', 'also reported by')} {', '.join(f.corroborated_by)}" if f.corroborated_by else ""
+                also = f"; {bi('亦見於', 'also reported by')} {self._inline(', '.join(f.corroborated_by))}" if f.corroborated_by else ""
                 mapping = f" {self._code_span(f.owasp_mapping)}" if f.owasp_mapping else ""
-                md.append(f"- **[{f.severity.value}] {self._inline(f.title)}**{mapping}{tag} ({bi('發現者', 'Identified by')} {f.reviewer_name}{also})")
+                md.append(f"- **[{f.severity.value}] {self._inline(f.title)}**{mapping}{tag} ({bi('發現者', 'Identified by')} {self._inline(f.reviewer_name)}{also})")
                 md.append(f"  - **{bi('根本原因', 'Root Cause')}**: {self._inline(f.root_cause)}")
                 md.append(f"  - **{bi('Vibe-Coding 缺陷', 'Vibe-Coding Flaw')}**: {self._inline(f.suspected_vibe_flaw)}")
                 md.append(f"  - **{bi('建議情境', 'Suggested Scenario')}**: {self._code_span(f.suggested_test_scenario)}")
@@ -332,7 +334,7 @@ class ReportGenerator:
         if debate_result.disputed_findings:
             md.append(f"\n{HEADING_DISPUTED_FINDINGS}:")
             for f in debate_result.disputed_findings:
-                md.append(f"- [{f.severity.value}] {self._inline(f.title)} ({bi('發現者', 'Identified by')} {f.reviewer_name}) — {self._votes(f)}")
+                md.append(f"- [{f.severity.value}] {self._inline(f.title)} ({bi('發現者', 'Identified by')} {self._inline(f.reviewer_name)}) — {self._votes(f)}")
 
         md.append(f"\n{HEADING_WHITEBOX_RESULTS}")
         if whitebox_results:
@@ -827,7 +829,7 @@ class ReportGenerator:
         if not finding.verification_votes:
             return bi("沒有可用的驗證者投票", "no usable verifier votes")
         return "; ".join(
-            f"{v.model_alias}: {v.verdict}" + (f" ({ReportGenerator._inline(v.reason)})" if v.reason else "")
+            f"{ReportGenerator._inline(v.model_alias)}: {v.verdict}" + (f" ({ReportGenerator._inline(v.reason)})" if v.reason else "")
             for v in finding.verification_votes
         )
 

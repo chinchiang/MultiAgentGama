@@ -242,6 +242,9 @@ def test_bilingual_data_fields_reach_live_prompts_in_english_only(scripted, tmp_
         symbol_name="login", severity=FindingSeverity.HIGH, title=SEP.join(["密碼回傳", "Password echoed"]),
         description=SEP.join(["描述", "Description"]), root_cause=SEP.join(["根因", "Root cause"]),
         suspected_vibe_flaw="", suggested_test_scenario=SEP.join(["情境", "Scenario"]),
+        # 模擬引擎的項目帶 is_simulated；真實模型的文字原樣送出（#183 第 19 項）
+        # The simulation engine's items carry is_simulated; a real model's text goes out whole (#183 item 19)
+        is_simulated=True,
     )
     MultiModelDebater(gateway).arbitrate([finding])
     WhiteboxTestGenerator(gateway).generate_tests_for_findings([finding], symbols, root_dir=str(tmp_path))
@@ -250,6 +253,7 @@ def test_bilingual_data_fields_reach_live_prompts_in_english_only(scripted, tmp_
         description="", asset_at_risk="a", attack_vector=SEP.join(["呼叫 login", "call login"]),
         trust_boundary_crossed="b", severity=FindingSeverity.HIGH,
         attack_scenario=SEP.join(["攻擊 login", "attack login"]), test_verification_goal=SEP.join(["目標", "goal"]),
+        is_simulated=True,
     )
     ThreatScenarioBuilder(gateway).build_test_cases_from_threats([threat], base_url=None, symbols=symbols,
                                                                   root_dir=str(tmp_path))

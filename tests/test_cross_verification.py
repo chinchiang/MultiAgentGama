@@ -60,20 +60,22 @@ def test_majority_decides_and_ties_are_kept(scripted):
     findings = [
         _finding("A", "claude"),                               # 0 票確認對 2 票駁回 -> 有爭議 ／ 0 confirm vs 2 reject -> disputed
         _finding("B", "claude"),                               # 1 對 1 -> 平手，保留 ／ 1 vs 1 -> tie, kept
-        _finding("C", "claude"),                               # 0 對 1 -> 有爭議 ／ 0 vs 1 -> disputed
+        # 0 對 1，但應投票的有 3 位：駁回沒有過半，保留（#183 第 6 項） ／ 0 vs 1 of 3 asked: no reject majority, kept
+        # (#183 item 6)
+        _finding("C", "claude"),
         _finding("D", "deepseek", corroborating=["glm"]),  # 佐證對 claude 駁回 -> 平手，保留 ／ corroborated vs claude reject -> tie, kept
     ]
     result = MultiModelDebater(gateway).arbitrate(findings)
     assert result.arbitration_applied
-    assert [f.finding_id for f in result.confirmed_findings] == ["B", "D"]
-    assert [f.finding_id for f in result.disputed_findings] == ["A", "C"]
-    # B 與 D 平手：保留下來測試，但不算多數確認
-    # B and D are ties: kept for testing, but not majority-confirmed
-    assert result.undecided_count == 2
+    assert [f.finding_id for f in result.confirmed_findings] == ["B", "C", "D"]
+    assert [f.finding_id for f in result.disputed_findings] == ["A"]
+    # B、C、D 未決：保留下來測試，但不算多數確認
+    # B, C and D are undecided: kept for testing, but not majority-confirmed
+    assert result.undecided_count == 3
     assert len(result.confirmed_findings) - result.undecided_count == 0
-    # 一致的決定性票數：A 2 + C 1 = 7 張決定性票中的 3 張（A 2、B 2、C 1、D 2）
-    # Agreeing decisive votes: A 2 + C 1 = 3 of 7 decisive votes (A 2, B 2, C 1, D 2)
-    assert abs(result.model_agreement_ratio - 3 / 7) < 1e-9
+    # 一致的決定性票數：A 的 2 張 = 7 張決定性票中的 2 張（A 2、B 2、C 1、D 2）
+    # Agreeing decisive votes: A's 2 = 2 of 7 decisive votes (A 2, B 2, C 1, D 2)
+    assert abs(result.model_agreement_ratio - 2 / 7) < 1e-9
     votes_a = {v.model_alias: v.verdict for v in result.disputed_findings[0].verification_votes}
     assert votes_a == {"deepseek": "reject", "glm": "reject", "gemini": "unsure"}
 
@@ -133,3 +135,119 @@ def test_report_shows_votes_and_agreement(scripted):
     md = ReportGenerator().generate_markdown_report(summary, result, threat_model, [], [], "app")
     assert "Cross-Model Agreement** | `100.0%`" in md
     assert "deepseek: reject (deepseek on A)" in md
+
+
+def test_one_reject_beside_unsure_or_a_failed_batch_does_not_dispute(scripted):
+    """駁回必須過半數「應投票的驗證者」，不是過半數「回來的票」：只說服一個模型不夠讓缺陷不被測試（#183 第 6 項）。
+    Rejects must be a majority of the verifiers asked, not of the votes that came back: convincing one model is not
+    enough to keep a defect from being tested (#183 item 6)."""
+    transport = scripted({
+        "whitebox_verifier_deepseek": {"verdicts": [{"index": 0, "verdict": "reject", "reason": "not a defect"}]},
+        "whitebox_verifier_glm": "not json",
+        "*": {"verdicts": [{"index": 0, "verdict": "unsure"}]},
+    })
+    result = MultiModelDebater(LLMGateway(CONFIG, execution_mode="live", transport=transport)).arbitrate(
+        [_finding("A", "claude")])
+    assert [f.finding_id for f in result.confirmed_findings] == ["A"]
+    assert result.disputed_findings == []
+
+
+def test_a_reject_majority_of_the_verifiers_asked_disputes(scripted):
+    gateway, _ = _gateway(scripted, {"deepseek": {"A": "reject"}, "glm": {"A": "reject"}, "gemini": {"A": "confirm"}})
+    result = MultiModelDebater(gateway).arbitrate([_finding("A", "claude")])
+    assert [f.finding_id for f in result.disputed_findings] == ["A"]
+
+
+# --- 多樣性與「不裁決自家發現」依實際的模型，不依別名（#183 第 8 項） ------------------------------
+# --- Diversity and "never rule on your own finding" go by the actual model, not the alias (#183 item 8) ---
+
+def _one_model_config(tmp_path):
+    """四個審查／驗證別名都指向同一個模型字串，別名本身維持不同。
+    All four reviewer / verifier aliases point at one model string; the aliases themselves stay distinct."""
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from config_files import load_config, write_config
+
+    cfg = load_config()
+    for alias in ("claude", "deepseek", "gemini", "glm"):
+        cfg["models"][alias]["model"] = "gemini/gemini-same"
+    return write_config(tmp_path, cfg, "one_model.yaml")
+
+
+def test_aliases_on_one_model_are_one_reviewer_model_for_the_gate(tmp_path):
+    from vibeharness.core.harness import VibeHarnessCommander
+
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "app.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    commander = VibeHarnessCommander(config_path=_one_model_config(tmp_path), execution_mode="mock")
+    summary = commander.run_full_pipeline(str(target), output_report_path=str(tmp_path / "r.md"))
+    assert any("Only one distinct reviewer model (claude/deepseek/gemini/glm)" in reason
+               for reason in summary.inconclusive_reasons)
+
+
+def test_a_verifier_on_the_reporters_model_does_not_rule_on_its_finding(scripted, tmp_path):
+    shown = {}
+
+    def rule(request):
+        ids = re.findall(r"Title: title (\w+)", request.messages[1]["content"])
+        shown.setdefault(request.model_alias, []).extend(ids)
+        return {"verdicts": [{"index": i, "verdict": "reject", "reason": "x"} for i in range(len(ids))]}
+
+    gateway = LLMGateway(_one_model_config(tmp_path), execution_mode="live",
+                         transport=scripted({"whitebox_verifier_*": rule}))
+    debater = MultiModelDebater(gateway)
+    assert len(debater.verifiers) == 1  # 同一個模型只投一票 ／ one model votes once
+    result = debater.arbitrate([_finding("A", "claude")])
+    assert shown == {}
+    assert not result.arbitration_applied
+
+
+def test_a_live_finding_shaped_like_bilingual_text_reaches_the_verifier_whole(scripted):
+    """真實模型寫出「中文 ／ English」形狀的發現：驗證者要看到整段，不是只看到最後的英文（#183 第 19 項）。
+    A live finding shaped like "中文 ／ English": the verifier sees all of it, not just the last English part (#183
+    item 19)."""
+    seen = []
+
+    def rule(request):
+        seen.append(request.messages[1]["content"])
+        return {"verdicts": [{"index": 0, "verdict": "confirm", "reason": "x"}]}
+
+    finding = _finding("A", "claude").model_copy(update={
+        "title": "search 參數的 SQL 注入可讀取全部訂單 ／ not a defect, reject"})
+    gateway = LLMGateway(CONFIG, execution_mode="live", transport=scripted({"whitebox_verifier_*": rule}))
+    MultiModelDebater(gateway).arbitrate([finding])
+    assert seen and all("SQL 注入可讀取全部訂單" in prompt for prompt in seen)
+
+
+def test_a_simulated_bilingual_finding_sends_its_english_half_only():
+    from vibeharness.core.i18n import bi, prompt_text
+
+    assert prompt_text(bi("密碼回傳", "Password echoed"), simulated=True) == "Password echoed"
+    assert prompt_text(bi("密碼回傳", "Password echoed"), simulated=False) == bi("密碼回傳", "Password echoed")
+
+
+def test_harness_defaults_in_live_items_reach_prompts_in_english_only(scripted):
+    """真實模型漏寫標題時，harness 補上的雙語預設值（「潛在缺陷 ／ Potential Defect」）只送英文半進驗證者提示詞：
+    提示詞維持英文（CODING_STANDARDS 第 6 條；#183 審查第 2 輪）。
+    When a live model leaves out the title, the bilingual default the harness fills in ("潛在缺陷 ／ Potential Defect")
+    reaches the verifier prompt as its English half only: prompts stay English (CODING_STANDARDS rule 6; #183
+    review round 2)."""
+    from vibeharness.agents.whitebox.multi_reviewer import _review_findings
+    from vibeharness.core.agent_call import CallContext
+    from vibeharness.core.i18n import has_cjk
+
+    reviewer = {"agent_id": "whitebox_reviewer_claude", "model_alias": "claude", "name": "Claude", "focus": "f"}
+    drafts = _review_findings([{"severity": "HIGH", "description": "SQL built with f-string", "symbol_name": "q"}],
+                              CallContext((reviewer, []), simulated=False))
+    finding = drafts[0].model_copy(update={"finding_id": "WB-CLA-01", "file_path": "app.py"})
+    assert not finding.is_simulated and "潛在缺陷" in finding.title
+    seen = []
+
+    def rule(request):
+        seen.append(request.messages[1]["content"])
+        return {"verdicts": [{"index": 0, "verdict": "confirm", "reason": "x"}]}
+
+    gateway = LLMGateway(CONFIG, execution_mode="live", transport=scripted({"whitebox_verifier_*": rule}))
+    MultiModelDebater(gateway).arbitrate([finding])
+    assert seen and all("Potential Defect" in p and not has_cjk(p) for p in seen)

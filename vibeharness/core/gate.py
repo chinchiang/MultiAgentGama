@@ -36,16 +36,21 @@ class GapCode(str, Enum):
     NO_REVIEWERS = "no_reviewers"
     SINGLE_REVIEWER_MODEL = "single_reviewer_model"
     NO_CROSS_VERIFICATION = "no_cross_verification"
+    TRUNCATED_SYMBOLS = "truncated_symbols"
     NO_SYMBOLS = "no_symbols"
     PARSE_FAILURES = "parse_failures"
     INCOMPLETE_SCAN = "incomplete_scan"
     OVERSIZED_FILES = "oversized_files"
+    UNSAFE_FILES_SKIPPED = "unsafe_files_skipped"
     MAX_FILES_SKIPPED = "max_files_skipped"
     DISCOVERED_SCOPE_FILTERED = "discovered_scope_filtered"
     TESTS_NOT_RUN = "tests_not_run"
+    RUNNER_SHADOWED = "runner_shadowed"
     MUTATION_NO_CONCLUSION = "mutation_no_conclusion"
     MUTATION_BELOW_THRESHOLD = "mutation_below_threshold"
     MUTATION_TRUNCATED = "mutation_truncated"
+    MUTATION_MOSTLY_INVALID = "mutation_mostly_invalid"
+    PYTHON_NO_TESTS = "python_no_tests"
     JS_NO_TESTS = "js_no_tests"
     JS_TESTS_NOT_RUN = "js_tests_not_run"
     TS_TESTS_NOT_RUN = "ts_tests_not_run"
@@ -88,6 +93,8 @@ class ReviewEvidence:
     arbitration_applied: bool = False
     confirmed_findings: Sequence[ReviewFinding] = ()
     findings_without_model_tests: Sequence[str] = ()
+    # 審查提示詞裡被截斷的符號（見 HeterogeneousReviewerEnsemble.truncated_symbols） ／ symbols truncated in the review prompt
+    truncated_symbols: Sequence[str] = ()
 
 
 @dataclass(frozen=True)
@@ -98,6 +105,7 @@ class ScopeDisclosure:
     detected_langs: Sequence[str] = ()
     parse_failures: Sequence[str] = ()
     oversized_files: Sequence[str] = ()
+    unsafe_files: Sequence[str] = ()
     skipped_files: Sequence[str] = ()
     unsupported_count: int = 0
     unsupported_languages: Dict[str, int] = field(default_factory=dict)
@@ -118,6 +126,9 @@ class ExecutionEvidence:
     js_runner_problem: Optional[str] = None
     ts_problem: Optional[str] = None
     mutation_report: Optional[MutationReport] = None
+    # 目標中與測試執行器同名的模組（見 sandbox.shadowed_runner_modules）
+    # Target modules named like the test runner's (see sandbox.shadowed_runner_modules)
+    runner_shadows: Sequence[str] = ()
 
 @dataclass(frozen=True)
 class GateEvidence:
@@ -237,6 +248,13 @@ def _evidence_gaps(evidence: GateEvidence) -> List[EvidenceGap]:
             f"the target ({integrity_rules}); model-based review, verification "
             "and threat modeling may have been manipulated (OWASP LLM01:2026), so review those locations manually"
         ))
+    if review.truncated_symbols:
+        shown = ", ".join(list(review.truncated_symbols)[:5]) + (" …" if len(review.truncated_symbols) > 5 else "")
+        gap(GapCode.TRUNCATED_SYMBOLS, bi(
+            f"{len(review.truncated_symbols)} 個符號超過一個審查批次的預算，原始碼在審查提示詞中被截斷，後半段沒有模型審查過：{shown}",
+            f"{len(review.truncated_symbols)} symbol(s) exceed one review batch's budget, so their source was truncated "
+            f"in the review prompt and no model reviewed the rest: {shown}"
+        ))
     if not review.reviewers_configured:
         gap(GapCode.NO_REVIEWERS, bi("沒有設定任何 whitebox_reviewer_* 代理，因此沒有執行白箱模型審查",
                                      "No whitebox_reviewer_* agents are configured, so no white-box model review ran"))
@@ -285,6 +303,12 @@ def _evidence_gaps(evidence: GateEvidence) -> List[EvidenceGap]:
             f"{n_big} 個原始碼檔案超過 max_file_bytes（{limits.max_file_bytes}），未納入分析",
             f"{n_big} source file(s) exceed max_file_bytes ({limits.max_file_bytes}) and were not analyzed"
         ) + f": {', '.join(os.path.basename(p) for p in list(scope.oversized_files)[:5])}")
+    if scope.unsafe_files:
+        gap(GapCode.UNSAFE_FILES_SKIPPED, bi(
+            f"{len(scope.unsafe_files)} 個檔案是解析到目標之外的連結或不是一般檔案，沒有讀取也沒有分析",
+            f"{len(scope.unsafe_files)} file(s) are links resolving outside the target or are not regular files, "
+            "and were neither read nor analyzed"
+        ) + f": {', '.join(os.path.basename(p) for p in list(scope.unsafe_files)[:5])}")
     if scope.skipped_files:
         n_skip = len(scope.skipped_files)
         gap(GapCode.MAX_FILES_SKIPPED, bi(
@@ -305,6 +329,14 @@ def _evidence_gaps(evidence: GateEvidence) -> List[EvidenceGap]:
             f"{not_run} generated test(s) errored, were skipped, or never ran; "
             "the boundaries they cover remain unverified by this run"
         ))
+    ran_python = any(t.language == "python" for t in [*ex.wb_tests, *ex.bb_tests])
+    if ex.runner_shadows and ran_python:
+        shown = ", ".join(ex.runner_shadows[:5]) + (" …" if len(ex.runner_shadows) > 5 else "")
+        gap(GapCode.RUNNER_SHADOWED, bi(
+            f"目標中有與測試執行器同名的模組（{shown}），它們會取代 pytest 或它的外掛，Python 測試結果因此不可信",
+            f"The target has modules named like the test runner's ({shown}); they replace pytest or its plugins, "
+            "so the Python test results cannot be trusted"
+        ))
     mutation_report = ex.mutation_report
     if mutation_report is not None:
         min_score = limits.mutation_min_score
@@ -319,6 +351,14 @@ def _evidence_gaps(evidence: GateEvidence) -> List[EvidenceGap]:
                 f"Mutation score {mutation_report.score:.1f}% is below the {min_score:g}% threshold: {mutation_report.survived} surviving mutant(s) "
                 "mean the passing tests may not catch behaviour changes"
             ))
+        decided = mutation_report.killed + mutation_report.survived
+        if mutation_report.score is not None and mutation_report.invalid > decided:
+            gap(GapCode.MUTATION_MOSTLY_INVALID, bi(
+                f"{mutation_report.total} 個變異體中有 {mutation_report.invalid} 個無效（把程式壞到無法判斷），"
+                f"分數 {mutation_report.score:.1f}% 只根據 {decided} 個有結論的變異體",
+                f"{mutation_report.invalid} of {mutation_report.total} mutant(s) were invalid (broke the code beyond "
+                f"judging), so the {mutation_report.score:.1f}% score rests on only {decided} decided mutant(s)"
+            ))
         if mutation_report.truncated:
             gap(GapCode.MUTATION_TRUNCATED, bi(
                 f"突變測試只涵蓋 {mutation_report.total} 個變異體（候選 {mutation_report.candidate_sites} 個，受 mutation_max_mutants 限制），分數只是樣本",
@@ -326,6 +366,15 @@ def _evidence_gaps(evidence: GateEvidence) -> List[EvidenceGap]:
                 "(limited by mutation_max_mutants), so the score is a sample"
             ))
     js_tests = [t for t in list(ex.wb_tests) + list(ex.bb_tests) if t.language != "python"]
+    # 混合語言的專案裡，白箱測試全都是 JS/TS 時 Python 程式碼沒有任何白箱測試。只看白箱：黑箱的 HTTP 攻擊測試一律用
+    # Python 寫，算進來就會把這個缺口遮掉
+    # In a mixed-language project whose white-box tests are all JS/TS, the Python code got no white-box test. White-box
+    # only: black-box HTTP attack tests are always written in Python, and counting them would mask this gap
+    if "Python" in scope.detected_langs and ex.wb_tests and not any(t.language == "python" for t in ex.wb_tests):
+        gap(GapCode.PYTHON_NO_TESTS, bi(
+            "Python 程式碼沒有任何白箱測試：產生的白箱測試全都是 JS/TS",
+            "Python code got no white-box test: every generated white-box test is JS/TS"
+        ))
     if "TypeScript/JavaScript" in scope.detected_langs:
         if not js_tests:
             gap(GapCode.JS_NO_TESTS, bi(

@@ -121,7 +121,7 @@ class _JsTsExtractor:
         # 正在分析的 JS/TS 檔案的（原文, 行串列），每個檔案只切一次行；以及 match_delim 的配對表
         # (content, lines) of the JS/TS file being analyzed, split into lines once per file; and match_delim's pair tables
         self._content_lines: Optional[Tuple[str, List[str]]] = (
-            (content, content.splitlines()) if masked is not None else None
+            (content, content.split("\n")) if masked is not None else None
         )
         # 目前檔案剩餘的回傳型別掃描預算與符號原始碼字元預算（None：不限，例如直接呼叫輔助函式時）
         # The current file's remaining return-type scan budget and symbol-source character budget (None: unlimited,
@@ -233,7 +233,9 @@ class _JsTsExtractor:
             source_code = content[left:right]
         else:
             cached = self._content_lines
-            lines = cached[1] if cached is not None and cached[0] is content else content.splitlines()
+            # 與 line_of 一樣只依 "\n" 切行（見 ast_extractor._parse_python_file）
+            # Split on "\n" only, like line_of (see ast_extractor._parse_python_file)
+            lines = cached[1] if cached is not None and cached[0] is content else content.split("\n")
             source_code = "\n".join(lines[start_line - 1:end_line])
         if self._snippet_left is not None:
             self._snippet_left -= len(source_code)

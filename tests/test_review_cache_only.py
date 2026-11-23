@@ -140,7 +140,10 @@ def test_cache_only_accepts_the_configured_cache_dir(monkeypatch, tmp_path):
         return type("S", (), {"overall_status": "INCONCLUSIVE"})()
 
     monkeypatch.setattr(cli.VibeHarnessCommander, "run_full_pipeline", run)
-    assert _run_cli(monkeypatch, "-t", str(tmp_path), "-m", "mock", "-c", str(config), "--cache-only") == 3
+    # 快取目錄不可在目標之內（#183 第 2 項），所以目標是一個子目錄
+    # The cache directory may not be inside the target (#183 item 2), so the target is a subdirectory
+    (tmp_path / "t").mkdir()
+    assert _run_cli(monkeypatch, "-t", str(tmp_path / "t"), "-m", "mock", "-c", str(config), "--cache-only") == 3
     assert seen == {"cache_only": True}
 
 
