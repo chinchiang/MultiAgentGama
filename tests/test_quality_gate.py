@@ -160,6 +160,8 @@ GAP_CASES = {
     GapCode.NO_SYMBOLS: lambda e: _with(e, "scope", symbols_found=False),
     GapCode.PARSE_FAILURES: lambda e: _with(e, "scope", parse_failures=["bad.py"]),
     GapCode.INCOMPLETE_SCAN: lambda e: _with(e, "scope", incomplete_files=["huge.py"]),
+    **({GapCode.STATIC_HITS_CAPPED: lambda e: _with(e, "scope", capped_hits=[("/srv/app/loads.py", "VH-AI-001", 3)])}
+       if hasattr(GapCode, "STATIC_HITS_CAPPED") else {}),
     GapCode.OVERSIZED_FILES: lambda e: _with(e, "scope", oversized_files=["/srv/app/big.py"]),
     **({GapCode.UNSAFE_FILES_SKIPPED: lambda e: _with(e, "scope", unsafe_files=["/srv/app/leak.py"])}
        if hasattr(GapCode, "UNSAFE_FILES_SKIPPED") else {}),
@@ -435,6 +437,18 @@ def test_cross_verification_gap_requires_two_verifiers_and_decisive_rulings_on_r
         clean(), "review", verifier_models=["gpt", "claude"], confirmed_findings=[sim_finding], arbitration_applied=False
     )
     assert code not in _codes(evaluate(sim_only))
+
+
+def test_hits_dropped_by_the_per_file_cap_are_an_evidence_gap_naming_the_count_and_files():
+    """每檔上限略過的命中是證據缺口：沒人看過的命中不能當成乾淨；訊息寫出略過的筆數、（規則, 檔案）組數與檔名（#195）。
+    Hits dropped by the per-file cap are an evidence gap, since hits nobody looked at are not clean; the message gives
+    the dropped count, the number of (rule, file) pairs and the file names (#195)."""
+    capped = [("/srv/app/loads.py", "VH-AI-001", 3), ("/srv/app/other.py", "VH-AI-008", 2)]
+    result = evaluate(_with(clean(), "scope", capped_hits=capped))
+    assert [c.value for c in _codes(result)] == ["static_hits_capped"]
+    assert result.verdict is Verdict.INCONCLUSIVE
+    assert "5 deterministic rule hit(s)" in result.reasons[0] and "2 rule/file pair(s)" in result.reasons[0]
+    assert "loads.py (VH-AI-001)" in result.reasons[0] and "other.py (VH-AI-008)" in result.reasons[0]
 
 
 def test_a_score_on_mostly_decided_mutants_is_no_gap():

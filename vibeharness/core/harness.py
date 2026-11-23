@@ -574,6 +574,7 @@ class VibeHarnessCommander:
                     unsupported_languages=dict(scope.unsupported_languages),
                     unsupported_files=scope.unsupported_files,
                     incomplete_files=scan.incomplete_files,
+                    capped_hits=scan.capped_hits,
                     config_files_not_fully_scanned=[
                         *scope.skipped_config_files, *scope.oversized_config_files,
                         *scan.incomplete_config_files],

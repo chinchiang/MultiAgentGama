@@ -781,6 +781,35 @@ def test_the_per_file_cap_keeps_the_most_severe_hits(tmp_path, caplog):
     assert "6 more are not" in caplog.text
 
 
+def _trust_remote_code_lines(n):
+    """n 行各自不同的 `trust_remote_code=True` 載入，每行一筆 VH-AI-001（HIGH）。
+    n distinct `trust_remote_code=True` loads, one VH-AI-001 (HIGH) hit per line."""
+    return "from transformers import AutoModel\n\n" + "".join(
+        f"m{i} = AutoModel.from_pretrained('acme/m{i}', revision='abc', trust_remote_code=True)\n" for i in range(n))
+
+
+def test_the_scan_result_records_the_hits_the_per_file_cap_dropped(tmp_path):
+    """同一規則在一個檔案超過每檔上限時，`ScanResult.capped_hits` 記下（檔案, 規則, 少了幾筆），讓閘門揭露為證據缺口；
+    原本少了幾筆只寫進日誌（#195）。
+    When one rule exceeds the per-file cap in a file, `ScanResult.capped_hits` records (file, rule, how many were
+    dropped) so the gate can disclose it as an evidence gap; the count used to reach only the log (#195)."""
+    path = tmp_path / "loads.py"
+    path.write_text(_trust_remote_code_lines(23), encoding="utf-8")
+    result = AISecurityStaticScanner().scan([str(path)], [])
+    assert len([h for h in result.findings if h.rule_id == "VH-AI-001"]) == 20
+    assert getattr(result, "capped_hits", None) == ((str(path), "VH-AI-001", 3),)
+
+
+def test_exactly_the_per_file_cap_drops_nothing(tmp_path):
+    """剛好 20 筆不算超過上限：`capped_hits` 是空的（#195）。
+    Exactly 20 hits are not over the cap: `capped_hits` is empty (#195)."""
+    path = tmp_path / "loads.py"
+    path.write_text(_trust_remote_code_lines(20), encoding="utf-8")
+    result = AISecurityStaticScanner().scan([str(path)], [])
+    assert len(result.findings) == 20
+    assert getattr(result, "capped_hits", "missing") == ()
+
+
 @pytest.mark.parametrize("call", [
     "AutoModel.from_pretrained('acme/m', revision='abc', trust_remote_code='yes')",
     "AutoModel.from_pretrained('acme/m', revision='abc', trust_remote_code=1)",

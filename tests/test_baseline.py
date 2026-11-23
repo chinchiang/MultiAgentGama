@@ -164,6 +164,35 @@ def test_known_problems_are_reported_but_no_longer_decide_the_verdict(tmp_path, 
     assert [s.id for s in summary.baseline_suppressed] == ["WB-PROBE-01", "BB-TEST-THREAT-01"]
 
 
+def _remote_code_loads(n):
+    """n 行各自不同的 `trust_remote_code=True` 載入（每行一筆 VH-AI-001，HIGH）。
+    n distinct `trust_remote_code=True` loads (one VH-AI-001 HIGH hit per line)."""
+    return "from transformers import AutoModel\n\n" + "".join(
+        f"m{i} = AutoModel.from_pretrained('acme/m{i}', revision='abc', trust_remote_code=True)\n" for i in range(n))
+
+
+def test_a_new_hit_the_per_file_cap_drops_behind_known_hits_is_disclosed(tmp_path):
+    """基準報告已有一個檔案的 20 筆 HIGH；之後在它們後面多一筆 HIGH：每檔上限留下 20 筆已知的、略過新的那筆，
+    新的阻擋命中是 0。閘門要把略過的命中記成證據缺口，不然 live 模式會判成 READY_TO_SHIP（#195）。
+    The baseline report holds 20 HIGH hits of one file; then a 21st HIGH hit follows them: the per-file cap keeps the
+    20 known ones and drops the new one, leaving 0 new blocking hits. The gate must record the dropped hit as an
+    evidence gap, or a live run would be READY_TO_SHIP (#195)."""
+    target = tmp_path / "t"
+    target.mkdir()
+    (target / "loads.py").write_text(_remote_code_loads(20), encoding="utf-8")
+    first = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
+    first.run_full_pipeline(target_dir=str(target), output_report_path=str(tmp_path / "base.json"), output_format="json")
+
+    (target / "loads.py").write_text(_remote_code_loads(21), encoding="utf-8")
+    second = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
+    second.baseline = bl.load_baseline(str(tmp_path / "base.json"))
+    summary = second.run_full_pipeline(target_dir=str(target), output_report_path=str(tmp_path / "r.md"))
+    assert summary.new_blocking_rule_hits == 0 and summary.blocking_rule_hits == 20
+    reasons = "\n".join(summary.inconclusive_reasons)
+    assert "1 deterministic rule hit(s) over the per-file cap in 1 rule/file pair(s)" in reasons, reasons
+    assert "loads.py (VH-AI-001)" in reasons, reasons
+
+
 def test_cli_baseline_flag_is_validated_before_the_run(monkeypatch, tmp_path):
     from vibeharness import cli
     monkeypatch.setattr(sys, "argv", ["vibeharness", "-t", str(tmp_path), "-m", "mock", "--baseline", str(tmp_path / "none.json")])
