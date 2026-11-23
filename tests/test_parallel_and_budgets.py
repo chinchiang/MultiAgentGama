@@ -689,3 +689,38 @@ def test_a_failing_git_diff_is_an_error_not_zero_changed_files(git_repo, tmp_pat
     with pytest.raises(ValueError, match="git diff failed"):
         commander.changed_files(str(root / "src"), "HEAD")
     assert injected, "the fault was never injected"
+
+
+def test_an_empty_changed_since_ref_is_refused(git_repo, tmp_path):
+    from vibeharness.core.harness import VibeHarnessCommander
+
+    root = _tree(tmp_path)
+    git_repo(root)
+    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
+    for ref in ("", "   "):
+        with pytest.raises(ValueError, match="must not be empty or start with"):
+            commander.changed_files(str(root / "src"), ref)
+
+
+def test_a_failing_git_ls_files_is_an_error_not_zero_untracked_files(git_repo, tmp_path):
+    """git ls-files 失敗時，未追蹤的新檔案會被安靜地漏掉：要拋錯（#182 審查）。
+    A failing git ls-files would quietly drop untracked new files: it raises (#182 review)."""
+    from vibeharness.core.harness import VibeHarnessCommander
+
+    root = _tree(tmp_path)
+    git_repo(root)
+    (root / "src" / "new.py").write_text("def g(x):\n    return x\n")
+    commander = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
+    real_git = commander._git
+    injected = []
+
+    def git(args, cwd):
+        if args and args[0] == "ls-files":
+            injected.append(args)
+            return None
+        return real_git(args, cwd)
+
+    commander._git = git  # type: ignore[method-assign]
+    with pytest.raises(ValueError, match="git ls-files failed"):
+        commander.changed_files(str(root / "src"), "HEAD")
+    assert injected, "the fault was never injected"
