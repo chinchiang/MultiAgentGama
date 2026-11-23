@@ -646,3 +646,76 @@ def test_mutation_testing_runs_against_the_mounted_copy_in_docker(tmp_path):
     report = mut.run_mutation_testing(executor.run_mutant_batch, tests, _passed(tests), [_finding("F1", root, "discount")],
                                       _symbols(root), root, 3, 40)
     assert report.skipped_reason is None and report.killed == 3 and report.score == 100.0
+
+
+# --- 複本不跟隨目標之外的連結、不複製特殊檔案（#183 第 5 項） -----------------------------------
+# --- The copy follows no link out of the target and copies no special file (#183 item 5) ---------
+
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="symlinks and FIFOs need POSIX")
+
+
+@posix_only
+def test_the_scratch_copy_skips_outside_links_and_special_files(tmp_path):
+    root = _setup(tmp_path)
+    outside = tmp_path / "outside_secret.txt"
+    outside.write_text("HARNESS_SECRET=sk-live-123\n", encoding="utf-8")
+    (pathlib.Path(root) / "real_helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+    os.symlink(outside, os.path.join(root, "leak"))
+    os.symlink(os.path.join(root, "real_helper.py"), os.path.join(root, "helper_link.py"))
+    seen = []
+
+    def run_batch(tests, working_dir, timeout):
+        seen.append(sorted(os.listdir(working_dir)))
+        return "survived"
+
+    tests = [_test("T1", WEAK, "F1")]
+    report = mut.run_mutation_testing(run_batch, tests, _passed(tests), [_finding("F1", root, "discount")],
+                                      _symbols(root), root, 2, 5)
+    assert seen, report.skipped_reason
+    assert seen[0] == ["helper_link.py", "real_helper.py", "shop.py"]
+    assert mut._copy_size(root, 10**9) < 10_000
+
+
+@posix_only
+def test_the_walk_does_not_read_outside_links_or_special_files(tmp_path):
+    from vibeharness.agents.whitebox.ast_extractor import ASTExtractor
+
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "app.py").write_text("def handler():\n    return 1\n", encoding="utf-8")
+    (target / "inside.py").write_text("def inside():\n    return 2\n", encoding="utf-8")
+    secret = tmp_path / "secret.py"
+    secret.write_text("def leaked():\n    return 'sk-live-123'\n", encoding="utf-8")
+    os.symlink(secret, target / "leak.py")
+    os.symlink(tmp_path / "env", target / ".env")
+    (tmp_path / "env").write_text("TOKEN=abc\n", encoding="utf-8")
+    os.symlink(target / "inside.py", target / "inside_link.py")
+
+    symbols, scope = ASTExtractor().scan_directory(str(target))
+    names = sorted(s.name for s in symbols)
+    assert "leaked" not in names
+    assert names == ["handler", "inside", "inside"]
+    assert sorted(os.path.basename(p) for p in scope.unsafe_files) == [".env", "leak.py"]
+    assert not any(p.endswith(".env") for p in scope.config_files)
+
+
+@posix_only
+def test_is_unsafe_file_refuses_special_files_and_links_out_of_the_root(tmp_path):
+    """FIFO 與 /dev/zero 在 master 上會讓走訪與複本永遠讀不完，所以在這裡直接測判斷本身。
+    A FIFO and /dev/zero make the walk and the copy read forever on master, so the predicate is tested directly."""
+    from vibeharness.core.settings import is_unsafe_file
+
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "real.py").write_text("", encoding="utf-8")
+    (tmp_path / "outside.py").write_text("", encoding="utf-8")
+    os.symlink(root / "real.py", root / "inside_link.py")
+    os.symlink(tmp_path / "outside.py", root / "outside_link.py")
+    os.symlink("/dev/zero", root / "zero.py")
+    os.symlink(tmp_path / "missing.py", root / "dangling.py")
+    os.mkfifo(root / "pipe.py")
+    real_root = os.path.realpath(root)
+    verdicts = {name: is_unsafe_file(str(root / name), real_root)
+                for name in ("real.py", "inside_link.py", "outside_link.py", "zero.py", "dangling.py", "pipe.py")}
+    assert verdicts == {"real.py": False, "inside_link.py": False, "outside_link.py": True,
+                        "zero.py": True, "dangling.py": True, "pipe.py": True}

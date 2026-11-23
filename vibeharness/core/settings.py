@@ -13,6 +13,7 @@ same name. This module loads no third-party package at import time (yaml is impo
 import math
 import os
 import re
+import stat
 import urllib.parse
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, FrozenSet, List, Literal, Mapping, NoReturn, Optional, Tuple
@@ -69,6 +70,24 @@ DEFAULT_MAX_FILE_BYTES = 1_000_000
 # 目錄走訪與突變測試複本絕不進入的目錄名稱（再加上任何以 '.' 開頭的名稱）
 # Directory names never descended into by the directory walk or mutation scratch copies (plus any name starting with '.')
 SKIPPED_DIRS = {"venv", "__pycache__", "node_modules", "dist", "build", "site-packages"}
+
+
+def is_unsafe_file(path: str, real_root: str) -> bool:
+    """目錄走訪與突變測試複本都不讀的檔案：解析後不是一般檔案（FIFO、裝置、懸空連結），或是解析到 `real_root`
+    （已 realpath 的目標）之外的連結。後者會把目標之外的內容（例如 /proc/self/environ 裡的金鑰）送給模型或複製進
+    沙盒，前者可能永遠讀不完（/dev/zero）。
+    A file neither the directory walk nor the mutation scratch copy reads: one that does not resolve to a regular file
+    (a FIFO, a device, a dangling link), or a link resolving outside `real_root` (the realpath'd target). The latter
+    would send content from outside the target (e.g. the keys in /proc/self/environ) to the models or copy it into
+    the sandbox; the former may never finish reading (/dev/zero)."""
+    try:
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            return True
+    except OSError:
+        return True
+    if not os.path.islink(path):
+        return False
+    return not os.path.realpath(path).startswith(real_root.rstrip(os.sep) + os.sep)
 
 # 設定檔中缺少的代理會解析為此別名，它沒有模型也沒有金鑰：hybrid 模式
 # 會模擬它們，而 live 模式會明確失敗，而不是悄悄地把它們導向某個真實供應商

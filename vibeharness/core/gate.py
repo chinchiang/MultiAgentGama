@@ -40,6 +40,7 @@ class GapCode(str, Enum):
     PARSE_FAILURES = "parse_failures"
     INCOMPLETE_SCAN = "incomplete_scan"
     OVERSIZED_FILES = "oversized_files"
+    UNSAFE_FILES_SKIPPED = "unsafe_files_skipped"
     MAX_FILES_SKIPPED = "max_files_skipped"
     DISCOVERED_SCOPE_FILTERED = "discovered_scope_filtered"
     TESTS_NOT_RUN = "tests_not_run"
@@ -99,6 +100,7 @@ class ScopeDisclosure:
     detected_langs: Sequence[str] = ()
     parse_failures: Sequence[str] = ()
     oversized_files: Sequence[str] = ()
+    unsafe_files: Sequence[str] = ()
     skipped_files: Sequence[str] = ()
     unsupported_count: int = 0
     unsupported_languages: Dict[str, int] = field(default_factory=dict)
@@ -289,6 +291,12 @@ def _evidence_gaps(evidence: GateEvidence) -> List[EvidenceGap]:
             f"{n_big} 個原始碼檔案超過 max_file_bytes（{limits.max_file_bytes}），未納入分析",
             f"{n_big} source file(s) exceed max_file_bytes ({limits.max_file_bytes}) and were not analyzed"
         ) + f": {', '.join(os.path.basename(p) for p in list(scope.oversized_files)[:5])}")
+    if scope.unsafe_files:
+        gap(GapCode.UNSAFE_FILES_SKIPPED, bi(
+            f"{len(scope.unsafe_files)} 個檔案是解析到目標之外的連結或不是一般檔案，沒有讀取也沒有分析",
+            f"{len(scope.unsafe_files)} file(s) are links resolving outside the target or are not regular files, "
+            "and were neither read nor analyzed"
+        ) + f": {', '.join(os.path.basename(p) for p in list(scope.unsafe_files)[:5])}")
     if scope.skipped_files:
         n_skip = len(scope.skipped_files)
         gap(GapCode.MAX_FILES_SKIPPED, bi(

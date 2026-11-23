@@ -15,6 +15,7 @@ from vibeharness.core.settings import (
     DEFAULT_MAX_FILE_BYTES as DEFAULT_MAX_FILE_BYTES,
     DEFAULT_MAX_FILES as DEFAULT_MAX_FILES,
     SKIPPED_DIRS as SKIPPED_DIRS,
+    is_unsafe_file,
 )
 
 logger = logging.getLogger("VibeHarness.ASTExtractor")
@@ -88,6 +89,9 @@ class ScopeResult:
     analyzed_files: Tuple[str, ...] = ()
     skipped_files: Tuple[str, ...] = ()  # 超過 max_files ／ beyond max_files
     oversized_files: Tuple[str, ...] = ()  # 超過 max_file_bytes ／ over max_file_bytes
+    # 解析到目標之外或不是一般檔案的連結與特殊檔案（沒有讀取） ／ links resolving outside the target, and non-regular
+    # files (not read)
+    unsafe_files: Tuple[str, ...] = ()
     parse_failures: Tuple[str, ...] = ()
     filtered_out: int = 0  # 被篩選條件排除的原始碼檔案（明確指定時不是證據缺口） ／ source files dropped by filters (not a gap when explicit)
     discovered_filtered: int = 0  # 由自動發現設定檔排除的檔案（證據缺口） ／ files excluded by a discovered config (a gap)
@@ -122,6 +126,7 @@ class ASTExtractor:
         # 因超過 max_file_bytes 而被排除的檔案
         # Files left out because they exceed max_file_bytes
         self.oversized_files: List[str] = []
+        self.unsafe_files: List[str] = []
         # 被 include/exclude 樣式或 only_files 篩選器排除的原始碼檔案（使用者明確指定時不是證據缺口）
         # Source files dropped by include/exclude patterns or the only_files filter (not a gap when explicitly requested)
         self.filtered_out: int = 0
@@ -195,6 +200,7 @@ class ASTExtractor:
         self.oversized_files, self.filtered_out, self.discovered_filtered = [], 0, 0
         self.unsupported_count, self.unsupported_languages, self.unsupported_files = 0, {}, []
         self.config_files, self.skipped_config_files, self.oversized_config_files = [], [], []
+        self.unsafe_files = []
         if os.path.isfile(dir_path):
             kind = self._file_kind(os.path.basename(dir_path))
             if kind == "source":
@@ -207,6 +213,7 @@ class ASTExtractor:
             return self.parse_file(dir_path)
         source_files: List[str] = []
         wanted = {os.path.normcase(os.path.abspath(p)) for p in only_files} if only_files is not None else None
+        real_root = os.path.realpath(dir_path)
         for root, dirs, files in os.walk(dir_path):
             dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in SKIPPED_DIRS)
             for f in sorted(files):
@@ -224,6 +231,12 @@ class ASTExtractor:
                         self.filtered_out += 1
                     if trusted_baseline is not None and self._selected(rel, *trusted_baseline):
                         self.discovered_filtered += 1
+                    continue
+                # 原始碼會送給模型、設定類檔案會被掃描：兩者都不讀目標之外的連結或特殊檔案（/dev/zero 讀不完）
+                # Source goes to the models and config-like files get scanned: neither reads a link out of the target
+                # or a special file (/dev/zero never ends)
+                if not kind.startswith("unsupported:") and is_unsafe_file(full, real_root):
+                    self.unsafe_files.append(full)
                     continue
                 if kind != "source":
                     self._collect_other(full, kind, max_file_bytes, max_config_files)
@@ -278,6 +291,7 @@ class ASTExtractor:
         return symbols, ScopeResult(
             analyzed_files=tuple(self.analyzed_files), skipped_files=tuple(self.skipped_files),
             oversized_files=tuple(self.oversized_files), parse_failures=tuple(self.parse_failures),
+            unsafe_files=tuple(self.unsafe_files),
             filtered_out=self.filtered_out, discovered_filtered=self.discovered_filtered,
             unsupported_count=self.unsupported_count,
             unsupported_languages=MappingProxyType(dict(self.unsupported_languages)),

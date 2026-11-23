@@ -542,6 +542,7 @@ class VibeHarnessCommander:
                     detected_langs=detected_langs,
                     parse_failures=scope.parse_failures,
                     oversized_files=scope.oversized_files,
+                    unsafe_files=scope.unsafe_files,
                     skipped_files=scope.skipped_files,
                     unsupported_count=scope.unsupported_count,
                     unsupported_languages=dict(scope.unsupported_languages),

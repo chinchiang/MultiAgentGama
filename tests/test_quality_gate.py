@@ -159,6 +159,7 @@ GAP_CASES = {
     GapCode.PARSE_FAILURES: lambda e: _with(e, "scope", parse_failures=["bad.py"]),
     GapCode.INCOMPLETE_SCAN: lambda e: _with(e, "scope", incomplete_files=["huge.py"]),
     GapCode.OVERSIZED_FILES: lambda e: _with(e, "scope", oversized_files=["/srv/app/big.py"]),
+    GapCode.UNSAFE_FILES_SKIPPED: lambda e: _with(e, "scope", unsafe_files=["/srv/app/leak.py"]),
     GapCode.MAX_FILES_SKIPPED: lambda e: _with(e, "scope", skipped_files=["z.py"]),
     **({GapCode.DISCOVERED_SCOPE_FILTERED: lambda e: _with(e, "scope", discovered_filtered_count=2)}
        if hasattr(GapCode, "DISCOVERED_SCOPE_FILTERED") else {}),
