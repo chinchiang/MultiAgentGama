@@ -49,6 +49,7 @@ class GapCode(str, Enum):
     MUTATION_NO_CONCLUSION = "mutation_no_conclusion"
     MUTATION_BELOW_THRESHOLD = "mutation_below_threshold"
     MUTATION_TRUNCATED = "mutation_truncated"
+    MUTATION_MOSTLY_INVALID = "mutation_mostly_invalid"
     PYTHON_NO_TESTS = "python_no_tests"
     JS_NO_TESTS = "js_no_tests"
     JS_TESTS_NOT_RUN = "js_tests_not_run"
@@ -349,6 +350,14 @@ def _evidence_gaps(evidence: GateEvidence) -> List[EvidenceGap]:
                 f"突變測試分數 {mutation_report.score:.1f}% 低於門檻 {min_score:g}%：{mutation_report.survived} 個存活的變異體表示通過的測試可能抓不到行為改變",
                 f"Mutation score {mutation_report.score:.1f}% is below the {min_score:g}% threshold: {mutation_report.survived} surviving mutant(s) "
                 "mean the passing tests may not catch behaviour changes"
+            ))
+        decided = mutation_report.killed + mutation_report.survived
+        if mutation_report.score is not None and mutation_report.invalid > decided:
+            gap(GapCode.MUTATION_MOSTLY_INVALID, bi(
+                f"{mutation_report.total} 個變異體中有 {mutation_report.invalid} 個無效（把程式壞到無法判斷），"
+                f"分數 {mutation_report.score:.1f}% 只根據 {decided} 個有結論的變異體",
+                f"{mutation_report.invalid} of {mutation_report.total} mutant(s) were invalid (broke the code beyond "
+                f"judging), so the {mutation_report.score:.1f}% score rests on only {decided} decided mutant(s)"
             ))
         if mutation_report.truncated:
             gap(GapCode.MUTATION_TRUNCATED, bi(
