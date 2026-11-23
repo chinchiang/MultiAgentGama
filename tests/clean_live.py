@@ -1,13 +1,17 @@
 """`clean_live_run` 夾具的乾淨小目標與它專用的假模型回答（responder）。不是測試模組（檔名不以 `test_` 開頭）。
 live 模式＋假 litellm 不會有 mock 的 `simulated` 缺口；這裡的回答讓乾淨目標上每一個證據缺口都不成立，所以一次乾淨的
 執行是 READY_TO_SHIP（`tests/test_clean_live_run.py` 檢查），建在上面的測試就能斷言判定本身（#200）。
-回答只看系統提示詞的角色句子（認出是哪個 agent）與使用者提示詞的內容，不看措辭的其他細節。
+以系統提示詞的角色句子認出 agent（審查者另看 `(Claude)` 模型標籤）；只有驗證者讀使用者提示詞，取其中 `[N]` 開頭的
+編號行。乾淨的一次仍有一筆已確認的 LOW 發現（見 _FINDING），沒有阻擋的命中。寫法照 `scripts/golden/fake_llm.py`；
+golden 只供開發、不在 sdist 裡，測試不能匯入它，所以這裡另寫一份。
 The clean small target of the `clean_live_run` fixture and its own fake model answers (the responder). Not a test
 module (the name does not start with `test_`). Live mode with the fake litellm has no `simulated` gap, unlike mock;
 these answers make every evidence gap false on the clean target, so one clean run is READY_TO_SHIP (checked by
 `tests/test_clean_live_run.py`), and tests built on it can assert the Verdict itself (#200).
-The answers depend only on the system prompt's role sentence (which agent it is) and the user prompt's content, not
-on any other detail of the wording."""
+The agent is recognised by the system prompt's role sentence (reviewers also by the `(Claude)` model label); only
+the verifier reads the user prompt, taking its numbered lines starting `[N]`. A clean run still carries one confirmed
+LOW finding (see _FINDING) and no blocking hit. Modelled on `scripts/golden/fake_llm.py`; golden is development-only
+and not in the sdist, so tests cannot import it and this is a separate copy."""
 import json
 import re
 
@@ -41,8 +45,10 @@ _ATTACK_TEST = "from calc import add\n\n\ndef test_the_sum_cannot_be_tampered_wi
 
 
 def respond(system: str, user: str) -> str:
-    """乾淨目標上一次模型呼叫的回答文字；不認得的 agent 讓測試失敗。
-    The answer text of one model call on the clean target; an agent it does not know fails the test."""
+    """乾淨目標上一次模型呼叫的回答文字。不認得的 agent 會拋出例外：live 模式把它當成那次呼叫失敗，執行中止或記成缺口，
+    基準測試因此變紅。
+    The answer text of one model call on the clean target. An agent it does not know raises: live mode takes it as
+    that call failing, so the run stops or records a gap, and the baseline test turns red."""
     if "white-box AI code auditor" in system:
         return json.dumps({"findings": [_FINDING] if "(Claude)" in system else []})
     if "code-review verifier" in system:

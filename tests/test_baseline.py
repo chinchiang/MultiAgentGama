@@ -184,13 +184,14 @@ def test_a_new_hit_the_per_file_cap_drops_behind_known_hits_makes_the_run_inconc
     assert first.overall_status == "NEEDS_FIXES" and first.new_blocking_rule_hits == 20
     baseline = bl.load_baseline(str(tmp_path / "base.json"))
 
-    known = clean_live_run(baseline=baseline, report="known.md")
+    known = clean_live_run({"loads.py": _remote_code_loads(20)}, baseline=baseline, report="known.md")
     assert (known.overall_status, known.inconclusive_reasons) == ("READY_TO_SHIP", [])
 
     capped = clean_live_run({"loads.py": _remote_code_loads(21)}, baseline=baseline, report="capped.md")
     assert capped.new_blocking_rule_hits == 0 and capped.blocking_rule_hits == 20
     assert capped.overall_status == "INCONCLUSIVE"
-    reasons = "\n".join(capped.inconclusive_reasons)
+    assert len(capped.inconclusive_reasons) == 1, capped.inconclusive_reasons
+    reasons = capped.inconclusive_reasons[0]
     assert "1 deterministic rule hit(s) over the per-file cap in 1 rule/file pair(s)" in reasons, reasons
     assert "loads.py (VH-AI-001)" in reasons, reasons
     assert "over the per-file cap in 1 rule/file pair(s)" in (tmp_path / "capped.md").read_text(encoding="utf-8")
