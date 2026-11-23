@@ -79,9 +79,9 @@ inputs:
     default: "vibeharness.sarif"
   extra-args:
     description: >-
-      額外的 CLI 參數，例如 --exclude 'tests/*' --cache-dir .vibeharness-cache；以 CLI 自己的解析器檢查，不執行稽核的旗標
+      額外的 CLI 參數，例如 --exclude 'tests/*' --cache-dir ${{ runner.temp }}/vibeharness-cache；以 CLI 自己的解析器檢查，不執行稽核的旗標
       （--estimate、--help、--version、--init-config、--force、--summary-json）與有專屬 input 的旗標（--output、--format、--sarif）
-      以 exit 5 拒絕 ／ Additional CLI arguments, e.g. --exclude 'tests/*' --cache-dir .vibeharness-cache; checked with the
+      以 exit 5 拒絕 ／ Additional CLI arguments, e.g. --exclude 'tests/*' --cache-dir ${{ runner.temp }}/vibeharness-cache; checked with the
       CLI's own parser, and non-audit flags (--estimate, --help, --version, --init-config, --force, --summary-json) and flags
       with a dedicated input (--output, --format, --sarif) are refused with exit 5
     default: ""

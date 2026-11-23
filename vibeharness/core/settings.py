@@ -617,6 +617,29 @@ def prepare_cache_dir(path: str) -> str:
     return target
 
 
+def check_cache_dir_location(cache_dir: Optional[str], target: str) -> None:
+    """回應快取目錄不可位於受稽核的目標之內，在 GitHub Actions 上也不可位於 GITHUB_WORKSPACE（PR 的 checkout）之內，
+    否則是 ConfigError：快取命中的回答會被當成線上回答使用、閘門不記任何缺口，所以目標或 PR 一起提交的快取檔
+    就能偽造每一個模型回答。
+    The response cache directory must not lie inside the audited target, nor on GitHub Actions inside
+    GITHUB_WORKSPACE (the PR's checkout), else a ConfigError: a cache hit is used as a live answer with no gap, so
+    cache files committed with the target or the PR could forge every model answer."""
+    if not cache_dir:
+        return
+    cache = os.path.realpath(cache_dir)
+    roots = [("target", os.path.realpath(target))]
+    workspace = os.environ.get("GITHUB_WORKSPACE")
+    if os.environ.get("GITHUB_ACTIONS") == "true" and workspace:
+        roots.append(("GITHUB_WORKSPACE", os.path.realpath(workspace)))
+    for label, root in roots:
+        if cache == root or cache.startswith(root.rstrip(os.sep) + os.sep):
+            raise ConfigError(bi(
+                f"cache_dir {cache_dir!r} 位於 {label}（{root}）之內：那裡的檔案可能來自受稽核的程式碼，"
+                "請改用目標之外的目錄（GitHub Actions 上用 $RUNNER_TEMP）",
+                f"cache_dir {cache_dir!r} is inside the {label} ({root}): files there may come from the audited "
+                "code; use a directory outside the target ($RUNNER_TEMP on GitHub Actions)"))
+
+
 # --- 設定 ／ Settings --------------------------------------------------------------------------------
 
 Origin = Literal["explicit", "discovered", "bundled"]

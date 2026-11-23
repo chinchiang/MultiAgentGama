@@ -189,3 +189,51 @@ def test_store_that_cannot_write_warns_and_does_not_raise(tmp_path, caplog):
     When it cannot write (the directory does not exist) it only logs a warning; the model call does not fail."""
     _store(str(tmp_path / "missing"), _key())
     assert "Could not write the response cache entry" in caplog.text
+
+
+# --- 快取目錄的位置（#183 第 2 項） ------------------------------------------------------
+# --- Where the cache directory may live (#183 item 2) ----------------------------------
+
+def _run_cli_with_cache(monkeypatch, target, cache_dir):
+    """以 mock 模式和 --cache-dir 執行 CLI；回傳（結束碼, 管線是否被執行）。
+    Runs the CLI in mock mode with --cache-dir; returns (exit code, whether the pipeline ran)."""
+    import sys
+
+    from vibeharness import cli
+
+    ran = []
+
+    def run(self, **kwargs):
+        ran.append(kwargs["target_dir"])
+        raise SystemExit(0)
+
+    monkeypatch.setattr(cli.VibeHarnessCommander, "run_full_pipeline", run)
+    monkeypatch.setattr(sys, "argv", ["vibeharness", "-t", str(target), "-m", "mock", "--cache-dir", str(cache_dir)])
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+    return exit_info.value.code, bool(ran)
+
+
+def test_cache_dir_inside_the_target_is_refused(monkeypatch, tmp_path, capsys):
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    target = tmp_path / "repo"
+    target.mkdir()
+    assert _run_cli_with_cache(monkeypatch, target, target / ".vibeharness-cache") == (5, False)
+    assert "is inside the target" in capsys.readouterr().err
+
+
+def test_cache_dir_inside_the_actions_workspace_is_refused(monkeypatch, tmp_path, capsys):
+    workspace = tmp_path / "workspace"
+    target = workspace / "src"
+    target.mkdir(parents=True)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(workspace))
+    assert _run_cli_with_cache(monkeypatch, target, workspace / ".vibeharness-cache") == (5, False)
+    assert "is inside the GITHUB_WORKSPACE" in capsys.readouterr().err
+
+
+def test_cache_dir_outside_the_target_is_accepted(monkeypatch, tmp_path):
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    target = tmp_path / "repo"
+    target.mkdir()
+    assert _run_cli_with_cache(monkeypatch, target, tmp_path / "cache") == (0, True)

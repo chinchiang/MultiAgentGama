@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     # Type checkers see these names; at run time _load_dependencies() puts them into the module namespace
     from vibeharness.core.harness import VibeHarnessCommander
     from vibeharness.core.llm_gateway import LLMGatewayError
-    from vibeharness.core.settings import ConfigError, Overrides, load_settings
+    from vibeharness.core.settings import ConfigError, Overrides, check_cache_dir_location, load_settings
     from vibeharness.core.sandbox import SandboxUnavailableError
     from vibeharness.agents.blackbox.scenario_builder import validate_base_url
     from vibeharness.core.baseline import load_baseline
@@ -38,6 +38,7 @@ _LAZY_IMPORTS = {
     "ConfigError": ("vibeharness.core.settings", "ConfigError"),
     "Overrides": ("vibeharness.core.settings", "Overrides"),
     "load_settings": ("vibeharness.core.settings", "load_settings"),
+    "check_cache_dir_location": ("vibeharness.core.settings", "check_cache_dir_location"),
     "SandboxUnavailableError": ("vibeharness.core.sandbox", "SandboxUnavailableError"),
     "validate_base_url": ("vibeharness.agents.blackbox.scenario_builder", "validate_base_url"),
     "load_baseline": ("vibeharness.core.baseline", "load_baseline"),
@@ -557,6 +558,9 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             parser.error(f"{flag}: " + bi(f"無法寫入 '{path}'（目錄不存在或不可寫入）",
                                            f"cannot write to '{path}' (directory missing or not writable)"))
     try:
+        # 快取目錄不可在目標（或 Actions 的 checkout）之內，見 check_cache_dir_location
+        # The cache directory must not be inside the target (or the Actions checkout), see check_cache_dir_location
+        check_cache_dir_location(settings.gateway.cache_dir, target_path)
         commander = VibeHarnessCommander(settings=settings)
         # --cache-only 搭配 mock 模式的雙語警告已由 load_settings 收進 settings.warnings，
         # 並於上方啟動檢查階段統一印出（mock 模式根本不讀快取：--cache-only 不會有任何作用）。
