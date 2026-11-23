@@ -556,6 +556,38 @@ def relative_executable_warnings(config: Dict[str, Any]) -> List[str]:
     return warnings
 
 
+# 設定檔裡 harness 認得的鍵；其他的鍵沒有任何作用，多半是拼錯（`max_filez`），所以啟動時印出警告
+# The keys of the config file the harness knows; any other key has no effect and is most likely a typo (`max_filez`),
+# so a warning is printed at start-up
+KNOWN_TOP_LEVEL_KEYS = frozenset({"global", "models", "agents"})
+KNOWN_GLOBAL_KEYS = frozenset({
+    "cache_dir", "docker_bin", "docker_cpus", "docker_image", "docker_memory", "docker_network", "docker_node_image",
+    "docker_pids_limit", "exclude", "execution_mode", "include", "max_concurrent_calls", "max_file_bytes", "max_files",
+    "max_model_calls", "max_output_tokens", "max_retries", "mutation_max_copy_mb", "mutation_max_mutants",
+    "mutation_min_score", "mutation_testing", "mutation_timeout_seconds", "node_bin", "per_test_timeout_seconds",
+    "retry_invalid_output", "sandbox_memory_mb", "sandbox_node_provider", "sandbox_provider", "sandbox_timeout_seconds",
+    "timeout_seconds",
+})
+KNOWN_MODEL_KEYS = frozenset({
+    "model", "fallback_model", "provider", "api_key_env", "api_base", "base_url", "aws_profile_name", "aws_region_name",
+    "extra_params", "max_output_tokens", "price_per_million_input", "price_per_million_output",
+})
+KNOWN_AGENT_KEYS = frozenset({"model_alias", "name", "focus", "role", "temperature"})
+
+
+def unknown_key_warnings(config: Mapping[str, Any]) -> List[str]:
+    """設定檔中 harness 不認得的鍵（最上層、global、每個 models.<alias> 與 agents.<id>），每個一則警告，依路徑排序。
+    One warning per key the harness does not know (top level, global, each models.<alias> and agents.<id>), sorted
+    by path."""
+    unknown: List[str] = [str(k) for k in config if k not in KNOWN_TOP_LEVEL_KEYS]
+    unknown += [f"global.{k}" for k in (config.get("global") or {}) if k not in KNOWN_GLOBAL_KEYS]
+    for section, known in (("models", KNOWN_MODEL_KEYS), ("agents", KNOWN_AGENT_KEYS)):
+        for name, entry in (config.get(section) or {}).items():
+            unknown += [f"{section}.{name}.{k}" for k in (entry or {}) if k not in known]
+    return [bi(f"設定檔中未知的鍵 {key}：它沒有任何作用（拼錯了嗎？）",
+               f"Unknown config key {key}: it has no effect (a typo?)") for key in sorted(unknown)]
+
+
 # --- 唯讀的 models／agents ／ read-only models / agents --------------------------------------------
 
 def _read_only(*args: Any, **kwargs: Any) -> NoReturn:
@@ -807,7 +839,7 @@ def load_settings(path: str, *, origin: Origin, overrides: Optional[Overrides] =
     config = load_config_file(path, untrusted=(origin == "discovered"))
     if origin == "discovered":
         _raise_discovered_violations(path, discovered_config_violations(config, load_config_file(reference_path)))
-    warnings = tuple(relative_executable_warnings(config))
+    warnings = tuple(relative_executable_warnings(config)) + tuple(unknown_key_warnings(config))
     # 空的 `global:` 會載入成 None：當成空對應表 ／ An empty `global:` loads as None: treat it as an empty mapping
     g: Dict[str, Any] = config.get("global") or {}
     models: Dict[str, Any] = config.get("models") or {}
@@ -958,6 +990,15 @@ def _validate_models_and_agents(models: Dict[str, Any], agents: Dict[str, Any], 
                                  f"models.{alias}.base_url is not read; use models.{alias}.api_base for a custom endpoint"))
         if info.get("max_output_tokens") is not None:
             number(info["max_output_tokens"], f"models.{alias}.max_output_tokens", minimum=1, integer=True)
+        # 端點與憑證欄位在呼叫時才被讀：型別錯誤（例如 list）過去要到第一次呼叫才失敗，aws_profile_name 只要是 truthy
+        # 就讓 live 以為已設定
+        # The endpoint and credential fields are read at call time: a wrong type (e.g. a list) used to fail only at
+        # the first call, and any truthy aws_profile_name made live think it was configured
+        for key in ("api_key_env", "aws_profile_name", "aws_region_name"):
+            value = info.get(key)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ConfigError(bi(f"models.{alias}.{key} 必須是非空字串或 null，目前為 {value!r}",
+                                     f"models.{alias}.{key} must be a non-empty string or null, got {value!r}"))
     for agent_id, meta in agents.items():
         # 打錯字的 model_alias 過去會悄悄解析成 unconfigured：hybrid 改用模擬，live 則在已付費的呼叫之後才中途失敗。
         # 省略或 null 仍是刻意的 unconfigured；明確寫出的別名必須存在於 models

@@ -440,3 +440,45 @@ def test_importing_settings_loads_no_third_party_package():
     out = subprocess.run([sys.executable, "-c", code], cwd=REPO_ROOT, capture_output=True, text=True,
                          env=dict(os.environ, PYTHONPATH=REPO_ROOT), check=True).stdout
     assert out.strip() == "[]"
+
+
+# --- 未知的設定鍵會發出警告（#183 第 14 項） ------------------------------------------------------
+# --- Unknown config keys warn (#183 item 14) --------------------------------------------------------
+
+def test_unknown_config_keys_are_warned_about(tmp_path):
+    from vibeharness.core.settings import load_settings
+
+    path = tmp_path / "c.yaml"
+    path.write_text(
+        "global:\n  max_filez: 3\n  sandbox_timout_seconds: 1\n  max_files: 5\n"
+        "models:\n  m:\n    model: openai/x\n    api_kee_env: K\n"
+        "agents:\n  whitebox_reviewer_m:\n    model_alias: m\n    temprature: 0.1\n"
+        "extra_section: {}\n", encoding="utf-8")
+    warnings = [w for w in load_settings(str(path), origin="explicit").warnings if "Unknown config key" in w]
+    keys = [w.split("Unknown config key ", 1)[1].split(":", 1)[0] for w in warnings]
+    assert keys == ["agents.whitebox_reviewer_m.temprature", "extra_section", "global.max_filez",
+                    "global.sandbox_timout_seconds", "models.m.api_kee_env"]
+
+
+def test_the_bundled_config_has_no_unknown_key():
+    from vibeharness.core.settings import DEFAULT_CONFIG_PATH, load_settings
+
+    assert not [w for w in load_settings(DEFAULT_CONFIG_PATH, origin="bundled").warnings if "Unknown config key" in w]
+
+
+# --- 端點與憑證欄位在載入時驗證型別（#183 第 15 項） -----------------------------------------------
+# --- Endpoint and credential fields are type-checked at load time (#183 item 15) --------------------
+
+@pytest.mark.parametrize("key, value", [
+    ("api_key_env", ["A", "B"]), ("api_key_env", ""), ("aws_profile_name", True),
+    ("aws_region_name", {"r": 1}),
+])
+def test_endpoint_and_credential_fields_must_be_strings(tmp_path, key, value):
+    import yaml
+
+    from vibeharness.core.settings import ConfigError, load_settings
+
+    path = tmp_path / "c.yaml"
+    path.write_text(yaml.safe_dump({"models": {"m": {"model": "openai/x", key: value}}}), encoding="utf-8")
+    with pytest.raises(ConfigError, match=f"models.m.{key} must be a non-empty string or null"):
+        load_settings(str(path), origin="explicit")
