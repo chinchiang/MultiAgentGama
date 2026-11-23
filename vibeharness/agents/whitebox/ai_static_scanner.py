@@ -31,6 +31,7 @@ from typing import Dict, Iterable, Iterator, List, Optional, Set, Tuple
 from vibeharness.core.models import FindingSeverity, StaticFinding
 from vibeharness.core.i18n import bi
 from vibeharness.core.sanitize import clean_model_text, find_injection_markers, find_invisible, find_secrets
+from vibeharness.core.identity import severity_rank
 
 logger = logging.getLogger("VibeHarness.AIStaticScanner")
 
@@ -1934,17 +1935,28 @@ class AISecurityStaticScanner:
 
     @staticmethod
     def _dedupe(findings: List[StaticFinding]) -> List[StaticFinding]:
-        seen: Set[tuple] = set()
-        per_rule_file: Dict[tuple, int] = {}
-        out: List[StaticFinding] = []
+        """同一規則、檔案與行只留一筆；每個（規則, 檔案）最多 _MAX_HITS_PER_RULE_PER_FILE 筆，先留最嚴重的（同嚴重度依行號），
+        依（檔案, 行, 規則）排序回傳。超過上限而略過的筆數會記在警告裡：過去依行號截斷，前面的 MEDIUM 命中會把後面的 HIGH
+        擠掉，閘門就不再阻擋。
+        One hit per rule, file and line; at most _MAX_HITS_PER_RULE_PER_FILE per (rule, file), the most severe kept
+        first (line order within a severity), returned sorted by (file, line, rule). The count dropped by the cap is
+        logged as a warning: truncating in line order used to let earlier MEDIUM hits push a later HIGH out, and the
+        gate stopped blocking."""
+        unique: Dict[tuple, StaticFinding] = {}
         for f in sorted(findings, key=lambda f: (f.file_path, f.line_number, f.rule_id)):
-            key = (f.rule_id, f.file_path, f.line_number)
-            if key in seen:
-                continue
-            seen.add(key)
-            bucket = (f.rule_id, f.file_path)
-            per_rule_file[bucket] = per_rule_file.get(bucket, 0) + 1
-            if per_rule_file[bucket] > _MAX_HITS_PER_RULE_PER_FILE:
-                continue
-            out.append(f)
-        return out
+            unique.setdefault((f.rule_id, f.file_path, f.line_number), f)
+        buckets: Dict[tuple, List[StaticFinding]] = {}
+        for f in unique.values():
+            buckets.setdefault((f.rule_id, f.file_path), []).append(f)
+        out: List[StaticFinding] = []
+        for (rule_id, file_path), hits in buckets.items():
+            hits.sort(key=lambda f: (severity_rank(f.severity), f.line_number))
+            out.extend(hits[:_MAX_HITS_PER_RULE_PER_FILE])
+            dropped = len(hits) - _MAX_HITS_PER_RULE_PER_FILE
+            if dropped > 0:
+                logger.warning(bi(
+                    f"{file_path} 的 {rule_id} 命中超過每檔 {_MAX_HITS_PER_RULE_PER_FILE} 筆的上限：只列出最嚴重的 "
+                    f"{_MAX_HITS_PER_RULE_PER_FILE} 筆，另有 {dropped} 筆未列出",
+                    f"{rule_id} hits in {file_path} exceed the per-file cap of {_MAX_HITS_PER_RULE_PER_FILE}: only the "
+                    f"{_MAX_HITS_PER_RULE_PER_FILE} most severe are listed, {dropped} more are not"))
+        return sorted(out, key=lambda f: (f.file_path, f.line_number, f.rule_id))

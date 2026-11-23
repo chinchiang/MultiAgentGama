@@ -734,3 +734,16 @@ def test_chinese_reviewer_directed_injection_is_detected(text):
 ])
 def test_ordinary_chinese_text_is_not_flagged(text):
     assert find_injection_markers(text) == []
+
+
+def test_the_per_file_cap_keeps_the_most_severe_hits(tmp_path, caplog):
+    """每檔上限先留最嚴重的命中：前面 25 行的 MEDIUM 不能把後面的 HIGH 擠掉，被略過的筆數要記在警告裡（#183 第 11 項）。
+    The per-file cap keeps the most severe hits first: 25 earlier MEDIUM lines must not push a later HIGH out, and the
+    dropped count is logged (#183 item 11)."""
+    code = "".join(f"x{i} = 'a\u200bb'\n" for i in range(25)) + "y = 'a\u202eb'\n"
+    _, hits = _scan(tmp_path, code)
+    vh008 = [h for h in hits if h.rule_id == "VH-AI-008"]
+    assert len(vh008) == 20
+    assert any(h.severity == FindingSeverity.HIGH and h.line_number == 26 for h in vh008)
+    assert [h.line_number for h in hits] == sorted(h.line_number for h in hits)
+    assert "6 more are not" in caplog.text
