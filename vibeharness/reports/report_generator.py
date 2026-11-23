@@ -395,7 +395,10 @@ class ReportGenerator:
                 md.append(f"\n{HEADING_POCS}:")
                 for p in pocs:
                     md.append(f"#### {bi('PoC 對象', 'PoC for')} {self._code_span(p.test_id)}")
-                    poc_text = p.reproduction_poc or ""
+                    # PoC 是模型寫的測試程式碼：去除終端機跳脫序列、控制與不可見字元（圍欄寬度由 _fence 決定）
+                    # The PoC is model-written test code: terminal escapes, control and invisible characters are
+                    # removed (the fence width comes from _fence)
+                    poc_text = clean_model_text(p.reproduction_poc or "")
                     fence = self._fence(poc_text)
                     md.append(f"{fence}{self._fence_lang(p.language)}\n{poc_text}\n{fence}")
         else:

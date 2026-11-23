@@ -601,7 +601,9 @@ class VibeHarnessCommander:
                     + f" ({escape(', '.join(s.id for s in known_problems))})[/yellow]"
                 )
             for reason in inconclusive_reasons:
-                self.console.print(f"[yellow][!] {bi('證據缺口', 'Evidence gap')}: {reason}[/yellow]")
+                # 原因裡有檔名與模型提到的名稱：escape 掉 rich 標記，`[red]` 才會原樣印出
+                # Reasons carry file names and names a model wrote: escape rich markup so `[red]` prints as is
+                self.console.print(f"[yellow][!] {bi('證據缺口', 'Evidence gap')}: {escape(reason)}[/yellow]")
 
             commit, dirty = self._target_revision(target_dir)
             run_meta = RunMetadata(
@@ -677,13 +679,13 @@ class VibeHarnessCommander:
             with open(output_report_path, "w", encoding="utf-8") as f:
                 f.write(md_content)
 
-            self.console.print(f"[+] {bi('最終稽核報告已寫入', 'Final audit report written to')}: [bold green]{output_report_path}[/bold green]")
+            self.console.print(f"[+] {bi('最終稽核報告已寫入', 'Final audit report written to')}: [bold green]{escape(output_report_path)}[/bold green]")
 
             if output_sarif_path:
                 sarif_content = self.reporter.generate_sarif_report(symbols=symbols, **report_args)
                 with open(output_sarif_path, "w", encoding="utf-8") as f:
                     f.write(sarif_content)
-                self.console.print(f"[+] {bi('SARIF 報告已寫入', 'SARIF report written to')}: [bold green]{output_sarif_path}[/bold green] ({bi('供 GitHub Code Scanning 使用', 'for GitHub Code Scanning')})")
+                self.console.print(f"[+] {bi('SARIF 報告已寫入', 'SARIF report written to')}: [bold green]{escape(output_sarif_path)}[/bold green] ({bi('供 GitHub Code Scanning 使用', 'for GitHub Code Scanning')})")
             verdict_color = {Verdict.READY_TO_SHIP: "green", Verdict.INCONCLUSIVE: "yellow"}.get(overall_status, "red")
             self.console.print(Panel.fit(
                 f"[bold]{bi('品質閘門判定結果', 'Quality Gate Verdict')}:[/bold] [{verdict_color} bold]{overall_status}[/{verdict_color} bold]\n"

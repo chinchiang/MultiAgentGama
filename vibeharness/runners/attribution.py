@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from vibeharness.core.i18n import bi
 from vibeharness.core.models import GeneratedTest, TestExecutionResult, TestStatus
 from vibeharness.core.sandbox import TIMEOUT_EXIT_CODE
+from vibeharness.core.sanitize import clean_model_text
 
 # 與執行器同一個紀錄器名稱：log 格式會印出名稱，搬家不能改變輸出
 # The executor's logger name: the log format prints the name, so the move must not change the output
@@ -622,7 +623,7 @@ def _generate_poc(test: GeneratedTest, fn_name: str) -> str:
         f"{header}\n"
         f"{c} {bi('目標', 'Target')}: {header_field(test.target_component)}\n"
         f"{c} {bi('失敗情境', 'Failure Context')}: {header_field(test.title)}\n"
-        f"{c} {bi('測試函式', 'Test Function')}: {fn_name}\n"
+        f"{c} {bi('測試函式', 'Test Function')}: {header_field(fn_name)}\n"
         f"{c} {bi('測試程式碼', 'Test Code')}:\n{test.code}\n"
     )
 
@@ -631,13 +632,16 @@ def header_field(text: Optional[str]) -> str:
     """插入產生的原始碼中 '#' 註解的中繼資料。
 
     CR／LF（及其他行分隔符）會逃出註解並注入 check_test_code()
-    從未驗證過的程式碼，所以每個行分隔符都換成空格。
+    從未驗證過的程式碼，所以每個行分隔符都換成空格。終端機跳脫序列、控制與不可見字元先以 clean_model_text 去除，
+    模型寫的 testcase 名稱因此無法把它們帶進 PoC。
     Metadata interpolated into a '#' comment in generated source.
 
     CR/LF (and other line separators) would escape the comment and inject code that
-    check_test_code() never validated, so every line separator becomes a space.
+    check_test_code() never validated, so every line separator becomes a space. Terminal escapes, control and
+    invisible characters are removed first (clean_model_text), so a testcase name a model wrote cannot carry them
+    into a PoC.
     """
-    return " ".join(str(text or "").splitlines()) or "-"
+    return " ".join(clean_model_text(str(text or "")).splitlines()) or "-"
 
 
 REASON_NO_TEST_COLLECTED = bi("產生的程式碼中沒有收集到任何測試", "No test was collected from the generated code")
