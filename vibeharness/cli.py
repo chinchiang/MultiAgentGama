@@ -533,11 +533,6 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     # 自動發現的設定檔可能來自不可信的 checkout：在 harness 執行任何東西之前拒絕安全敏感的鍵
     # A discovered config may come from an untrusted checkout: refuse security-sensitive keys before the
     # harness runs anything
-    # 設定檔只載入、驗證一次，連同 CLI 旗標的覆寫值；數值旗標的範圍與 --cache-dir 的位置已在上面先檢查，
-    # 其他設定問題都在檢查目標與其餘旗標之前回報
-    # The config is loaded and validated once, together with the CLI flags' overrides; the numeric flags' ranges and
-    # --cache-dir's location were checked above, and every other config problem is reported before the target and
-    # the remaining flags are checked
     # 旗標的範圍在載入設定之前檢查，訊息才會指出旗標名稱（load_settings 會對 Overrides 再驗證一次，給函式庫呼叫端）
     # Flag ranges are checked before the settings load, so the message names the flag (load_settings validates
     # Overrides once more, for library callers)
@@ -556,6 +551,11 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         except ConfigError as e:
             print(f"{bi('錯誤', 'Error')}: {bi('harness 設定問題', 'harness configuration problem')}: {e}", file=sys.stderr)
             sys.exit(USAGE_ERROR_EXIT_CODE)
+    # 設定檔只載入、驗證一次，連同 CLI 旗標的覆寫值；數值旗標的範圍與 --cache-dir 的位置已在上面先檢查，
+    # 其他設定問題都在檢查目標與其餘旗標之前回報
+    # The config is loaded and validated once, together with the CLI flags' overrides; the numeric flags' ranges and
+    # --cache-dir's location were checked above, and every other config problem is reported before the target and
+    # the remaining flags are checked
     try:
         settings = load_settings(args.config, origin=origin, overrides=Overrides(
             execution_mode=args.mode, max_files=args.max_files, max_model_calls=args.max_model_calls,

@@ -47,7 +47,7 @@
 - 黑箱模組第一個失敗的 testcase 不是測試自己的斷言（非斷言的失敗，或目標自己的 `assert`），後面的才是時，記為突破（`BLOCKED_CRITICAL_RISK`），原因與 PoC 取自那個斷言；過去只看第一個失敗，所以會讀成未分類的失敗（`INCONCLUSIVE`）。白箱測試照舊回報第一個失敗（#182）。
 - `--baseline` 依次數計算已知問題：基準報告裡出現 K 次的指紋，這次最多抵掉 K 筆，第 K+1 筆算新的。過去指紋是集合，一筆已知的 VH-AI-007／VH-AI-003 命中（key 不含行號）或一筆重複，就能壓下同檔任意多筆新命中（#182）。
 - 數值設定拒絕 NaN 與 ±Inf（YAML 的 `.nan`／`.inf`；NaN 過去能通過所有上下限），`--base-url` 拒絕不在 1–65535 的連接埠（過去接受 `http://localhost:99999`），`load_settings` 也以 `ConfigError` 驗證程式自行建構的 `Overrides`（`max_files`、`max_model_calls`、`mutation_max_mutants`）。CLI 在載入設定之前先檢查這三個旗標，所以旗標錯誤現在比設定檔錯誤先回報，仍是 exit 5 並指出旗標名稱（#182）。
-- `--changed-since` 拒絕空的或以 `-` 開頭的 ref（目前是 rev-parse 的 `^{commit}` 碰巧擋下 `--output=<路徑>`），`git diff`／`git ls-files` 失敗時是 exit 5，不再當成沒有檔案改變。單檔的 `--target` 也像目錄裡的檔案一樣套用 `only_files`、`include`／`exclude`、自動發現設定檔的篩選揭露與 `is_unsafe_file`（#182）。
+- `--changed-since` 拒絕空的或以 `-` 開頭的 ref（目前是 rev-parse 的 `^{commit}` 碰巧擋下 `--output=<路徑>`），`git diff`／`git ls-files` 失敗時是 exit 5，不再當成沒有檔案改變。原始碼或設定類的單檔 `--target` 也像目錄裡的檔案一樣套用 `only_files`、`include`／`exclude` 與自動發現設定檔的篩選揭露（#182）。
 - 主控台印證據缺口原因與輸出路徑時不再解讀 rich 標記；報告的 PoC 先經過 `clean_model_text`；PoC 的測試函式那一行去除控制字元與換行（`header_field`）；當掉的呼叫的錯誤字串先以 `redact_secrets` 遮蔽，再寫進日誌與 call_log（#182）。
 
 ### 測試
