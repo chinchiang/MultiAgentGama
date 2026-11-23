@@ -270,8 +270,9 @@ MultiAgentGama/
 │   ├── recite_design_refs.py    # 檢查設計文件的 path:line 引用，並依 git diff 重新對應到目前的程式碼
 │   └── test_sdist.py            # 在本機重現 CI 的 package job：建 sdist、解開、在裡面跑測試套件
 ├── tests/                       # 工具包本身之測試（離線、不需 API 金鑰）
+│   ├── clean_live.py            # clean_live_run 的乾淨小目標與專用的假模型回答：live＋假 litellm 下沒有任何證據缺口
 │   ├── config_files.py          # 讀出內建設定、寫出修改後的測試用設定檔（load_config／write_config）
-│   ├── conftest.py              # 共用 fixture：以假 litellm 讓 live 路徑離線執行；git_repo 建不受全域 git 設定影響的測試 repo
+│   ├── conftest.py              # 共用 fixture：以假 litellm 讓 live 路徑離線執行；git_repo 建不受全域 git 設定影響的測試 repo；clean_live_run 跑乾淨目標的 live pipeline
 │   ├── test_agent_call.py       # 透過 ask／ask_text 測試代理呼叫：提示組裝與通道、只有可用的 items 到 mapper、模擬輸出、純文字呼叫
 │   ├── test_ai_security.py      # OWASP LLM Top 10 2026／ATLAS 控制與確定性 AI 安全規則
 │   ├── test_baseline.py                # --baseline：載入與重算、已知問題不計入、action.yml 結構
@@ -281,6 +282,7 @@ MultiAgentGama/
 │   ├── test_check_all.py               # check_all.py：摘要留下 TOTAL 覆蓋率、計數與 red-on-base 每一行，失敗、逾時與 --skip 都寫明，逾時的命令會被停掉
 │   ├── test_check_new_tests_red_on_base.py # 新測試在基準上要紅：挑哪些測試（含類別、子目錄）、紅綠、skip（含整個檔案）與 xfail、參數化、收集不到與語法、編碼錯誤、rootdir 與 -x、結束碼與清除、收集錯誤不擋其他檔案並點名、逾時列成 hang 並停掉行程樹
 │   ├── test_check_reversions.py        # 改回一項就列出變紅的測試、沒有紅燈時結束碼 1、收集錯誤算紅、工作目錄不乾淨或原文不唯一就拒絕、pytest 跑不起來也寫回
+│   ├── test_clean_live_run.py          # clean_live_run 的基準：乾淨目標在 live＋假 litellm 下是 READY_TO_SHIP、沒有缺口
 │   ├── test_cross_verification.py      # 交叉驗證：模型不評審自己的發現、依票數判定
 │   ├── test_dedup_and_budget.py        # 重複發現合併與 token 預算內的提示上下文
 │   ├── test_design_refs.py             # 設計文件的 path:line 引用落在它指向的名稱上、中英逐行一致；重新對應的邏輯

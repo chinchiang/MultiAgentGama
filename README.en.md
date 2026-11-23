@@ -270,8 +270,9 @@ MultiAgentGama/
 │   ├── recite_design_refs.py    # Checks the design documents' path:line references and remaps them to the current code via git diff
 │   └── test_sdist.py            # Reproduces CI's package job locally: build the sdist, extract it, run the suite inside
 ├── tests/                       # The toolkit's own tests (offline, no API keys needed)
+│   ├── clean_live.py            # clean_live_run's clean small target and its own fake model answers: no evidence gap under live + the fake litellm
 │   ├── config_files.py          # Read the bundled config, write an edited copy for a test (load_config / write_config)
-│   ├── conftest.py              # Shared fixtures: a fake litellm so the live paths run offline; git_repo builds test repos that ignore the global git config
+│   ├── conftest.py              # Shared fixtures: a fake litellm so the live paths run offline; git_repo builds test repos that ignore the global git config; clean_live_run runs the live pipeline on the clean target
 │   ├── test_agent_call.py       # Agent calls through ask / ask_text: prompt assembly and channels, only usable items to the mapper, Simulated output, the plain-text call
 │   ├── test_ai_security.py      # OWASP LLM Top 10 2026 / ATLAS controls and the deterministic AI-security rules
 │   ├── test_baseline.py                # --baseline: loading and recomputing, known problems not counted, action.yml structure
@@ -281,6 +282,7 @@ MultiAgentGama/
 │   ├── test_check_all.py               # check_all.py: the summary keeps the TOTAL coverage, the counts and every red-on-base line, names failures, timeouts and --skip; a timed-out command is stopped
 │   ├── test_check_new_tests_red_on_base.py # New tests red on the base: which tests (classes, subdirectories), red / green / skipped (whole files too) / xfail, parametrized, uncollected tests, syntax and encoding errors, rootdir and -x, exit codes, cleanup, a collection error blocking no other file and named, a timeout listed as hang with the process tree stopped
 │   ├── test_check_reversions.py        # A reversion lists the tests it turns red, exit 1 when none, collection errors count, a dirty tree or a non-unique old text is refused, written back when pytest cannot run
+│   ├── test_clean_live_run.py          # clean_live_run's baseline: the clean target is READY_TO_SHIP with no gap under live + the fake litellm
 │   ├── test_cross_verification.py      # Cross-verification: models never judge their own findings, vote tallies
 │   ├── test_dedup_and_budget.py        # Duplicate-finding merge and prompt context within the token budget
 │   ├── test_design_refs.py             # The design documents' path:line references land on the names they point at, match zh/en line for line; the remapping logic

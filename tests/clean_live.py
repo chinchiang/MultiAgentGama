@@ -1,0 +1,60 @@
+"""`clean_live_run` 夾具的乾淨小目標與它專用的假模型回答（responder）。不是測試模組（檔名不以 `test_` 開頭）。
+live 模式＋假 litellm 不會有 mock 的 `simulated` 缺口；這裡的回答讓乾淨目標上每一個證據缺口都不成立，所以一次乾淨的
+執行是 READY_TO_SHIP（`tests/test_clean_live_run.py` 檢查），建在上面的測試就能斷言判定本身（#200）。
+回答只看系統提示詞的角色句子（認出是哪個 agent）與使用者提示詞的內容，不看措辭的其他細節。
+The clean small target of the `clean_live_run` fixture and its own fake model answers (the responder). Not a test
+module (the name does not start with `test_`). Live mode with the fake litellm has no `simulated` gap, unlike mock;
+these answers make every evidence gap false on the clean target, so one clean run is READY_TO_SHIP (checked by
+`tests/test_clean_live_run.py`), and tests built on it can assert the Verdict itself (#200).
+The answers depend only on the system prompt's role sentence (which agent it is) and the user prompt's content, not
+on any other detail of the wording."""
+import json
+import re
+
+# 乾淨目標：一個有 docstring 的純函式 ／ The clean target: one pure function with a docstring
+CLEAN_TARGET = {
+    "calc.py": 'def add(a, b):\n    """Return the sum of a and b."""\n    return a + b\n',
+}
+
+# 一位審查者（Claude）回報一筆 LOW 的發現，其他審查者沒有發現：沒有任何發現時白箱測試產生器不產生測試，
+# 「沒有執行任何白箱測試」就成了缺口。這筆發現的測試會通過，所以它只是一個假說，不影響判定
+# One reviewer (Claude) reports one LOW finding and the others none: with no finding at all the white-box test
+# generator writes no test and "no white-box tests were executed" becomes a gap. This finding's test passes, so it
+# stays a hypothesis and does not affect the Verdict
+_FINDING = {
+    "symbol_name": "add", "severity": "LOW", "title": "Sum of two numbers is never checked",
+    "description": "No test checks the sum.", "root_cause": "No test.", "suspected_vibe_flaw": "Happy path only.",
+    "suggested_test_scenario": "Add two small numbers.", "owasp_mapping": "",
+}
+_WHITEBOX_TEST = "from calc import add\n\n\ndef test_two_plus_three_is_five():\n    assert add(2, 3) == 5\n"
+
+# 一個威脅與它會通過的攻擊測試：沒有威脅是 `no_threats` 缺口，威脅沒有可執行的測試是 `untested_threats`
+# One threat and its attack test, which passes: no threat is the `no_threats` gap, a threat without an executable test
+# is `untested_threats`
+_THREAT = {
+    "threat_id": "THREAT-01", "stride_category": "Tampering", "owasp_mapping": "", "atlas_mapping": "",
+    "title": "A sum could be wrong", "description": "A caller could get a wrong sum.", "asset_at_risk": "results",
+    "attack_vector": "function call", "trust_boundary_crossed": "caller to calc", "severity": "LOW",
+    "attack_scenario": "Call add with two numbers.", "test_verification_goal": "The sum is right.",
+}
+_ATTACK_TEST = "from calc import add\n\n\ndef test_the_sum_cannot_be_tampered_with():\n    assert add(2, 3) == 5\n"
+
+
+def respond(system: str, user: str) -> str:
+    """乾淨目標上一次模型呼叫的回答文字；不認得的 agent 讓測試失敗。
+    The answer text of one model call on the clean target; an agent it does not know fails the test."""
+    if "white-box AI code auditor" in system:
+        return json.dumps({"findings": [_FINDING] if "(Claude)" in system else []})
+    if "code-review verifier" in system:
+        indices = sorted({int(n) for n in re.findall(r"^\[(\d+)\]", user, re.MULTILINE)})
+        return json.dumps({"verdicts": [{"index": i, "verdict": "confirm", "reason": "Plausible."} for i in indices]})
+    if "QA Engineer" in system:
+        return json.dumps({"test_id": "WB-TEST-01", "title": "The sum is right", "rationale": "Checks the sum.",
+                           "expected_outcome": "The assertion holds.", "code": _WHITEBOX_TEST})
+    if "Threat Modeling Specialist" in system:
+        return json.dumps({"system_description": "A calculator.", "entrypoints": ["add"],
+                           "trust_boundaries": ["caller to calc"], "assets": ["results"], "threats": [_THREAT]})
+    if "Offensive Security" in system:
+        return json.dumps({"test_id": "BB-TEST-THREAT-01", "title": "Attack THREAT-01", "rationale": "Tries the threat.",
+                           "expected_outcome": "The attack is refused.", "code": _ATTACK_TEST})
+    raise AssertionError("clean_live responder: unknown agent: " + system[:80])
