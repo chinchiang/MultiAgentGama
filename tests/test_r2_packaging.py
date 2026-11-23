@@ -254,6 +254,76 @@ def test_every_changelog_section_has_a_compare_link(changelog):
     assert releases[0] == __version__
 
 
+def _unreleased_layout_problems(text):
+    """CHANGELOG `## [Unreleased]` 區段（到下一個 `## [` 為止）的版面問題，每筆是「line N: 說明」：標題後面沒有接一個空行、
+    條目後面直接接標題、連續兩個空行。已發布的區段不檢查。
+    The layout problems of a CHANGELOG's `## [Unreleased]` section (up to the next `## [`), each "line N: what":
+    a heading not followed by one blank line, a heading straight after an entry, two blank lines in a row. Released
+    sections are not checked."""
+    lines = text.split("\n")
+    start = next(i for i, line in enumerate(lines) if line.startswith("## [Unreleased]"))
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## [")), len(lines))
+    problems = []
+    for i in range(start, end + 1 if end < len(lines) else end):
+        line, number = lines[i], i + 1
+        heading = line.startswith(("## ", "### "))
+        if heading and i < end and (i + 1 >= len(lines) or lines[i + 1].strip()):
+            problems.append(f"line {number}: heading {line!r} is not followed by one blank line")
+        if heading and i > start and lines[i - 1].strip() and not lines[i - 1].startswith(("## ", "### ")):
+            problems.append(f"line {number}: heading {line!r} has no blank line before it")
+        if i > start and not line.strip() and not lines[i - 1].strip():
+            problems.append(f"line {number}: two blank lines in a row")
+    return problems
+
+
+_GOOD_UNRELEASED = """\
+# Changelog
+
+## [Unreleased]
+
+### Fixed
+
+- one fix
+- another fix
+
+### Engineering
+
+- one tool change
+
+## [0.1.0] - 2026-01-01
+### Added
+- old entries sit right under their heading
+"""
+
+
+@pytest.mark.parametrize("good, bad, line, problem", [
+    ("### Fixed\n\n- one fix", "### Fixed\n- one fix", 5, "is not followed by one blank line"),
+    ("- another fix\n\n### Engineering", "- another fix\n### Engineering", 9, "has no blank line before it"),
+    ("### Engineering\n\n- one", "### Engineering\n\n\n- one", 12, "two blank lines"),
+    ("## [Unreleased]\n\n### Fixed", "## [Unreleased]\n### Fixed", 3, "is not followed by one blank line"),
+])
+def test_the_unreleased_layout_check_names_each_misplaced_line(good, bad, line, problem):
+    """`[Unreleased]` 的版面檢查：標題後面接一個空行再接條目、標題前面有空行、不連續空兩行；違規時寫出行號與問題。
+    已發布的區段不檢查（[0.4.0] 以前的條目直接接在標題下）（#199）。
+    The `[Unreleased]` layout check: a heading is followed by one blank line and then an entry, a heading has a blank
+    line before it, and no two blank lines follow each other; a violation names its line and the problem. Released
+    sections are not checked (entries up to [0.4.0] sit right under their headings) (#199)."""
+    assert _unreleased_layout_problems(_GOOD_UNRELEASED) == []
+    assert good in _GOOD_UNRELEASED
+    text = _GOOD_UNRELEASED.replace(good, bad, 1)
+    problems = _unreleased_layout_problems(text)
+    assert len(problems) == 1 and problems[0].startswith(f"line {line}: ") and problem in problems[0], problems
+
+
+@pytest.mark.parametrize("changelog", ["CHANGELOG.md", "CHANGELOG.en.md"])
+def test_the_unreleased_section_keeps_its_blank_lines(changelog):
+    """兩份 CHANGELOG 的 `[Unreleased]` 標題後面都接一個空行：#197 用固定行號插入條目，把空行擠到條目後面，而中英行數相同的
+    測試照樣是綠的（#199）。
+    Both CHANGELOGs keep one blank line after each `[Unreleased]` heading: #197 inserted an entry at a fixed line
+    number, pushing the blank line below it, and the zh / en line-count test stayed green (#199)."""
+    assert _unreleased_layout_problems(_read(changelog)) == []
+
+
 # --- 設計文件 §15.2／§16.4、用法範例與 workflow 釘版 ---------------------------------------------
 # --- Design §15.2 / §16.4, the usage examples and the workflow pins ------------------------------
 
