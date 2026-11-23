@@ -200,6 +200,13 @@ class VibeHarnessCommander:
         未暫存與未追蹤），供 --changed-since 使用。ref 無法解析時拋出 ValueError。
         Absolute paths of files under the target that differ from `since_ref` (committed, staged,
         unstaged and untracked), for --changed-since. Raises ValueError when the ref cannot be resolved."""
+        # 以 "-" 開頭的 ref 會被 git 當成選項（`--output=<路徑>` 讓 git diff 寫檔）；目前是 rev-parse 的
+        # `^{commit}` 碰巧擋下它，這裡明確拒絕，不依賴那個巧合
+        # A ref starting with "-" is taken by git as an option (`--output=<path>` makes git diff write a file); today
+        # rev-parse's `^{commit}` happens to stop it, and this refuses it explicitly instead of relying on that
+        if not since_ref.strip() or since_ref.lstrip().startswith("-"):
+            raise ValueError(bi(f"--changed-since：git ref {since_ref!r} 不可為空或以 '-' 開頭",
+                                f"--changed-since: git ref {since_ref!r} must not be empty or start with '-'"))
         cwd = self.work_dir_for(target_dir)
         top = self._git(["rev-parse", "--show-toplevel"], cwd)
         if top is None:
@@ -214,8 +221,15 @@ class VibeHarnessCommander:
         # 兩個指令都在版本庫根目錄執行，因此其輸出路徑相對於根目錄；-z 讓非 ASCII 檔名原樣輸出，不被 C 風格加引號
         # Both commands run from the repository root so their output paths are root-relative; -z keeps non-ASCII
         # names verbatim instead of C-quoting them
-        diff = self._git(["diff", "--name-only", "-z", "--diff-filter=ACMR", since_ref, "--", spec], root) or ""
-        untracked = self._git(["ls-files", "-z", "--others", "--exclude-standard", "--", spec], root) or ""
+        # git 失敗（None）不能當成「沒有檔案改變」：--changed-since 會安靜地什麼都不審
+        # A git failure (None) must not read as "no file changed": --changed-since would quietly review nothing
+        diff = self._git(["diff", "--name-only", "-z", "--diff-filter=ACMR", since_ref, "--", spec], root)
+        untracked = self._git(["ls-files", "-z", "--others", "--exclude-standard", "--", spec], root)
+        for command, output in (("git diff", diff), ("git ls-files", untracked)):
+            if output is None:
+                raise ValueError(bi(f"--changed-since：{command} 在 {root} 失敗，無法得知哪些檔案改變",
+                                    f"--changed-since: {command} failed in {root}, so the changed files are unknown"))
+        assert diff is not None and untracked is not None
         paths = set()
         for name in (diff + untracked).split("\0"):
             if not name:
@@ -587,7 +601,9 @@ class VibeHarnessCommander:
                     + f" ({escape(', '.join(s.id for s in known_problems))})[/yellow]"
                 )
             for reason in inconclusive_reasons:
-                self.console.print(f"[yellow][!] {bi('證據缺口', 'Evidence gap')}: {reason}[/yellow]")
+                # 原因裡有檔名與模型提到的名稱：escape 掉 rich 標記，`[red]` 才會原樣印出
+                # Reasons carry file names and names a model wrote: escape rich markup so `[red]` prints as is
+                self.console.print(f"[yellow][!] {bi('證據缺口', 'Evidence gap')}: {escape(reason)}[/yellow]")
 
             commit, dirty = self._target_revision(target_dir)
             run_meta = RunMetadata(
@@ -663,18 +679,18 @@ class VibeHarnessCommander:
             with open(output_report_path, "w", encoding="utf-8") as f:
                 f.write(md_content)
 
-            self.console.print(f"[+] {bi('最終稽核報告已寫入', 'Final audit report written to')}: [bold green]{output_report_path}[/bold green]")
+            self.console.print(f"[+] {bi('最終稽核報告已寫入', 'Final audit report written to')}: [bold green]{escape(output_report_path)}[/bold green]")
 
             if output_sarif_path:
                 sarif_content = self.reporter.generate_sarif_report(symbols=symbols, **report_args)
                 with open(output_sarif_path, "w", encoding="utf-8") as f:
                     f.write(sarif_content)
-                self.console.print(f"[+] {bi('SARIF 報告已寫入', 'SARIF report written to')}: [bold green]{output_sarif_path}[/bold green] ({bi('供 GitHub Code Scanning 使用', 'for GitHub Code Scanning')})")
+                self.console.print(f"[+] {bi('SARIF 報告已寫入', 'SARIF report written to')}: [bold green]{escape(output_sarif_path)}[/bold green] ({bi('供 GitHub Code Scanning 使用', 'for GitHub Code Scanning')})")
             verdict_color = {Verdict.READY_TO_SHIP: "green", Verdict.INCONCLUSIVE: "yellow"}.get(overall_status, "red")
             self.console.print(Panel.fit(
                 f"[bold]{bi('品質閘門判定結果', 'Quality Gate Verdict')}:[/bold] [{verdict_color} bold]{overall_status}[/{verdict_color} bold]\n"
                 f"{bi('白箱通過', 'White-Box Passed')}: {wb_passed} | {bi('黑箱突破', 'Black-Box Breaches')}: {summary.blackbox_security_breaches}\n"
-                f"{bi('報告', 'Report')}: {output_report_path}",
+                f"{bi('報告', 'Report')}: {escape(output_report_path)}",
                 title=bi("驗證摘要", "Verification Summary"),
                 border_style=verdict_color
             ))

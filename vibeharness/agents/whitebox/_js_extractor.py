@@ -343,7 +343,10 @@ class _JsTsExtractor:
         # `[^{;]*\{`, but a file without `{` no longer makes every `class X` scan to the end of the file). A class nested
         # inside an extracted class is no symbol of its own: its source is already in the enclosing class / method,
         # and nested snippets would otherwise add up to quadratic size
-        class_re = re.compile(rf"(?:export\s+)?(?:abstract\s+)?class\s+({_JS_IDENTIFIER})")
+        # 前面不能接識別字、`$` 或 `.`：`subclass`、`el.class` 換行後接名稱不是類別宣告
+        # Not after an identifier character, `$` or `.`: `subclass` or `el.class` followed by a newline and a name is
+        # no class declaration
+        class_re = re.compile(rf"(?<![\w$.])(?:export\s+)?(?:abstract\s+)?class\s+({_JS_IDENTIFIER})")
         stops = [s.start() for s in re.finditer(r"[{;]", masked)]
         consumed = 0
         class_end = -1

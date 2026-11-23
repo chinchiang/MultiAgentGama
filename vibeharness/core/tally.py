@@ -5,7 +5,7 @@ Known problems. The Quality Gate and the summary read the run's full tally; the 
 results available in phases 3 and 5."""
 import os
 from dataclasses import dataclass
-from typing import AbstractSet, Callable, Dict, Generic, List, Optional, Sequence, Tuple, TypeVar
+from typing import Callable, Dict, Generic, List, Mapping, Optional, Sequence, Tuple, TypeVar
 
 from vibeharness.core.baseline import Baseline
 from vibeharness.core.identity import breach_key, static_key, whitebox_failure_key
@@ -50,18 +50,23 @@ def _unsplit(items: Sequence[T]) -> Split[T]:
 
 def _partition(
     items: Sequence[T],
-    known_keys: AbstractSet[str],
+    known_keys: Mapping[str, int],
     kind: str,
     describe: Callable[[T], Tuple[Optional[str], str, str]],
     suppressed: List[BaselineSuppressedItem],
 ) -> Split[T]:
-    """依基準鍵集將一組證據拆成 `Split(all, new, known)`，並將命中的已知項目加入 `suppressed`。
-    Partitions `items` into `Split(all, new, known)` against `known_keys`, appending matched items to `suppressed`."""
+    """依基準鍵與次數將一組證據拆成 `Split(all, new, known)`，並將命中的已知項目加入 `suppressed`。每個鍵最多抵掉它
+    在基準線裡出現的次數，之後同指紋的項目算新的。
+    Partitions `items` into `Split(all, new, known)` against the baseline keys and their counts, appending matched
+    items to `suppressed`. Each key offsets at most as many items as it appeared in the baseline; later items with
+    that fingerprint are new."""
+    remaining = dict(known_keys)
     new_items: List[T] = []
     known_items: List[T] = []
     for item in items:
         key, item_id, title = describe(item)
-        if key is not None and key in known_keys:
+        if key is not None and remaining.get(key, 0) > 0:
+            remaining[key] -= 1
             known_items.append(item)
             suppressed.append(BaselineSuppressedItem(kind=kind, id=item_id, title=title, fingerprint=key))
         else:

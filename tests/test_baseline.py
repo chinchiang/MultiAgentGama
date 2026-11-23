@@ -106,7 +106,7 @@ def test_a_failed_whitebox_item_with_a_fingerprint_is_known_even_if_it_does_not_
     }
     path = tmp_path / "old.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
-    assert bl.load_baseline(str(path)).findings == {"FP-FAILED-UNPARSEABLE"}
+    assert bl.load_baseline(str(path)).findings == {"FP-FAILED-UNPARSEABLE": 1}
 
 
 # --- 經過關卡的端對端 -------------------------------------------------------------------------

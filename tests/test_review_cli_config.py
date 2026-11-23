@@ -403,3 +403,23 @@ def test_setup_logging_installs_the_safe_formatter(monkeypatch):
     finally:
         for handler in root.handlers:
             handler.close()
+
+
+# --- 旗標的範圍在設定檔之前檢查（#182 審查） --------------------------------------------------------
+# --- Flag ranges are checked before the config file (#182 review) -----------------------------------
+
+@pytest.mark.parametrize("flag, value, message", [
+    ("--max-files", "0", "--max-files must be at least 1"),
+    ("--max-model-calls", "-1", "--max-model-calls must not be negative"),
+    ("--mutation-max-mutants", "0", "--mutation-max-mutants must be at least 1"),
+])
+def test_a_bad_flag_is_reported_before_a_bad_config_file(monkeypatch, tmp_path, capsys, flag, value, message):
+    """旗標錯誤與設定檔錯誤同時存在時，先回報指出旗標名稱的訊息（exit 5），設定檔還沒有被讀。
+    With a bad flag and a bad config file together, the message naming the flag comes first (exit 5), before the
+    config file is read."""
+    # master 也會拒絕的設定錯誤（範圍 0–5），所以只有檢查順序決定先看到哪個訊息
+    # A config error master rejects too (range 0-5), so only the check order decides which message comes first
+    config = _write_config(tmp_path, "global:\n  retry_invalid_output: 99\n")
+    assert _run_cli(monkeypatch, "-t", str(tmp_path), "-m", "mock", "-c", config, flag, value) == 5
+    err = capsys.readouterr().err
+    assert message in err and "retry_invalid_output" not in err

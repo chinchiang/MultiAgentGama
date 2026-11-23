@@ -27,7 +27,8 @@ from vibeharness.core.llm_gateway import LLMGateway, LLMGatewayError
 from vibeharness.core.models import CallKind  # 也從這裡匯出 ／ re-exported here too
 from vibeharness.core.model_output import OutputSchema
 from vibeharness.core.sanitize import (
-    UNTRUSTED_CODE_POLICY, UNTRUSTED_MODEL_POLICY, untrusted_block, untrusted_model_block,
+    UNTRUSTED_CODE_POLICY, UNTRUSTED_MODEL_POLICY, clean_model_text, redact_secrets, untrusted_block,
+    untrusted_model_block,
 )
 
 _T = TypeVar("_T")
@@ -406,10 +407,16 @@ def fan_out(gateway: LLMGateway, calls: Sequence[Call[_T]], *, fallback: _T, log
 
 def _book(gateway: LLMGateway, call: "Call[Any]", error: Exception, logger: logging.Logger) -> None:
     zh, en = call.label
-    logger.error(bi(f"{zh}失敗：{type(error).__name__}: {error}", f"{en} failed: {type(error).__name__}: {error}"))
+    # 例外訊息可能帶著請求內容、設定值或模型回答：先遮蔽機密、去除跳脫序列與控制字元，再寫進日誌與 call_log
+    # （後者會進報告）；不依賴 CLI 的 SafeLogFormatter，函式庫呼叫端自己的 logger 也拿到乾淨的文字
+    # An exception message may carry request content, settings or a model answer: secrets are redacted and escape
+    # sequences and control characters removed before it reaches the log and the call_log (the latter ends up in the
+    # report), without relying on the CLI's SafeLogFormatter, so a library caller's own logger gets clean text too
+    detail = clean_model_text(redact_secrets(f"{type(error).__name__}: {error}"))
+    logger.error(bi(f"{zh}失敗：{detail}", f"{en} failed: {detail}"))
     # 記入 call_log，讓品質閘門把缺少的結果視為證據缺口
     # Booked in call_log so the quality gate sees the missing result as an evidence gap
-    gateway.record_failure(call.agent_id, f"{type(error).__name__}: {error}", kind=call.kind)
+    gateway.record_failure(call.agent_id, detail, kind=call.kind)
 
 
 def _run_ordered(calls: List[Callable[[], _T]], max_workers: int) -> List[Tuple[Optional[_T], Optional[Exception]]]:

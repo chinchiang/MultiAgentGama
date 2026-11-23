@@ -122,3 +122,46 @@ def test_no_calls_returns_an_empty_list_without_a_pool(monkeypatch):
         raise AssertionError("no thread pool may be opened for an empty list of calls")
     monkeypatch.setattr("vibeharness.core.agent_call.ThreadPoolExecutor", no_pool)
     assert fan_out(_gateway(), [], fallback=None, logger=LOGGER) == []
+
+
+# --- 當掉呼叫的錯誤訊息先遮蔽機密（#182 第 6 組） ----------------------------------------------------
+# --- A crashed call's error is redacted before it is logged or booked (#182 group 6) -----------------
+
+def test_a_crashed_calls_error_is_redacted_in_the_log_and_the_call_log(caplog):
+    """例外訊息常帶著請求內容或設定值：遮蔽後才寫進日誌與 call_log（後者會進報告）。
+    An exception message often carries request content or settings: it is redacted before it reaches the log and the
+    call_log (the latter ends up in the report)."""
+    key = "sk-ant-" + "a1B2c3D4e5F6g7H8i9J0k1L2"
+    fired = []
+
+    def boom():
+        fired.append(True)
+        raise RuntimeError(f"provider rejected key {key}")
+
+    gateway = _gateway()
+    with caplog.at_level(logging.ERROR):
+        fan_out(gateway, [_call(boom)], fallback=None, logger=LOGGER)
+    assert fired, "the fault was never injected"
+    assert key not in caplog.text and "<REDACTED:anthropic-key>" in caplog.text
+    reasons = [r.reason or "" for r in gateway.call_log]
+    assert reasons and all(key not in r for r in reasons) and any("<REDACTED:anthropic-key>" in r for r in reasons)
+
+
+def test_a_crashed_calls_error_reaches_the_log_and_call_log_without_control_characters(caplog):
+    """不靠 CLI 的 SafeLogFormatter：函式庫呼叫端自己的 logger 與會寫進報告的 call_log 也不能帶跳脫序列（#182 審查）。
+    Without the CLI's SafeLogFormatter: a library caller's own logger and the call_log that reaches the report carry
+    no escape sequence either (#182 review)."""
+    fired = []
+
+    def boom():
+        fired.append(True)
+        raise RuntimeError("bad answer \x1b]52;c;SGk=\x07\x1b[31m red")
+
+    gateway = _gateway()
+    with caplog.at_level(logging.ERROR):
+        fan_out(gateway, [_call(boom)], fallback=None, logger=LOGGER)
+    assert fired, "the fault was never injected"
+    reasons = [r.reason or "" for r in gateway.call_log]
+    assert reasons and "bad answer" in reasons[0]
+    for text in (caplog.text, *reasons):
+        assert "\x1b" not in text and "\x07" not in text

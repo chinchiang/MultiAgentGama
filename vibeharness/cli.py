@@ -533,9 +533,15 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     # 自動發現的設定檔可能來自不可信的 checkout：在 harness 執行任何東西之前拒絕安全敏感的鍵
     # A discovered config may come from an untrusted checkout: refuse security-sensitive keys before the
     # harness runs anything
-    # 設定檔只載入、驗證一次，連同 CLI 旗標的覆寫值；任何設定問題都在檢查目標與旗標之前回報
-    # The config is loaded and validated once, together with the CLI flags' overrides; every config problem is
-    # reported before the target and the flags are checked
+    # 旗標的範圍在載入設定之前檢查，訊息才會指出旗標名稱（load_settings 會對 Overrides 再驗證一次，給函式庫呼叫端）
+    # Flag ranges are checked before the settings load, so the message names the flag (load_settings validates
+    # Overrides once more, for library callers)
+    if args.max_files is not None and args.max_files < 1:
+        parser.error(bi("--max-files 至少要是 1", "--max-files must be at least 1"))
+    if args.mutation_max_mutants is not None and args.mutation_max_mutants < 1:
+        parser.error(bi("--mutation-max-mutants 至少要是 1", "--mutation-max-mutants must be at least 1"))
+    if args.max_model_calls is not None and args.max_model_calls < 0:
+        parser.error(bi("--max-model-calls 不可為負數", "--max-model-calls must not be negative"))
     # --cache-dir 在載入設定（它會建立目錄）之前就先檢查位置：目錄不能先在目標裡被建立出來
     # --cache-dir's location is checked before the settings load (which creates the directory): the directory must
     # not be created inside the target first
@@ -545,6 +551,11 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         except ConfigError as e:
             print(f"{bi('錯誤', 'Error')}: {bi('harness 設定問題', 'harness configuration problem')}: {e}", file=sys.stderr)
             sys.exit(USAGE_ERROR_EXIT_CODE)
+    # 設定檔只載入、驗證一次，連同 CLI 旗標的覆寫值；數值旗標的範圍與 --cache-dir 的位置已在上面先檢查，
+    # 其他設定問題都在檢查目標與其餘旗標之前回報
+    # The config is loaded and validated once, together with the CLI flags' overrides; the numeric flags' ranges and
+    # --cache-dir's location were checked above, and every other config problem is reported before the target and
+    # the remaining flags are checked
     try:
         settings = load_settings(args.config, origin=origin, overrides=Overrides(
             execution_mode=args.mode, max_files=args.max_files, max_model_calls=args.max_model_calls,
@@ -569,12 +580,6 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         print(f"{bi('錯誤', 'Error')}: {bi(f'目標路徑 {target_path!r} 不存在。', f'Target path {target_path!r} does not exist.')}", file=sys.stderr)
         sys.exit(USAGE_ERROR_EXIT_CODE)
 
-    if args.max_files is not None and args.max_files < 1:
-        parser.error(bi("--max-files 至少要是 1", "--max-files must be at least 1"))
-    if args.mutation_max_mutants is not None and args.mutation_max_mutants < 1:
-        parser.error(bi("--mutation-max-mutants 至少要是 1", "--mutation-max-mutants must be at least 1"))
-    if args.max_model_calls is not None and args.max_model_calls < 0:
-        parser.error(bi("--max-model-calls 不可為負數", "--max-model-calls must not be negative"))
     if args.base_url is not None:
         try:
             args.base_url = validate_base_url(args.base_url)

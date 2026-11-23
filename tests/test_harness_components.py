@@ -135,3 +135,49 @@ def test_sandbox_process_isolation_and_timeout():
     # 訊息必須指出所嘗試的模組名稱
     # The message must name the module that was attempted
     assert "test_exec.py" in run.stderr
+
+
+# --- 主控台不解讀 rich 標記（#182 第 6 組） -----------------------------------------------------
+# --- The console does not interpret rich markup (#182 group 6) --------------------------------
+
+def test_evidence_gaps_and_output_paths_are_printed_without_interpreting_markup(tmp_path):
+    """證據缺口原因裡有檔名、輸出路徑由使用者或 workspace 決定：`[red]` 這種文字要原樣印出，不能變成樣式。
+    Evidence-gap reasons carry file names and output paths come from the user or the workspace: text like `[red]`
+    must print as is, not turn into a style."""
+    from rich.console import Console
+
+    from vibeharness.core.harness import VibeHarnessCommander
+
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "app.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    (target / "[red]legacy.go").write_text("package main\n", encoding="utf-8")
+    out_dir = tmp_path / "out[bold]"
+    out_dir.mkdir()
+    commander = VibeHarnessCommander(execution_mode="mock")
+    commander.console = Console(record=True, width=400, color_system=None)
+    commander.run_full_pipeline(str(target), output_report_path=str(out_dir / "r.md"))
+    text = commander.console.export_text()
+    assert "[red]legacy.go" in text
+    assert "out[bold]" in text
+
+
+def test_the_closing_summary_panel_prints_the_report_path_as_is(tmp_path):
+    """結尾的「驗證摘要」面板也要原樣印出報告路徑，不只「已寫入」那一行（#182 審查）。
+    The closing "Verification Summary" panel prints the report path as is too, not only the "written to" line (#182
+    review)."""
+    from rich.console import Console
+
+    from vibeharness.core.harness import VibeHarnessCommander
+
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "app.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    out_dir = tmp_path / "out[bold]"
+    out_dir.mkdir()
+    report = out_dir / "r.md"
+    commander = VibeHarnessCommander(execution_mode="mock")
+    commander.console = Console(record=True, width=400, color_system=None)
+    commander.run_full_pipeline(str(target), output_report_path=str(report))
+    panel_lines = [ln for ln in commander.console.export_text().splitlines() if "報告 ／ Report:" in ln]
+    assert panel_lines and all(str(report) in ln for ln in panel_lines)

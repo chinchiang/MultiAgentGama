@@ -422,3 +422,46 @@ def test_the_local_sandbox_caps_the_process_count():
             f"    assert soft != resource.RLIM_INFINITY and soft <= {bound}, soft\n")
     run = LocalSubprocessSandbox(timeout_seconds=60).execute_pytest_files({"test_vh_nproc.py": code})
     assert run.exit_code == 0, run.stdout
+
+
+# --- 一個黑箱模組裡有多個失敗的 testcase（#182 第 2 組） ---------------------------------------------
+# --- Several failing testcases in one black-box module (#182 group 2) --------------------------------
+
+def _case(name, message, frame):
+    return {"name": name, "time": 0.0, "outcome": "failure", "message": message,
+            "details": f"def {name}():\n>       check()\n\n{frame}", "stdout": "", "stderr": ""}
+
+
+_TEST_ASSERT = _case("test_b", "AssertionError: admin data returned",
+                     "/tmp/vibe_sandbox_x/test_vh_001.py:9: AssertionError")
+
+
+@pytest.mark.parametrize("first", [
+    _case("test_a", "ZeroDivisionError: division by zero", "/srv/app/bank.py:4: ZeroDivisionError"),
+    _case("test_a", "AssertionError: amount must be positive", "/srv/app/bank.py:2: AssertionError"),
+], ids=["earlier-non-assertion", "earlier-target-assert"])
+def test_a_later_assertion_of_the_test_is_still_a_breach(first):
+    """前面的 testcase 是非斷言失敗或目標自己的 assert，後面的才是測試自己的斷言：仍是突破，原因取自那個斷言。
+    An earlier testcase fails without an assertion or on the target's own assert, a later one on the test's own
+    assertion: still a Breach, with the reason taken from that assertion."""
+    result = attribute(_test("BB-T-01", "def test_a():\n    pass\n"), "BB-T-01", [first, _TEST_ASSERT])
+    assert result.status == TestStatus.FAILED
+    assert result.is_security_exploit_confirmed is True
+    assert result.failure_reason == "AssertionError: admin data returned"
+    assert "test_b" in (result.reproduction_poc or "")
+
+
+def test_failures_without_a_test_assertion_stay_unclassified():
+    cases = [_case("test_a", "ZeroDivisionError: division by zero", "/srv/app/bank.py:4: ZeroDivisionError"),
+             _case("test_b", "AssertionError: amount must be positive", "/srv/app/bank.py:2: AssertionError")]
+    result = attribute(_test("BB-T-01", "def test_a():\n    pass\n"), "BB-T-01", cases)
+    assert result.status == TestStatus.FAILED and result.is_security_exploit_confirmed is False
+    assert result.failure_reason == "ZeroDivisionError: division by zero"
+
+
+def test_a_white_box_test_keeps_reporting_its_first_failure():
+    cases = [_case("test_a", "ZeroDivisionError: division by zero", "/srv/app/bank.py:4: ZeroDivisionError"),
+             _TEST_ASSERT]
+    result = attribute(_test("WB-T-01", "def test_a():\n    pass\n", test_type="whitebox_unit"), "WB-T-01", cases)
+    assert result.failure_reason == "ZeroDivisionError: division by zero"
+    assert result.is_security_exploit_confirmed is False

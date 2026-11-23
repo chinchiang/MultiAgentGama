@@ -178,7 +178,7 @@ def find_invisible(text: str) -> List[Tuple[int, str, str]]:
 # Every pattern must stay linear on a 200 KB adversarial input: token prefixes use a "not after a token
 # character" look-behind instead of \b, so a long "eyJ-eyJ-..." run has a single starting point, and a
 # private-key block never runs past the next BEGIN line
-_SECRET_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
+_REDACTION_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     ("private-key", re.compile(r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY(?: BLOCK)?-----(?:(?!-----BEGIN )[\s\S])*?"
                                r"-----END (?:[A-Z]+ )?PRIVATE KEY(?: BLOCK)?-----")),
     ("anthropic-key", re.compile(r"(?<![A-Za-z0-9_\-])sk-ant-[A-Za-z0-9_\-]{20,}")),
@@ -403,7 +403,7 @@ def is_placeholder_credential(user: str, password: str, host: str = "") -> bool:
 def _secret_spans(text: str) -> Iterator[Tuple[str, int, int, bool]]:
     """(類型, 起點, 終點, 是否回報)，依類型順序列出每一段要遮蔽的文字；同一類型內依位置排序且不重疊。
     (kind, start, end, reportable) for every span to redact, in kind order; within a kind, sorted and disjoint."""
-    for kind, pattern in _SECRET_PATTERNS:
+    for kind, pattern in _REDACTION_PATTERNS:
         group = "v" if "v" in pattern.groupindex else 0
         for m in pattern.finditer(text):
             yield kind, m.start(group), m.end(group), True
@@ -440,7 +440,7 @@ def redact_secrets(text: str) -> str:
     Replaces every credential found with <REDACTED:kind>; formats preceded by a variable name keep it."""
     if not text:
         return text
-    for kind, pattern in _SECRET_PATTERNS:
+    for kind, pattern in _REDACTION_PATTERNS:
         group = "v" if "v" in pattern.groupindex else 0
         spans = [(m.start(group), m.end(group)) for m in pattern.finditer(text)]
         if spans:

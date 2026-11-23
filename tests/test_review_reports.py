@@ -293,3 +293,36 @@ def test_config_sourced_names_are_escaped_in_markdown():
     _no_spoofed_blocks(md)
     # 程式碼區段裡的 "![x]" 只是文字，不會變成圖片 ／ "![x]" inside a code span is text, never an image
     assert "![x]" not in re.sub(r"`+[^`]*`+", "", md)
+
+
+# --- PoC 與 PoC 的測試函式名稱（#182 第 6 組） -----------------------------------------------------
+# --- The PoC and its test function name (#182 group 6) --------------------------------------------
+
+def test_the_reproduction_poc_is_cleaned_before_it_reaches_the_report():
+    """PoC 是模型寫的測試程式碼：終端機跳脫序列與 bidi 控制字元不能原樣寫進報告。
+    The PoC is model-written test code: terminal escapes and bidi controls must not reach the report as they are."""
+    result = TestExecutionResult(test_id="BB-1", test_type="blackbox_security", status=TestStatus.FAILED,
+                                 is_security_exploit_confirmed=True,
+                                 reproduction_poc="def test_x():\n    assert 1  # \x1b]52;c;SGk=\x07 \u202eevil\n")
+    md = _report(bb=[result])
+    assert "\x1b" not in md and "\x07" not in md and "\u202e" not in md
+    assert "def test_x():" in md
+
+
+def test_the_poc_test_function_line_stays_one_comment_line():
+    """testcase 名稱來自模型寫的參數化 id，可能含換行：PoC 的「測試函式」那行不能被切開、長出未註解的程式碼。
+    The testcase name comes from model-written parametrize ids and may hold a newline: the PoC's "Test Function" line
+    must not split into uncommented code."""
+    from vibeharness.core.models import GeneratedTest
+    from vibeharness.runners.attribution import attribute
+
+    test = GeneratedTest(test_id="BB-1", test_type="blackbox_security", target_component="m", title="t",
+                         code="def test_a():\n    pass\n", rationale="", expected_outcome="")
+    case = {"name": "test_a[x\nimport os; os.system('id')\x1b[2J]", "time": 0.0, "outcome": "failure",
+            "message": "AssertionError: leaked", "details": "/tmp/r/test_vh_000.py:3: AssertionError",
+            "stdout": "", "stderr": ""}
+    poc = attribute(test, "BB-1", [case]).reproduction_poc or ""
+    line = next(ln for ln in poc.splitlines() if "Test Function" in ln)
+    assert "test_a[x" in line and "os.system" in line
+    assert not any(ln.startswith("import os") for ln in poc.splitlines())
+    assert "\x1b" not in poc
