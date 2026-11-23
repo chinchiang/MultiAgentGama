@@ -30,7 +30,9 @@ from vibeharness.core.baseline import Baseline
 from vibeharness.core.gate import (
     ExecutionEvidence, GateEvidence, GateLimits, ReviewEvidence, ScopeDisclosure, evaluate,
 )
-from vibeharness.core.settings import FrozenDict, Overrides, SandboxSettings, Settings, load_settings
+from vibeharness.core.settings import (
+    FrozenDict, Overrides, SandboxSettings, Settings, check_cache_dir_location, load_settings,
+)
 from vibeharness.core.transport import ModelTransport
 from vibeharness.core.tally import tally_evidence
 from vibeharness.core.verdict import Verdict
@@ -280,6 +282,10 @@ class VibeHarnessCommander:
         if output_format not in ("md", "json"):
             raise ValueError(bi(f"未知的 output_format '{output_format}'（應為 'md' 或 'json'）",
                                 f"Unknown output_format '{output_format}' (expected 'md' or 'json')"))
+        # 函式庫呼叫端（set_cache_dir、global.cache_dir）不經過 CLI 的檢查：在這裡對真正要稽核的目標再查一次
+        # Library callers (set_cache_dir, global.cache_dir) skip the CLI's check: check again here against the target
+        # actually audited
+        check_cache_dir_location(self.gateway.cache_dir, target_dir)
         reviewer_models = self.multi_reviewer.distinct_models
         # 多樣性依實際的模型計算：指向同一模型的別名只算一個（見 GatewaySettings.distinct_model_labels）
         # Diversity counts actual models: aliases pointing at one model count once (see

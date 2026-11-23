@@ -237,3 +237,30 @@ def test_cache_dir_outside_the_target_is_accepted(monkeypatch, tmp_path):
     target = tmp_path / "repo"
     target.mkdir()
     assert _run_cli_with_cache(monkeypatch, target, tmp_path / "cache") == (0, True)
+
+
+def test_a_refused_cache_dir_is_never_created_inside_the_target(monkeypatch, tmp_path):
+    """--cache-dir 的位置在建立目錄之前就檢查：被拒絕時目標裡不會多出一個空目錄（#183 審查第 2 輪）。
+    --cache-dir's location is checked before the directory is created: a refused one leaves no empty directory in
+    the target (#183 review round 2)."""
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    target = tmp_path / "repo"
+    target.mkdir()
+    assert _run_cli_with_cache(monkeypatch, target, target / ".vibeharness-cache") == (5, False)
+    assert not (target / ".vibeharness-cache").exists()
+
+
+def test_library_callers_cannot_use_a_cache_dir_inside_the_target(tmp_path):
+    """不經過 CLI 的呼叫端（set_cache_dir）也一樣被拒絕：檢查在 run_full_pipeline 的開頭（#183 審查第 2 輪）。
+    Callers that skip the CLI (set_cache_dir) are refused too: the check is at the start of run_full_pipeline
+    (#183 review round 2)."""
+    from vibeharness.core.harness import VibeHarnessCommander
+    from vibeharness.core.settings import ConfigError
+
+    target = tmp_path / "repo"
+    target.mkdir()
+    (target / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    commander = VibeHarnessCommander(execution_mode="mock")
+    commander.gateway.set_cache_dir(str(target / "cache"))
+    with pytest.raises(ConfigError, match="is inside the target"):
+        commander.run_full_pipeline(str(target), output_report_path=str(tmp_path / "r.md"))

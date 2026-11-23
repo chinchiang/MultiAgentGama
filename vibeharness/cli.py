@@ -536,6 +536,15 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     # 設定檔只載入、驗證一次，連同 CLI 旗標的覆寫值；任何設定問題都在檢查目標與旗標之前回報
     # The config is loaded and validated once, together with the CLI flags' overrides; every config problem is
     # reported before the target and the flags are checked
+    # --cache-dir 在載入設定（它會建立目錄）之前就先檢查位置：目錄不能先在目標裡被建立出來
+    # --cache-dir's location is checked before the settings load (which creates the directory): the directory must
+    # not be created inside the target first
+    if args.cache_dir:
+        try:
+            check_cache_dir_location(args.cache_dir, os.path.abspath(args.target))
+        except ConfigError as e:
+            print(f"{bi('錯誤', 'Error')}: {bi('harness 設定問題', 'harness configuration problem')}: {e}", file=sys.stderr)
+            sys.exit(USAGE_ERROR_EXIT_CODE)
     try:
         settings = load_settings(args.config, origin=origin, overrides=Overrides(
             execution_mode=args.mode, max_files=args.max_files, max_model_calls=args.max_model_calls,
