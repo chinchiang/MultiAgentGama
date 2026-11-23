@@ -313,3 +313,45 @@ def test_a_conftest_above_the_run_directory_is_not_loaded(tmp_path, monkeypatch)
     assert "ANCESTOR CONFTEST LOADED" not in run.stdout
     assert run.exit_code == 1
     assert run.junit_xml is not None and "<failure" in run.junit_xml
+
+
+# --- 目標頂替測試執行器（#183 第 4 項） -----------------------------------------------------
+# --- A target shadowing the test runner (#183 item 4) -------------------------------------
+
+def test_shadowed_runner_modules_lists_every_import_form(tmp_path):
+    from vibeharness.core.sandbox import shadowed_runner_modules
+
+    parent = tmp_path / "repo"
+    target = parent / "src"
+    (target / "_pytest").mkdir(parents=True)
+    (target / "_pytest" / "__init__.py").write_text("", encoding="utf-8")
+    (target / "pytest.py").write_text("", encoding="utf-8")
+    (target / "pluggy.cpython-312-x86_64-linux-gnu.so").write_bytes(b"")
+    (target / "coverage").mkdir()  # 命名空間套件：敵不過已安裝的套件 ／ a namespace package: loses to the installed one
+    (target / "app.py").write_text("", encoding="utf-8")
+    (parent / "sitecustomize.py").write_text("", encoding="utf-8")
+
+    in_target = sorted(str(target / name) for name in ("_pytest", "pytest.py", "pluggy.cpython-312-x86_64-linux-gnu.so"))
+    assert shadowed_runner_modules(str(target), include_parent=False) == in_target
+    assert shadowed_runner_modules(str(target)) == sorted([*in_target, str(parent / "sitecustomize.py")])
+
+
+def test_a_target_shadowing_pytest_is_an_evidence_gap(tmp_path):
+    """目標的 pytest.py 自己寫出全部通過的 JUnit 報告；判定不可以是 READY_TO_SHIP，並且要說出原因。
+    The target's pytest.py writes an all-passed JUnit report itself; the verdict must not be READY_TO_SHIP, and the
+    reason must say why."""
+    from vibeharness.core.harness import VibeHarnessCommander
+
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "app.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    (target / "pytest.py").write_text(
+        "import sys\n"
+        "junit = next(a.split('=', 1)[1] for a in sys.argv if a.startswith('--junitxml='))\n"
+        "open(junit, 'w').write('<testsuites><testsuite name=\"pytest\" tests=\"0\"></testsuite></testsuites>')\n",
+        encoding="utf-8")
+    commander = VibeHarnessCommander(execution_mode="mock")
+    summary = commander.run_full_pipeline(str(target), output_report_path=str(tmp_path / "r.md"))
+    assert summary.overall_status != "READY_TO_SHIP"
+    assert any("named like the test runner's" in reason and "pytest.py" in reason
+               for reason in summary.inconclusive_reasons)

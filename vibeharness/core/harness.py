@@ -24,6 +24,7 @@ from vibeharness.core.models import (
 from vibeharness.core.llm_gateway import LLMGateway, DEFAULT_CONFIG_PATH
 from vibeharness.core.sandbox import (
     LocalSubprocessSandbox, DockerSandbox, DEFAULT_DOCKER_IMAGE as DEFAULT_DOCKER_IMAGE, build_node_sandbox,
+    shadowed_runner_modules,
 )
 from vibeharness.core.baseline import Baseline
 from vibeharness.core.gate import (
@@ -557,6 +558,10 @@ class VibeHarnessCommander:
                     js_runner_problem=js_reason,
                     ts_problem=node_runtime.ts_problem if node_runtime else None,
                     mutation_report=mutation_report,
+                    # docker 沙盒的 PYTHONPATH 只有目標；本機沙盒還有目標的父目錄
+                    # The docker sandbox's PYTHONPATH holds the target only; the local one also its parent
+                    runner_shadows=shadowed_runner_modules(
+                        work_dir, include_parent=not isinstance(self.sandbox, DockerSandbox)),
                 ),
             ))
             overall_status, inconclusive_reasons, recommendations = gate.verdict, gate.reasons, gate.recommendations

@@ -163,6 +163,7 @@ GAP_CASES = {
     **({GapCode.DISCOVERED_SCOPE_FILTERED: lambda e: _with(e, "scope", discovered_filtered_count=2)}
        if hasattr(GapCode, "DISCOVERED_SCOPE_FILTERED") else {}),
     GapCode.TESTS_NOT_RUN: lambda e: _with(e, "execution", wb_results=[_result("WB-T-01", TestStatus.ERROR)]),
+    GapCode.RUNNER_SHADOWED: lambda e: _with(e, "execution", runner_shadows=["/srv/app/pytest.py"]),
     GapCode.MUTATION_NO_CONCLUSION: lambda e: _with(e, "execution", mutation_report=MutationReport(skipped_reason="no tests")),
     GapCode.MUTATION_BELOW_THRESHOLD: lambda e: _with(e, "execution", mutation_report=MutationReport(score=50.0, survived=1)),
     GapCode.MUTATION_TRUNCATED: lambda e: _with(e, "execution", mutation_report=MutationReport(score=100.0, truncated=True)),

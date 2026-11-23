@@ -313,6 +313,47 @@ def _read_capture(stream: Any) -> str:
     return data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
 
 
+# 測試執行器本身在目標之後才匯入、目標卻排在 sys.path 前面的模組：pytest 與它的相依和外掛、涵蓋率，以及 Python
+# 啟動時自動匯入的 sitecustomize／usercustomize。目標頂層有同名模組時，它就取代了執行器，能自己寫出 JUnit 報告
+# Modules the test runner imports while the target sits ahead of them on sys.path: pytest with its dependencies and
+# plugins, coverage, and the sitecustomize / usercustomize Python imports at start-up. A top-level module of the same
+# name in the target replaces the runner and can write its own JUnit report
+RUNNER_MODULES = (
+    "pytest", "_pytest", "pluggy", "iniconfig", "packaging", "py", "coverage", "pytest_cov",
+    "hypothesis", "_hypothesis_pytestplugin", "sitecustomize", "usercustomize",
+)
+_EXTENSION_SUFFIXES = (".so", ".pyd")
+
+
+def shadowed_runner_modules(base_dir: str, include_parent: bool = True) -> List[str]:
+    """`base_dir`（以及 include_parent 時它的父目錄，本機沙盒把兩者都放進 PYTHONPATH）頂層與 RUNNER_MODULES 同名的模組，
+    以 "<目錄>/<項目>" 列出並排序：`name.py`、`name.pyc`、含 `__init__.py` 的目錄，或 `name.*.so`／`.pyd` 擴充模組
+    （沒有 `__init__.py` 的目錄是命名空間套件，敵不過已安裝的一般套件）。讀不到的目錄略過。
+    The top-level modules of `base_dir` (and, with include_parent, its parent: the local sandbox puts both on
+    PYTHONPATH) named like RUNNER_MODULES, listed sorted as "<dir>/<entry>": `name.py`, `name.pyc`, a directory with
+    `__init__.py`, or a `name.*.so` / `.pyd` extension (a directory without `__init__.py` is a namespace package,
+    which loses to an installed regular package). An unreadable directory is skipped."""
+    dirs = [os.path.abspath(base_dir)]
+    if include_parent:
+        dirs.append(os.path.dirname(dirs[0]))
+    found = set()
+    for directory in dict.fromkeys(dirs):
+        try:
+            entries = os.listdir(directory)
+        except OSError:
+            continue
+        for entry in entries:
+            path = os.path.join(directory, entry)
+            stem, ext = os.path.splitext(entry)
+            if ext in (".py", ".pyc") and stem in RUNNER_MODULES and os.path.isfile(path):
+                found.add(path)
+            elif ext in _EXTENSION_SUFFIXES and entry.split(".", 1)[0] in RUNNER_MODULES:
+                found.add(path)
+            elif entry in RUNNER_MODULES and os.path.isfile(os.path.join(path, "__init__.py")):
+                found.add(path)
+    return sorted(found)
+
+
 class LocalSubprocessSandbox:
     """
     用來執行測試腳本與動態酬載的子行程沙盒。

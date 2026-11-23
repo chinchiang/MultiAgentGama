@@ -43,6 +43,7 @@ class GapCode(str, Enum):
     MAX_FILES_SKIPPED = "max_files_skipped"
     DISCOVERED_SCOPE_FILTERED = "discovered_scope_filtered"
     TESTS_NOT_RUN = "tests_not_run"
+    RUNNER_SHADOWED = "runner_shadowed"
     MUTATION_NO_CONCLUSION = "mutation_no_conclusion"
     MUTATION_BELOW_THRESHOLD = "mutation_below_threshold"
     MUTATION_TRUNCATED = "mutation_truncated"
@@ -118,6 +119,9 @@ class ExecutionEvidence:
     js_runner_problem: Optional[str] = None
     ts_problem: Optional[str] = None
     mutation_report: Optional[MutationReport] = None
+    # 目標中與測試執行器同名的模組（見 sandbox.shadowed_runner_modules）
+    # Target modules named like the test runner's (see sandbox.shadowed_runner_modules)
+    runner_shadows: Sequence[str] = ()
 
 @dataclass(frozen=True)
 class GateEvidence:
@@ -304,6 +308,14 @@ def _evidence_gaps(evidence: GateEvidence) -> List[EvidenceGap]:
             f"{not_run} 個產生的測試發生錯誤、被略過或從未執行；它們涵蓋的邊界在這次執行中仍未驗證",
             f"{not_run} generated test(s) errored, were skipped, or never ran; "
             "the boundaries they cover remain unverified by this run"
+        ))
+    ran_python = any(t.language == "python" for t in [*ex.wb_tests, *ex.bb_tests])
+    if ex.runner_shadows and ran_python:
+        shown = ", ".join(ex.runner_shadows[:5]) + (" …" if len(ex.runner_shadows) > 5 else "")
+        gap(GapCode.RUNNER_SHADOWED, bi(
+            f"目標中有與測試執行器同名的模組（{shown}），它們會取代 pytest 或它的外掛，Python 測試結果因此不可信",
+            f"The target has modules named like the test runner's ({shown}); they replace pytest or its plugins, "
+            "so the Python test results cannot be trusted"
         ))
     mutation_report = ex.mutation_report
     if mutation_report is not None:
