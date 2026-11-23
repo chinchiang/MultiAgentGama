@@ -260,6 +260,7 @@ MultiAgentGama/
 │       ├── issue-tracker.md     # GitHub Issues 的操作；本 repo 什麼時候開 issue、/code-review 的 spec 來源
 │       └── triage-labels.md     # triage 角色對應的標籤名稱
 ├── scripts/
+│   ├── check_all.py             # 開 PR 前的完整檢查（單一來源）：依序跑每一項，結束碼與關鍵行寫到 scratch/checks-<HEAD>.log
 │   ├── check_bi_english.py      # bi-english 的判斷：與基準 commit 比對每個 bi() 的英文半，改了或移除的要寫進兩份 CHANGELOG
 │   ├── check_new_tests_red_on_base.py # 新增回歸測試的分支用：新增或改動的測試換到 merge-base 的程式碼上跑，列出已經綠或被 skip 的
 │   ├── check_pr_issue_link.py   # pr-issue-link 的判斷：哪些 PR 需要 issue、描述與 commit 是否連到存在的 issue
@@ -277,6 +278,7 @@ MultiAgentGama/
 │   ├── test_bi_english.py              # bi() 英文半的比對：f-string 欄位、搬進 helper 的字串、[Unreleased] 區段、workflow 權限
 │   ├── test_call_kinds.py              # 每筆呼叫紀錄、送出的請求與報告都帶著呼叫的種類（含修復與當掉的呼叫）
 │   ├── test_call_plans.py              # 每個代理的呼叫計畫（plan）等於它實際發出的呼叫
+│   ├── test_check_all.py               # check_all.py：摘要留下 TOTAL 覆蓋率、計數與 red-on-base 每一行，失敗、逾時與 --skip 都寫明，逾時的命令會被停掉
 │   ├── test_check_new_tests_red_on_base.py # 新測試在基準上要紅：挑哪些測試（含類別、子目錄）、紅綠、skip（含整個檔案）與 xfail、參數化、收集不到與語法、編碼錯誤、rootdir 與 -x、結束碼與清除
 │   ├── test_check_reversions.py        # 改回一項就列出變紅的測試、沒有紅燈時結束碼 1、收集錯誤算紅、工作目錄不乾淨或原文不唯一就拒絕、pytest 跑不起來也寫回
 │   ├── test_cross_verification.py      # 交叉驗證：模型不評審自己的發現、依票數判定

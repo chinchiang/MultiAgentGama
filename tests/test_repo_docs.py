@@ -664,3 +664,57 @@ def test_non_orchestrator_agent_imports_catches_absolute_and_relative_imports(tm
         "bad.py:13",
         "sub/harness.py:1",
     ]
+
+
+def _check_all_steps():
+    """`scripts/check_all.py` 的步驟（名稱 → 命令，去掉開頭的 Python）。
+    The steps of `scripts/check_all.py` (name → command without the leading Python)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("check_all_for_docs", os.path.join(REPO_ROOT, "scripts",
+                                                                                     "check_all.py"))
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return {name: cmd[1:] for name, cmd in module.steps("python", "master")}
+
+
+def _ci_run_lines():
+    """`.github/workflows/tests.yml` 每個單行 `run:` 的命令；sdist 沒有 `.github/`，在那裡略過。
+    The command of every one-line `run:` in `.github/workflows/tests.yml`; skipped in the sdist, which has no
+    `.github/`."""
+    path = os.path.join(REPO_ROOT, ".github", "workflows", "tests.yml")
+    if not os.path.isfile(path):
+        pytest.skip("the sdist does not ship .github/")
+    with open(path, encoding="utf-8") as f:
+        return [m.group(1).strip() for m in re.finditer(r"^\s*-?\s*run:\s*(\S.*)$", f.read(), re.M)]
+
+
+def test_check_all_runs_mypy_with_the_arguments_ci_uses():
+    """`scripts/check_all.py` 的 mypy 參數和 CI 的 mypy 步驟相同（#187 的本機檢查少了 `main.py`）。
+    `scripts/check_all.py` runs mypy with the same arguments as CI's mypy step (#187's local run left out `main.py`)."""
+    ci = [line.split() for line in _ci_run_lines() if re.match(r"(python -m )?mypy\s", line)]
+    assert len(ci) == 1, f"expected one mypy step in tests.yml, found {ci}"
+    ci_args = ci[0][ci[0].index("mypy") + 1:]
+    assert _check_all_steps()["mypy"] == ["-m", "mypy", *ci_args]
+
+
+def test_check_all_measures_coverage_like_ci():
+    """`scripts/check_all.py` 的 pytest 量的覆蓋率範圍與門檻（`--cov`、`--cov-fail-under`）和 CI 的覆蓋率步驟相同。
+    `scripts/check_all.py`'s pytest measures coverage over the same scope with the same floor (`--cov`,
+    `--cov-fail-under`) as CI's coverage step."""
+    ci = [line.split() for line in _ci_run_lines() if "--cov-fail-under" in line]
+    assert len(ci) == 1, f"expected one coverage step in tests.yml, found {ci}"
+
+    def coverage_args(tokens):
+        return sorted(t for t in tokens if t.startswith(("--cov=", "--cov-fail-under=")))
+
+    assert coverage_args(_check_all_steps()["pytest"]) == coverage_args(ci[0])
+
+
+def test_contributing_points_at_check_all_in_both_languages():
+    """`CONTRIBUTING.md` 的中文與英文兩半都點名 `scripts/check_all.py`，完整檢查只寫在那一處。
+    Both the zh and the en half of `CONTRIBUTING.md` name `scripts/check_all.py`, the one place the full check is
+    written down."""
+    with open(os.path.join(REPO_ROOT, "CONTRIBUTING.md"), encoding="utf-8") as f:
+        zh, en = f.read().split("\n## English\n", 1)
+    assert "scripts/check_all.py" in zh and "scripts/check_all.py" in en
