@@ -10,6 +10,11 @@ from typing import Dict, List, Optional
 
 # 這些關鍵字之後的 `/` 是正規表達式字面值的開頭，不是除法
 # After these keywords a `/` starts a regex literal, not division
+# 後面可以直接接字串的關鍵字：`import"pkg"`、`from"pkg"` 是合法的 JS，引號開啟字串（不能放進 _JS_REGEX_KEYWORDS：
+# `from / 2` 裡的 from 是識別字，`/` 是除法）
+# Keywords a string may follow directly: `import"pkg"` and `from"pkg"` are valid JS and the quote opens a string (not
+# part of _JS_REGEX_KEYWORDS: in `from / 2`, from is an identifier and `/` is division)
+_JS_STRING_KEYWORDS = {"import", "from"}
 _JS_REGEX_KEYWORDS = {"return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw",
                       "case", "do", "else", "yield", "await"}
 # 可能含 JSX 的副檔名：.ts/.mts/.cts 不算（`<T>x` 是型別斷言，不是 JSX）
@@ -167,9 +172,14 @@ def _mask_code(source: str, out: List[str], i: int, jsx: Optional[List[int]], de
                 if source[i] != "\n":
                     out[i] = " "
                 i += 1
+            # 結尾的 `*/` 也清空：留著它會和下一個字元黏成 `*`／`/` 運算子或正規表達式的開頭
+            # Blank the closing `*/` too: left in place it glues to the next character as a `*` / `/` operator or the
+            # start of a regex
+            _blank_range(source, out, i, i + 2)
             i += 2
             continue
-        glued = i > 0 and (source[i - 1].isalnum() or source[i - 1] in "_$") and prev_word not in _JS_REGEX_KEYWORDS
+        glued = i > 0 and (source[i - 1].isalnum() or source[i - 1] in "_$") \
+            and prev_word not in _JS_REGEX_KEYWORDS and prev_word not in _JS_STRING_KEYWORDS
         if c in "\"'" and not glued:
             # 緊貼在識別字後的引號（JSX 文字中的 `Don't`）不可能開啟 JS 字串
             # A quote glued to an identifier (`Don't` in JSX text) cannot open a JS string
