@@ -11,12 +11,19 @@ skipped。紅的附上失敗原因，看得出是不是因為錯的理由紅（�
 挑選的範圍：只看 `tests/` 底下的 `test_*.py`，其中最上層的 `test*` 函式，以及最上層 `Test*` 類別裡的 `test*`
 方法；「改了」是指函式本身的 AST 不同。只改 fixture、helper 或 `conftest.py` 時，用到它們的測試不會被選到。
 
+一個檔案在基準上收集失敗時，其他檔案照樣跑完（`--continue-on-collection-errors`），那個檔案裡選到的測試列成紅的、帶
+著收集錯誤；有測試收集不到時，無法比對的訊息也點名每個收集失敗的檔案與錯誤的第一行。基準上的那一次 pytest 最多跑
+`--timeout` 秒（預設 1200）：超過就停掉它的行程群組（POSIX；測試開的子行程也在裡面，自己用 setsid 另開群組的子行程停
+不到，它若還握著輸出的 pipe，最多再等 10 秒就放棄剩下的輸出）或整個行程樹（Windows 的 `taskkill /T`），已經有結果的
+測試照進度記錄分類，其餘列成 `hang`（不算紅也不算綠），並印出 pytest 最後的輸出；faulthandler 在一個測試跑超過
+60 秒與時限一半中較短的那個（至少 1 秒）時印出它卡在哪裡。
+
 結束碼：0 全部是紅的（或沒有新增、改動的測試），1 有綠的或 skipped 的（列出來），2 無法比對（找不到 merge-base 或
 無法建 worktree、測試檔解析不了或不是 UTF-8、pytest 在基準上沒寫出報告（附上它最後幾行輸出）或報告讀不了、
-選到的測試在基準上收集不到）。
+選到的測試在基準上收集不到、超過 `--timeout`）。
 
 用法：
-    python scripts/check_new_tests_red_on_base.py --against master
+    python scripts/check_new_tests_red_on_base.py --against master [--timeout 1200]
 
 The tests a branch adds or changes must be red on the base revision's code (CODING_STANDARDS rule 1; #150).
 
@@ -34,13 +41,23 @@ What it selects: only `test_*.py` under `tests/`, and in them the top-level `tes
 of top-level `Test*` classes; "changed" means the function's own AST differs. A change only to a fixture, a helper or
 `conftest.py` does not select the tests that use it.
 
+When a file fails to collect on the base, the other files still run (`--continue-on-collection-errors`) and the file's
+selected tests are red with the collection error; when a test is not collected, the could-not-compare message also
+names each file that failed to collect with the first line of its error. The one pytest run on the base takes at most
+`--timeout` seconds (default 1200): past that its process group is stopped (POSIX; the tests' child processes are in
+it, while a child that opened a group of its own with setsid is not stopped, and when it still holds the output pipe
+the rest of the output is given up after 10 seconds) or its whole process tree (`taskkill /T` on Windows), the tests
+that already have a result are sorted from the progress records, the rest are listed as `hang` (neither red nor
+green), and pytest's last output is printed; faulthandler prints where a test is stuck once it runs longer than the
+shorter of 60 seconds and half the time limit (at least 1 second).
+
 Exit code: 0 every test is red (or no test is new or changed), 1 some are green or skipped (they are listed), 2 could
 not compare (no merge-base or the worktree could not be added, a test file does not parse or is not UTF-8, pytest
 wrote no report on the base (its last output lines are shown) or one that does not read, a selected test was not
-collected on the base).
+collected on the base, the run took longer than `--timeout`).
 
 Usage:
-    python scripts/check_new_tests_red_on_base.py --against master
+    python scripts/check_new_tests_red_on_base.py --against master [--timeout 1200]
 """
 
 from __future__ import annotations
@@ -49,13 +66,69 @@ import argparse
 import ast
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import NamedTuple
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 基準上的那一次 pytest 最多跑這麼久（秒），超過就停掉它，沒有結果的測試列成 hang（#186）
+# The longest the one pytest run on the base may take (seconds); past it the run is stopped and the tests without a
+# result are listed as hang (#186)
+DEFAULT_TIMEOUT = 1200.0
+# 一個測試跑超過這麼久（秒，且不超過時限的一半），faulthandler 就印出它卡在哪裡
+# A test running longer than this (seconds, and no more than half the time limit) gets faulthandler's dump of where
+# it is stuck
+_DUMP_AFTER = 60.0
+# 逾時之後印出的 pytest 最後幾行（含 faulthandler 的輸出）
+# The last lines of pytest's output printed after a timeout (faulthandler's dump included)
+_HANG_TAIL = 40
+# 停掉之後最多再等這麼久（秒）把輸出讀完：逃出行程群組的子行程可能還握著 pipe，不能讓它又把檢查卡住
+# After stopping, wait at most this long (seconds) to read the rest of the output: a child that left the process
+# group may still hold the pipe, and must not hang the check again
+_PIPE_GRACE = 10.0
+# 每個測試跑完就記一行的 pytest 外掛：逾時時沒有 JUnit 報告，靠它分出哪些測試已經有結果
+# A pytest plugin writing one line as each test finishes: a timed-out run writes no JUnit report, so this tells which
+# tests already have a result
+_PROGRESS_PLUGIN = """\
+import os
+
+_PATH = os.environ["VH_RED_ON_BASE_PROGRESS"]
+
+
+def _write(nodeid, outcome):
+    with open(_PATH, "a", encoding="utf-8") as f:
+        f.write(nodeid + "\\t" + outcome + "\\n")
+
+
+def pytest_runtest_logreport(report):
+    if report.failed:
+        _write(report.nodeid, "failed")
+    elif report.skipped:
+        _write(report.nodeid, "failed" if hasattr(report, "wasxfail") else "skipped")
+    elif report.when == "call":
+        _write(report.nodeid, "passed")
+
+
+def pytest_collectreport(report):
+    if report.failed:
+        _write(report.nodeid, "broken")
+"""
+_PLUGIN_NAME = "vh_red_on_base_progress"
+
+
+class BaseRun(NamedTuple):
+    """基準上那一次 pytest 的結果：每個 node id 的 (狀態, 說明)、收集失敗的檔案與錯誤，以及逾時時 pytest 的最後幾行
+    （沒逾時是 None）。
+    The one pytest run on the base: each node id's (status, detail), the files that failed to collect with their
+    errors, and, after a timeout, pytest's last output lines (None when it finished)."""
+
+    results: dict[str, tuple[str, str]]
+    broken_files: dict[str, str]
+    hang_tail: list[str] | None
 
 
 class NoReport(Exception):
@@ -150,19 +223,24 @@ def _module_skip_reason(skip: ET.Element) -> str:
     return text.splitlines()[0] if text else skip.get("message") or "skipped"
 
 
-def run_on_base(worktree: Path, node_ids: list[str], report: Path) -> dict[str, tuple[str, str]]:
+def run_on_base(worktree: Path, node_ids: list[str], report: Path, timeout: float = DEFAULT_TIMEOUT) -> BaseRun:
     """在 worktree 裡跑 node_ids 所在的整個檔案，只讀它們的結果，回傳每個 node id 在基準上的 (狀態, 說明)。狀態是
     `red`、`green` 或 `skipped`：參數化的測試算一筆，有任何 case 通過就是綠的，說明列出那些 case；沒有通過但有 case
     被 skip（或整個檔案被 skip）是 skipped，說明是 skip 的原因（它沒在基準上失敗，結束碼和綠的一樣算）；全部失敗是
     紅的，說明是第一個 case 的失敗原因。收集不到的測試檔，裡面每個選到的測試是紅的、帶那個收集錯誤；檔案收集得到、
     報告裡卻沒有的測試是 `not collected`，`main` 把它當成無法比對，絕不算紅或綠。pytest 沒寫出報告時丟出 `NoReport`。
+    另外回傳每個收集失敗的檔案與它的錯誤，給 `main` 的無法比對訊息用。超過 timeout 秒還沒跑完時照 `_run_with_timeout` 停掉，
+    已經有結果的測試照進度記錄分類，其餘列成 `hang`，並帶回 pytest 的最後幾行。
     Runs the whole files node_ids are in on the worktree, reads only their results, and returns each node id's (status,
     detail) on the base. The status is `red`, `green` or `skipped`: a parametrized test is one entry, green when any
     case passes, with those cases as the detail; skipped when none passes and a case (or the whole file) was skipped,
     with the skip reason as the detail (it did not fail on the base, so the exit code counts it like green); red when
     all fail, with the first case's failure as the detail. Each selected test in a file that failed to collect is red
     with that collection error; a test missing from the report of a file that did collect is `not collected`, which
-    `main` takes as could not compare, never as red or green. When pytest writes no report it raises `NoReport`."""
+    `main` takes as could not compare, never as red or green. When pytest writes no report it raises `NoReport`.
+    Also returns each file that failed to collect with its error, for `main`'s could-not-compare message. A run past
+    timeout seconds is stopped as `_run_with_timeout` does: the tests that already have a result are sorted from the
+    progress records, the rest are `hang`, and pytest's last output lines come back with them."""
     # pytest 的結束碼分不出「無法啟動」與「選到的檔案收集失敗」（兩者都可能是 4），所以只讀報告
     # pytest's exit code cannot tell "could not start" from "a selected file failed to collect" (both can be 4), so
     # only the report is read
@@ -176,13 +254,28 @@ def run_on_base(worktree: Path, node_ids: list[str], report: Path) -> dict[str, 
     # 停下，使選到的測試沒有結果
     # --maxfail=0 (no limit) comes after the base config's addopts and overrides -x / --maxfail: a test that fails
     # earlier in the same file must not stop pytest and leave the selected tests without a result
+    # --continue-on-collection-errors：一個檔案收集失敗時 pytest 預設整批中斷，其他檔案選到的測試就沒有結果（#186）
+    # --continue-on-collection-errors: by default pytest stops the whole run when one file fails to collect, leaving
+    # the selected tests of every other file without a result (#186)
+    # faulthandler_timeout（pytest 內建）：卡住的測試在時限之前就印出它停在哪一行
+    # faulthandler_timeout (built into pytest): a stuck test prints where it stopped before the time limit
     files = sorted({_file_of(node_id) for node_id in node_ids})
-    run = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", f"--rootdir={worktree}",
-                          "--maxfail=0", f"--junitxml={report}", *files],
-                         cwd=worktree, capture_output=True, encoding="utf-8", errors="replace")
+    plugin_dir = report.parent / "plugin"
+    plugin_dir.mkdir(exist_ok=True)
+    (plugin_dir / f"{_PLUGIN_NAME}.py").write_text(_PROGRESS_PLUGIN, encoding="utf-8")
+    progress = report.parent / "progress.tsv"
+    env = dict(os.environ, VH_RED_ON_BASE_PROGRESS=str(progress),
+               PYTHONPATH=os.pathsep.join(p for p in (str(plugin_dir), os.environ.get("PYTHONPATH", "")) if p))
+    dump_after = max(1.0, min(_DUMP_AFTER, timeout / 2))
+    cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-p", _PLUGIN_NAME,
+           f"--rootdir={worktree}", "--maxfail=0", "--continue-on-collection-errors",
+           "-o", f"faulthandler_timeout={dump_after:g}", f"--junitxml={report}", *files]
+    output, finished = _run_with_timeout(cmd, worktree, env, timeout)
+    lines = [line for line in output.splitlines() if line.strip()]
+    if not finished:
+        return _results_after_timeout(progress, node_ids, lines[-_HANG_TAIL:])
     if not report.is_file():
-        tail = [line for line in (run.stdout + run.stderr).splitlines() if line.strip()][-5:]
-        raise NoReport("pytest wrote no report on the base:\n" + "\n".join(tail))
+        raise NoReport("pytest wrote no report on the base:\n" + "\n".join(lines[-5:]))
     passed: dict[str, list[str]] = {}
     skipped: dict[str, str] = {}
     failed: dict[str, str] = {}
@@ -239,12 +332,77 @@ def run_on_base(worktree: Path, node_ids: list[str], report: Path) -> dict[str, 
             results[node_id] = ("red", broken_files[test_file])
         else:
             results[node_id] = ("not collected", "")
-    return results
+    return BaseRun(results, broken_files, None)
+
+
+def _run_with_timeout(cmd: list[str], cwd: Path, env: dict[str, str], timeout: float) -> tuple[str, bool]:
+    """跑命令，回傳（stdout 與 stderr 合併的輸出, 有沒有在時限內跑完）；逾時就停掉它的行程群組（POSIX）或整個行程樹
+    （Windows），停掉之後最多再等 `_PIPE_GRACE` 秒讀完輸出。
+    Run a command and return (stdout and stderr combined, whether it finished in time); past the time limit its
+    process group (POSIX) or whole process tree (Windows) is stopped, and the output is read for at most `_PIPE_GRACE`
+    seconds after that."""
+    posix = os.name == "posix"
+    proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            encoding="utf-8", errors="replace", start_new_session=posix)
+    try:
+        return proc.communicate(timeout=timeout)[0], True
+    except subprocess.TimeoutExpired:
+        if posix:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        else:
+            # /T 連同子行程一起停（venv 的 python 可能是再開真正直譯器的啟動器）
+            # /T stops the children too (a venv's python may be a launcher starting the real interpreter)
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+            proc.kill()
+        try:
+            return proc.communicate(timeout=_PIPE_GRACE)[0], False
+        except subprocess.TimeoutExpired:
+            # pytest 已經停了，pipe 卻還有別的行程開著：放棄剩下的輸出
+            # pytest has stopped but another process still holds the pipe open: the rest of the output is given up
+            proc.wait()
+            return "(pytest's output was not read: a process outside its group still holds the pipe)", False
+
+
+def _results_after_timeout(progress: Path, node_ids: list[str], tail: list[str]) -> BaseRun:
+    """逾時的那一次：照外掛的進度記錄分類已經有結果的測試（任何 case 通過是綠、有 skip 是 skipped、否則紅），收集失敗
+    的檔案裡的測試是紅的，其餘是 `hang`，絕不算紅或綠。
+    The timed-out run: the tests with a result are sorted from the plugin's progress records (any passing case green,
+    a skip skipped, otherwise red), the tests of a file that failed to collect are red, and the rest are `hang`, never
+    red or green."""
+    outcomes: dict[str, list[str]] = {}
+    broken_paths: set[str] = set()
+    if progress.is_file():
+        for line in progress.read_text(encoding="utf-8", errors="replace").splitlines():
+            nodeid, _, outcome = line.rpartition("\t")
+            if outcome == "broken":
+                broken_paths.add(nodeid)
+            else:
+                outcomes.setdefault(nodeid.split("[", 1)[0], []).append(outcome)
+    results: dict[str, tuple[str, str]] = {}
+    for node_id in node_ids:
+        seen = outcomes.get(node_id, [])
+        if "passed" in seen:
+            results[node_id] = ("green", "green on the base before the run timed out")
+        elif "skipped" in seen:
+            results[node_id] = ("skipped", "skipped on the base before the run timed out")
+        elif seen:
+            results[node_id] = ("red", "failed on the base before the run timed out (its reason is in no report)")
+        elif _file_of(node_id) in broken_paths:
+            results[node_id] = ("red", "failed to collect on the base")
+        else:
+            results[node_id] = ("hang", "")
+    return BaseRun(results, {path: "failed to collect" for path in broken_paths}, tail)
 
 
 def main(argv: list[str] | None = None, repo: str = _REPO) -> int:
     parser = argparse.ArgumentParser(description="List the new and changed tests that already pass on the base.")
     parser.add_argument("--against", required=True, metavar="REV", help="the revision whose merge-base is the base")
+    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, metavar="SECONDS",
+                        help=f"stop the run on the base after this long and list the tests without a result as hang "
+                             f"(default: {DEFAULT_TIMEOUT:g})")
     args = parser.parse_args(argv)
     # 解開符號連結（macOS 的 /var/folders 指向 /private/var/folders）：--rootdir 與 pytest 算 node id 用的路徑要相同，
     # classname 才對得上
@@ -268,7 +426,7 @@ def main(argv: list[str] | None = None, repo: str = _REPO) -> int:
         # Swap in the working tree's tests/: the branch's tests run against the base's code
         shutil.rmtree(worktree / "tests", ignore_errors=True)
         shutil.copytree(Path(repo, "tests"), worktree / "tests")
-        results = run_on_base(worktree, node_ids, scratch / "report.xml")
+        results, broken_files, hang_tail = run_on_base(worktree, node_ids, scratch / "report.xml", args.timeout)
     except (subprocess.CalledProcessError, OSError, ET.ParseError, SyntaxError, UnicodeDecodeError, NoReport) as exc:
         # git 的錯誤在它的 stderr；pytest 沒寫出報告是 NoReport（帶著 pytest 的最後幾行），報告讀不了是 ParseError；
         # 測試檔解析不了是 SyntaxError，不是 UTF-8 是 UnicodeDecodeError
@@ -296,10 +454,25 @@ def main(argv: list[str] | None = None, repo: str = _REPO) -> int:
         status, detail = results[node_id]
         if status != "not collected":
             print(f"{status:<6} {node_id}  {detail}".rstrip())
+    if hang_tail is not None:
+        # 逾時：卡住的測試沒有結果，紅綠都不能算；附上 pytest 最後的輸出（faulthandler 點名卡住的測試）
+        # Timed out: a stuck test has no result, neither red nor green; pytest's last output follows (faulthandler
+        # names the stuck test)
+        print(f"could not compare: the run on the base did not finish within {args.timeout:g}s; the tests without "
+              "a result are listed as hang. pytest's last output:", file=sys.stderr)
+        print("\n".join(hang_tail), file=sys.stderr)
+        return 2
     if missing:
         # 沒被收集的測試在基準上沒有結果，紅綠都不能算：整次比對不成立
         # A test that was not collected has no result on the base, neither red nor green: the comparison fails
         print("could not compare: not collected on the base: " + ", ".join(missing), file=sys.stderr)
+        # 點名收集失敗的檔案：收集不到常是另一個檔案壞了的連帶結果，只列測試看不出原因（#186）
+        # Name the files that failed to collect: an uncollected test is often a side effect of another broken file,
+        # and the test list alone does not show the cause (#186)
+        if broken_files:
+            print("files that failed to collect on the base:", file=sys.stderr)
+            for path, error in sorted(broken_files.items()):
+                print(f"  {path}: {error}", file=sys.stderr)
         return 2
     return 1 if any(status != "red" for status, _ in results.values()) else 0
 

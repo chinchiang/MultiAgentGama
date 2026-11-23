@@ -535,3 +535,208 @@ def test_adding_zero_to_zero_gives_zero():
     captured = capsys.readouterr()
     assert code == 1, captured.out + captured.err
     assert captured.out.splitlines() == ["green  tests/test_calc.py::test_adding_zero_to_zero_gives_zero"]
+
+
+BROKEN_ON_BASE = '''\
+from calc import sub
+
+
+def test_subtracting_gives_the_difference():
+    assert sub(3, 1) == 2
+'''
+
+
+def test_a_file_that_fails_to_collect_does_not_hide_another_files_red_test(make_repo, tmp_path, capsys):
+    """一個測試檔在基準上匯入失敗、另一個檔案的新測試在基準上失敗：兩個都列成紅的，壞掉的檔案帶著它的匯入錯誤，
+    結束碼 0。原本 pytest 遇到收集錯誤就整批中斷，另一個檔案的測試成了「收集不到」、結束碼 2（#183 有 60 個）。
+    One test file fails to import on the base and another file's new test fails there: both are listed as red, the
+    broken file's test with its import error, exit code 0. Before, pytest stopped the whole run on the collection
+    error, so the other file's test came out "not collected", exit code 2 (about 60 tests in #183)."""
+    repo = make_repo(tmp_path / "repo")
+    (repo / "calc.py").write_text(FIXED + "\n\ndef sub(a, b):\n    return a - b\n", encoding="utf-8")
+    (repo / "tests" / "test_sub.py").write_text(BROKEN_ON_BASE, encoding="utf-8")
+    (repo / "tests" / "test_calc.py").write_text(BASE_TESTS + '''
+
+def test_adding_two_numbers_gives_their_sum():
+    assert add(1, 2) == 3
+''', encoding="utf-8")
+    code = tool.main(["--against", "HEAD"], repo=str(repo))
+    out, err = capsys.readouterr()
+    assert code == 0, out + err
+    lines = out.splitlines()
+    assert "red    tests/test_calc.py::test_adding_two_numbers_gives_their_sum  assert -1 == 3" in lines, out
+    broken = next(line for line in lines if "test_subtracting_gives_the_difference" in line)
+    assert broken.startswith("red    tests/test_sub.py::") and "ImportError" in broken, out
+
+
+def test_could_not_compare_names_each_file_that_failed_to_collect(make_repo, tmp_path, capsys):
+    """有測試收集不到時，「could not compare」的訊息也逐一點名在基準上收集失敗的檔案，附上錯誤的第一行，看得出
+    是哪個檔案壞了；原本只列收集不到的測試（#183 的 60 個測試沒說是 `tests/test_quality_gate.py` 匯入失敗）。
+    When a test is not collected, the "could not compare" message also names each file that failed to collect on the
+    base with the first line of its error, so the broken file shows; it used to list only the uncollected tests
+    (#183's 60 tests did not say that `tests/test_quality_gate.py` failed to import)."""
+    repo = make_repo(tmp_path / "repo")
+    (repo / "calc.py").write_text(FIXED + "\n\ndef sub(a, b):\n    return a - b\n", encoding="utf-8")
+    (repo / "tests" / "test_sub.py").write_text(BROKEN_ON_BASE, encoding="utf-8")
+    (repo / "tests" / "test_calc.py").write_text(BASE_TESTS + '''
+
+class TestHelper:
+    def __init__(self):
+        pass
+
+    def test_never_collected(self):
+        assert True
+''', encoding="utf-8")
+    code = tool.main(["--against", "HEAD"], repo=str(repo))
+    captured = capsys.readouterr()
+    assert code == 2, captured.out + captured.err
+    named = [line for line in captured.err.splitlines() if line.strip().startswith("tests/test_sub.py: ")]
+    assert len(named) == 1 and "ImportError: cannot import name 'sub'" in named[0], captured.err
+
+
+def _alive(pid):
+    """這個 pid 的行程還在不在（POSIX 用 signal 0，Windows 問行程的結束碼）。
+    Whether the process with this pid is still running (signal 0 on POSIX; the process's exit code on Windows)."""
+    if os.name == "nt":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # 只查詢的權限 ／ PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+            return code.value == 259  # 還在執行 ／ STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def test_a_test_that_never_ends_is_reported_as_a_hang_and_its_process_tree_is_stopped(make_repo, tmp_path, capsys):
+    """新測試在基準上一直不結束（它自己再開一個子行程）：過了很短的 `--timeout`，這個測試列成 `hang`（不算紅也不算綠），
+    結束碼 2，在時限加上餘裕內結束；pytest 與它開的子行程都被停掉，faulthandler 的輸出點名卡住的測試函式。原本
+    `subprocess.run` 沒有時限，整個檢查卡住（#183 只好把 FIFO 與 `/dev/zero` 的案例改在判斷函式上測）。
+    A new test never ends on the base (and starts a child process of its own): past a short `--timeout` it is listed
+    as `hang` (neither red nor green), exit code 2, ending within the timeout plus a margin; pytest and the child it
+    started are both stopped, and faulthandler's output names the stuck test function. Before, `subprocess.run` had no
+    time limit and the whole check hung (#183 had to test its FIFO and `/dev/zero` cases at the predicate instead)."""
+    import time
+
+    pids = tmp_path / "pids"
+    repo = make_repo(tmp_path / "repo")
+    (repo / "tests" / "test_calc.py").write_text(BASE_TESTS + f'''
+
+def test_waits_forever_on_the_base():
+    import os, subprocess, sys, time
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    with open({str(pids)!r}, "w") as f:
+        f.write(f"{{os.getpid()}} {{child.pid}}")
+    time.sleep(120)
+''', encoding="utf-8")
+    start = time.monotonic()
+    code = tool.main(["--against", "HEAD", "--timeout", "4"], repo=str(repo))
+    elapsed = time.monotonic() - start
+    captured = capsys.readouterr()
+    assert code == 2, captured.out + captured.err
+    assert "hang   tests/test_calc.py::test_waits_forever_on_the_base" in captured.out.splitlines(), captured.out
+    assert elapsed < 4 + 30, elapsed
+    assert "test_waits_forever_on_the_base" in captured.err, captured.err
+    deadline = time.monotonic() + 10
+    left = [int(p) for p in pids.read_text().split()]
+    while any(_alive(p) for p in left) and time.monotonic() < deadline:
+        time.sleep(0.2)
+    assert [p for p in left if _alive(p)] == [], "pytest or its child is still running"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="a new session only exists on POSIX")
+def test_a_child_that_leaves_the_process_group_cannot_hang_the_check(make_repo, tmp_path, capsys):
+    """基準關掉輸出擷取，卡住的測試開了一個用 `start_new_session` 逃出行程群組、還握著 stdout 的子行程：停掉群組之後，script 不再一直
+    等那個 pipe，照樣在時限加上餘裕內回報 `hang`、結束碼 2。原本停掉群組後的 `communicate()` 沒有時限，又卡住了。
+    The stuck test starts a child that leaves the process group with `start_new_session` and still holds stdout: after
+    the group is stopped the script no longer waits on that pipe forever and still reports `hang` with exit code 2
+    within the timeout plus a margin. The `communicate()` after stopping the group used to have no time limit and hung
+    again."""
+    import signal
+    import time
+
+    pids = tmp_path / "pids"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    # 基準關掉輸出擷取（-s）：子行程繼承的是 script 讀的 pipe，不是 pytest 的暫存檔
+    # The base turns output capture off (-s): the child inherits the pipe the script reads, not pytest's temp file
+    (repo / "pytest.ini").write_text("[pytest]\naddopts = -s\n", encoding="utf-8")
+    make_repo(repo)
+    (repo / "tests" / "test_calc.py").write_text(BASE_TESTS + f'''
+
+def test_leaves_a_child_outside_the_group():
+    import subprocess, sys, time
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], start_new_session=True)
+    with open({str(pids)!r}, "w") as f:
+        f.write(str(child.pid))
+    time.sleep(120)
+''', encoding="utf-8")
+    start = time.monotonic()
+    try:
+        code = tool.main(["--against", "HEAD", "--timeout", "4"], repo=str(repo))
+        elapsed = time.monotonic() - start
+    finally:
+        if pids.is_file():
+            try:
+                os.kill(int(pids.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    captured = capsys.readouterr()
+    assert code == 2, captured.out + captured.err
+    assert "hang   tests/test_calc.py::test_leaves_a_child_outside_the_group" in captured.out.splitlines()
+    assert elapsed < 4 + 40, elapsed
+
+
+def test_tests_that_finished_before_the_timeout_keep_their_result(make_repo, tmp_path, capsys):
+    """逾時之前已經跑完的新測試照進度記錄分類：通過的是綠、失敗與 xfail 的是紅、在基準上收集失敗的檔案裡的是紅，
+    只有卡住的那個是 `hang`，結束碼 2。
+    The new tests that finished before the timeout are sorted from the progress records: a pass is green, a failure
+    and an xfail are red, a test in a file that failed to collect on the base is red, and only the stuck one is
+    `hang`, exit code 2."""
+    repo = make_repo(tmp_path / "repo")
+    (repo / "calc.py").write_text(FIXED + "\n\ndef sub(a, b):\n    return a - b\n", encoding="utf-8")
+    (repo / "tests" / "test_a_sub.py").write_text(BROKEN_ON_BASE, encoding="utf-8")
+    (repo / "tests" / "test_calc.py").write_text(BASE_TESTS + '''
+
+import pytest
+
+
+def test_adding_zero_to_zero_gives_zero():
+    assert add(0, 0) == 0
+
+
+def test_adding_two_numbers_gives_their_sum():
+    assert add(1, 2) == 3
+
+
+@pytest.mark.xfail(reason="add subtracts on the base")
+def test_adding_one_and_one():
+    assert add(1, 1) == 2
+
+
+def test_waits_forever_on_the_base():
+    import time
+    time.sleep(120)
+''', encoding="utf-8")
+    code = tool.main(["--against", "HEAD", "--timeout", "4"], repo=str(repo))
+    captured = capsys.readouterr()
+    assert code == 2, captured.out + captured.err
+    statuses = {line.split()[1]: line.split()[0] for line in captured.out.splitlines()}
+    assert statuses == {
+        "tests/test_a_sub.py::test_subtracting_gives_the_difference": "red",
+        "tests/test_calc.py::test_adding_zero_to_zero_gives_zero": "green",
+        "tests/test_calc.py::test_adding_two_numbers_gives_their_sum": "red",
+        "tests/test_calc.py::test_adding_one_and_one": "red",
+        "tests/test_calc.py::test_waits_forever_on_the_base": "hang",
+    }, captured.out

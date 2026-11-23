@@ -6,7 +6,7 @@
 的參數要和 `.github/workflows/tests.yml` 相同（`tests/test_repo_docs.py` 會檢查）。
 
 摘要 log（預設 `scratch/checks-<HEAD 短 SHA>.log`）在每一步跑完就寫入：結束碼，加上該步的關鍵行（pytest 的
-`TOTAL` 覆蓋率與通過數、golden 的差異數與每一種差異、red-on-base 的 `red=N green=M skipped=K` 與每一行結果，
+`TOTAL` 覆蓋率與通過數、golden 的差異數與每一種差異、red-on-base 的 `red=N green=M skipped=K hang=H` 與每一行結果，
 不截斷）；某一步失敗卻沒有任何關鍵行時，留它的最後 20 行。每一步的完整輸出寫在同名的 `.full.log`。
 
 golden、test_sdist 與 red-on-base 都讀工作目錄，跑的時候不要改檔案。
@@ -27,7 +27,7 @@ pytest coverage arguments must equal those in `.github/workflows/tests.yml` (`te
 
 The summary log (default `scratch/checks-<short HEAD SHA>.log`) is written as each step finishes: the exit code plus
 the step's key lines (pytest's `TOTAL` coverage and counts, golden's difference count and each difference,
-red-on-base's `red=N green=M skipped=K` and every result line, never cut); a failed step with no key line keeps its
+red-on-base's `red=N green=M skipped=K hang=H` and every result line, never cut); a failed step with no key line keeps its
 last 20 lines. Each step's full output goes to the `.full.log` of the same name.
 
 golden, test_sdist and red-on-base read the working tree: change no file while they run.
@@ -73,7 +73,7 @@ _KEYS = {
     "red_on_base": None,
 }
 # red-on-base 的每一行結果 ／ red-on-base's result lines
-_RED_ON_BASE_LINE = re.compile(r"^(red|green|skipped)\s")
+_RED_ON_BASE_LINE = re.compile(r"^(red|green|skipped|hang)\s")
 
 
 def steps(python: str, against: str) -> List[Tuple[str, List[str]]]:
@@ -96,15 +96,15 @@ STEP_NAMES = tuple(name for name, _ in steps(sys.executable, "master"))
 
 
 def key_lines(name: str, output: str, failed: bool) -> List[str]:
-    """一步的輸出裡要寫進摘要的行；red-on-base 另外在最前面加上紅、綠、略過的數量。
-    The lines of a step's output that go into the summary; red-on-base also gets its red, green and skipped counts
+    """一步的輸出裡要寫進摘要的行；red-on-base 另外在最前面加上紅、綠、略過與 hang 的數量。
+    The lines of a step's output that go into the summary; red-on-base also gets its red, green, skipped and hang counts
     first."""
     lines = [line.rstrip() for line in output.splitlines() if line.strip()]
     pattern = _KEYS.get(name)
     kept = lines if pattern is None else [line for line in lines if pattern.search(line)]
     if name == "red_on_base":
         statuses = [m.group(1) for m in map(_RED_ON_BASE_LINE.match, lines) if m]
-        counts = " ".join(f"{s}={statuses.count(s)}" for s in ("red", "green", "skipped"))
+        counts = " ".join(f"{s}={statuses.count(s)}" for s in ("red", "green", "skipped", "hang"))
         kept = [counts, *kept]
     if failed and (not kept or (name == "red_on_base" and len(kept) == 1)):
         kept += lines[-TAIL_LINES:]
