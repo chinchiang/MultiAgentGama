@@ -43,6 +43,12 @@
 - 送出前的遮蔽也涵蓋 gitlab、npm、SendGrid、Slack webhook 權杖與 PGP 私鑰區塊（同時回報為 VH-AI-007），以及只遮蔽不回報的形狀：名稱像憑證的字串賦值、`Bearer`／`Basic` 標頭、短的 `sk-` 金鑰與含未編碼 `/` 的 URL 密碼（#183）。
 - 未知的設定鍵在啟動時印出警告；`models.<alias>.api_key_env`／`aws_profile_name`／`aws_region_name` 必須是非空字串或 null（`ConfigError`，exit 5）；本機沙盒在 Linux 上限制使用者的執行緒數（`RLIMIT_NPROC`，目前數量 + `SANDBOX_PROCESS_HEADROOM` = 1024）；真實模型寫的發現／威脅文字原樣送進提示詞（`prompt_text`；`en_only` 只用於模擬的項目與以 `default_text` 登記的 harness 預設值）；設定檔來源的名稱在 Markdown 報告裡會跳脫；每個不受信任通道的內容都先剔除不可見字元，全形、連字號與空白的通道標籤變形也會被中和（#183）。
 - `--summary-json` 新增 `sandbox_provider`，測試在 `local_subprocess`（不是隔離邊界）裡執行時，GitHub Action 會發出 `::warning::`（#183）。
+- JS/TS 遮罩連區塊註解結尾的 `*/` 一起清空，緊接在 `import`／`from` 後的字串（`import"pkg"`）也會遮罩（過去內容沒有遮罩，裡面的 `function fake() {}` 會變成幽靈符號），類別宣告前面也要有邊界，`subclass`、`el.class` 後面接換行與名稱不再產生幽靈類別（#182）。
+- 黑箱模組第一個失敗的 testcase 不是測試自己的斷言（非斷言的失敗，或目標自己的 `assert`），後面的才是時，記為突破（`BLOCKED_CRITICAL_RISK`），原因與 PoC 取自那個斷言；過去只看第一個失敗，所以會讀成未分類的失敗（`INCONCLUSIVE`）。白箱測試照舊回報第一個失敗（#182）。
+- `--baseline` 依次數計算已知問題：基準報告裡出現 K 次的指紋，這次最多抵掉 K 筆，第 K+1 筆算新的。過去指紋是集合，一筆已知的 VH-AI-007／VH-AI-003 命中（key 不含行號）或一筆重複，就能壓下同檔任意多筆新命中（#182）。
+- 數值設定拒絕 NaN 與 ±Inf（YAML 的 `.nan`／`.inf`；NaN 過去能通過所有上下限），`--base-url` 拒絕不在 1–65535 的連接埠（過去接受 `http://localhost:99999`），`load_settings` 也以 `ConfigError` 驗證程式自行建構的 `Overrides`（`max_files`、`max_model_calls`、`mutation_max_mutants`）。CLI 在載入設定之前先檢查這三個旗標，所以旗標錯誤現在比設定檔錯誤先回報，仍是 exit 5 並指出旗標名稱（#182）。
+- `--changed-since` 拒絕空的或以 `-` 開頭的 ref（目前是 rev-parse 的 `^{commit}` 碰巧擋下 `--output=<路徑>`），`git diff`／`git ls-files` 失敗時是 exit 5，不再當成沒有檔案改變。單檔的 `--target` 也像目錄裡的檔案一樣套用 `only_files`、`include`／`exclude`、自動發現設定檔的篩選揭露與 `is_unsafe_file`（#182）。
+- 主控台印證據缺口原因與輸出路徑時不再解讀 rich 標記；報告的 PoC 先經過 `clean_model_text`；PoC 的測試函式那一行去除控制字元與換行（`header_field`）；當掉的呼叫的錯誤字串先以 `redact_secrets` 遮蔽，再寫進日誌與 call_log（#182）。
 
 ### 測試
 
@@ -60,6 +66,7 @@
 - 新增 `tests/test_bi_english.py`：英文半取自 `bi()` 第二個參數的字串常值（f-string 的欄位寫成 `{}`）、只改變數名稱或把字串搬進 helper 的參數不算改動、改了或移除的英文半要寫進兩份 CHANGELOG 的 `[Unreleased]`、workflow 只有讀取權限且基準 commit 經 env 傳入。
 - `tests/test_repo_docs.py`：新增 `stale_tree_paths` 與 `test_the_readme_file_tree_has_no_stale_entries`，反向檢查兩份 README 檔案樹列出的每個路徑在磁碟上以相符的大小寫與型別存在（目錄以 `/` 結尾、一般檔案不加 `/`），且 `tree_paths` 對缺少緊接圍欄的檔頭、無法解析的行、含額外 `/` 或 `.`／`..` 的項目名稱、跳層縮排、掛在一般檔案底下的子項目、重複項目或缺少 ` ``` ` 結束圍欄一律丟出 `ValueError`；在解開的 sdist 裡（沒有 `.github/`）略過 `.github/`、`_NOT_SHIPPED` 與 `MANIFEST.in` prune 掉且不存在的目錄（含因此空掉消失的上層目錄），其他已刪除或寫錯的路徑仍會報錯。
 - #183 的回歸測試：`tests/test_js_ts_extractor.py`、`tests/test_response_cache.py`、`tests/test_review_sandbox_executor.py`、`tests/test_mutation.py`、`tests/test_cross_verification.py`、`tests/test_dedup_and_budget.py`、`tests/test_ai_security.py`、`tests/test_js_execution.py`、`tests/test_review_cli_config.py`、`tests/test_review_sanitize.py`、`tests/test_settings.py`、`tests/test_quality_gate.py`、`tests/test_review_reports.py` 與 `tests/test_r3_cli_report_action.py`；調整了把快取放在目標裡、或寫死 `splitlines()` 行號與沙盒限制的既有測試。
+- #182 的回歸測試：`tests/test_js_ts_extractor.py`、`tests/test_review_sandbox_executor.py`、`tests/test_evidence_tally.py`、`tests/test_settings.py`、`tests/test_parallel_and_budgets.py`、`tests/test_mutation.py`、`tests/test_fanout.py`、`tests/test_review_reports.py` 與 `tests/test_harness_components.py`；`tests/test_baseline.py` 改成比對指紋次數而不是集合。
 
 ### 文件
 
