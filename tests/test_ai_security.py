@@ -747,3 +747,21 @@ def test_the_per_file_cap_keeps_the_most_severe_hits(tmp_path, caplog):
     assert any(h.severity == FindingSeverity.HIGH and h.line_number == 26 for h in vh008)
     assert [h.line_number for h in hits] == sorted(h.line_number for h in hits)
     assert "6 more are not" in caplog.text
+
+
+@pytest.mark.parametrize("call", [
+    "AutoModel.from_pretrained('acme/m', revision='abc', trust_remote_code='yes')",
+    "AutoModel.from_pretrained('acme/m', revision='abc', trust_remote_code=1)",
+    "AutoModel.from_pretrained('acme/m', revision='abc', **{'trust_remote_code': True})",
+])
+def test_trust_remote_code_is_caught_in_every_truthy_spelling(tmp_path, call):
+    """`trust_remote_code` 依 Python 真值判斷，字面值字典展開的寫法也算（#183 第 20 項）。
+    `trust_remote_code` is judged by Python truthiness, the literal-dict unpacking included (#183 item 20)."""
+    _, hits = _scan(tmp_path, f"from transformers import AutoModel\n\ndef load():\n    return {call}\n")
+    assert [h.rule_id for h in hits] == ["VH-AI-001"]
+
+
+def test_trust_remote_code_false_is_not_a_hit(tmp_path):
+    _, hits = _scan(tmp_path, "from transformers import AutoModel\n\ndef load():\n"
+                              "    return AutoModel.from_pretrained('acme/m', revision='abc', **{'trust_remote_code': False})\n")
+    assert hits == []

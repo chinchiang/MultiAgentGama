@@ -1038,11 +1038,24 @@ class AISecurityStaticScanner:
 
     @staticmethod
     def _kw(node: ast.Call, name: str) -> Optional[ast.expr]:
-        return next((k.value for k in node.keywords if k.arg == name), None)
+        """關鍵字參數 `name` 的值，包含以字面值字典展開的寫法（`f(**{"trust_remote_code": True})`）。
+        The value of keyword argument `name`, including the spelling unpacked from a literal dict
+        (`f(**{"trust_remote_code": True})`)."""
+        for k in node.keywords:
+            if k.arg == name:
+                return k.value
+            if k.arg is None and isinstance(k.value, ast.Dict):
+                for key, value in zip(k.value.keys, k.value.values, strict=True):
+                    if isinstance(key, ast.Constant) and key.value == name:
+                        return value
+        return None
 
     @staticmethod
     def _is_true(value: Optional[ast.expr]) -> bool:
-        return isinstance(value, ast.Constant) and value.value is True
+        """常數依 Python 的真值判斷（`True`、`1`、`"yes"` 都是真；函式庫也是寫 `if trust_remote_code:`）。
+        A constant judged by Python truthiness (`True`, `1` and `"yes"` are all true; the libraries also write
+        `if trust_remote_code:`)."""
+        return isinstance(value, ast.Constant) and bool(value.value)
 
     def _is_llm_call(self, node: ast.AST, aliases: Dict[str, str]) -> bool:
         if not isinstance(node, ast.Call):
