@@ -32,6 +32,9 @@
       "Bash(git push *--all*)",
       "Bash(git push *--mirror*)",
       "Bash(git push *--delete*)"
+    ],
+    "ask": [
+      "Bash(gh pr merge * --merge)"
     ]
   }
 }
