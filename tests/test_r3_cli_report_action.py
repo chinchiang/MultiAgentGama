@@ -131,7 +131,11 @@ def test_an_explicit_config_may_set_sensitive_keys_but_warns_about_relative_exec
     """--config 明確指定的檔案可以設定敏感鍵（使用者信任它），但相對路徑的可執行檔會印出警告。
     A file passed with --config may set sensitive keys (the user trusts it), but a relative executable path warns."""
     config = tmp_path / "trusted.yaml"
-    config.write_text("global:\n  node_bin: ./tools/node\n  cache_dir: " + str(tmp_path / "c") + "\n", encoding="utf-8")
+    # 快取目錄不可在目標（這裡是目前目錄 tmp_path）之內（#183 第 2 項），所以放在它旁邊
+    # The cache directory may not be inside the target (here the current directory, tmp_path; #183 item 2), so it
+    # sits next to it
+    config.write_text("global:\n  node_bin: ./tools/node\n  cache_dir: " + str(tmp_path.parent / f"{tmp_path.name}-c")
+                      + "\n", encoding="utf-8")
     (tmp_path / "vibeharness.yaml").write_text("global:\n  node_bin: ./evil\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     seen = _capture_run(monkeypatch)

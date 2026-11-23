@@ -593,7 +593,10 @@ def test_cli_cache_dir_flag_enables_the_cache(monkeypatch, tmp_path):
         return _summary("INCONCLUSIVE")
 
     monkeypatch.setattr(cli.VibeHarnessCommander, "run_full_pipeline", run)
-    monkeypatch.setattr(sys, "argv", ["vibeharness", "-t", str(tmp_path), "-m", "mock", "--cache-dir", str(tmp_path / "c")])
+    # 快取目錄不可在目標之內（#183 第 2 項），所以目標是一個子目錄
+    # The cache directory may not be inside the target (#183 item 2), so the target is a subdirectory
+    (tmp_path / "t").mkdir()
+    monkeypatch.setattr(sys, "argv", ["vibeharness", "-t", str(tmp_path / "t"), "-m", "mock", "--cache-dir", str(tmp_path / "c")])
     with pytest.raises(SystemExit):
         cli.main()
     assert seen["cache_dir"] == str(tmp_path / "c") and (tmp_path / "c").is_dir()
