@@ -653,3 +653,90 @@ def test_waits_forever_on_the_base():
     while any(_alive(p) for p in left) and time.monotonic() < deadline:
         time.sleep(0.2)
     assert [p for p in left if _alive(p)] == [], "pytest or its child is still running"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="a new session only exists on POSIX")
+def test_a_child_that_leaves_the_process_group_cannot_hang_the_check(make_repo, tmp_path, capsys):
+    """基準關掉輸出擷取，卡住的測試開了一個用 `start_new_session` 逃出行程群組、還握著 stdout 的子行程：停掉群組之後，script 不再一直
+    等那個 pipe，照樣在時限加上餘裕內回報 `hang`、結束碼 2。原本停掉群組後的 `communicate()` 沒有時限，又卡住了。
+    The stuck test starts a child that leaves the process group with `start_new_session` and still holds stdout: after
+    the group is stopped the script no longer waits on that pipe forever and still reports `hang` with exit code 2
+    within the timeout plus a margin. The `communicate()` after stopping the group used to have no time limit and hung
+    again."""
+    import signal
+    import time
+
+    pids = tmp_path / "pids"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    # 基準關掉輸出擷取（-s）：子行程繼承的是 script 讀的 pipe，不是 pytest 的暫存檔
+    # The base turns output capture off (-s): the child inherits the pipe the script reads, not pytest's temp file
+    (repo / "pytest.ini").write_text("[pytest]\naddopts = -s\n", encoding="utf-8")
+    make_repo(repo)
+    (repo / "tests" / "test_calc.py").write_text(BASE_TESTS + f'''
+
+def test_leaves_a_child_outside_the_group():
+    import subprocess, sys, time
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], start_new_session=True)
+    with open({str(pids)!r}, "w") as f:
+        f.write(str(child.pid))
+    time.sleep(120)
+''', encoding="utf-8")
+    start = time.monotonic()
+    try:
+        code = tool.main(["--against", "HEAD", "--timeout", "4"], repo=str(repo))
+        elapsed = time.monotonic() - start
+    finally:
+        if pids.is_file():
+            try:
+                os.kill(int(pids.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    captured = capsys.readouterr()
+    assert code == 2, captured.out + captured.err
+    assert "hang   tests/test_calc.py::test_leaves_a_child_outside_the_group" in captured.out.splitlines()
+    assert elapsed < 4 + 40, elapsed
+
+
+def test_tests_that_finished_before_the_timeout_keep_their_result(make_repo, tmp_path, capsys):
+    """逾時之前已經跑完的新測試照進度記錄分類：通過的是綠、失敗與 xfail 的是紅、在基準上收集失敗的檔案裡的是紅，
+    只有卡住的那個是 `hang`，結束碼 2。
+    The new tests that finished before the timeout are sorted from the progress records: a pass is green, a failure
+    and an xfail are red, a test in a file that failed to collect on the base is red, and only the stuck one is
+    `hang`, exit code 2."""
+    repo = make_repo(tmp_path / "repo")
+    (repo / "calc.py").write_text(FIXED + "\n\ndef sub(a, b):\n    return a - b\n", encoding="utf-8")
+    (repo / "tests" / "test_a_sub.py").write_text(BROKEN_ON_BASE, encoding="utf-8")
+    (repo / "tests" / "test_calc.py").write_text(BASE_TESTS + '''
+
+import pytest
+
+
+def test_adding_zero_to_zero_gives_zero():
+    assert add(0, 0) == 0
+
+
+def test_adding_two_numbers_gives_their_sum():
+    assert add(1, 2) == 3
+
+
+@pytest.mark.xfail(reason="add subtracts on the base")
+def test_adding_one_and_one():
+    assert add(1, 1) == 2
+
+
+def test_waits_forever_on_the_base():
+    import time
+    time.sleep(120)
+''', encoding="utf-8")
+    code = tool.main(["--against", "HEAD", "--timeout", "4"], repo=str(repo))
+    captured = capsys.readouterr()
+    assert code == 2, captured.out + captured.err
+    statuses = {line.split()[1]: line.split()[0] for line in captured.out.splitlines()}
+    assert statuses == {
+        "tests/test_a_sub.py::test_subtracting_gives_the_difference": "red",
+        "tests/test_calc.py::test_adding_zero_to_zero_gives_zero": "green",
+        "tests/test_calc.py::test_adding_two_numbers_gives_their_sum": "red",
+        "tests/test_calc.py::test_adding_one_and_one": "red",
+        "tests/test_calc.py::test_waits_forever_on_the_base": "hang",
+    }, captured.out
