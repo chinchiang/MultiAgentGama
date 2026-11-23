@@ -384,22 +384,22 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    F["去重後的 findings"] --> ASSIGN["派工：每個 whitebox_verifier_*<br/>只拿 alias ≠ 作者且未佐證過的 findings<br/>每 15 筆一批"]
+    F["去重後的 findings"] --> ASSIGN["派工：每個 whitebox_verifier_*<br/>只拿模型 ≠ 作者且自家模型未佐證過的 findings<br/>每 15 筆一批"]
     ASSIGN --> VOTE["平行呼叫 verifier<br/>confirm / reject / unsure"]
     F --> CORR["corroborating_models 每個自動一票 corroborated<br/>（is_simulated 的發現不給）"]
     VOTE --> REAL{"real_votes（verifier 的 confirm／reject）== 0？"}
     CORR --> TALLY
     REAL -- 是 --> NA["arbitration_applied=False<br/>全部原樣進 confirmed<br/>ratio=None"]
     REAL -- 否 --> TALLY["每筆：yes = confirm + corroborated<br/>no = reject"]
-    TALLY --> D{"no > yes？"}
+    TALLY --> D{"2 × no > eligible？<br/>eligible = 被分派的 verifier + 佐證"}
     D -- 是 --> DIS["disputed（不生成測試）"]
     D -- 否 --> C{"yes > no？"}
     C -- 是 --> CONF["confirmed"]
     C -- 否 --> UND["confirmed 但 undecided<br/>交給測試決定"]
 ```
 
-- verifier 名單來自所有 `whitebox_verifier_*`，**每個 model alias 只留一個**：兩個 verifier agent 路由到同一個 alias 時，只保留排序後的第一個 agent id 並記警告，同一模型不會對同一筆發現投兩次票；缺 `model_alias` 時同樣解析為 `unconfigured`（`:46-69`），所以下面的「不評自家」判斷用的是實際路由的 alias。
-- 派工規則（`:132-140`）：`alias != f.model_alias and alias not in f.corroborating_models`。模型不評自家的發現，也不評自己已經佐證過的。
+- verifier 名單來自所有 `whitebox_verifier_*`，**每個模型只留一個**（依解析後的 `models.<alias>.model` 字串比較，`GatewaySettings.model_for`）：兩個 verifier agent 路由到同一個模型時（不論是同一個或兩個別名），只保留排序後的第一個 agent id 並記警告，同一模型不會對同一筆發現投兩次票；缺 `model_alias` 時同樣解析為 `unconfigured`（`:46-69`），所以下面的「不評自家」判斷用的是實際路由的 alias。
+- 派工規則（`:132-140`）：`_rules_on(alias, f.model_alias)`，且驗證者的模型不在佐證模型之中；兩者都比較解析後的模型字串，所以模型換個別名也不評自家的發現、不評自己已經佐證過的。只有 `2 * no > eligible` 時發現才列為爭議，`eligible` 是被分派評審它的驗證者數加上它的佐證數：否決必須過半數「應投票的模型」，不是過半數「回來的票」，所以一張否決配上一張 unsure 或一個失敗的批次仍保留去測試。
 - 初始票（`:142-147`）：`corroborating_models` 每個算一票 `corroborated`；發現是模擬的就不給，模擬的審查者彼此同意不是證據。
 - 判票（`:185-210`）與共識率（`:214`）：`agreeing` 是每筆多數方的票數加總（平手貢獻 0），`decisive` 是所有 `yes + no`，`ratio = agreeing / decisive`。
 - 沒有任何真實票時（`:166-183`）：`arbitration_applied=False`，所有發現原樣保留，`consensus_summary` 註明是未過濾的假設。只有 verifier 的 `confirm` 或 `reject` 算真實票；`unsure` 與單靠佐證都不算，所以每個 verifier 批次都失敗時就是沒有人裁決過，即使有重複被合併。harness 這時把已確認數報為 `None`（JSON 報告為 `null`，Markdown 與 console 顯示 N/A；第 4 章）。
@@ -442,6 +442,7 @@ flowchart TD
 - **AI 目標的判斷**：Python 解析 import 比對 `AI_PYTHON_MODULES`（`vibeharness/agents/whitebox/ai_static_scanner.py:40-46`），JS/TS 用 `_AI_JS_PACKAGE_RE`（`:47-51`）。結果寫進 `ai_components`，harness 再交給威脅建模器決定要不要加 OWASP LLM 清單。
 - VH-AI-006 的污點分析（`_taint_rule`）是同作用域、不分流程的：最多 4 輪 fixpoint 追衍生綁定（指派，以及 `for`／`with ... as`／comprehension／海象運算子的目標；`_bindings`，`vibeharness/agents/whitebox/ai_static_scanner.py:1850-1865`），刻意偏向 vibe coding 常見的 `answer = llm(...); eval(answer)` 形狀。每個範疇的綁定／修改索引（`_ScopeIndex`：字面值清單綁定、修改、標準輸入餵入）只建一次，argv 判斷依清單／名稱快取，屬性鏈摘要、接收者檢查與值的走訪都有備忘表，所以許多執行點或很深的 `a.b.b...` 鏈不再是平方時間，也不會 `RecursionError`。屬性目標以點號名稱追蹤（`self.last`），不會污染基底物件；`cache[key] = ...` 污染的是 `cache` 而不是 `key`（`_target_keys`，`:1867-1882`）。
 - `_dedupe`（`vibeharness/agents/whitebox/ai_static_scanner.py:1950-1975`）：同規則、同檔案、同行只留一筆；每個檔案每條規則最多 20 筆。
+- 每個（規則, 檔案）最多 `_MAX_HITS_PER_RULE_PER_FILE`（20）筆，`_dedupe` 先留最嚴重的（同嚴重度依行號），超過上限略過的筆數記成警告；過去依行號截斷，前面的 MEDIUM 命中會把後面的 HIGH 擠掉（#183）。VH-AI-001 的 `trust_remote_code` 依 Python 真值判斷，`**{"trust_remote_code": True}` 這種字面值字典展開也算（`_kw`）。
 
 ### 7.3 對閘門的影響
 
@@ -490,6 +491,7 @@ flowchart TD
 4. 每個測試都有斷言。認可的斷言：`assert`、`raise AssertionError`、`pytest.raises`／`fail`／`warns`／`deprecated_call`／`approx`（`:17`）。`mock.assert_called_once()` 這類 `assert` 開頭的方法不算。巢狀函式裡的 `assert` 只在該函式真的被呼叫時才算（`:43-80`），否則一個從未呼叫的 helper 就能騙過閘門。每個測試函式，以及 `Test*` 類別裡的**每個** `test_*` 方法，都必須有斷言：可以直接寫，或（可遞移地）呼叫到同一模組裡含斷言的程式：以名稱呼叫的模組層級輔助函式（`check(resp)`），或以 `self.<helper>()` 呼叫的類別方法，包括繼承自同一模組中定義的基底類別的方法（`_vacuous_tests`，`:272-290`；`_class_methods`，`:293-303`；`_asserts`，`:306-329`）。有斷言的方法不能再替同類別裡空洞的方法背書，否則空洞的方法會被算成已防禦的邊界；呼叫模組外（看不到原始碼）的程式仍不算斷言證據。`_asserts` 以明確的堆疊走訪呼叫圖（不遞迴），數千層的輔助函式鏈也不會 `RecursionError`；`_parse_and_check_python` 另有保險（`:105-111`）：真的遇到 `RecursionError` 時保守地當成沒有斷言證據，絕不讓整次執行崩潰。
 
 JS/TS 測試走 `check_js_test_code`（`:399-435`，第 9.5 節）；`prepare_test_code`（`:467-481`）一次完成圍欄剝除、依語言靜態檢查與 Python 前導 `__future__` 匯入切分，生成器、合成器與執行器都用它（`check_test_code_for`，`:438-443`，保留單純的依語言檢查入口）。
+- 安裝檢查讀不懂的寫法以「無法檢查」拒絕（CODING_STANDARDS 第 8 條，`_unreadable_call`／`_js_unreadable_call`）：以 subprocess／os／pty／asyncio 啟動行程但命令不是字面值、動態匯入或執行的名稱／程式碼不是字面值、getattr 的屬性名稱不是字面值、呼叫對象是查表結果（`vars(os)["system"]`），以及 JS 的 require／import()／getBuiltinModule 模組名稱或 child_process 命令不是單一字串字面值。這是品質閘門（擋下模型幻想出來的套件），不是隔離：隔離是沙盒的事。
 
 ### 9.2 執行器（`vibeharness/runners/test_executor.py`）
 
@@ -517,6 +519,7 @@ JS/TS 測試走 `check_js_test_code`（`:399-435`，第 9.5 節）；`prepare_te
 | 部分 skipped | PASSED，但 `failure_reason` 註明只有執行的案例驗證了邊界 |
 
 stdout／stderr 各截到 500 字，traceback 截到 2000 字（`_result`，`:579-604`）。
+- 突破只認測試自己的斷言（`_assertion_raised_in_target`）：AssertionError 的最內層框架（Python 是 pytest 回溯的最後一個框架；JS 是斷言錯誤自己的 V8 框架，不含 `actual:`／`expected:` 欄位裡另一個錯誤的堆疊）在目標程式碼裡時，那是目標以 `assert` 拒絕輸入，算未分類的失敗；第三方套件（`site-packages`、`dist-packages`、`node_modules`）裡的斷言輔助函式仍算測試的斷言。
 
 ### 9.3 本機子程序沙盒（`LocalSubprocessSandbox`，`vibeharness/core/sandbox.py:385-842`）
 
@@ -533,6 +536,7 @@ docstring 明寫**不是安全邊界**：生成的程式碼以目前使用者的
 - **讀回報告**（`read_untrusted_file`，`vibeharness/core/jscoverage.py:335-359`）：被測程式碼（本機是同一個使用者，容器裡是 `nobody`）可以把 `junit.xml` 或 `lcov.info` 換成指向主機檔案的 symlink、FIFO、裝置或巨大的檔案，所以兩者都經它讀回（`vibeharness/core/sandbox.py:498`、`:1264` 經 `read_lcov_file`）：POSIX 上以 `O_NOFOLLOW`（最後一段是 symlink 就失敗）加 `O_NONBLOCK`（FIFO 卡不住 harness）開啟；Windows 沒有 `O_NOFOLLOW`，改為開啟前以 `lstat` 拒絕 symlink／重新剖析點、開啟後以 `fstat` 比對；只接受與檢查時同一個 inode、只有一個硬連結、不超過 `MAX_REPORT_BYTES`（64 MiB，`vibeharness/core/jscoverage.py:366`，與寫檔上限相同）的一般檔案，最多多讀一個位元組，讀取中變大也會被拒絕。拒絕即「沒有報告」：`junit.xml` 的雙語原因放在 stderr 最前面（「沒有產生報告」的原因只顯示 stderr 的開頭），lcov 報告則記一行 WARNING。
 - **實際逾時**（`_effective_timeout`，`vibeharness/core/sandbox.py:508-515`）：沒給或非正數的單次逾時退回沙盒的批次預算，Docker 沙盒容器內的 `timeout` 也用同一個值。
 - 哨兵 exit code：逾時 124、沙盒自身失敗 125（`:28-31`），避開 1..-31 的訊號範圍。
+- pytest 一律帶 `--confcutdir=<執行目錄>`：`-c /dev/null` 讓 confcutdir 落在 /dev，執行目錄任何上層（例如 /tmp）的 conftest.py 都會被載入。Linux 上 `RLIMIT_NPROC`（計的是使用者全部的執行緒）設為目前數量加 `SANDBOX_PROCESS_HEADROOM`（1024），擋住 fork bomb。目標（本機沙盒還有它在 `PYTHONPATH` 上的父目錄）頂層有 `RUNNER_MODULES` 同名模組時記 `runner_shadowed` 缺口；突變測試的複本與符號擷取都略過 `is_unsafe_file` 的檔案（解析到目標之外的連結、FIFO、裝置），後者記 `unsafe_files_skipped` 缺口。`--summary-json` 記錄 `sandbox_provider`，Action 在 `local_subprocess` 時發出 `::warning::`。
 
 ### 9.4 Docker 沙盒（`DockerSandbox`，`vibeharness/core/sandbox.py:913-1151`）
 
@@ -614,13 +618,13 @@ flowchart TD
 | 4 | 231-240 | 確認的 finding 沒有可用的模型測試，只由探針覆蓋（沒有套用跨模型驗證時，訊息稱它們為「未經驗證」而不是「已確認」） | `FINDINGS_WITHOUT_MODEL_TESTS` · `review.findings_without_model_tests` |
 | 5 | 241-250 | 目標中有對審查者的指令或隱形字元（VH-AI-008／009） | `REVIEW_INTEGRITY` · `static_findings` (`affects_review_integrity`) |
 | 6 | 258-260 | 沒有設定任何 `whitebox_reviewer_*` | `NO_REVIEWERS` · `review.reviewers_configured` |
-| 7 | 261-268 | 有審查者但只有一個不同的模型別名，交叉驗證無法進行（OWASP LLM07:2026；計算的是別名，不是模型字串） | `SINGLE_REVIEWER_MODEL` · `review.reviewer_models` |
+| 7 | 261-268 | 有審查者但只有一個不同的模型，交叉驗證無法進行（OWASP LLM07:2026；計算的是解析後的 `models.<alias>.model` 字串，指向同一模型的別名只算一個，`GatewaySettings.distinct_model_labels`） | `SINGLE_REVIEWER_MODEL` · `review.reviewer_models` |
 | 8 | 284-285 | 沒有抽到任何符號 | `NO_SYMBOLS` · `scope.symbols_found` |
 | 9 | 286-291 | 有檔案解析失敗 | `PARSE_FAILURES` · `scope.parse_failures` |
 | 10 | 300-305 | 有檔案超過 `max_file_bytes` 未分析（列出前五個檔名） | `OVERSIZED_FILES` · `scope.oversized_files`, `limits.max_file_bytes` |
 | 11 | 312-317 | 有檔案超過 `max_files` 被跳過 | `MAX_FILES_SKIPPED` · `scope.skipped_files`, `limits.max_files` |
 | 12 | 325-331 | 白箱或黑箱測試 ERROR、SKIPPED 或沒跑 | `TESTS_NOT_RUN` · `tally.whitebox_not_run` / `blackbox_not_run` |
-| 13 | 368-382 | 偵測到 JS/TS 但沒有生成任何 JS/TS 測試（mock 模式必然如此） | `JS_NO_TESTS` · `scope.detected_langs`, `execution.wb_tests` / `bb_tests` |
+| 13 | 377-382 | 偵測到 JS/TS 但沒有生成任何 JS/TS 測試（mock 模式必然如此） | `JS_NO_TESTS` · `scope.detected_langs`, `execution.wb_tests` / `bb_tests` |
 | 14 | 383-388 | 生成了 JS/TS 測試但無法執行（沒有可用的 Node、Node 太舊、Node 映像缺失） | `JS_TESTS_NOT_RUN` · `execution.js_runner_problem` |
 | 15 | 389-392 | 生成了 TypeScript 測試但 Node < 22.6，沒有型別剝除 | `TS_TESTS_NOT_RUN` · `execution.ts_problem` |
 | 16 | 393-402 | 擷取器不支援的語言（Go、Java、Kotlin、Rust、C／C++、C#、PHP、Ruby、Swift、Scala 等）的原始碼檔案沒有分析；訊息列出各語言的數量與最多五個檔名 | `UNSUPPORTED_LANGUAGES` · `scope.unsupported_count` / `unsupported_languages` / `unsupported_files` |
@@ -628,12 +632,16 @@ flowchart TD
 | 18 | 420-421 | 完全沒有執行任何白箱測試 | `NO_WHITEBOX_TESTS` · `execution.wb_results` |
 | 19 | 422-424 | 威脅建模沒有產出任何威脅 | `NO_THREATS` · `threat_report.threats` |
 | 20 | 425-429 | 有威脅沒有對應的可執行測試 | `UNTESTED_THREATS` · `tally.untested_threats` |
-| 21 | 340-367 | 突變測試：分數低於 `mutation_min_score`、清單被 `mutation_max_mutants` 截斷、或已要求卻沒有結論（只在開啟時） | `MUTATION_NO_CONCLUSION` / `MUTATION_BELOW_THRESHOLD` / `MUTATION_TRUNCATED` · `execution.mutation_report`, `limits.mutation_min_score` |
+| 21 | 340-367 | 突變測試：分數低於 `mutation_min_score`、清單被 `mutation_max_mutants` 截斷、已要求卻沒有結論，或無效的變異體多於有結論的（只在開啟時） | `MUTATION_NO_CONCLUSION` / `MUTATION_BELOW_THRESHOLD` / `MUTATION_MOSTLY_INVALID` / `MUTATION_TRUNCATED` · `execution.mutation_report`, `limits.mutation_min_score` |
 | 22 | 208-214 | `--cache-only` 時回應快取沒有答案的呼叫改走模擬（未呼叫任何模型） | `CACHE_MISS` · `call_log` |
 | 23 | 292-299 | 確定性 AI 安全規則未能完整掃描某些原始碼檔案（超過單檔時間上限或意外出錯，第 7.2 節） | `INCOMPLETE_SCAN` · `scope.incomplete_files` |
 | 24 | 403-409 | 設定類檔案沒有完整做密鑰掃描：超過 200 個的上限、超過 `max_file_bytes`，或掃描時讀不了／超過 30 秒上限（第 7.2 節） | `CONFIG_FILES_NOT_SCANNED` · `scope.config_files_not_fully_scanned` |
 | 25 | 318-324 | 自動發現的設定檔以 `include`／`exclude` 實際排除了檔案（未經 `--config` 或 CLI `--include`／`--exclude` 指定，第 13.1 節） | `DISCOVERED_SCOPE_FILTERED` · `scope.discovered_filtered_count` |
 | 26 | 269-283 | 有兩個以上不同審查模型，但獨立驗證模型少於兩個，或有非模擬發現卻未完成有效交叉驗證（全為 `unsure` 或無法使用） | `NO_CROSS_VERIFICATION` · `review.verifier_models`, `review.arbitration_applied`, `review.confirmed_findings` |
+| 27 | 251-257 | 某個符號單獨就超過一個審查批次的預算（`BATCH_MAX_TOKENS`），原始碼在審查提示詞中被截斷，後半段沒有模型審查過（`HeterogeneousReviewerEnsemble.truncated_symbols`） | `TRUNCATED_SYMBOLS` · `review.truncated_symbols` |
+| 28 | 306-311 | 走訪到的檔案是解析到目標之外的連結，或不是一般檔案（FIFO、裝置、懸空連結），所以沒有讀取、也沒有送給模型（`vibeharness/core/settings.py` 的 `is_unsafe_file`） | `UNSAFE_FILES_SKIPPED` · `scope.unsafe_files` |
+| 29 | 333-339 | 執行了 Python 測試，而目標（本機沙盒時還有它在 `PYTHONPATH` 上的父目錄）頂層有與測試執行器同名的模組（`RUNNER_MODULES`：pytest、`_pytest`、pluggy、coverage、`pytest_cov`、sitecustomize……），會取代它（`vibeharness/core/sandbox.py` 的 `shadowed_runner_modules`） | `RUNNER_SHADOWED` · `execution.runner_shadows` |
+| 30 | 372-376 | 偵測到 Python，但產生的測試全都是 JS/TS（#13 的對應項） | `PYTHON_NO_TESTS` · `scope.detected_langs`, `execution.wb_tests` / `bb_tests` |
 
 ### 10.3 Exit code（`vibeharness/cli.py:130-140`、`:218-268`、`:521-663`）
 
@@ -727,6 +735,7 @@ console 輸出另外用 `rich.markup.escape`（`vibeharness/core/harness.py:9`�
 與 OWASP LLM Top 10 2026 的對照見 `README.md` 的「安全設計依據」表；本章是那張表每一列的程式位置。
 
 ---
+- 遮蔽分兩層：低誤判的形狀（含 gitlab、npm、SendGrid、Slack webhook 與 PGP 私鑰區塊）既遮蔽也回報成 VH-AI-007；寬鬆的形狀（`_REDACT_ONLY_PATTERNS`：名稱像憑證的字串賦值、`Bearer`／`Basic` 標頭、短的 `sk-` 金鑰、含未編碼 "/" 的 URL 密碼）只遮蔽不回報。每個通道的內容都先 `strip_invisible` 再中和標籤（`_neutralized`），標籤樣式也認得全形角括號與斜線、連字號、空白與全形底線的變形。日誌由 CLI 的 `SafeLogFormatter` 清理成一行（`log_safe`），模型文字不能注入 ANSI／OSC 序列或偽造 `::error::`。
 
 ## 13. 設定與擴充點
 
@@ -903,6 +912,7 @@ DAST／fuzzing、以 hypothesis 為測試策略（Docker 沙盒映像已附 `hyp
 - 跨模型一致度的顯示集中在 `agreement_display`（`vibeharness/reports/report_generator.py:76`，報告與 console 共用）。其中「N/A（沒有決定性投票） ／ N/A (no decisive votes)」分支由 `MultiModelDebater` 產生的結果走不到（`arbitration_applied=True` 蘊含 `decisive > 0`），刻意保留作為防護：結果模型也可能由讀回的 JSON 等其他路徑建立。
 
 `[0.9.0]` 修正了先前列在這裡與 README 的三點：`os.exec*`／`os.spawn*` 已是執行點、`env -S "bash -c …"` 會拆解、`admin:admin@prod-db` 會回報。`[0.6.0]` 修正了先前列在這裡的六點：威脅建模與攻擊合成的批次崩潰現在經 `record_failure` 記入 `call_log`（evidence gap #3）；Next.js 處理函式改為只送審一次（改標為 route）；Flask 工廠裡的巢狀路由處理函式只送審一次（第 6.1 節）；hapi 的陣列形式與 regex 路徑會成為 route；JSX 文字裡的 `/*` 或單獨的反引號不再藏起檔案後半段；`live-smoke.yml` 的 JSON 重跑改用 `--cache-only`，不再可能多出最多 `max_model_calls` 次真實呼叫。以下六點在 2026-10-08 修正（見 `CHANGELOG.md` 的 `[0.3.0]`）：審查／驗證批次崩潰不進 `call_log`；單一 reviewer 模型只印警告；Markdown 的 evidence gap 與未測試威脅清單未消毒；缺 `model_alias` 時顯示的 alias 與實際路由不一致；root 下兩個 Docker 測試對不存在的 run_dir 做 `chmod`；設定檔 `max_files` 負數未驗證。
+- 威脅模型的限制：已執行的證據假設目標「誠實但有缺陷」。測試與目標同行程，刻意欺騙稽核的程式碼可以修改 pytest、印出假的涵蓋率表或偵測 `PYTEST_CURRENT_TEST`；只有最便宜的形式（`runner_shadowed`、`unsafe_files_skipped`）會被揭露。測試預言是模型寫的，攻擊測試預期錯的狀態碼也會變成突破。沒有模型發現的執行沒有白箱測試，得不到 `READY_TO_SHIP`（`no_whitebox_tests`）。
 
 ### 16.3 運維限制
 

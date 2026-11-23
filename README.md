@@ -111,8 +111,8 @@ flowchart TD
    - **DeepSeek**：專精輸入清洗、注入、資源消耗上限（DoS 防禦）與並行安全護欄。
    - **GLM**：專精 API 協定契約遵守、規範一致性與授權檢查（BOLA／BFLA）。
    - **Gemini**：專精 AI／LLM 整合安全——依 OWASP Top 10 for LLM Applications 2026 檢查呼叫模型的程式：不受信任輸入拼進提示詞（LLM01）、提示／日誌中的密鑰（LLM02／LLM08）、工具或 Agent 無允許清單（LLM03）、未固定或不安全載入的模型與套件（LLM04／LLM05）、無上限的 token 與花費（LLM06）、模型輸出未驗證即採信（LLM07）或流入 eval／exec／shell／SQL／HTML（LLM10）；LLM09 向量弱點未列入審查焦點。審查者可在發現上標註 `owasp_mapping`（例如 `LLM01:2026`）。
-   - 審查者少於兩個不同的模型別名（`model_alias` 值；兩個別名指向同一個模型字串仍算兩個，所以請讓模型家族真的不同）時列為證據缺口（判定不會是 `READY_TO_SHIP`；同一模型的「共識」只是一致性，不是佐證；OWASP LLM07:2026）。驗證者從不評審自己模型回報的發現，所以單一模型家族時沒有任何驗證票，發現不經過濾，報告的共識率與已確認數都標示為 N/A（發現列為未經驗證的假設）。
-   - **交叉驗證（Cross-Model Verification）**：不設單一仲裁模型。每筆發現由「沒有回報它」的其他模型各自獨立判定 confirm／reject／unsure；不論有幾個驗證者條目指向同一個 model alias，它都只投一票。其他模型也回報了同一缺陷（去重合併時記錄；合併採 complete-linkage，泛泛的發現無法把兩個不同缺陷串在一起）則算一票確認，但單靠佐證永遠不算驗證：驗證者沒有投下任何真正的 confirm／reject 時，發現仍是未經驗證的假設。審查模型 ≥ 2 但獨立驗證模型別名 < 2，或有非模擬發現卻缺乏有效的跨模型裁決（例如全部投 unsure）時，也會列為證據缺口（`NO_CROSS_VERIFICATION`，不會得到 `READY_TO_SHIP`）。確認票多於否決票即確認、否決票較多列為爭議（不生成測試）、同票則保留交給測試決定。共識率依實際票數計算。
+   - 審查者少於兩個不同的模型（依解析後的 `models.<alias>.model` 字串計算，兩個別名指向同一個模型只算一個；缺口訊息會把它們併在一起，例如 `claude/claude_alt`）時列為證據缺口（判定不會是 `READY_TO_SHIP`；同一模型的「共識」只是一致性，不是佐證；OWASP LLM07:2026）。驗證者從不評審自己模型回報的發現，所以單一模型家族時沒有任何驗證票，發現不經過濾，報告的共識率與已確認數都標示為 N/A（發現列為未經驗證的假設）。
+   - **交叉驗證（Cross-Model Verification）**：不設單一仲裁模型。每筆發現由「沒有回報它」的其他模型各自獨立判定 confirm／reject／unsure；不論有幾個驗證者條目或別名指向同一個模型，它都只投一票，驗證者也不會以另一個別名評審自家模型的發現。其他模型也回報了同一缺陷（去重合併時記錄；合併採 complete-linkage，泛泛的發現無法把兩個不同缺陷串在一起）則算一票確認，但單靠佐證永遠不算驗證：驗證者沒有投下任何真正的 confirm／reject 時，發現仍是未經驗證的假設。審查模型 ≥ 2 但獨立驗證模型別名 < 2，或有非模擬發現卻缺乏有效的跨模型裁決（例如全部投 unsure）時，也會列為證據缺口（`NO_CROSS_VERIFICATION`，不會得到 `READY_TO_SHIP`）。只有否決票超過「被分派評審它的驗證者加上已佐證它的模型」的半數，發現才列為爭議（不生成測試），所以一張否決配上一張 unsure 或一個失敗的驗證批次仍會保留去測試；其餘情況中確認票多於否決票即確認，其他都列為未決，保留交給測試決定。共識率依實際票數計算。
 3. **黑箱強制威脅建模先行（Threat-Modeling First）**：拒絕盲目暴力測試，先依據 STRIDE（S 仿冒、T 竄改、R 否認、I 資訊洩漏、D 拒絕服務、E 越權）與 OWASP API Security Top 10 建立攻擊矩陣，再針對性生成攻擊測試。威脅建模的輸入是 `--desc`（或預設描述）、階段 1 擷取的路由與符號，以及確定性規則偵測到的 `ai_components`，不依賴白箱結果。與白箱審查相同，目標符號會分批送審（以 token 預算切分），確保每個符號都進入威脅模型的視野；各批產出的威脅合併並去重編號。
 4. **以執行結果為準的品質閘門**：模型發現與威脅僅是假設；只有實際執行的測試或確定性規則能讓閘門失敗或封鎖。黑箱測試只有以 `AssertionError`、裸 `assert` 或 `pytest.fail` 失敗才算確認突破（JS/TS 的 `node:test` 模組為 `ERR_ASSERTION`／`AssertionError`／失敗的 `expect(`）。無斷言的空測試、無效的模型輸出（非 JSON／缺欄位，或審查、驗證、威脅建模的批次或攻擊合成在閘道之外崩潰，皆記錄為 `invalid`）、未測試的威脅、以及「失敗但未分類為 exploit」的黑箱攻擊測試，都列為證據缺口。
 5. **確定性 AI 安全規則（不經模型）**：在任何模型看到程式碼之前，先以 AST／文字規則掃描目標，結果無法被提示注入說服：
@@ -151,6 +151,7 @@ VibeHarness 本身就是一個 LLM 應用：待審程式碼是每個審查、驗
 | LLM06 無上限消耗（AML.T0034） | `max_model_calls`（硬上限，用完即停止真實呼叫）、`max_output_tokens`（全域與每模型）、請求與沙盒逾時、並行上限 `max_concurrent_calls`、批次 token 預算；live 失敗或 Ctrl-C 時取消仍在排隊的呼叫；自動發現的設定檔只能調低這些上限，不能改成 `live` 或新增審查者 |
 | LLM07 錯誤資訊 | 模型的發現與威脅只是假設；只有執行過的測試或確定性規則能讓閘門失敗；模型不評審自己的發現；審查者或驗證者少於兩個不同的模型別名，或非模擬發現缺乏有效跨模型裁決時，都列為證據缺口 |
 | LLM10 輸出處理不當（AML.T0077） | 模型文字進入 Markdown 前停用圖片與原始 HTML（防圖片 URL 外洩）、移除 ANSI／OSC 控制序列並收合換行（無法開出偽造的標題或表格）；模型選的 id 放進程式碼區段並跳脫管線符號；console 輸出跳脫 rich markup；SARIF 訊息去除控制字元 |
+| 威脅模型的限制 | 已執行的證據假設目標「誠實但有缺陷」：測試與目標在同一個行程裡執行，刻意欺騙稽核的程式碼可以修改 pytest、印出假的涵蓋率表或偵測 `PYTEST_CURRENT_TEST`；harness 會揭露最便宜的幾種（目標頂替測試執行器是 `runner_shadowed` 缺口，指到目標之外的連結是 `unsafe_files_skipped`），但無法排除其他做法。測試預言是模型寫的：攻擊測試預期了錯的狀態碼，也會變成突破（Breach）。沒有模型發現的執行沒有白箱測試，得不到 `READY_TO_SHIP`（`no_whitebox_tests`）。`local_subprocess` 不是隔離邊界，不受信任的程式碼請用 Docker 沙盒。 |
 | 稽核可追溯 | 每筆呼叫紀錄（live、retried、invalid 或 simulated）都帶 `prompt_sha256`，重問過的呼叫也一律是原始提示的雜湊，可把判定對回實際輸入，而報告不必保存（可能敏感的）程式碼；批次（審查、驗證、威脅建模、攻擊合成）在閘道之外崩潰時經 `record_failure` 記為 `invalid`（附例外原因，無雜湊） |
 
 ### 🧭 尚未實作（規劃中）
@@ -407,7 +408,7 @@ export GEMINI_API_KEY="AIza..."          # Gemini
 
 任何 agent 都可透過 `model_alias` 指向任一已定義的模型；缺少 `model_alias` 的 agent 會解析為 `unconfigured`（hybrid 模式改用模擬，live 直接失敗），`model_alias` 指向 `models` 區段沒有的別名（打錯字）則在啟動時就以 exit 5 結束。手上只有一組金鑰也能跑 live 模式——例如只有 Gemini key 時，把 `agents` 區段中所有 `model_alias` 改成 `gemini` 即可（註：`gemini-2.5-flash` 已不再供新申請的 Google API 金鑰使用，請使用 3.x 版本）。但單一模型家族時驗證者不會評審自己模型的發現，沒有任何驗證票、發現不經過濾，且審查者少於兩個不同的模型別名列為證據缺口，判定最好只到 `INCONCLUSIVE`（exit code 3），結果僅供參考。
 
-*註：若未配置 API 金鑰，`hybrid` 模式會退回模擬引擎（Simulation Engine）以便離線體驗工作流。模擬引擎回傳的是**與目標程式碼無關的固定範本**，報告會以 `[SIMULATED]` 與「執行來源 ／ Execution Provenance」表明確標示，且品質閘門不會因此給出 `READY_TO_SHIP`。*
+*註：若未配置 API 金鑰，`hybrid` 模式會退回模擬引擎（Simulation Engine）以便離線體驗工作流。模擬引擎回傳的是**與目標程式碼無關的固定範本**，報告會以 `[SIMULATED]` 與「執行來源 ／ Execution Provenance」表明確標示，且品質閘門不會因此給出 `READY_TO_SHIP`。mock 執行仍可能以 `NEEDS_FIXES`（exit 1）結束：確定性的 `WB-PROBE-*` 探針會以 `None` 參數呼叫目標函式並真的執行，目標因此拋出 `TypeError`／`KeyError` 時探針就失敗，而這是已執行的證據。所以在 GitHub Action（預設 `mode` 為 hybrid、`fail-on: needs-fixes`）裡，沒有金鑰的執行可能讓 job 失敗。*
 
 | `--mode` | 行為 |
 | :--- | :--- |
@@ -446,7 +447,8 @@ docker build -t vibeharness-sandbox-node:latest -f docker/sandbox-node.Dockerfil
 ### 4. 對目標專案執行全流程檢驗
 
 ```bash
-python main.py --target examples --output vibe_harness_report.md
+python main.py --target examples --output vibe_harness_report.md   # 從 checkout 執行（wheel 不含 examples/）
+vibeharness --target path/to/your/project --mode mock               # 從 PyPI 安裝後：離線的第一次執行
 ```
 
 `--target`（`-t`，預設 `.`，即目前目錄）可為目錄或單一檔案；`--output`（`-o`）預設 `vibe_harness_report.md`。`--desc`（`-d`）可提供系統的高階描述供威脅建模參考；`--config`（`-c`）指定其他設定檔（沒指定時依序使用目前目錄的 `./vibeharness.yaml`、`./.vibeharness.yaml`，都沒有才用套件內建的預設設定；實際使用的檔案會印在 stderr），`vibeharness --init-config [PATH]` 則把內建預設設定複製一份供編輯（預設 `./vibeharness.yaml`；已存在的檔案不會被覆寫，除非加 `--force`；符號連結、目錄或其他不是一般檔案的目標即使加 `--force` 也拒絕）；`--verbose`（`-v`）開啟除錯日誌。長旗標必須寫完整：`--conf` 這類縮寫是用法錯誤（exit 5），所以繞不過 GitHub Action 對 `--config` 的偵測。黑箱測試預設以 in-process 方式直接 import 目標呼叫；只有明確指定 `--base-url`（`-u`，例如 `--base-url http://localhost:8000`；只接受含主機名的 `http://`／`https://`，其他 scheme 為用法錯誤）且該位址有服務回應時，才會改發真實 HTTP 請求。不會自動探測任何預設位址，以免攻擊腳本打到本機上無關的服務；live HTTP 模式下，攻擊程式碼若指向 `--base-url` 以外的主機，或同一主機的其他連接埠，會被靜態拒絕。範例輸出見 [`docs/sample_report.md`](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/sample_report.md)。

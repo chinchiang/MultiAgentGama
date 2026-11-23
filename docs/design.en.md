@@ -384,22 +384,22 @@ This is the implementation of "no single arbiter".
 
 ```mermaid
 flowchart TD
-    F["deduplicated findings"] --> ASSIGN["assignment: each whitebox_verifier_*<br/>gets only findings whose alias is not its own<br/>and that it did not corroborate; 15 per call"]
+    F["deduplicated findings"] --> ASSIGN["assignment: each whitebox_verifier_*<br/>gets only findings whose model is not its own<br/>and that its model did not corroborate; 15 per call"]
     ASSIGN --> VOTE["verifiers called in parallel<br/>confirm / reject / unsure"]
     F --> CORR["each corroborating_models entry is one automatic<br/>corroborated vote (none for is_simulated findings)"]
     VOTE --> REAL{"real_votes (verifier confirm / reject) == 0?"}
     CORR --> TALLY
     REAL -- yes --> NA["arbitration_applied=False<br/>everything kept as confirmed<br/>ratio=None"]
     REAL -- no --> TALLY["per finding: yes = confirm + corroborated<br/>no = reject"]
-    TALLY --> D{"no > yes?"}
+    TALLY --> D{"2 × no > eligible?<br/>eligible = verifiers asked + corroborations"}
     D -- yes --> DIS["disputed (no test generated)"]
     D -- no --> C{"yes > no?"}
     C -- yes --> CONF["confirmed"]
     C -- no --> UND["confirmed but undecided<br/>the tests decide"]
 ```
 
-- The verifier list is every `whitebox_verifier_*`, **one per model alias**: when two verifier agents route to the same alias, only the first agent id in sorted order is kept and a warning is logged, so one model never votes twice on a finding; a missing `model_alias` resolves to `unconfigured` here too (`:46-69`), so the self-review exclusion below compares the alias the calls are really routed under.
-- Assignment rule (`:132-140`): `alias != f.model_alias and alias not in f.corroborating_models`. A model never judges its own finding, nor one it already corroborated.
+- The verifier list is every `whitebox_verifier_*`, **one per model** (compared by the resolved `models.<alias>.model` string, `GatewaySettings.model_for`): when two verifier agents route to the same model, under one alias or two, only the first agent id in sorted order is kept and a warning is logged, so one model never votes twice on a finding; a missing `model_alias` resolves to `unconfigured` here too (`:46-69`), so the self-review exclusion below compares the alias the calls are really routed under.
+- Assignment rule (`:132-140`): `_rules_on(alias, f.model_alias)` and the verifier's model is not among the corroborating models' models; both compare resolved model strings, so a model never judges its own finding, nor one it already corroborated, under another alias either. A finding is disputed only when `2 * no > eligible`, where `eligible` is the number of verifiers assigned to it plus its corroborations: rejects must be a strict majority of the models that should vote, not of the votes that came back, so one reject beside an `unsure` or a failed batch keeps the finding for testing.
 - Initial votes (`:142-147`): each `corroborating_models` entry is one `corroborated` vote; a simulated finding gets none, since simulated reviewers agreeing is not evidence.
 - Tallying (`:185-210`) and agreement ratio (`:214`): `agreeing` is the sum of each finding's majority side (ties contribute 0), `decisive` is the sum of all `yes + no`, `ratio = agreeing / decisive`.
 - With no real vote at all (`:166-183`): `arbitration_applied=False`, every finding is kept as is, and `consensus_summary` says they are unfiltered hypotheses. Only a verifier's `confirm` or `reject` counts as a real vote; `unsure` and corroborations alone do not, so if every verifier batch failed nobody ruled, even when duplicates were merged. The harness then reports the confirmed count as `None` (`null` in the JSON report, N/A in Markdown and on the console; section 4).
@@ -442,6 +442,7 @@ Model reviewers produce hypotheses, and an injected target can talk them out of 
 - **Deciding whether the target is an AI application**: Python imports are resolved against `AI_PYTHON_MODULES` (`vibeharness/agents/whitebox/ai_static_scanner.py:40-46`), JS/TS uses `_AI_JS_PACKAGE_RE` (`:47-51`). The result is `ai_components`, which the harness hands to the threat modeler to decide whether to add the OWASP LLM checklist.
 - VH-AI-006's taint analysis (`_taint_rule`) is intra-scope and flow-insensitive: up to 4 fixpoint rounds over derived bindings (assignments, `for` / `with ... as` / comprehension / walrus targets; `_bindings`, `vibeharness/agents/whitebox/ai_static_scanner.py:1850-1865`), deliberately biased toward the `answer = llm(...); eval(answer)` shape vibe coding produces. Each scope's binding / mutation index (`_ScopeIndex`: literal-list bindings, mutations, stdin feeds) is built once, argv verdicts are cached per list / name, and attribute-chain summaries, receiver checks and value walks are memoized, so many sinks or a deep `a.b.b...` chain no longer take quadratic time or raise `RecursionError`. An attribute target is tracked by its dotted name (`self.last`) without tainting the base object, and `cache[key] = ...` taints `cache`, not `key` (`_target_keys`, `:1867-1882`).
 - `_dedupe` (`vibeharness/agents/whitebox/ai_static_scanner.py:1950-1975`): one hit per rule, file and line; at most 20 hits per rule per file.
+- At most `_MAX_HITS_PER_RULE_PER_FILE` (20) hits per (rule, file): `_dedupe` keeps the most severe first (line order within a severity) and logs the count dropped by the cap; truncating in line order used to let earlier MEDIUM hits push a later HIGH out (#183). VH-AI-001 judges `trust_remote_code` by Python truthiness, and literal-dict unpacking such as `**{"trust_remote_code": True}` counts too (`_kw`).
 
 ### 7.3 Effect on the gate
 
@@ -490,6 +491,7 @@ Model reviewers produce hypotheses, and an injected target can talk them out of 
 4. Every test has an assertion. Recognized: `assert`, `raise AssertionError`, `pytest.raises` / `fail` / `warns` / `deprecated_call` / `approx` (`:17`). Methods merely starting with `assert`, like `mock.assert_called_once()`, do not count. An `assert` inside a nested function counts only when that function is actually called (`:43-80`); otherwise a never-called helper would satisfy the gate. Every test function and, in a `Test*` class, **every** `test_*` method must assert, directly or (transitively) through same-module code that does: a module-level helper called by name (`check(resp)`), or a `self.<helper>()` call to a class method, including methods inherited from base classes defined in the same module (`_vacuous_tests`, `:272-290`; `_class_methods`, `:293-303`; `_asserts`, `:306-329`). One asserting method no longer vouches for a vacuous sibling, which would otherwise count as a defended boundary; a call into code outside the module (source not visible) is still no assertion evidence. `_asserts` walks the call graph with an explicit stack (no recursion), so a helper chain thousands deep cannot raise `RecursionError`; `_parse_and_check_python` adds a safety net (`:105-111`) that treats a `RecursionError` conservatively as no assertion evidence and never crashes the run.
 
 JS/TS tests go through `check_js_test_code` (`:399-435`, section 9.5); `prepare_test_code` (`:467-481`) strips code fences, runs language-specific validation and splits leading Python `__future__` imports in one pass, and the generator, the synthesizer and the executor all use it (`check_test_code_for`, `:438-443`, remains the standalone validator helper).
+- Forms the install check cannot read are refused as "could not check" (CODING_STANDARDS rule 8, `_unreadable_call` / `_js_unreadable_call`): a process started through subprocess / os / pty / asyncio with a non-literal command, a dynamic import or execution of a non-literal name / code, getattr with a non-literal attribute name, a call whose callee is a lookup (`vars(os)["system"]`), and in JS a require / import() / getBuiltinModule module name or a child_process command that is not a single string literal. This is a quality gate (it stops packages a model hallucinated), not isolation: isolation is the sandbox's job.
 
 ### 9.2 The executor (`vibeharness/runners/test_executor.py`)
 
@@ -517,6 +519,7 @@ JS/TS tests go through `check_js_test_code` (`:399-435`, section 9.5); `prepare_
 | partly skipped | PASSED, with `failure_reason` noting that only the executed cases verify the boundary |
 
 stdout / stderr are cut to 500 characters, tracebacks to 2000 (`_result`, `:579-604`).
+- A Breach is the test's own assertion only (`_assertion_raised_in_target`): when the AssertionError's innermost frame (Python: the last frame of pytest's traceback; JS: the assertion error's own V8 frames, not the stack of another error in its `actual:` / `expected:` fields) is in target code, the target refused the input with its own `assert`, which is an unclassified failure; an assertion helper in a third-party package (`site-packages`, `dist-packages`, `node_modules`) still counts as the test's assertion.
 
 ### 9.3 The local subprocess sandbox (`LocalSubprocessSandbox`, `vibeharness/core/sandbox.py:385-842`)
 
@@ -533,6 +536,7 @@ The docstring says it plainly: **not a security boundary**. Generated code runs 
 - **Reading the reports back** (`read_untrusted_file`, `vibeharness/core/jscoverage.py:335-359`): the code under test (the same user locally, `nobody` in the container) can replace `junit.xml` or `lcov.info` with a symlink to a host file, a FIFO, a device or a huge file, so both are read back through it (`vibeharness/core/sandbox.py:498`, `:1264` through `read_lcov_file`): on POSIX `O_NOFOLLOW` (a symlink as the last component fails) plus `O_NONBLOCK` (a FIFO cannot hang the harness); Windows has no `O_NOFOLLOW`, so a symlink / reparse point is refused with `lstat` before opening and `fstat` is compared with it after; only a regular file with the inode that was checked and a single hard link, of at most `MAX_REPORT_BYTES` (64 MiB, `vibeharness/core/jscoverage.py:366`, the same as the write cap) is accepted, reading at most one byte more so growth during the read is refused too. A refusal is "no report": the bilingual reason goes to the front of stderr for `junit.xml` (the "produced no report" reason only shows the start of stderr) and into a WARNING for the lcov report.
 - **Effective timeout** (`_effective_timeout`, `vibeharness/core/sandbox.py:508-515`): a missing or non-positive per-run timeout falls back to the sandbox's batch budget, and the in-container `timeout` of the Docker sandboxes uses the same value.
 - Sentinel exit codes: 124 for timeout, 125 for a sandbox failure (`:28-31`), outside the 1..-31 signal range.
+- pytest always gets `--confcutdir=<run dir>`: `-c /dev/null` put confcutdir at /dev, so a conftest.py in any ancestor of the run directory (e.g. /tmp) was loaded. On Linux `RLIMIT_NPROC` (which counts all of the user's threads) is set to the current count plus `SANDBOX_PROCESS_HEADROOM` (1024), stopping a fork bomb. A target (and, for the local sandbox, its parent on `PYTHONPATH`) with a top-level module named like one of `RUNNER_MODULES` records the `runner_shadowed` gap; the mutation scratch copy and symbol extraction both skip `is_unsafe_file` files (links resolving outside the target, FIFOs, devices), the latter recording the `unsafe_files_skipped` gap. `--summary-json` records `sandbox_provider`, and the Action emits a `::warning::` for `local_subprocess`.
 
 ### 9.4 The Docker sandbox (`DockerSandbox`, `vibeharness/core/sandbox.py:913-1151`)
 
@@ -614,13 +618,13 @@ Any one of these rules out `READY_TO_SHIP`. Every message is a `bi()` "中文 �
 | 4 | 231-240 | a confirmed finding has no usable model test and is covered only by probes (without cross-model verification the message calls them "unverified", not "confirmed") | `FINDINGS_WITHOUT_MODEL_TESTS` · `review.findings_without_model_tests` |
 | 5 | 241-250 | reviewer-directed instructions or invisible characters in the target (VH-AI-008 / 009) | `REVIEW_INTEGRITY` · `static_findings` (`affects_review_integrity`) |
 | 6 | 258-260 | no `whitebox_reviewer_*` configured | `NO_REVIEWERS` · `review.reviewers_configured` |
-| 7 | 261-268 | reviewers exist but on a single distinct model alias, so cross-model verification could not run (OWASP LLM07:2026; the check counts aliases, not model strings) | `SINGLE_REVIEWER_MODEL` · `review.reviewer_models` |
+| 7 | 261-268 | reviewers exist but on a single distinct model, so cross-model verification could not run (OWASP LLM07:2026; the check counts resolved `models.<alias>.model` strings, so aliases pointing at one model count once, `GatewaySettings.distinct_model_labels`) | `SINGLE_REVIEWER_MODEL` · `review.reviewer_models` |
 | 8 | 284-285 | no symbols extracted | `NO_SYMBOLS` · `scope.symbols_found` |
 | 9 | 286-291 | a file failed to parse | `PARSE_FAILURES` · `scope.parse_failures` |
 | 10 | 300-305 | files above `max_file_bytes` not analyzed (the first five names are listed) | `OVERSIZED_FILES` · `scope.oversized_files`, `limits.max_file_bytes` |
 | 11 | 312-317 | files skipped by `max_files` | `MAX_FILES_SKIPPED` · `scope.skipped_files`, `limits.max_files` |
 | 12 | 325-331 | white-box or black-box tests ERROR, SKIPPED or not run | `TESTS_NOT_RUN` · `tally.whitebox_not_run` / `blackbox_not_run` |
-| 13 | 368-382 | JS/TS detected but no JS/TS test was generated (always the case in mock mode) | `JS_NO_TESTS` · `scope.detected_langs`, `execution.wb_tests` / `bb_tests` |
+| 13 | 377-382 | JS/TS detected but no JS/TS test was generated (always the case in mock mode) | `JS_NO_TESTS` · `scope.detected_langs`, `execution.wb_tests` / `bb_tests` |
 | 14 | 383-388 | JS/TS tests were generated but could not run (no usable Node, Node too old, Node image missing) | `JS_TESTS_NOT_RUN` · `execution.js_runner_problem` |
 | 15 | 389-392 | TypeScript tests were generated but Node < 22.6 has no type stripping | `TS_TESTS_NOT_RUN` · `execution.ts_problem` |
 | 16 | 393-402 | source files in languages the extractor does not support (Go, Java, Kotlin, Rust, C / C++, C#, PHP, Ruby, Swift, Scala, ...) were not analyzed; the message gives the count per language and up to five file names | `UNSUPPORTED_LANGUAGES` · `scope.unsupported_count` / `unsupported_languages` / `unsupported_files` |
@@ -628,12 +632,16 @@ Any one of these rules out `READY_TO_SHIP`. Every message is a `bi()` "中文 �
 | 18 | 420-421 | no white-box test executed at all | `NO_WHITEBOX_TESTS` · `execution.wb_results` |
 | 19 | 422-424 | threat modeling produced no threats | `NO_THREATS` · `threat_report.threats` |
 | 20 | 425-429 | a threat has no executable test | `UNTESTED_THREATS` · `tally.untested_threats` |
-| 21 | 340-367 | mutation testing: score below `mutation_min_score`, list truncated by `mutation_max_mutants`, or requested with no conclusion (only when on) | `MUTATION_NO_CONCLUSION` / `MUTATION_BELOW_THRESHOLD` / `MUTATION_TRUNCATED` · `execution.mutation_report`, `limits.mutation_min_score` |
+| 21 | 340-367 | mutation testing: score below `mutation_min_score`, list truncated by `mutation_max_mutants`, requested with no conclusion, or more invalid than decided mutants (only when on) | `MUTATION_NO_CONCLUSION` / `MUTATION_BELOW_THRESHOLD` / `MUTATION_MOSTLY_INVALID` / `MUTATION_TRUNCATED` · `execution.mutation_report`, `limits.mutation_min_score` |
 | 22 | 208-214 | under `--cache-only`, calls the response cache could not answer were simulated (no model was called) | `CACHE_MISS` · `call_log` |
 | 23 | 292-299 | the deterministic AI-security rules could not fully scan some source files (per-file time cap or an unexpected error, section 7.2) | `INCOMPLETE_SCAN` · `scope.incomplete_files` |
 | 24 | 403-409 | config-like files were not fully secret-scanned: beyond the 200-file cap, above `max_file_bytes`, or unreadable / past the 30 s cap during the scan (section 7.2) | `CONFIG_FILES_NOT_SCANNED` · `scope.config_files_not_fully_scanned` |
 | 25 | 318-324 | a discovered config's `include` / `exclude` actually excluded files (without `--config` or CLI `--include` / `--exclude`, section 13.1) | `DISCOVERED_SCOPE_FILTERED` · `scope.discovered_filtered_count` |
 | 26 | 269-283 | two or more distinct reviewer models are configured, while fewer than two distinct verifier models exist or non-simulated findings lack decisive cross-verification (all `unsure` or unusable) | `NO_CROSS_VERIFICATION` · `review.verifier_models`, `review.arbitration_applied`, `review.confirmed_findings` |
+| 27 | 251-257 | a symbol alone exceeds one review batch's budget (`BATCH_MAX_TOKENS`), so its source was truncated in the review prompt and no model reviewed the rest (`HeterogeneousReviewerEnsemble.truncated_symbols`) | `TRUNCATED_SYMBOLS` · `review.truncated_symbols` |
+| 28 | 306-311 | files in the walk are links resolving outside the target or are not regular files (FIFO, device, dangling link), so they were neither read nor sent to a model (`is_unsafe_file` in `vibeharness/core/settings.py`) | `UNSAFE_FILES_SKIPPED` · `scope.unsafe_files` |
+| 29 | 333-339 | Python tests ran while the target (or, for the local sandbox, its parent on `PYTHONPATH`) holds a top-level module named like the test runner's (`RUNNER_MODULES`: pytest, `_pytest`, pluggy, coverage, `pytest_cov`, sitecustomize, ...), which replaces it (`shadowed_runner_modules` in `vibeharness/core/sandbox.py`) | `RUNNER_SHADOWED` · `execution.runner_shadows` |
+| 30 | 372-376 | Python was detected but every generated test is JS/TS (the counterpart of #13) | `PYTHON_NO_TESTS` · `scope.detected_langs`, `execution.wb_tests` / `bb_tests` |
 
 ### 10.3 Exit codes (`vibeharness/cli.py:130-140`, `:218-268`, `:521-663`)
 
@@ -727,6 +735,7 @@ Console output is escaped with `rich.markup.escape` (`vibeharness/core/harness.p
 The mapping to the OWASP LLM Top 10 2026 is the "Security design basis" table in `README.md`; this chapter gives the code location behind each row.
 
 ---
+- Redaction has two layers: the low-false-positive shapes (gitlab, npm, SendGrid, Slack webhook and PGP private key blocks included) are redacted and reported as VH-AI-007; broad shapes (`_REDACT_ONLY_PATTERNS`: credential-named string assignments, `Bearer` / `Basic` headers, short `sk-` keys, URL passwords holding an unencoded "/") are redacted only. Every channel's content is `strip_invisible`d before its tags are neutralized (`_neutralized`), and the tag pattern also knows the fullwidth bracket and slash, hyphen, space and fullwidth-underscore variants. Logs are cleaned into one line by the CLI's `SafeLogFormatter` (`log_safe`), so model text cannot inject ANSI / OSC sequences or forge `::error::`.
 
 ## 13. Configuration and extension points
 
@@ -903,6 +912,7 @@ DAST / fuzzing, hypothesis as a test strategy (the Docker sandbox image ships `h
 - The cross-model agreement display lives in `agreement_display` (`vibeharness/reports/report_generator.py:76`, shared by the report and the console). Its "N/A（沒有決定性投票） ／ N/A (no decisive votes)" branch cannot be reached from a `MultiModelDebater` result (`arbitration_applied=True` implies `decisive > 0`) and is kept on purpose as a guard: the result model can also be built elsewhere, e.g. from JSON read back.
 
 `[0.9.0]` fixed three items previously listed here and in the README: `os.exec*` / `os.spawn*` are sinks, `env -S "bash -c …"` is split, and `admin:admin@prod-db` is reported. `[0.6.0]` fixed six items previously listed here: crashed threat-modeling and attack-synthesis batches are now booked in `call_log` through `record_failure` (evidence gap #3); a Next.js handler is reviewed once (retagged as a route); a nested route handler in a Flask factory is reviewed once (section 6.1); hapi's array form and regex paths become routes; a `/*` or a lone backtick in JSX text no longer hides the rest of the file; and the JSON re-run in `live-smoke.yml` uses `--cache-only`, so it can no longer add up to `max_model_calls` more real calls. Six items were fixed on 2026-10-08 (see `[0.3.0]` in `CHANGELOG.md`): crashed review / verification batches not reaching `call_log`; a single reviewer model only warning; the Markdown evidence-gap and untested-threat lists bypassing sanitization; the displayed alias disagreeing with the routed one when `model_alias` was missing; two Docker tests chmod-ing a non-existent run dir under root; a negative `max_files` in the config going unvalidated.
+- Threat-model limits: Executed evidence assumes an honest-but-buggy target. The tests share the target's process, so code written to fool the audit can patch pytest, print a fake coverage table or detect `PYTEST_CURRENT_TEST`; only the cheapest forms (`runner_shadowed`, `unsafe_files_skipped`) are disclosed. The test oracle is model-written, so an attack test expecting the wrong status code also becomes a Breach. A run without model findings has no white-box test and cannot reach `READY_TO_SHIP` (`no_whitebox_tests`).
 
 ### 16.3 Operational limits
 
