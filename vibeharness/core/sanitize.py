@@ -1210,6 +1210,17 @@ def clean_model_text(text: str) -> str:
     return strip_invisible(_CONTROL_RE.sub("", _ANSI_RE.sub("", text.replace("\r\n", "\n"))))
 
 
+def log_safe(text: str) -> str:
+    """寫進主控台或日誌的一行文字：先照 clean_model_text 移除跳脫序列、控制字元與不可見字元，再把換行寫成 `\\n`，
+    所以模型文字不能在終端機裡注入 ANSI／OSC 序列，也不能另起一行偽造 GitHub Actions 的 workflow command（`::error::`）。
+    One line of text for the console or a log: escapes, control and invisible characters removed as clean_model_text
+    does, then line breaks written as `\\n`, so model text can neither inject ANSI / OSC sequences into a terminal nor
+    start a new line forging a GitHub Actions workflow command (`::error::`)."""
+    if not text:
+        return text
+    return clean_model_text(text).replace("\r", "\\r").replace("\n", "\\n")
+
+
 def sanitize_prompt_field(text: str) -> str:
     """提示詞單行欄位（符號名稱、匯出名稱、系統描述、進入點）中的不可信文字：剔除不可見字元與控制字元、遮蔽機密、
     中和偽造通道標籤，並把換行折成單一空白。

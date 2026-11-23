@@ -359,3 +359,47 @@ def test_unverified_findings_are_not_counted_as_confirmed(tmp_path, capsys):
     text = report.read_text(encoding="utf-8")
     assert "Confirmed White-Box Logic Flaws" in text and "`N/A`" in text
     assert "unverified hypotheses; verification not applied" in text
+
+
+# --- 日誌裡的模型文字是乾淨的一行（#183 第 12 項） ----------------------------------------------------
+# --- Model text in the log is one clean line (#183 item 12) ------------------------------------------
+
+def _formatted(message, *args):
+    import logging
+
+    record = logging.LogRecord("VibeHarness.MultiReviewer", logging.WARNING, __file__, 1, message, args, None)
+    return cli.SafeLogFormatter("%(levelname)s %(message)s").format(record)
+
+
+def test_log_lines_carry_no_escape_sequence_and_no_forged_workflow_command():
+    injected = "x\n::error::fake\x1b]52;c;SGk=\x07\r\x1b[31mred"
+    line = _formatted("Reviewer returned unknown severity '%s'; using MEDIUM", injected)
+    assert "\n" not in line and "\r" not in line and "\x1b" not in line and "\x07" not in line
+    assert "x\\n::error::fake" in line
+
+
+def test_tracebacks_keep_their_lines_but_none_starts_a_workflow_command():
+    import logging
+    import sys as _sys
+
+    try:
+        raise ValueError("boom\n::error::fake\x1b[31m")
+    except ValueError:
+        record = logging.LogRecord("x", logging.ERROR, __file__, 1, "crash", (), _sys.exc_info())
+    text = cli.SafeLogFormatter("%(message)s").format(record)
+    lines = text.split("\n")
+    assert len(lines) > 2 and "\x1b" not in text
+    assert not any(line.startswith("::") for line in lines)
+
+
+def test_setup_logging_installs_the_safe_formatter(monkeypatch):
+    import logging
+
+    root = logging.getLogger()
+    monkeypatch.setattr(root, "handlers", [])
+    cli.setup_logging()
+    try:
+        assert any(isinstance(h.formatter, cli.SafeLogFormatter) for h in root.handlers)
+    finally:
+        for handler in root.handlers:
+            handler.close()

@@ -100,13 +100,31 @@ class _UsageErrorParser(argparse.ArgumentParser):
 
 
 
+class SafeLogFormatter(logging.Formatter):
+    """每筆日誌都是一行乾淨的文字（見 sanitize.log_safe）：日誌常插入模型回答的片段（嚴重度、威脅 id、STRIDE 類別、
+    失敗原因），在這裡統一清理，不必逐一呼叫端處理。回溯保留換行，但每行去除控制字元並縮排，不能以 `::` 開頭。
+    Every log record is one clean line (see sanitize.log_safe): logs often interpolate pieces of model answers
+    (severities, threat ids, STRIDE categories, failure reasons), cleaned here once instead of at every call site.
+    A traceback keeps its line breaks, but each line is stripped of control characters and indented, so none starts
+    with `::`."""
+
+    def formatMessage(self, record: logging.LogRecord) -> str:
+        from vibeharness.core.sanitize import log_safe
+
+        record.message = log_safe(record.message)
+        return super().formatMessage(record)
+
+    def formatException(self, ei) -> str:
+        from vibeharness.core.sanitize import clean_model_text
+
+        return "\n".join("  " + clean_model_text(line) for line in super().formatException(ei).split("\n"))
+
+
 def setup_logging(verbose: bool = False):
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S"
-    )
+    handler = logging.StreamHandler()
+    handler.setFormatter(SafeLogFormatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S"))
+    logging.basicConfig(level=level, handlers=[handler])
 
 
 def verdict_exit_code(overall_status: str) -> int:
