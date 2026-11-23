@@ -529,3 +529,15 @@ def test_programmatic_overrides_are_validated(field, value):
 
     with pytest.raises(ConfigError, match=field):
         load_settings(DEFAULT_CONFIG_PATH, origin="bundled", overrides=Overrides(**{field: value}))
+
+
+def test_an_invalid_port_message_is_bilingual():
+    """固定的錯誤訊息經過 bi()：CLI 以 parser.error 印出它（CODING_STANDARDS 第 6 條；#182 審查）。
+    The fixed error message goes through bi(): the CLI prints it with parser.error (CODING_STANDARDS rule 6; #182
+    review)."""
+    from vibeharness.agents.blackbox.scenario_builder import validate_base_url
+
+    for url in ("http://localhost:99999", "http://localhost:0"):
+        with pytest.raises(ValueError) as info:
+            validate_base_url(url)
+        assert "連接埠" in str(info.value) and "invalid port" in str(info.value)

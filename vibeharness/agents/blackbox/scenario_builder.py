@@ -74,9 +74,10 @@ def validate_base_url(base_url: str) -> str:
     try:
         port = parts.port
     except ValueError as e:
-        raise ValueError(f"base URL {base_url!r} has an invalid port: {e}") from e
+        raise ValueError(bi(f"base URL {base_url!r} 的連接埠無效：{e}",
+                            f"base URL {base_url!r} has an invalid port: {e}")) from e
     if port == 0:
-        raise ValueError(f"base URL {base_url!r} has an invalid port: 0")
+        raise ValueError(bi(f"base URL {base_url!r} 的連接埠無效：0", f"base URL {base_url!r} has an invalid port: 0"))
     return base_url.strip()
 
 
