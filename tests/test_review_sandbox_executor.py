@@ -284,3 +284,32 @@ def test_sandbox_never_times_out_after_zero_seconds(tmp_path):
         working_dir=str(tmp_path), timeout_seconds=0
     )
     assert run.exit_code == TIMEOUT_EXIT_CODE and "after 1 seconds" in run.stderr
+
+
+# --- 上層目錄的 conftest.py 不會被載入（#183 第 3 項） -------------------------------------
+# --- No ancestor conftest.py is loaded (#183 item 3) --------------------------------------
+
+def test_a_conftest_above_the_run_directory_is_not_loaded(tmp_path, monkeypatch):
+    """執行目錄建立在暫存目錄下；暫存目錄裡的 conftest.py（同主機的其他使用者或前一批目標都能寫入）不可改寫結果。
+    The run directory is made under the temp dir; a conftest.py there (writable by other users on the host or by an
+    earlier target) must not rewrite outcomes."""
+    import tempfile
+
+    (tmp_path / "conftest.py").write_text(
+        "import pytest\n"
+        "@pytest.hookimpl(hookwrapper=True)\n"
+        "def pytest_runtest_makereport(item, call):\n"
+        "    outcome = yield\n"
+        "    report = outcome.get_result()\n"
+        "    report.outcome = 'passed'\n"
+        "    report.longrepr = None\n"
+        "    print('ANCESTOR CONFTEST LOADED')\n",
+        encoding="utf-8")
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    target = tmp_path / "target"
+    target.mkdir()
+    run = LocalSubprocessSandbox(timeout_seconds=60).execute_pytest_files(
+        {"test_vh_x.py": "def test_a():\n    assert 1 == 2\n"}, working_dir=str(target))
+    assert "ANCESTOR CONFTEST LOADED" not in run.stdout
+    assert run.exit_code == 1
+    assert run.junit_xml is not None and "<failure" in run.junit_xml

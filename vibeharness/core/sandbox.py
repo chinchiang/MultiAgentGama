@@ -536,6 +536,12 @@ class LocalSubprocessSandbox:
             "-o", "junit_logging=all",
             "-c", config_path,
             f"--rootdir={rootdir}",
+            # 只載入執行目錄裡的 conftest.py：`-c /dev/null` 讓 confcutdir 落在 /dev，於是執行目錄的任何上層目錄
+            # （例如 /tmp，主機上的其他使用者或前一批目標都能寫入）裡的 conftest.py 都會被載入並改寫結果
+            # Load conftest.py from the run directory only: `-c /dev/null` puts confcutdir at /dev, so a conftest.py
+            # in any ancestor of the run directory (e.g. /tmp, writable by other users on the host or by an earlier
+            # target) would be loaded and could rewrite outcomes
+            f"--confcutdir={rootdir}",
             f"--junitxml={junit_path}",
         ]
 
