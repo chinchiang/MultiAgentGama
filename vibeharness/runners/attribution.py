@@ -233,13 +233,19 @@ def attribute(test: GeneratedTest, test_id: str, cases: List[JunitCase]) -> Test
     if defect_failures:
         case = defect_failures[0]
         is_assertion = _js_is_assertion(case) if is_js else _is_assertion(case["message"])
+        # 只有測試自己的斷言是突破：目標自己拋出的 AssertionError（例如以 `assert amount > 0` 驗證輸入）表示目標
+        # 拒絕了輸入，不是攻擊成功；這種失敗留給「未分類的失敗」
+        # Only the test's own assertion is a Breach: an AssertionError the target raised itself (e.g. input
+        # validation with `assert amount > 0`) means the target refused the input, not that the attack worked; such a
+        # failure is left to the unclassified failures
+        raised_in_target = _assertion_raised_in_target(case, is_js)
         reason = (_js_exception_summary(case) if is_js else "") or _first_line(case["message"]) \
             or bi(f"於 {test.title} 期間斷言失敗", f"Assertion failed during {test.title}")
         return _result(
             test, test_id, TestStatus.FAILED,
             failure_reason=reason,
             traceback=case["details"], duration=duration, stdout=stdout, stderr=stderr,
-            is_exploit=test.test_type == "blackbox_security" and is_assertion,
+            is_exploit=test.test_type == "blackbox_security" and is_assertion and not raised_in_target,
             poc=_generate_poc(test, case["name"])
         )
     if errors or harness_failures:
@@ -366,6 +372,39 @@ def _raised_in_test_module(case: dict) -> bool:
     True when the innermost frame is the generated test module (test_vh_NNN.py); False without a traceback."""
     location = _innermost_location(case)
     return location is not None and os.path.basename(location[0]).startswith("test_vh_")
+
+
+# 第三方套件的路徑片段：斷言輔助函式（`numpy.testing.assert_equal`、expect() 風格的函式庫）在這裡拋出 AssertionError，
+# 仍是測試自己的斷言
+# Path segments of third-party packages: an assertion helper (`numpy.testing.assert_equal`, an expect()-style
+# library) raising AssertionError there is still the test's own assertion
+# 斷言錯誤自己的堆疊框架（行尾可以接著物件內文的 `{`），以及它的 `actual:`／`expected:` 欄位：欄位裡是另一個錯誤
+# （例如 assert.doesNotThrow 抓到的目標例外）的堆疊，不算
+# The assertion error's own stack frames (the line may end with the `{` of its property dump), and its `actual:` /
+# `expected:` fields: those hold another error's stack (e.g. the target exception assert.doesNotThrow caught), which
+# does not count
+_V8_OWN_FRAME_RE = re.compile(r"^\s+at (?:.*?\()?((?:file:///|/|[A-Za-z]:[\\/])[^\s)]+?):\d+:\d+\)?\s*\{?\s*$", re.MULTILINE)
+_JS_NESTED_FIELD_RE = re.compile(r"^\s+(?:actual|expected):", re.MULTILINE)
+_LIBRARY_PATH_RE = re.compile(r"[\\/](?:site-packages|dist-packages|node_modules)[\\/]")
+
+
+def _assertion_raised_in_target(case: dict, is_js: bool) -> bool:
+    """斷言失敗的最內層框架（Python：pytest 回溯的最後一個框架；JS：V8 堆疊第一個檔案框架）在目標的程式碼裡：
+    不是產生的測試模組，也不是第三方套件。沒有框架時為 False（不歸咎於目標）。
+    The assertion failure's innermost frame (Python: the last frame of pytest's traceback; JS: the first file frame
+    of the V8 stack) is in the target's code: neither the generated test module nor a third-party package. False
+    without a frame (nothing is attributed to the target)."""
+    if is_js:
+        details = case.get("details") or ""
+        nested = _JS_NESTED_FIELD_RE.search(details)
+        frames = _V8_OWN_FRAME_RE.findall(details[:nested.start()] if nested else details)
+        path = frames[0] if frames else None
+    else:
+        location = _innermost_location(case)
+        path = location[0] if location else None
+    if path is None or os.path.basename(path).startswith("test_vh_"):
+        return False
+    return not _LIBRARY_PATH_RE.search(path)
 
 
 def _target_failed_to_load(case: dict) -> bool:

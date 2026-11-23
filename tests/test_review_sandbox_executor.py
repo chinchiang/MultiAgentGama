@@ -355,3 +355,54 @@ def test_a_target_shadowing_pytest_is_an_evidence_gap(tmp_path):
     assert summary.overall_status != "READY_TO_SHIP"
     assert any("named like the test runner's" in reason and "pytest.py" in reason
                for reason in summary.inconclusive_reasons)
+
+
+# --- 目標自己拋出的 AssertionError 不是突破（#183 第 10 項） ------------------------------------------
+# --- An AssertionError the target raised itself is not a Breach (#183 item 10) -----------------------
+
+def test_a_targets_own_assert_validation_is_not_a_breach(tmp_path):
+    """目標以 `assert` 驗證輸入；黑箱測試預期 ValueError，結果得到目標的 AssertionError：目標拒絕了輸入，不是被攻破。
+    The target validates input with `assert`; the black-box test expects ValueError and gets the target's
+    AssertionError: the target refused the input, it was not breached."""
+    (tmp_path / "bank.py").write_text(
+        "def withdraw(amount):\n    assert amount > 0, 'amount must be positive'\n    return amount\n", encoding="utf-8")
+    test = _test("BB-T-01", "import pytest\nfrom bank import withdraw\n\n"
+                            "def test_negative_withdrawal_is_rejected():\n"
+                            "    with pytest.raises(ValueError):\n        withdraw(-5)\n")
+    result = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60)).execute_test_suite(
+        [test], working_dir=str(tmp_path)).results[0]
+    assert result.status == TestStatus.FAILED, result.failure_reason
+    assert result.is_security_exploit_confirmed is False
+
+
+def test_the_tests_own_assertion_is_still_a_breach(tmp_path):
+    (tmp_path / "bank.py").write_text("def withdraw(amount):\n    return amount\n", encoding="utf-8")
+    test = _test("BB-T-01", "from bank import withdraw\n\n"
+                            "def test_negative_withdrawal_is_rejected():\n    assert withdraw(-5) is None\n")
+    result = TestSuiteExecutor(LocalSubprocessSandbox(timeout_seconds=60)).execute_test_suite(
+        [test], working_dir=str(tmp_path)).results[0]
+    assert result.is_security_exploit_confirmed is True
+
+
+@pytest.mark.parametrize("frame, breach", [
+    ("/srv/app/bank.py:2: AssertionError", False),
+    ("/tmp/vibe_sandbox_x/test_vh_001.py:5: AssertionError", True),
+    ("/usr/lib/python3/site-packages/numpy/testing/_private/utils.py:9: AssertionError", True),
+])
+def test_breach_attribution_follows_the_innermost_python_frame(frame, breach):
+    details = f"def test_a():\n>       check()\n\n{frame}"
+    assert _attributed("AssertionError: no", details, "blackbox_security").is_security_exploit_confirmed is breach
+
+
+@pytest.mark.parametrize("frame, breach", [
+    ("    at withdraw (file:///srv/app/bank.mjs:2:3)", False),
+    ("    at TestContext.<anonymous> (file:///tmp/run/test_vh_001.mjs:5:10)", True),
+    ("    at Proxy.assertEqual (file:///srv/app/node_modules/chai/lib/assert.js:9:3)", True),
+])
+def test_breach_attribution_follows_the_innermost_js_frame(frame, breach):
+    test = GeneratedTest(test_id="T", test_type="blackbox_security", target_component="m", title="t",
+                         code="test('a', () => { assert.ok(1); });", rationale="", expected_outcome="",
+                         language="javascript")
+    case = {"name": "a", "time": 0.0, "outcome": "failure", "message": "x",
+            "details": f"AssertionError [ERR_ASSERTION]: no\n{frame}\n", "stdout": "", "stderr": ""}
+    assert attribute(test, "T", [case]).is_security_exploit_confirmed is breach
