@@ -740,3 +740,31 @@ def test_waits_forever_on_the_base():
         "tests/test_calc.py::test_adding_one_and_one": "red",
         "tests/test_calc.py::test_waits_forever_on_the_base": "hang",
     }, captured.out
+
+
+def test_a_broken_files_tests_keep_their_collection_error_when_the_run_times_out(make_repo, tmp_path, capsys):
+    """逾時的那一次也照 JUnit 路徑帶出收集錯誤：在基準上匯入失敗的檔案裡的新測試列成紅的、說明是 `ImportError`，看得出是因為
+    錯的理由紅，stderr 也點名那個檔案與錯誤；卡住的測試是 `hang`，結束碼 2。原本逾時時一律寫「failed to collect on the
+    base」，也不點名壞掉的檔案（#197）。
+    The timed-out run carries the collection error like the JUnit path: a new test in a file that fails to import on
+    the base is red with the `ImportError`, so it shows as red for the wrong reason, and stderr names that file with
+    the error; the stuck test is `hang`, exit code 2. A timeout used to say only "failed to collect on the base" and
+    named no broken file (#197)."""
+    repo = make_repo(tmp_path / "repo")
+    (repo / "calc.py").write_text(FIXED + "\n\ndef sub(a, b):\n    return a - b\n", encoding="utf-8")
+    (repo / "tests" / "test_a_sub.py").write_text(BROKEN_ON_BASE, encoding="utf-8")
+    (repo / "tests" / "test_calc.py").write_text(BASE_TESTS + '''
+
+def test_waits_forever_on_the_base():
+    import time
+    time.sleep(120)
+''', encoding="utf-8")
+    code = tool.main(["--against", "HEAD", "--timeout", "4"], repo=str(repo))
+    captured = capsys.readouterr()
+    assert code == 2, captured.out + captured.err
+    lines = captured.out.splitlines()
+    broken = next(line for line in lines if "test_subtracting_gives_the_difference" in line)
+    assert broken.startswith("red    ") and "ImportError: cannot import name 'sub'" in broken, captured.out
+    assert "hang   tests/test_calc.py::test_waits_forever_on_the_base" in lines, captured.out
+    named = [line for line in captured.err.splitlines() if line.strip().startswith("tests/test_a_sub.py: ")]
+    assert len(named) == 1 and "ImportError: cannot import name 'sub'" in named[0], captured.err
