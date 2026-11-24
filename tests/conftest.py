@@ -23,7 +23,10 @@ from vibeharness.core.transport import ModelReply, ModelRequest  # noqa: E402
 # shows both sides (such as 'READY_TO_SHIP' == 'INCONCLUSIVE')
 pytest.register_assert_rewrite("clean_live")
 
-# 共用 Node 標記的 hook（tests/node_marks.py）／ The shared Node markers' hooks (tests/node_marks.py)
+# 共用 Node 標記的 hook（tests/node_marks.py）：pytest 只認 conftest 裡的名稱，node_marks 新增的 hook 也要加進這行
+# （非根目錄的 conftest 不能用 pytest_plugins）
+# The shared Node markers' hooks (tests/node_marks.py): pytest only sees names in the conftest, so a hook added to
+# node_marks goes into this line too (a non-root conftest cannot use pytest_plugins)
 from node_marks import pytest_configure, pytest_runtest_call, pytest_runtest_setup  # noqa: E402,F401
 
 _FAKE_KEY_VARS = ("ANTHROPIC_API_KEY", "ZAI_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY")

@@ -22,15 +22,21 @@ def test_needs_node():
 
 
 @pytest.fixture
-def repo_pytester(pytester, monkeypatch, tmp_path):
+def path_dir(tmp_path):
+    """子行程 PATH 上唯一的目錄，一開始是空的 ／ The only directory on the subprocess's PATH, empty at first."""
+    directory = tmp_path / "path-dir"
+    directory.mkdir()
+    return directory
+
+
+@pytest.fixture
+def repo_pytester(pytester, monkeypatch, path_dir):
     """子行程的 PATH 只有一個空目錄，所以 `detect_node("node")` 找不到 Node；pytester 目錄的 conftest 是
     `tests/conftest.py` 的原文，所以檢查的是 repo 真正的接線，`tests/` 與 repo 根目錄在 PYTHONPATH 上。
     The subprocess's PATH is one empty directory, so `detect_node("node")` finds no Node; the pytester directory's
     conftest is `tests/conftest.py` verbatim, so the repo's real wiring is what is checked, with `tests/` and the repo
     root on PYTHONPATH."""
-    empty = tmp_path / "empty-path"
-    empty.mkdir()
-    monkeypatch.setenv("PATH", str(empty))
+    monkeypatch.setenv("PATH", str(path_dir))
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join([_TESTS_DIR, _REPO_ROOT]))
     monkeypatch.delenv("VIBEHARNESS_REQUIRE_NODE", raising=False)
     with open(os.path.join(_TESTS_DIR, "conftest.py"), encoding="utf-8") as f:
@@ -39,16 +45,15 @@ def repo_pytester(pytester, monkeypatch, tmp_path):
 
 
 @pytest.fixture
-def fake_node(repo_pytester, tmp_path):
+def fake_node(repo_pytester, path_dir):
     """PATH 上的空目錄放一個只會印出 `v22.0.0` 的假 `node`（POSIX 是 sh 腳本，Windows 是 .cmd），所以
     `detect_node("node")` 認得到一個可用的 Node。
     The empty PATH directory gets a fake `node` that only prints `v22.0.0` (an sh script on POSIX, a .cmd on Windows),
     so `detect_node("node")` sees a usable Node."""
-    empty = tmp_path / "empty-path"
-    script = empty / "node"
+    script = path_dir / "node"
     script.write_text("#!/bin/sh\necho v22.0.0\n", encoding="utf-8", newline="\n")
     script.chmod(0o755)
-    (empty / "node.cmd").write_text("@echo v22.0.0\r\n", encoding="utf-8", newline="")
+    (path_dir / "node.cmd").write_text("@echo v22.0.0\r\n", encoding="utf-8", newline="")
     return repo_pytester
 
 
@@ -114,6 +119,30 @@ def test_a_node_feature_test_is_skipped_when_node_lacks_the_feature_even_if_requ
     out = result.stdout.str()
     result.assert_outcomes(skipped=1)
     assert "Node v20.0.0 lacks the feature" in out, out
+
+
+_HAS_THE_FEATURE = """
+from node_marks import node_feature, node_only
+
+
+@node_only
+def test_needs_node():
+    pass
+
+
+@node_feature(None)
+def test_needs_a_node_feature_this_node_has():
+    pass
+"""
+
+
+def test_node_tests_run_when_node_has_what_they_need(fake_node, monkeypatch):
+    """有可用的 Node：node_only 與這個 Node 具備功能的 node_feature 測試都照常執行，不會被略過或判失敗。
+    With a usable Node, a node_only test and a node_feature test whose feature this Node has both run as usual,
+    neither skipped nor failed."""
+    monkeypatch.setenv("VIBEHARNESS_REQUIRE_NODE", "1")
+    fake_node.makepyfile(test_has_feature=_HAS_THE_FEATURE)
+    _run(fake_node).assert_outcomes(passed=2)
 
 
 _GAP_REMOVED = """
