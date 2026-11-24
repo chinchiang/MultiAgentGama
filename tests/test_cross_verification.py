@@ -174,16 +174,22 @@ def _one_model_config(tmp_path):
     return write_config(tmp_path, cfg, "one_model.yaml")
 
 
-def test_aliases_on_one_model_are_one_reviewer_model_for_the_gate(tmp_path):
-    from vibeharness.core.harness import VibeHarnessCommander
+def test_aliases_on_one_model_are_one_reviewer_model_for_the_gate(clean_live_run):
+    """四個別名指向同一個模型字串：閘門依實際的模型算多樣性，「只有一個審查模型」是唯一的缺口，判定是 INCONCLUSIVE。
+    用 `clean_live_run` 跑，所以斷言的是判定本身（#183 第 8 項、#200、#207）。
+    Four aliases on one model string: the gate counts diversity by the actual model, so "only one reviewer model" is
+    the only gap and the Verdict is INCONCLUSIVE. It runs on `clean_live_run`, so it asserts the Verdict itself
+    (#183 item 8, #200, #207)."""
+    def one_model(cfg):
+        for alias in ("claude", "deepseek", "gemini", "glm"):
+            cfg["models"][alias]["model"] = "gemini/gemini-same"
 
-    target = tmp_path / "target"
-    target.mkdir()
-    (target / "app.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
-    commander = VibeHarnessCommander(config_path=_one_model_config(tmp_path), execution_mode="mock")
-    summary = commander.run_full_pipeline(str(target), output_report_path=str(tmp_path / "r.md"))
-    assert any("Only one distinct reviewer model (claude/deepseek/gemini/glm)" in reason
-               for reason in summary.inconclusive_reasons)
+    summary = clean_live_run(config=one_model)
+    assert summary.reviewer_models == ["claude", "deepseek", "gemini", "glm"]
+    assert summary.overall_status == "INCONCLUSIVE"
+    assert len(summary.inconclusive_reasons) == 1, summary.inconclusive_reasons
+    assert "Only one distinct reviewer model (claude/deepseek/gemini/glm)" in summary.inconclusive_reasons[0], \
+        summary.inconclusive_reasons
 
 
 def test_a_verifier_on_the_reporters_model_does_not_rule_on_its_finding(scripted, tmp_path):

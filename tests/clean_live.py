@@ -64,3 +64,20 @@ def respond(system: str, user: str) -> str:
         return json.dumps({"test_id": "BB-TEST-THREAT-01", "title": "Attack THREAT-01", "rationale": "Tries the threat.",
                            "expected_outcome": "The attack is refused.", "code": _ATTACK_TEST})
     raise AssertionError("clean_live responder: unknown agent: " + system[:80])
+
+
+def respond_with(finding=None, whitebox_code=None):
+    """換掉乾淨回答裡的一部分，其餘照 `respond`：`finding` 取代 Claude 審查者回報的那筆發現（其他審查者仍沒有發現）；
+    `whitebox_code(user_prompt)` 回傳白箱測試產生器（Python 或 JS/TS 的 QA Engineer）寫出的測試程式碼。交給
+    `clean_live_run` 的 `responder=`。
+    Replaces part of the clean answers and keeps `respond` for the rest: `finding` replaces the finding the Claude
+    reviewer reports (the other reviewers still report none); `whitebox_code(user_prompt)` returns the test code the
+    white-box test generator (the Python or JS/TS QA Engineer) writes. Pass it to `clean_live_run`'s `responder=`."""
+    def answer(system: str, user: str) -> str:
+        if finding is not None and "white-box AI code auditor" in system:
+            return json.dumps({"findings": [finding] if "(Claude)" in system else []})
+        if whitebox_code is not None and "QA Engineer" in system:
+            return json.dumps({"test_id": "WB-TEST-01", "title": "The finding is tested", "rationale": "Checks it.",
+                               "expected_outcome": "The assertion holds.", "code": whitebox_code(user)})
+        return respond(system, user)
+    return answer

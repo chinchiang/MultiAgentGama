@@ -700,6 +700,23 @@ def test_the_walk_does_not_read_outside_links_or_special_files(tmp_path):
 
 
 @posix_only
+def test_a_link_out_of_the_target_is_an_evidence_gap_on_a_clean_run(clean_live_run, tmp_path):
+    """乾淨目標裡多一個指向目標之外的 symlink：擷取器不讀它，`unsafe_files_skipped` 是唯一的缺口並列出連結的名稱，
+    判定是 INCONCLUSIVE。用 `clean_live_run` 跑，所以斷言的是判定本身（#183 第 5 項、#200、#207）。
+    The clean target plus a symlink resolving outside it: the extractor does not read it, `unsafe_files_skipped` is the
+    only gap and names the link, and the Verdict is INCONCLUSIVE. It runs on `clean_live_run`, so it asserts the
+    Verdict itself (#183 item 5, #200, #207)."""
+    secret = tmp_path / "secret.py"
+    secret.write_text("def leaked():\n    return 1\n", encoding="utf-8")
+    os.symlink(secret, clean_live_run.target / "leak.py")
+    summary = clean_live_run()
+    assert summary.overall_status == "INCONCLUSIVE"
+    assert len(summary.inconclusive_reasons) == 1, summary.inconclusive_reasons
+    reason = summary.inconclusive_reasons[0]
+    assert "links resolving outside the target" in reason and reason.endswith(": leak.py"), reason
+
+
+@posix_only
 def test_is_unsafe_file_refuses_special_files_and_links_out_of_the_root(tmp_path):
     """FIFO 與 /dev/zero 在 master 上會讓走訪與複本永遠讀不完，所以在這裡直接測判斷本身。
     A FIFO and /dev/zero make the walk and the copy read forever on master, so the predicate is tested directly."""

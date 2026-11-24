@@ -52,33 +52,40 @@ def fake_live(monkeypatch):
 @pytest.fixture
 def clean_live_run(fake_live, tmp_path):
     """乾淨小目標（`tests/clean_live.py` 的 CLEAN_TARGET）在 live 模式＋假 litellm 下跑完整個 pipeline，回傳摘要。
-    `run(files=None, baseline=None, config=None, report="r.md", output_format="md", sarif=None)`：先把 files
-    （相對路徑 -> 內容，需要的子目錄會建立）寫進目標（同一個測試裡的後續呼叫沿用同一個目標，前一次寫的檔案還在）；
-    `baseline` 是 `--baseline` 的 Baseline；`config` 是修改設定字典的函式，套在內建設定的副本上（夾具先固定關掉
-    突變測試，`config` 可以再改）；報告寫到 `tmp_path / report`，有給 `sarif` 時 SARIF 寫到 `tmp_path / sarif`。
-    `run.config_path` 是最近一次用的設定檔。乾淨的一次是 READY_TO_SHIP（`tests/test_clean_live_run.py`）。
+    `run(files=None, baseline=None, config=None, report="r.md", output_format="md", sarif=None, responder=None)`：
+    先把 files（相對路徑 -> 內容，需要的子目錄會建立）寫進目標（同一個測試裡的後續呼叫沿用同一個目標，前一次寫的
+    檔案還在）；`baseline` 是 `--baseline` 的 Baseline；`config` 是修改設定字典的函式，套在內建設定的副本上（夾具
+    先固定關掉突變測試，`config` 可以再改）；報告寫到 `tmp_path / report`，有給 `sarif` 時 SARIF 寫到
+    `tmp_path / sarif`；`responder` 取代這次呼叫的假模型回答（預設是 `clean_live.respond`，換掉一部分用
+    `clean_live.respond_with`）。`run.config_path` 是最近一次用的設定檔，`run.target` 是目標目錄（給 `files` 寫不出來
+    的東西用，例如 symlink）。乾淨的一次是 READY_TO_SHIP
+    （`tests/test_clean_live_run.py`）。
     Runs the whole pipeline on the clean small target (CLEAN_TARGET in `tests/clean_live.py`) in live mode with the
     fake litellm and returns the summary. `run(files=None, baseline=None, config=None, report="r.md",
-    output_format="md", sarif=None)`: files (relative path -> content, with any subdirectory they need created) are
-    written into the target first (later calls in the same test reuse that target, so earlier files are still there);
-    `baseline` is the Baseline of `--baseline`; `config` is a function editing the config dict, applied to a copy of
-    the bundled config (the fixture first turns mutation testing off, which `config` may change again); the report
-    goes to `tmp_path / report`, and with `sarif` the SARIF goes to `tmp_path / sarif`. `run.config_path` is the config
-    file of the latest call. A clean run is READY_TO_SHIP (`tests/test_clean_live_run.py`)."""
+    output_format="md", sarif=None, responder=None)`: files (relative path -> content, with any subdirectory they need
+    created) are written into the target first (later calls in the same test reuse that target, so earlier files are
+    still there); `baseline` is the Baseline of `--baseline`; `config` is a function editing the config dict, applied
+    to a copy of the bundled config (the fixture first turns mutation testing off, which `config` may change again);
+    the report goes to `tmp_path / report`, and with `sarif` the SARIF goes to `tmp_path / sarif`; `responder`
+    replaces the fake model answers for that call (`clean_live.respond` by default; `clean_live.respond_with` replaces
+    part of them). `run.config_path` is the config file of the latest call, `run.target` the target directory (for
+    what `files` cannot write, such as a symlink). A clean run is READY_TO_SHIP
+    (`tests/test_clean_live_run.py`)."""
     from clean_live import CLEAN_TARGET, respond
     from config_files import load_config, write_config
     from vibeharness.core.harness import VibeHarnessCommander
 
-    fake_live(respond)
     target = tmp_path / "clean_target"
     target.mkdir()
     for name, text in CLEAN_TARGET.items():
         (target / name).write_text(text, encoding="utf-8")
 
-    def run(files=None, baseline=None, config=None, report="r.md", output_format="md", sarif=None):
+    def run(files=None, baseline=None, config=None, report="r.md", output_format="md", sarif=None,
+            responder=None):
         for name, text in (files or {}).items():
             (target / name).parent.mkdir(parents=True, exist_ok=True)
             (target / name).write_text(text, encoding="utf-8")
+        fake_live(responder or respond)
         cfg = load_config()
         cfg["global"]["mutation_testing"] = False
         if config is not None:
@@ -89,6 +96,7 @@ def clean_live_run(fake_live, tmp_path):
         return commander.run_full_pipeline(target_dir=str(target), output_report_path=str(tmp_path / report),
                                            output_format=output_format,
                                            output_sarif_path=str(tmp_path / sarif) if sarif else None)
+    run.target = target
     return run
 
 

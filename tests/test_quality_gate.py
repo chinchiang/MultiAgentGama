@@ -1,12 +1,15 @@
-"""品質閘門（core/gate.py）：只透過 evaluate() 測試，不需要 pipeline、閘道或沙盒；最後一個測試跑一次 mock
-pipeline，確認各來源的事實確實送進閘門。
-The quality gate (core/gate.py): tested only through evaluate(), with no pipeline, gateway or sandbox; the last
-test runs one mock pipeline to check that each source's facts actually reach the gate."""
+"""品質閘門（core/gate.py）：多數測試只透過 evaluate()，不需要 pipeline、閘道或沙盒；以 `clean_live_run` 為參數的
+測試（擷取器與設定上限的接線、混合語言、突變測試）跑完整個 pipeline，確認各來源的事實確實送進閘門，並改變判定。
+The quality gate (core/gate.py): most tests go through evaluate() only, with no pipeline, gateway or sandbox; the
+tests taking `clean_live_run` (the extractor and limit wiring, the mixed-language and the mutation cases) run the
+whole pipeline to check that each source's facts actually reach the gate and change the Verdict."""
+import json
+import os
 from dataclasses import replace
 
 import pytest
 
-from config_files import load_config, write_config
+from clean_live import respond_with
 from vibeharness.core.baseline import Baseline, breach_key, finding_key, static_key
 from vibeharness.core.gate import (
     ExecutionEvidence, GapCode, GateEvidence, GateLimits, ReviewEvidence, ScopeDisclosure,
@@ -14,6 +17,7 @@ from vibeharness.core.gate import (
 from vibeharness.core import models as _models
 from vibeharness.core.gate import evaluate as gate_evaluate
 from vibeharness.core.llm_gateway import BUDGET_EXHAUSTED_REASON, CACHE_MISS_REASON
+from vibeharness.core.sandbox import detect_node
 from vibeharness.core.models import (
     AgentCallRecord, FindingSeverity, GeneratedTest, MutantResult, MutationReport, ReviewFinding, STRIDECategory,
     StaticFinding, TestExecutionResult, TestStatus, ThreatItem, ThreatModelReport,
@@ -354,48 +358,72 @@ def test_surviving_mutants_get_a_recommendation():
 
 # --- pipeline 接線 ／ pipeline wiring ------------------------------------------------------------
 
-def test_pipeline_wires_scope_limits_and_review_facts_into_the_gate(tmp_path, monkeypatch):
-    """一次 mock 執行：擷取器、掃描器、設定上限與審查名單的事實都必須出現在閘門的缺口裡（訊息規則本身由上面的測試涵蓋）。
-    One mock run: the facts of the extractor, the scanner, the configured limits and the reviewer roster must all
-    reach the gate's gaps (the message rules themselves are covered by the tests above)."""
-    from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
-    from vibeharness.core.harness import VibeHarnessCommander
-    cfg = load_config()
-    cfg["global"].update(max_files=4, max_file_bytes=1000)
+def _one_reviewer_alias(cfg):
+    """每位審查者與驗證者都用 gemini 這個別名 ／ Every reviewer and verifier uses the gemini alias."""
     for agent_id, meta in cfg["agents"].items():
         if agent_id.startswith(("whitebox_reviewer_", "whitebox_verifier_")):
             meta["model_alias"] = "gemini"
-    config = write_config(tmp_path, cfg, "single.yaml")
 
-    target = tmp_path / "t"
-    target.mkdir()
-    files = {"app.py": "def add(a, b):\n    return a + b\n", "bad.py": "def broken(:\n", "big.py": "x = 1\n" * 400,
-             "m1.py": "def f1(x):\n    return x\n", "m2.py": "def f2(x):\n    return x\n", "m3.py": "def f3(x):\n    return x\n",
-             "main.go": "package main\n\nfunc main() {}\n", "a.yaml": "k: v\n", "big.json": '{"k": "' + "v" * 2000 + '"}'}
-    for name, text in files.items():
-        (target / name).write_text(text, encoding="utf-8")
+
+def _set_limits(**limits):
+    """回傳把 global 的上限改成 limits 的設定修改函式 ／ Returns a config edit setting the global limits in `limits`."""
+    return lambda cfg: cfg["global"].update(limits)
+
+
+# 每個案例：加進乾淨目標的檔案、設定修改、預期的唯一缺口（英文片段）
+# Each case: the files added to the clean target, the config edit, and the expected only gap (an English fragment)
+_WIRING_CASES = {
+    "single_reviewer_model": ({}, _one_reviewer_alias, "Only one distinct reviewer model (gemini)"),
+    "parse_error": ({"bad.py": "def broken(:\n"}, None, "1 source file(s) could not be parsed"),
+    "oversized_file": ({"big.py": "x = 1\n" * 400}, _set_limits(max_file_bytes=1000),
+                       "1 source file(s) exceed max_file_bytes (1000) and were not analyzed: big.py"),
+    "max_files": ({"m1.py": "def f1(x):\n    return x\n", "m2.py": "def f2(x):\n    return x\n"},
+                  _set_limits(max_files=2), "1 source file(s) were skipped by the max_files limit (2)"),
+    "config_not_fully_scanned": ({"big.json": '{"k": "' + "v" * 2000 + '"}'}, _set_limits(max_file_bytes=1000),
+                                 "1 configuration-like file(s) were not fully secret-scanned"),
+}
+
+
+def _assert_only_gap(summary, expected):
+    """判定是 INCONCLUSIVE，唯一的缺口含有 expected ／ The Verdict is INCONCLUSIVE and the only gap contains `expected`."""
+    assert summary.overall_status == "INCONCLUSIVE"
+    assert len(summary.inconclusive_reasons) == 1, summary.inconclusive_reasons
+    assert expected in summary.inconclusive_reasons[0], summary.inconclusive_reasons
+
+
+@pytest.mark.parametrize("case", list(_WIRING_CASES))
+def test_pipeline_wires_scope_limits_and_review_facts_into_the_gate(case, clean_live_run):
+    """擷取器、設定上限與審查名單的事實各自送進閘門：乾淨目標加上一個案例的條件，那個缺口是唯一的一筆，判定是
+    INCONCLUSIVE（訊息規則本身由上面的測試涵蓋）。掃描器沒掃完的缺口見下一個測試，不支援語言的缺口見
+    `tests/test_r5_languages_secrets.py`。原本是一次 mock 執行裡同時觸發全部缺口，拿掉任何一個判定都不變；改用
+    `clean_live_run` 一次一個（#200、#207）。
+    The facts of the extractor, the configured limits and the reviewer roster each reach the gate: the clean target
+    plus one case's condition has that gap as the only one and the Verdict INCONCLUSIVE (the message rules themselves
+    are covered by the tests above). The scanner's incomplete-scan gap is in the next test, the unsupported-language
+    gap in `tests/test_r5_languages_secrets.py`. This used to be one mock run raising every gap at once, where removing
+    any one left the Verdict as it was; it now runs one case at a time on `clean_live_run` (#200, #207)."""
+    files, config, expected = _WIRING_CASES[case]
+    _assert_only_gap(clean_live_run(files, config=config), expected)
+
+
+def test_pipeline_wires_an_incomplete_static_scan_into_the_gate(clean_live_run, monkeypatch):
+    """掃描器把乾淨目標的 calc.py 記成沒掃完：`incomplete_scan` 是唯一的缺口，判定是 INCONCLUSIVE（#200、#207）。
+    The scanner marks the clean target's calc.py as not fully scanned: `incomplete_scan` is the only gap and the
+    Verdict is INCONCLUSIVE (#200, #207)."""
+    from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
     original = AISecurityStaticScanner.scan_files
+    marked = []
 
     def scan_files(self, paths):
         findings = original(self, paths)
-        self.incomplete_files = [str(target / "app.py")]
+        self.incomplete_files = [p for p in paths if p.endswith("calc.py")]
+        marked.extend(self.incomplete_files)
         return findings
     monkeypatch.setattr(AISecurityStaticScanner, "scan_files", scan_files)
 
-    commander = VibeHarnessCommander(config_path=config, execution_mode="mock")
-    summary = commander.run_full_pipeline(target_dir=str(target), output_report_path=str(tmp_path / "r.md"))
-    assert summary.overall_status != "READY_TO_SHIP"
-    reasons = "\n".join(summary.inconclusive_reasons)
-    for expected in (
-        "Only one distinct reviewer model (gemini)",
-        "1 source file(s) could not be parsed",
-        "could not fully scan 1 source file(s)",
-        "1 source file(s) exceed max_file_bytes (1000) and were not analyzed: big.py",
-        "1 source file(s) were skipped by the max_files limit (4)",
-        "1 source file(s) in unsupported languages (go: 1) were not analyzed: main.go",
-        "1 configuration-like file(s) were not fully secret-scanned",
-    ):
-        assert expected in reasons, expected
+    summary = clean_live_run()
+    assert [os.path.basename(p) for p in marked] == ["calc.py"]
+    _assert_only_gap(summary, "could not fully scan 1 source file(s)")
 
 
 def test_discovered_config_scope_filtering_is_an_evidence_gap():
@@ -473,3 +501,72 @@ def test_python_black_box_tests_do_not_mask_python_without_white_box_tests():
     result = evaluate(evidence)
     assert "python_no_tests" in [c.value for c in _codes(result)]
     assert result.verdict is Verdict.INCONCLUSIVE
+
+
+# --- clean_live_run 上的混合語言與突變測試缺口（#183 第 17、22 項） ---------------------------------
+# --- Mixed-language and mutation gaps on clean_live_run (#183 items 17 and 22) -----------------------
+
+_NODE_PATH, _, _NODE_PROBLEM = detect_node("node")
+node_only = pytest.mark.skipif(_NODE_PATH is None, reason=f"Node unavailable: {_NODE_PROBLEM}")
+
+_LOGIN_JS = "export function login(user) {\n  if (!user) return 'error';\n  return 'ok';\n}\n"
+_LOGIN_FINDING = {
+    "symbol_name": "login", "severity": "LOW", "title": "An empty user is never checked",
+    "description": "No test checks an empty user.", "root_cause": "No test.", "suspected_vibe_flaw": "Happy path only.",
+    "suggested_test_scenario": "Log in with an empty user.", "owasp_mapping": "",
+}
+
+
+def _login_node_test(user_prompt):
+    """匯入提示詞給的 URL、檢查空使用者的 node:test ／ A node:test importing the URL the prompt gives, checking an empty user."""
+    url = next(line.split(": ", 1)[1] for line in user_prompt.splitlines() if line.startswith("Import URL"))
+    return ('import { test } from "node:test";\nimport assert from "node:assert/strict";\n'
+            f'import {{ login }} from "{url}";\n\n'
+            'test("an empty user is an error", () => {\n  assert.equal(login(""), "error");\n});\n')
+
+
+@node_only
+def test_a_mixed_target_whose_only_white_box_test_is_js_lacks_python_tests(clean_live_run, tmp_path):
+    """乾淨目標（Python）加上一個 JS 模組，唯一的發現在 JS 函式上：唯一的白箱測試是 node:test，Python 程式碼沒有任何
+    白箱測試。黑箱的攻擊測試是 Python，但不能遮掉這個缺口：`python_no_tests` 是唯一的一筆，判定是 INCONCLUSIVE
+    （#183 第 17 項、#200、#207）。
+    The clean (Python) target plus a JS module, with the only finding on the JS function: the only white-box test is a
+    node:test, and the Python code got no white-box test. The black-box attack test is Python but must not mask the
+    gap: `python_no_tests` is the only one and the Verdict is INCONCLUSIVE (#183 item 17, #200, #207)."""
+    summary = clean_live_run({"auth.mjs": _LOGIN_JS}, report="r.json", output_format="json",
+                             responder=respond_with(finding=_LOGIN_FINDING, whitebox_code=_login_node_test))
+    report = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
+    assert [(r["test_id"], r["language"], r["status"]) for r in report["whitebox"]["test_results"]] == [
+        ("WB-TEST-01", "javascript", "PASSED")]
+    assert [r["language"] for r in report["blackbox_test_results"]] == ["python"]
+    _assert_only_gap(summary, "Python code got no white-box test")
+
+
+# `return a + b + 1 - 1` 的 5 個變異體，算出 -1、3、4、7 與 6；測試在結果是 6 時斷言失敗（殺死），其他不是 5 的結果
+# 在測試模組裡呼叫一個未定義的名稱（NameError 是測試端的錯誤，變異體無效）
+# The 5 mutants of `return a + b + 1 - 1` compute -1, 3, 4, 7 and 6; the test fails its assertion on 6 (killed) and
+# calls an undefined name in the test module on any other result but 5 (a NameError is a test-side error, so the
+# mutant is invalid)
+_ADD_PLUS_ONE_MINUS_ONE = 'def add(a, b):\n    """Return the sum of a and b."""\n    return a + b + 1 - 1\n'
+_MOSTLY_INVALID_TEST = (
+    "from calc import add\n\n\ndef test_two_plus_three_is_five():\n    total = add(2, 3)\n"
+    "    if total == 6:\n        assert total == 5\n    if total != 5:\n        undefined_helper()\n")
+
+
+def test_a_mutation_score_on_mostly_invalid_mutants_is_an_evidence_gap(clean_live_run, tmp_path):
+    """突變測試打開：5 個變異體裡 4 個無效、1 個殺死，分數 100% 只根據 1 個有結論的變異體。`mutation_mostly_invalid`
+    是唯一的一筆，判定是 INCONCLUSIVE；變異體的結果從 JSON 報告讀回，證明它們真的這樣執行（#183 第 22 項、#200、#207）。
+    Mutation testing on: of 5 mutants 4 are invalid and 1 is killed, so the 100% score rests on 1 decided mutant.
+    `mutation_mostly_invalid` is the only gap and the Verdict is INCONCLUSIVE; the mutant outcomes are read back from
+    the JSON report, showing they really ran that way (#183 item 22, #200, #207)."""
+    def mutation_on(cfg):
+        cfg["global"]["mutation_testing"] = True
+
+    summary = clean_live_run({"calc.py": _ADD_PLUS_ONE_MINUS_ONE}, config=mutation_on, report="r.json",
+                             output_format="json", responder=respond_with(whitebox_code=lambda _: _MOSTLY_INVALID_TEST))
+    mutation = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))["summary"]["mutation"]
+    assert [m["mutated"].split("return ")[1] + " " + m["status"] for m in mutation["mutants"]] == [
+        "a - b + 1 - 1 invalid", "a + b - 1 - 1 invalid", "a + b + 0 - 1 invalid", "a + b + 1 + 1 invalid",
+        "a + b + 1 - 0 killed"]
+    assert (mutation["score"], mutation["killed"], mutation["invalid"]) == (100.0, 1, 4)
+    _assert_only_gap(summary, "4 of 5 mutant(s) were invalid")
