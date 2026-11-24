@@ -5,6 +5,7 @@ red, and writes the file back as it was."""
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -320,7 +321,9 @@ def test_a_named_test_whose_outcome_cannot_be_read_is_refused(repo, tmp_path, ca
     （CODING_STANDARDS 第 8 條；#209 審查第 1 輪）。
     A test named by node id with no outcome line read (the outcome line format is made unreadable here) cannot be
     checked: exit code 2, not taken as passing (CODING_STANDARDS rule 8; #209 review round 1)."""
-    monkeypatch.setattr(tool, "_OUTCOME_RE", tool.re.compile(r"^(never)::(matches)$"))
+    # raising=False：在沒有 `_OUTCOME_RE` 的舊版上，紅燈的原因才會是行為本身，不是屬性不存在
+    # raising=False: on an older version without `_OUTCOME_RE` the test goes red on the behaviour, not a missing name
+    monkeypatch.setattr(tool, "_OUTCOME_RE", re.compile(r"^(never)::(matches)$"), raising=False)
     named = "tests/test_calc.py::test_adding_two_numbers_gives_their_sum"
     code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b")), named], repo=str(repo))
     out = capsys.readouterr().out
@@ -455,7 +458,9 @@ def test_failures_reported_but_none_read_is_could_not_check(repo, tmp_path, caps
     「turned nothing red」（CODING_STANDARDS 第 8 條；#209 審查第 2 輪）。
     pytest exits 1 (some failed) but no failure is read (the summary parsing is made to read nothing here): could not
     check, exit code 2, not "turned nothing red" (CODING_STANDARDS rule 8; #209 review round 2)."""
-    monkeypatch.setattr(tool, "_red", lambda output, known: [])
+    # 任意參數：舊版的 `_red` 只收一個參數，紅燈的原因才會是行為本身，不是簽章不合
+    # Any arguments: an older `_red` takes one, so the test goes red on the behaviour, not on the signature
+    monkeypatch.setattr(tool, "_red", lambda *args: [])
     code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(repo))
     out = capsys.readouterr().out
     assert code == 2, out
