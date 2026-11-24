@@ -265,7 +265,7 @@ MultiAgentGama/
 │   ├── check_new_tests_red_on_base.py # 新增回歸測試的分支用：新增或改動的測試換到 merge-base 的程式碼上跑，列出已經綠或被 skip 的
 │   ├── check_pr_issue_link.py   # pr-issue-link 的判斷：哪些 PR 需要 issue、描述與 commit 是否連到存在的 issue
 │   ├── check_required_checks.py # 必要檢查的三方比對：workflow 的 job 與 matrix、CONTRIBUTING、ruleset
-│   ├── check_reversions.py      # 敏感度檢查：把修正一次改回一項、跑測試，列出每項讓哪些測試變紅，再從記憶體寫回原檔（工作目錄要乾淨）
+│   ├── check_reversions.py      # 敏感度檢查：把修正一次改回一項、跑測試，先在原始檔上跑一次測試，列出每項讓哪些測試變紅與失敗的那一行、哪些被略過，再從記憶體寫回原檔（工作目錄要乾淨）
 │   ├── golden/                  # golden diff（只供開發用、不進 sdist）：run.py --against <rev> 比對 revision 與工作目錄的輸出
 │   ├── recite_design_refs.py    # 檢查設計文件的 path:line 引用，並依 git diff 重新對應到目前的程式碼
 │   └── test_sdist.py            # 在本機重現 CI 的 package job：建 sdist、解開、在裡面跑測試套件
@@ -281,7 +281,7 @@ MultiAgentGama/
 │   ├── test_call_plans.py              # 每個代理的呼叫計畫（plan）等於它實際發出的呼叫
 │   ├── test_check_all.py               # check_all.py：摘要留下 TOTAL 覆蓋率、計數與 red-on-base 每一行，失敗、逾時與 --skip 都寫明，逾時的命令會被停掉
 │   ├── test_check_new_tests_red_on_base.py # 新測試在基準上要紅：挑哪些測試（含類別、子目錄）、紅綠、skip（含整個檔案）與 xfail、參數化、收集不到與語法、編碼錯誤、rootdir 與 -x、結束碼與清除、收集錯誤不擋其他檔案並點名、逾時列成 hang 並停掉行程樹
-│   ├── test_check_reversions.py        # 改回一項就列出變紅的測試、沒有紅燈時結束碼 1、收集錯誤算紅、工作目錄不乾淨或原文不唯一就拒絕、pytest 跑不起來也寫回
+│   ├── test_check_reversions.py        # 改回一項就列出變紅的測試、沒有紅燈時結束碼 1、收集錯誤算紅、工作目錄不乾淨、原文不唯一、夾帶 pytest 選項、讀不懂輸出或原始檔案上測試沒全過就拒絕、印出失敗行與被略過的測試（含整個模組）、pytest 跑不起來也寫回
 │   ├── test_clean_live_run.py          # clean_live_run 的基準：乾淨目標在 live＋假 litellm 下是 READY_TO_SHIP、沒有缺口
 │   ├── test_cross_verification.py      # 交叉驗證：模型不評審自己的發現、依票數判定
 │   ├── test_dedup_and_budget.py        # 重複發現合併與 token 預算內的提示上下文
