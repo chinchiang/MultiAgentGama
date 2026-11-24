@@ -13,6 +13,7 @@ import warnings
 import pytest
 
 from config_files import load_config, write_config
+from node_marks import node_at_least, node_only
 from vibeharness.core.codecheck import check_js_test_code, check_test_code_for
 from vibeharness.core.codecontext import (
     import_instructions, js_exported_names, js_module_kind, language_for_file, target_file_url,
@@ -20,7 +21,7 @@ from vibeharness.core.codecontext import (
 from vibeharness.core.harness import VibeHarnessCommander
 from vibeharness.core.models import GeneratedTest, TestStatus
 from vibeharness.core.sandbox import (
-    DEFAULT_DOCKER_NODE_IMAGE, MIN_NODE_VERSION, TIMEOUT_EXIT_CODE, NodeDockerSandbox, NodeRuntime,
+    DEFAULT_DOCKER_NODE_IMAGE, TIMEOUT_EXIT_CODE, NodeDockerSandbox, NodeRuntime,
     NodeSubprocessSandbox, SandboxRun, SandboxUnavailableError, detect_node, node_test_command, parse_node_version,
 )
 from vibeharness.runners.attribution import (
@@ -31,14 +32,7 @@ from vibeharness.runners.test_executor import TestSuiteExecutor
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(REPO_ROOT, "vibeharness", "config", "agents_config.yaml")
 
-_NODE_PATH, _NODE_VERSION, _NODE_PROBLEM = detect_node("node")
-_NODE_REQUIRED = os.environ.get("VIBEHARNESS_REQUIRE_NODE") == "1"
-if _NODE_REQUIRED and _NODE_PATH is None:
-    raise RuntimeError(f"VIBEHARNESS_REQUIRE_NODE=1 but no usable Node runtime: {_NODE_PROBLEM}")
-node_only = pytest.mark.skipif(_NODE_PATH is None, reason=f"Node >= {MIN_NODE_VERSION} unavailable: {_NODE_PROBLEM}")
-_TS_OK = _NODE_VERSION is not None and _NODE_VERSION >= (22, 6, 0)
-_FOUND = "v" + ".".join(map(str, _NODE_VERSION)) if _NODE_VERSION else "none"
-node_ts_only = pytest.mark.skipif(not _TS_OK, reason=f"Node >= 22.6 (type stripping) unavailable (found {_FOUND})")
+node_ts_only = node_at_least((22, 6, 0), "type stripping")
 
 
 def _js_test(test_id, code, language="javascript", test_type="whitebox_unit"):

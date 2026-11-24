@@ -12,6 +12,7 @@ import tempfile
 import pytest
 import yaml
 
+from clean_live import assert_only_gap
 from config_files import load_config, write_config
 from vibeharness.core import mutation as mut
 from vibeharness.core.harness import VibeHarnessCommander
@@ -710,10 +711,8 @@ def test_a_link_out_of_the_target_is_an_evidence_gap_on_a_clean_run(clean_live_r
     secret.write_text("def leaked():\n    return 1\n", encoding="utf-8")
     os.symlink(secret, clean_live_run.target / "leak.py")
     summary = clean_live_run()
-    assert summary.overall_status == "INCONCLUSIVE"
-    assert len(summary.inconclusive_reasons) == 1, summary.inconclusive_reasons
-    reason = summary.inconclusive_reasons[0]
-    assert "links resolving outside the target" in reason and reason.endswith(": leak.py"), reason
+    reason = assert_only_gap(summary, "links resolving outside the target")
+    assert reason.endswith(": leak.py"), reason
 
 
 @posix_only

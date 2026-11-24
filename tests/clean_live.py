@@ -81,3 +81,16 @@ def respond_with(finding=None, whitebox_code=None):
                                "expected_outcome": "The assertion holds.", "code": whitebox_code(user)})
         return respond(system, user)
     return answer
+
+
+def assert_only_gap(summary, fragment: str) -> str:
+    """判定是 INCONCLUSIVE，而且唯一的證據缺口含有 `fragment`；回傳那筆缺口，呼叫端可以再檢查它的結尾。這裡的 assert
+    由 `tests/conftest.py` 註冊改寫，失敗時寫出兩邊的值（例如 'READY_TO_SHIP' == 'INCONCLUSIVE'）。
+    The Verdict is INCONCLUSIVE and the only evidence gap contains `fragment`; returns that gap, so callers can check
+    its ending. `tests/conftest.py` registers these asserts for rewriting, so a failure shows both sides (such as
+    'READY_TO_SHIP' == 'INCONCLUSIVE')."""
+    assert summary.overall_status == "INCONCLUSIVE"
+    assert len(summary.inconclusive_reasons) == 1, summary.inconclusive_reasons
+    reason = summary.inconclusive_reasons[0]
+    assert fragment in reason, summary.inconclusive_reasons
+    return reason

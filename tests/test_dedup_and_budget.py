@@ -5,6 +5,7 @@ import re
 
 import pytest
 
+from clean_live import assert_only_gap
 from vibeharness.core.codecontext import (
     estimate_tokens, truncate_to_tokens, class_skeleton, render_symbols, batch_symbols
 )
@@ -288,7 +289,5 @@ def test_a_symbol_truncated_in_the_review_prompt_is_an_evidence_gap(clean_live_r
     (#183 item 16, #200, #205)."""
     body = "".join(f"    total_{i} = value * {i} + offset_{i % 7}\n" for i in range(2500))
     summary = clean_live_run({"app.py": f"def huge(value):\n{body}    return value\n\ndef small(a):\n    return a\n"})
-    assert summary.overall_status == "INCONCLUSIVE"
-    assert len(summary.inconclusive_reasons) == 1, summary.inconclusive_reasons
-    reason = summary.inconclusive_reasons[0]
-    assert "truncated in the review prompt" in reason and reason.endswith(": app.py:huge"), reason
+    reason = assert_only_gap(summary, "truncated in the review prompt")
+    assert reason.endswith(": app.py:huge"), reason

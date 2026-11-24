@@ -15,6 +15,7 @@ import threading
 import pytest
 
 import vibeharness.core.sandbox as sandbox_mod
+from node_marks import NODE_VERSION, node_at_least
 from vibeharness.core.jscoverage import (
     LCOV_REPORT_NAME, _glob_include_root, _glob_include_roots, node_coverage_args, read_lcov_file,
     read_untrusted_file,
@@ -22,13 +23,11 @@ from vibeharness.core.jscoverage import (
 from vibeharness.core.codecontext import target_file_url
 from vibeharness.core.sandbox import (
     DEFAULT_DOCKER_IMAGE, EXECUTION_FAILURE_EXIT_CODE, OUTPUT_CAP_NOTE, SANDBOX_MAX_FILE_BYTES, DockerSandbox,
-    LocalSubprocessSandbox, NodeSubprocessSandbox, detect_node,
+    LocalSubprocessSandbox, NodeSubprocessSandbox,
 )
 
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink / FIFO / rlimit semantics")
-_NODE_PATH, _NODE_VERSION, _ = detect_node("node")
-node_globs_only = pytest.mark.skipif(_NODE_VERSION is None or _NODE_VERSION < (22, 5, 0) or _NODE_PATH is None,
-                                     reason="Node >= 22.5 (coverage include / exclude) unavailable")
+node_globs_only = node_at_least((22, 5, 0), "coverage include / exclude")
 
 SECRET = "TOP-SECRET-HOST-CONTENT"
 LCOV_FOR_M = "SF:{path}\nDA:1,1\nend_of_record\n"
@@ -332,7 +331,7 @@ def test_real_node_target_behind_a_symlink_is_covered(tmp_path):
     code = ('import { test } from "node:test";\nimport assert from "node:assert/strict";\n'
             f'import {{ f }} from "{target_file_url(str(link / "m.mjs"))}";\n'
             'test("a", () => { assert.equal(f(1), 2); });\n')
-    run = NodeSubprocessSandbox(timeout_seconds=60, node_version=_NODE_VERSION).execute_pytest_files(
+    run = NodeSubprocessSandbox(timeout_seconds=60, node_version=NODE_VERSION).execute_pytest_files(
         {"test_vh_000.mjs": code}, working_dir=str(link), collect_coverage=True)
     assert run.js_coverage is not None and list(run.js_coverage.files) == ["m.mjs"] and run.js_coverage.percent() == 100.0
 

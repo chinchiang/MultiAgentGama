@@ -273,6 +273,7 @@ MultiAgentGama/
 │   ├── clean_live.py            # clean_live_run's clean small target and its own fake model answers: no evidence gap under live + the fake litellm
 │   ├── config_files.py          # Read the bundled config, write an edited copy for a test (load_config / write_config)
 │   ├── conftest.py              # Shared fixtures: a fake litellm so the live paths run offline; git_repo builds test repos that ignore the global git config; clean_live_run runs the live pipeline on the clean target
+│   ├── node_marks.py            # Shared Node markers (node_only / node_feature): a missing Node fails under VIBEHARNESS_REQUIRE_NODE=1 and skips otherwise
 │   ├── test_agent_call.py       # Agent calls through ask / ask_text: prompt assembly and channels, only usable items to the mapper, Simulated output, the plain-text call
 │   ├── test_ai_security.py      # OWASP LLM Top 10 2026 / ATLAS controls and the deterministic AI-security rules
 │   ├── test_baseline.py                # --baseline: loading and recomputing, known problems not counted, action.yml structure
@@ -345,6 +346,7 @@ MultiAgentGama/
 │   ├── test_review_whitebox_fixes.py   # Routes, nested Python definitions, scanner rules, severity, untrusted finding text
 │   ├── test_sdist_script.py            # test_sdist.py: pytest runs in the extracted sdist with VIBEHARNESS_SDIST, a failed build stops, `..` paths are refused
 │   ├── test_settings.py                # Settings through load_settings: every key's null / 0 rule, validation order, Discovered config policy, overrides
+│   ├── test_shared_marks.py            # The shared Node markers fail, skip or run as the rule says, and assert_only_gap still shows both Verdicts when it fails
 │   ├── test_threat_symbols.py          # Which symbols a threat's text names: one rule for the attack code and the SARIF location, bare route paths, JS `$`, a longer path never naming a shorter route
 │   ├── test_transport.py               # The model-call seam: one ModelRequest per attempt, fallback, an unavailable transport, the scripted fixture
 │   └── test_windows_env_limit.py       # Windows caps an environment variable at 32767 characters: long string parameters get a short id so tests do not fail at setup

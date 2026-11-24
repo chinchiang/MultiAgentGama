@@ -811,7 +811,7 @@ console 輸出另外用 `rich.markup.escape`（`vibeharness/core/harness.py:9`�
 
 開發流程與提交前檢查見 `CONTRIBUTING.md`；弱點通報見 `SECURITY.md`。
 
-整個套件是 hermetic 的：mock 模式加 `conftest.py` 的兩個 fixture，不需要網路或真實金鑰就能跑 live 路徑。`scripted({代理 glob: 回答})` 回傳一個 `ModelTransport`，以 `transport=` 交給閘道或 Commander：依 `request.agent_id` 回答（完全相符優先，其次依序比對 `*` glob），記錄每個 `ModelRequest`，腳本裡的例外在那次嘗試中拋出，就像供應商錯誤；沒有腳本的代理讓測試失敗。`fake_live`（設假金鑰、用 `_FakeLiteLLM` 替換 `vibeharness.core.transport.litellm`）留給要走過 litellm 轉接器本身的測試。需要修改設定的測試用 `tests/config_files.py` 的 `load_config()` 讀出內建設定的新副本，改完以 `write_config(tmp_path, cfg)` 寫成暫存設定檔。
+整個套件是 hermetic 的：mock 模式加 `conftest.py` 的兩個 fixture，不需要網路或真實金鑰就能跑 live 路徑。`scripted({代理 glob: 回答})` 回傳一個 `ModelTransport`，以 `transport=` 交給閘道或 Commander：依 `request.agent_id` 回答（完全相符優先，其次依序比對 `*` glob），記錄每個 `ModelRequest`，腳本裡的例外在那次嘗試中拋出，就像供應商錯誤；沒有腳本的代理讓測試失敗。`fake_live`（設假金鑰、用 `_FakeLiteLLM` 替換 `vibeharness.core.transport.litellm`）留給要走過 litellm 轉接器本身的測試。需要修改設定的測試用 `tests/config_files.py` 的 `load_config()` 讀出內建設定的新副本，改完以 `write_config(tmp_path, cfg)` 寫成暫存設定檔。需要真實 Node 的測試以 `tests/node_marks.py` 的 `node_only`／`node_feature`／`node_at_least`／`node_coverage_only` 標記，`conftest.py` 匯入它的 hook：沒有可用的 Node 時，`VIBEHARNESS_REQUIRE_NODE=1` 就是失敗，否則略過；有 Node 但缺少某項功能時一律略過。建在 `clean_live_run` 上、斷言「判定是 INCONCLUSIVE 而且只有一個缺口」的測試用 `tests/clean_live.py` 的 `assert_only_gap(summary, fragment)`，`conftest.py` 註冊讓它的 assert 經過 pytest 改寫。
 
 | 檔案 | 涵蓋 |
 | :--- | :--- |

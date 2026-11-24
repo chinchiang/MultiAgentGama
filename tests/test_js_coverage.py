@@ -10,6 +10,7 @@ import subprocess
 
 import pytest
 
+from node_marks import NODE_VERSION, node_at_least, node_coverage_only
 from vibeharness.core.codecontext import target_file_url
 from vibeharness.core.jscoverage import (
     LCOV_REPORT_NAME, JsLineCoverage, node_coverage_args, node_coverage_problem, parse_lcov, resolve_source_path,
@@ -20,26 +21,13 @@ from vibeharness.core.models import (
 )
 from vibeharness.core.sandbox import (
     DEFAULT_DOCKER_NODE_IMAGE, TIMEOUT_EXIT_CODE, LocalSubprocessSandbox, NodeDockerSandbox, NodeRuntime,
-    NodeSubprocessSandbox, SandboxRun, detect_node, node_test_command,
+    NodeSubprocessSandbox, SandboxRun, node_test_command,
 )
 from vibeharness.reports.report_generator import ReportGenerator
 from vibeharness.runners.test_executor import (
     REASON_JS_COVERAGE_NO_REPORT, REASON_JS_COVERAGE_NO_TARGET_FILE, REASON_JS_COVERAGE_UNSUPPORTED, TestSuiteExecutor,
 )
 
-_NODE_PATH, _NODE_VERSION, _NODE_PROBLEM = detect_node("node")
-# 與 test_js_execution.py 相同：VIBEHARNESS_REQUIRE_NODE=1（CI）時缺少 Node 是失敗而不是略過；Node 存在但對某個功能
-# 太舊時仍以說明原因的方式略過
-# As in test_js_execution.py: with VIBEHARNESS_REQUIRE_NODE=1 (CI) a missing Node is a failure, not a skip; a Node that
-# exists but is too old for one feature is still skipped with the reason
-_NODE_REQUIRED = os.environ.get("VIBEHARNESS_REQUIRE_NODE") == "1"
-if _NODE_REQUIRED and _NODE_PATH is None:
-    raise RuntimeError(f"VIBEHARNESS_REQUIRE_NODE=1 but no usable Node runtime: {_NODE_PROBLEM}")
-_COVERAGE_PROBLEM = _NODE_PROBLEM if _NODE_PATH is None else node_coverage_problem(_NODE_VERSION)
-_COVERAGE_OK = _NODE_PATH is not None and _COVERAGE_PROBLEM is None
-node_coverage_only = pytest.mark.skipif(not _COVERAGE_OK, reason=f"Node with the lcov reporter unavailable: {_COVERAGE_PROBLEM}")
-_TS_OK = _COVERAGE_OK and _NODE_VERSION is not None and _NODE_VERSION >= (22, 6, 0)
-_FOUND = "v" + ".".join(map(str, _NODE_VERSION)) if _NODE_VERSION else "none"
 
 
 def _js_test(test_id, code, language="javascript", test_type="whitebox_unit"):
@@ -432,7 +420,7 @@ def test_real_node_esm_target_union_across_two_modules(tmp_path):
     (target / "node_modules" / "dep" / "i.js").write_text("export const one = 1;\n", encoding="utf-8")
     (target / "lib.mjs").write_text(_ESM_LIB, encoding="utf-8")
     (target / "unused.mjs").write_text("export const z = 1;\n", encoding="utf-8")
-    sandbox = NodeSubprocessSandbox(timeout_seconds=60, node_version=_NODE_VERSION)
+    sandbox = NodeSubprocessSandbox(timeout_seconds=60, node_version=NODE_VERSION)
     imports = f'import {{ add }} from "{target_file_url(str(target / "lib.mjs"))}";\nimport {{ one }} from "dep";'
     singles, suite = _run_two_modules(target, imports, sandbox)
     _assert_union(singles, suite)
@@ -450,12 +438,13 @@ def test_real_node_cjs_target_union_across_two_modules(tmp_path):
     (target / "lib.cjs").write_text(_CJS_LIB, encoding="utf-8")
     url = target_file_url(str(target / "lib.cjs"))
     imports = f'import lib from "{url}";\nconst {{ add }} = lib;'
-    sandbox = NodeSubprocessSandbox(timeout_seconds=60, node_version=_NODE_VERSION)
+    sandbox = NodeSubprocessSandbox(timeout_seconds=60, node_version=NODE_VERSION)
     singles, suite = _run_two_modules(target, imports, sandbox)
     _assert_union(singles, suite)
 
 
-@pytest.mark.skipif(not _TS_OK, reason=f"Node >= 22.6 (type stripping) with the lcov reporter unavailable (found {_FOUND})")
+@node_coverage_only
+@node_at_least((22, 6, 0), "type stripping")
 def test_real_node_typescript_target_coverage(tmp_path):
     target = tmp_path / "svc"
     target.mkdir()
@@ -463,7 +452,7 @@ def test_real_node_typescript_target_coverage(tmp_path):
         "export function add(a: number, b: number): number {\n  if (a > 100) {\n    return -1;\n  }\n"
         "  return a + b;\n}\nexport function neg(x: number): number {\n  return -x;\n}\n", encoding="utf-8")
     imports = f'import {{ add }} from "{target_file_url(str(target / "lib.ts"))}";'
-    sandbox = NodeSubprocessSandbox(timeout_seconds=60, strip_types=True, node_version=_NODE_VERSION)
+    sandbox = NodeSubprocessSandbox(timeout_seconds=60, strip_types=True, node_version=NODE_VERSION)
     singles, suite = _run_two_modules(target, imports, sandbox)
     _assert_union(singles, suite)
 

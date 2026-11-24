@@ -15,6 +15,7 @@ import tempfile
 import pytest
 
 import vibeharness.core.sandbox as sandbox_mod
+from node_marks import NODE_VERSION, node_at_least, node_coverage_only, node_only
 from vibeharness.core.codecheck import check_test_code
 from vibeharness.core.codecontext import target_file_url
 from vibeharness.core.jscoverage import (
@@ -22,17 +23,12 @@ from vibeharness.core.jscoverage import (
 )
 from vibeharness.core.models import GeneratedTest, TestStatus
 from vibeharness.core.sandbox import (
-    LocalSubprocessSandbox, NodeRuntime, NodeSubprocessSandbox, detect_node, sandbox_temp_env,
+    LocalSubprocessSandbox, NodeRuntime, NodeSubprocessSandbox, sandbox_temp_env,
 )
 from vibeharness.runners.attribution import REASON_NOT_RUN_CORRECTLY, REASON_TARGET_BROKEN, attribute
 from vibeharness.runners.test_executor import TestSuiteExecutor
 
-_NODE_PATH, _NODE_VERSION, _NODE_PROBLEM = detect_node("node")
-node_only = pytest.mark.skipif(_NODE_PATH is None, reason=f"Node unavailable: {_NODE_PROBLEM}")
-node_coverage_only = pytest.mark.skipif(_NODE_PATH is None or node_coverage_problem(_NODE_VERSION) is not None,
-                                        reason="Node with JS coverage support unavailable")
-node_globs_only = pytest.mark.skipif(_NODE_VERSION is None or _NODE_VERSION < (22, 5, 0) or _NODE_PATH is None,
-                                     reason="Node >= 22.5 (coverage include / exclude) unavailable")
+node_globs_only = node_at_least((22, 5, 0), "coverage include / exclude")
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX rlimit / temp-dir semantics")
 
 
@@ -249,7 +245,7 @@ def test_timed_out_js_module_with_coverage_leaves_nothing_in_the_host_temp_dir(t
     host_tmp.mkdir()
     monkeypatch.setenv("TMPDIR", str(host_tmp))
     monkeypatch.setattr(tempfile, "tempdir", str(host_tmp))
-    sandbox = NodeSubprocessSandbox(timeout_seconds=3, node_version=_NODE_VERSION)
+    sandbox = NodeSubprocessSandbox(timeout_seconds=3, node_version=NODE_VERSION)
     executor = _js_executor(sandbox, per_test_timeout_seconds=2)
     hang = _test("HANG", _esm_test("", 'test("spin", () => { while (true) {} assert.ok(1); });'), "javascript")
     results = executor.execute_test_suite([hang], working_dir=str(tmp_path), collect_coverage=True).results
@@ -276,7 +272,7 @@ def test_real_node_coverage_run_has_no_glob_warning_on_stderr(tmp_path):
     (tmp_path / "lib.mjs").write_text("export const add = (a, b) => a + b;\n", encoding="utf-8")
     code = _esm_test(f'import {{ add }} from "{target_file_url(str(tmp_path / "lib.mjs"))}";',
                      'test("a", () => { assert.equal(add(1, 2), 3); });')
-    sandbox = NodeSubprocessSandbox(timeout_seconds=60, node_version=_NODE_VERSION)
+    sandbox = NodeSubprocessSandbox(timeout_seconds=60, node_version=NODE_VERSION)
     run = sandbox.execute_pytest_files({"test_vh_000.mjs": code}, working_dir=str(tmp_path),
                                        collect_coverage=True)
     assert run.coverage_pct == 100.0 and run.js_coverage is not None and run.js_coverage.percent() == 100.0
@@ -312,7 +308,7 @@ def test_real_node_target_under_node_modules_is_covered(tmp_path):
                                   encoding="utf-8")
     code = _esm_test(f'import {{ f }} from "{target_file_url(str(target / "m.mjs"))}";',
                      'test("a", () => { assert.equal(f(1), 2); });')
-    run = NodeSubprocessSandbox(timeout_seconds=60, node_version=_NODE_VERSION).execute_pytest_files(
+    run = NodeSubprocessSandbox(timeout_seconds=60, node_version=NODE_VERSION).execute_pytest_files(
         {"test_vh_000.mjs": code}, working_dir=str(target), collect_coverage=True)
     assert run.js_coverage is not None and list(run.js_coverage.files) == ["m.mjs"]
 
