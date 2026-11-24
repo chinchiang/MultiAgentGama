@@ -86,7 +86,7 @@ def test_a_reversion_that_breaks_collection_counts_as_red(repo, tmp_path, capsys
     code = tool.main(["calc.py", _reversions(tmp_path, ("syntax", "a + b", "a +"))], repo=str(repo))
     out = capsys.readouterr().out
     assert code == 0, out
-    assert "## syntax: 1 red" in out, out
+    assert "## syntax: 1 red\n   tests/test_calc.py\n" in out, out  # 收集錯誤沒有原因，不印空行 ／ a collection error has no reason, so no blank line
     assert (repo / "calc.py").read_text(encoding="utf-8") == CALC
 
 
@@ -229,7 +229,8 @@ def test_a_test_named_by_id_that_skips_on_the_unmodified_file_is_refused(git_rep
     code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b")), test_id], repo=str(root))
     out = capsys.readouterr().out
     assert code == 2, out
-    assert "skipped on the unmodified calc.py" in out and test_id in out, out
+    assert f"were not read as passing on the unmodified calc.py, so no item can be checked against them: {test_id} " \
+           "(SKIPPED)" in out, out
     assert "## " not in out, out
 
 
@@ -244,6 +245,144 @@ def test_a_test_reached_through_its_file_that_skips_on_the_unmodified_file_is_a_
                      repo=str(root))
     out = capsys.readouterr().out
     assert code == 1, out
-    assert ("Skipped on the unmodified calc.py, so no item can turn them red: "
-            "tests/test_calc.py::test_adding_two_numbers_gives_their_sum") in out, out
+    assert ("Skipped on the unmodified calc.py, so no item can turn them red:\n"
+            "   skipped: tests/test_calc.py::test_adding_two_numbers_gives_their_sum") in out, out
     assert "## subtract: 0 red, 1 skipped" in out, out
+
+
+def _repo_with(git_repo, tmp_path, tests):
+    """`calc.py` 加上 `tests/` 底下的 tests（檔名 -> 內容）都已提交的 repo ／ A repo with `calc.py` and `tests` (file
+    name -> content) under `tests/` committed."""
+    root = tmp_path / "repo"
+    (root / "tests").mkdir(parents=True)
+    (root / "calc.py").write_text(CALC, encoding="utf-8")
+    for name, content in tests.items():
+        (root / "tests" / name).write_text(content, encoding="utf-8")
+    git_repo(root)
+    return root
+
+
+PARAMETRIZED = '''\
+import pytest
+
+from calc import add
+
+
+@pytest.mark.parametrize("a, b, total", [(1, 2, 3), (2, 2, 4)])
+def test_sums(a, b, total):
+    if a == 2:
+        pytest.skip("not today")
+    assert add(a, b) == total
+'''
+WHOLE_MODULE_SKIP = '''\
+import pytest
+
+pytest.skip("no runtime here", allow_module_level=True)
+
+
+def test_never_collected():
+    pass
+'''
+
+
+@pytest.mark.parametrize("named", ["tests/test_sums.py::test_sums", "./tests/test_sums.py::test_sums"])
+def test_a_parametrized_function_named_without_its_parameters_must_pass_in_every_case(git_repo, tmp_path, capsys,
+                                                                                       named):
+    """用 node id 指定、沒寫參數的參數化函式：每一個案例都要讀到 PASSED，一個被略過就結束碼 2；`./` 開頭的路徑也
+    認得。原本只逐字比對 ID，這兩種寫法都只警告後照常進行（#209 審查第 1 輪）。
+    A parametrized function named by node id without its parameters must read PASSED in every case, so one skipped
+    case exits 2; a path starting with `./` is read too. It used to match ids verbatim, so both forms only warned and
+    went on (#209 review round 1)."""
+    root = _repo_with(git_repo, tmp_path, {"test_sums.py": PARAMETRIZED})
+    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b")), named], repo=str(root))
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert f"{named} (PASSED, SKIPPED)" in out, out
+    assert "## " not in out, out
+
+
+def test_a_test_named_in_a_whole_skipped_module_is_refused(git_repo, tmp_path, capsys):
+    """整個模組被略過時，那裡的測試沒有任何結果行：用 node id 指定它，pytest 找不到可收集的項目，結束碼 2 並點出
+    那個 ID，什麼都沒改回（#209 審查第 1 輪）。
+    A whole skipped module gives its tests no outcome line at all: naming one by node id leaves pytest with nothing to
+    collect, so the exit code is 2, the id is named, and nothing is reverted (#209 review round 1)."""
+    root = _repo_with(git_repo, tmp_path, {"test_calc.py": TESTS, "test_runtime.py": WHOLE_MODULE_SKIP})
+    named = "tests/test_runtime.py::test_never_collected"
+    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b")), named], repo=str(root))
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert "do not all pass on the unmodified calc.py" in out and named in out, out
+    assert "## " not in out, out
+
+
+def test_a_named_test_whose_outcome_cannot_be_read_is_refused(repo, tmp_path, capsys, monkeypatch):
+    """用 node id 指定的測試讀不到任何結果行（這裡把結果行的格式換成讀不懂的）：無法檢查，結束碼 2，而不是當成通過
+    （CODING_STANDARDS 第 8 條；#209 審查第 1 輪）。
+    A test named by node id with no outcome line read (the outcome line format is made unreadable here) cannot be
+    checked: exit code 2, not taken as passing (CODING_STANDARDS rule 8; #209 review round 1)."""
+    monkeypatch.setattr(tool, "_OUTCOME_RE", tool.re.compile(r"^(never)::(matches)$"))
+    named = "tests/test_calc.py::test_adding_two_numbers_gives_their_sum"
+    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b")), named], repo=str(repo))
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert f"{named} (no outcome read)" in out, out
+
+
+def test_a_whole_skipped_module_reached_through_the_suite_is_listed(git_repo, tmp_path, capsys):
+    """整個模組被略過、經由整個套件跑到：它沒有測試 ID，從摘要的略過行列出來，在原始檔案上是警告、每一項底下也列出；
+    原本完全不會出現（#209 審查第 1 輪）。
+    A whole skipped module reached through the suite has no test id, so it is listed from the summary's skip line: as
+    a warning on the unmodified file and under every item. It used to appear nowhere (#209 review round 1)."""
+    root = _repo_with(git_repo, tmp_path, {"test_calc.py": TESTS, "test_runtime.py": WHOLE_MODULE_SKIP})
+    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(root))
+    out = capsys.readouterr().out
+    assert code == 0, out
+    line = "   skipped (no test id): SKIPPED [1] tests/test_runtime.py:3: no runtime here"
+    assert f"Skipped on the unmodified calc.py, so no item can turn them red:\n{line}" in out, out
+    assert "## subtract: 1 red, 1 skipped\n" in out and out.count(line) == 2, out
+
+
+def test_a_pytest_option_among_the_tests_is_refused(repo, tmp_path, capsys):
+    """`--` 之後的測試參數夾著 pytest 選項（`-q` 會蓋掉 `-v`，讓被略過的測試讀不出來）：結束碼 2，什麼都沒跑
+    （#209 審查第 1 輪）。
+    A pytest option among the tests after `--` (`-q` would cancel `-v` and hide skipped tests) exits 2 before anything
+    runs (#209 review round 1)."""
+    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b")), "--", "-q",
+                      "tests/test_calc.py"], repo=str(repo))
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert "not pytest options: -q" in out, out
+    assert "## " not in out and "unmodified" not in out, out
+
+
+def test_a_failure_reason_is_cut_after_the_whole_test_id(git_repo, tmp_path, capsys):
+    """參數化的 ID 本身含有 ` - `：原因從整個 ID 之後切，不是從第一個 ` - `（#209 審查第 1 輪）。
+    A parametrized id that itself contains ` - ` has its reason cut after the whole id, not at the first ` - `
+    (#209 review round 1)."""
+    tests = TESTS + '''
+
+import pytest
+
+
+@pytest.mark.parametrize("label", ["a - b"])
+def test_labelled_sum(label):
+    assert add(2, 2) == 4, label
+'''
+    root = _repo_with(git_repo, tmp_path, {"test_calc.py": tests})
+    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(root))
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "   tests/test_calc.py::test_labelled_sum[a - b]\n      AssertionError: a - b\n" in out, out
+
+
+def test_every_test_failing_on_the_unmodified_file_is_named(git_repo, tmp_path, capsys):
+    """原始檔案上失敗的測試全部點名，不只 stdout 最後幾行裡的（#209 審查第 1 輪）。
+    Every test failing on the unmodified file is named, not only those in the last lines of stdout (#209 review
+    round 1)."""
+    tests = "from calc import add\n" + "".join(f"\n\ndef test_wrong_{i}():\n    assert add(1, 1) == {i + 3}\n"
+                                              for i in range(8))
+    root = _repo_with(git_repo, tmp_path, {"test_calc.py": tests})
+    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(root))
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert all(f"   tests/test_calc.py::test_wrong_{i}\n" in out for i in range(8)), out
