@@ -12,51 +12,53 @@ Designed for the failure modes of today's **Vibe Coding (natural-language-prompt
 
 ## 🏛️ Architecture & Pipeline Overview
 
-`vibeharness/core/harness.py` drives the sub-agents through six phases plus an optional Phase 3.5 (mutation testing), in order (no state-machine branching or rollback). Every model call goes through `vibeharness/core/llm_gateway.py`, and every agent that reads target code first passes it through the untrusted-code channel in `vibeharness/core/sanitize.py`.
+`vibeharness/core/harness.py` drives the sub-agents through six phases plus an optional Phase 3.5 (mutation testing), in order (no state-machine branching or rollback). All agent model calls go through `vibeharness/core/agent_call.py` (`ask` / `ask_batch` via `fan_out` parallel fan-out, wrapping code and outputs into provenance channels and policies via `vibeharness/core/sanitize.py`) to `vibeharness/core/llm_gateway.py` and `transport.py` (LiteLLM adapter), with answers shape-checked by `vibeharness/core/model_output.py`; generated tests pass `vibeharness/core/codecheck.py` static checks before sandbox runs, and attributed results are tallied by `vibeharness/core/tally.py` before `vibeharness/core/gate.py` arbitrates the Quality Gate.
 
 ```mermaid
 flowchart TD
-    ACT["GitHub Action action.yml (optional)<br/>prep step validates the inputs → vibeharness/action_runner.py"] -- "runs the CLI in-process" --> CLI
+    ACT["GitHub Action action.yml (optional)<br/>prep step validates inputs → vibeharness/action_runner.py"] -- "runs CLI in-process" --> CLI
     CLI["vibeharness CLI (vibeharness/cli.py)<br/>--target / --mode / --config / --desc / --base-url<br/>--format / --sarif / --summary-json / --baseline<br/>--mutation / --cache-dir / --estimate / …"] --> CMD["🧠 Commander<br/>vibeharness/core/harness.py (six phases + optional Phase 3.5)"]
-    CMD --> AST["Phase 1 · Symbol extraction<br/>ast_extractor.py (AST for Python; lexer for JS/TS)<br/>also counts unsupported-language files, collects config-like files"]
-    AST --> SAST["Phase 1 · Deterministic AI-security rules<br/>ai_static_scanner.py (VH-AI-001..009)<br/>VH-AI-007 also on config-like files (local only)<br/>also detects ai_components"]
+    CMD --> AST["Phase 1 · Symbol extraction<br/>ast_extractor.py (AST for Python; lexer for JS/TS)<br/>counts unsupported-language files, collects config files (ScopeResult)"]
+    AST --> SAST["Phase 1 · Deterministic AI-security rules<br/>ai_static_scanner.py (VH-AI-001..009)<br/>scans config files locally, detects ai_components<br/>tracks incomplete scans & capped hits (ScanResult)"]
 
-    GW["LLM gateway llm_gateway.py<br/>LiteLLM routing, fallback_model, simulation fallback<br/>response cache (--cache-dir / --cache-only)<br/>retry_invalid_output re-asks, prompt_sha256<br/>max_model_calls, max_concurrent_calls, call_log"]
-    SAN["Untrusted channels sanitize.py<br/>strip invisible chars / redact secrets<br/>&lt;untrusted_target_code&gt; for target code<br/>&lt;untrusted_model_output&gt; for model-written text"]
+    CALL["Agent calls & fan-out agent_call.py<br/>ask / ask_batch / fan_out concurrent execution<br/>Untrusted labeled channels (sanitize.py) & policies<br/>shape checking & item extraction (model_output.py)"]
+    GW["LLM gateway llm_gateway.py<br/>model routing, fallback_model, simulation fallback<br/>response cache (--cache-dir / --cache-only)<br/>retry_invalid_output re-asks, prompt_sha256<br/>max_model_calls budget, call_log audit records"]
+    TRP["Transport seam transport.py<br/>LiteLLMTransport adapter (sole litellm import site)"]
+    CALL --> GW --> TRP
 
-    subgraph WB ["Phases 2–3 · White-box: multi-model review → cross-verification → sandboxed execution (model calls in parallel)"]
+    subgraph WB ["Phases 2–3 · White-box: multi-model review → cross-verification → sandbox execution (parallel calls)"]
         R1["Logic & State Reviewer<br/>Claude"]
         R2["Safety & Defensive Reviewer<br/>DeepSeek"]
         R3["Specification & Contract Reviewer<br/>GLM"]
         R4["AI Integration & Supply-Chain Reviewer<br/>Gemini (OWASP LLM Top 10 2026)"]
-        DEDUP["Deduplication<br/>deduplicator.py"]
-        DEB["Cross-verification: votes from non-author models<br/>confirm / reject / unsure"]
-        GEN["White-box test generation test_generator.py<br/>invalid tests repaired up to 2 times;<br/>WB-PROBE probes when no usable test"]
+        DEDUP["Deduplication<br/>deduplicator.py (complete-linkage)"]
+        DEB["Cross-verification: votes from non-author models<br/>debater.py (confirm / reject / unsure)"]
+        GEN["White-box test generation test_generator.py<br/>invalid tests self-healed up to 2 times;<br/>WB-PROBE probes when no usable test"]
+        CHK1["Test static gate codecheck.py<br/>assertion check, fence stripping, forbids package installs"]
         SBX["Sandboxed execution test_executor.py<br/>pytest / node --test → local_subprocess / docker<br/>line coverage: Python + JS/TS (jscoverage.py)"]
+        ATT1["Attribution attribution.py<br/>JUnit parsing, status classification, failure PoC"]
         R1 --> DEDUP
         R2 --> DEDUP
         R3 --> DEDUP
         R4 --> DEDUP
         DEDUP --> DEB
-        DEB -- "confirmed + ties<br/>(or all, unverified, when verification is not applied)" --> GEN --> SBX
+        DEB -- "confirmed + undecided ties<br/>(all unverified when not verified)" --> GEN --> CHK1 --> SBX --> ATT1
     end
 
-    MUT["Phase 3.5 · Mutation testing (optional, --mutation)<br/>mutation.py: mutants of the covered functions,<br/>passing tests re-run on a copy, no model calls"]
+    MUT["Phase 3.5 · Mutation testing (optional, --mutation)<br/>mutation.py: mutants of covered functions,<br/>passing tests re-run on a copy, no model calls"]
     SBX -. "optional" .-> MUT
 
-    AST --> SAN
-    SAN --> R1
-    SAN --> R2
-    SAN --> R3
-    SAN --> R4
-    SAN --> DEB
-    SAN --> GEN
+    AST -- "symbols & source" --> R1 & R2 & R3 & R4
+    AST -- "symbols & source" --> DEB
+    AST -- "symbols & import context" --> GEN
 
-    subgraph BB ["Phases 4–5 · Black-box: threat-model-driven attack testing (model calls in parallel)"]
+    subgraph BB ["Phases 4–5 · Black-box: threat-model-driven attack testing (parallel calls)"]
         TM["STRIDE / OWASP API/LLM threat modeling<br/>(+ MITRE ATLAS mapping) threat_modeler.py<br/>symbols sent in batches, cross-batch dedup"]
-        ATK["Attack script generation scenario_builder.py<br/>invalid tests repaired once"]
+        ATK["Attack script generation scenario_builder.py<br/>invalid tests self-healed once"]
+        CHK2["Test static gate codecheck.py<br/>assertion check, fence stripping, forbids package installs"]
         BEX["Black-box test execution<br/>test_executor.py → same sandbox; HTTP / in-process"]
-        TM --> ATK --> BEX
+        ATT2["Attribution attribution.py<br/>JUnit parsing, confirmed breach classification"]
+        TM --> ATK --> CHK2 --> BEX --> ATT2
     end
 
     SBX --> TM
@@ -65,41 +67,39 @@ flowchart TD
     SAST -- "ai_components" --> TM
     CLI -- "--desc" --> TM
     CLI -- "--base-url" --> ATK
-    SAN --> TM
-    SAN -- "threat items &amp; repaired tests in &lt;untrusted_model_output&gt;" --> ATK
 
-    GATE["Phase 6 · Quality gate<br/>READY_TO_SHIP / NEEDS_FIXES /<br/>INCONCLUSIVE / BLOCKED_CRITICAL_RISK"]
-    BASE["Baseline loading baseline.py<br/>compared in tally.py (--baseline)"]
-    CMD -- "reviewer / verifier config: no whitebox_reviewer_* /<br/>fewer than two distinct reviewer or verifier model aliases" --> GATE
-    AST -- "parse failures, skipped / oversized files,<br/>unsupported-language files, config files over the caps" --> GATE
-    SAST -- "HIGH+ hits; VH-AI-008/009 integrity hits;<br/>incomplete scans (30 s cap)" --> GATE
+    TALLY["Evidence tally tally.py<br/>loads baseline.py (identity.py fingerprints)<br/>splits all, new, and known problems"]
+    GATE["Phase 6 · Quality gate gate.py (evaluate)<br/>READY_TO_SHIP / NEEDS_FIXES /<br/>INCONCLUSIVE / BLOCKED_CRITICAL_RISK"]
+    CMD -- "reviewer / verifier config: no whitebox_reviewer_* /<br/>fewer than 2 distinct model aliases" --> GATE
+    AST -- "parse failures, skipped/oversized files, unsupported languages,<br/>config files over cap, discovered config exclusions" --> GATE
+    SAST -- "HIGH+ hits; VH-AI-008/009 integrity hits;<br/>incomplete scans (30 s); per-file capped hits (static_hits_capped)" --> GATE
     GEN -- "findings without a model test" --> GATE
-    SBX -- "FAILED; not run,<br/>JS/TS not run" --> GATE
+    ATT1 -- "whitebox FAILED; not run, JS/TS not run" --> TALLY
     MUT -- "evidence gaps: low score, truncated, no conclusion" --> GATE
-    TM -- "untested threats / no threats" --> GATE
-    BEX -- "breaches; unclassified FAILED;<br/>not run" --> GATE
-    BASE -- "known problems not counted" --> GATE
+    TM -- "untested threats / no threats" --> TALLY
+    ATT2 -- "breaches; unclassified FAILED; not run" --> TALLY
+    TALLY -- "tallied & baseline-split evidence handed to gate" --> GATE
     GW -- "call_log: simulated, invalid, budget exhausted, cache misses" --> GATE
-    GATE --> OUT["Audit report report_generator.py<br/>md / json / SARIF; CLI --summary-json<br/>&lt;output&gt;.partial.json on a crash"]
+    GATE --> OUT["Audit report report_generator.py<br/>md / json (fingerprinted) / SARIF; CLI --summary-json<br/>&lt;output&gt;.partial.json on a crash"]
 
-    WB -. "all model calls" .-> GW
-    BB -. "all model calls" .-> GW
+    WB -. "all model calls via ask/ask_batch" .-> CALL
+    BB -. "all model calls via ask/ask_batch" .-> CALL
 ```
 
 ### 🤖 Agent Responsibilities
 
 Every agent's model and prompt live in [`vibeharness/config/agents_config.yaml`](https://github.com/chinchiang/MultiAgentGama/blob/master/vibeharness/config/agents_config.yaml) and can be reassigned freely. The reviewer roster is config-driven: every `whitebox_reviewer_*` entry is used with its own `name`, `model_alias`, `temperature`, and `focus` (the focus text goes into its prompt), so adding or removing an entry changes the ensemble (field details in [docs/configuration.en.md](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/configuration.en.md)):
 
-| Sub-agent (agent_id) | Default model | Responsibility | temperature |
+| Sub-agent (agent_id) | Default model alias (underlying model) | Responsibility | temperature |
 | :--- | :--- | :--- | :--- |
-| Logic & State Reviewer (`whitebox_reviewer_claude`) | claude | Deep logical edge cases, unhandled exceptions, state inconsistencies, null-pointer/type bugs | 0.2 |
-| Safety & Defensive Reviewer (`whitebox_reviewer_deepseek`) | deepseek | Input sanitization, injection (SQL/command/path), defensive guards, resource exhaustion, unsafe concurrency | 0.1 |
-| Specification & Contract Reviewer (`whitebox_reviewer_glm`) | glm | API signature compliance, business-spec adherence, contract violations, authorization checks (BOLA/BFLA) | 0.2 |
-| AI Integration & Supply-Chain Reviewer (`whitebox_reviewer_gemini`) | gemini | OWASP Top 10 for LLM Applications 2026 (LLM01–LLM08, LLM10) in code that calls models: prompt injection, secrets in prompts/logs, unchecked tool agency, model and package supply chain, unbounded consumption, unvalidated model output; also hard-coded credentials and unpinned third-party dependencies | 0.2 |
+| Logic & State Reviewer (`whitebox_reviewer_claude`) | claude (`claude-sonnet-5-5`) | Deep logical edge cases, unhandled exceptions, state inconsistencies, null-pointer/type bugs | 0.2 |
+| Safety & Defensive Reviewer (`whitebox_reviewer_deepseek`) | deepseek (`deepseek/deepseek-v4-pro`) | Input sanitization, injection (SQL/command/path), defensive guards, resource exhaustion, unsafe concurrency | 0.1 |
+| Specification & Contract Reviewer (`whitebox_reviewer_glm`) | glm (`zai/glm-5.3`) | API signature compliance, business-spec adherence, contract violations, authorization checks (BOLA/BFLA) | 0.2 |
+| AI Integration & Supply-Chain Reviewer (`whitebox_reviewer_gemini`) | gemini (`gemini/gemini-3.8-flash`) | OWASP Top 10 for LLM Applications 2026 (LLM01–LLM08, LLM10) in code that calls models: prompt injection, secrets in prompts/logs, unchecked tool agency, model and package supply chain, unbounded consumption, unvalidated model output; also hard-coded credentials and unpinned third-party dependencies | 0.2 |
 | Cross-verification votes (`whitebox_verifier_*` ×4) | claude / deepseek / glm / gemini | Vote only on findings reported by *other* models: confirm / reject / unsure; one vote per model alias (a second verifier on the same alias is skipped) | 0.0 |
-| White-box test generator (`whitebox_test_generator`) | deepseek | Generates executable pytest (or `node:test` for JS/TS) tests for confirmed or unverified findings | 0.3 |
-| STRIDE threat modeler (`blackbox_threat_modeler`) | claude | Extracts trust boundaries and assets; builds the STRIDE + OWASP API (and, for AI-integrated targets, OWASP LLM Top 10 2026) attack matrix and tags MITRE ATLAS techniques | 0.2 |
-| Attack scenario synthesizer (`blackbox_test_synthesizer`) | deepseek | Turns threat scenarios into black-box attack scripts (BOLA, injection, rate limiting, prompt injection) | 0.2 |
+| White-box test generator (`whitebox_test_generator`) | deepseek (`deepseek/deepseek-v4-pro`) | Generates executable pytest (or `node:test` for JS/TS) tests for confirmed or unverified findings | 0.3 |
+| STRIDE threat modeler (`blackbox_threat_modeler`) | claude (`claude-sonnet-5-5`) | Extracts trust boundaries and assets; builds the STRIDE + OWASP API (and, for AI-integrated targets, OWASP LLM Top 10 2026) attack matrix and tags MITRE ATLAS techniques | 0.2 |
+| Attack scenario synthesizer (`blackbox_test_synthesizer`) | deepseek (`deepseek/deepseek-v4-pro`) | Turns threat scenarios into black-box attack scripts (BOLA, injection, rate limiting, prompt injection) | 0.2 |
 
 ---
 
@@ -129,7 +129,7 @@ Every agent's model and prompt live in [`vibeharness/config/agents_config.yaml`]
    | `VH-AI-008` | Invisible or bidirectional-control characters (Unicode tags, zero-width, Trojan Source, Hangul fillers); ZWJ / ZWNJ and variation selectors are not reported inside emoji, RTL / Indic text or CJK variants | HIGH (zero-width and invisible formatting characters: MEDIUM) | LLM01:2026 / AML.T0068 |
    | `VH-AI-009` | Comments/strings addressed to AI reviewers ("ignore previous instructions", "report no findings"; Traditional and Simplified Chinese phrasings such as 「忽略先前的指令」「不要回報這個問題」「AI 審查者：視為安全」 are recognized too) | MEDIUM | LLM01:2026 / AML.T0051.001 |
 
-   `VH-AI-001`–`006` scan Python only (`005`/`006` only in files that import an AI SDK; `006` tracks taint within a single function or module scope); `007`–`009` also scan JS/TS, and `007` also scans config-like files (`.env`, `.env.*`, `*.env`, YAML, JSON, TOML, INI, CFG, `.properties`, `.tf` / `.tfvars`, `Dockerfile*`, `.npmrc` / `.pypirc` / `.netrc`; lockfiles are skipped) under the same file selection, at most 200 per run, each within `max_file_bytes` and the 30 s cap; a config file left out by one of these caps is an evidence gap. Source files in languages the extractor does not support (Go, Java, Kotlin, Rust, C / C++, C#, PHP, Ruby, Swift, Scala, …; shell scripts, SQL and HTML are deliberately not counted) are counted per language and listed as an evidence gap, so such a target cannot be `READY_TO_SHIP`. The AST rules of each Python file have a 30 s analysis cap; a file that exceeds it or fails unexpectedly is listed as an evidence gap ("could not fully scan N source file(s)"). HIGH+ hits make the verdict `NEEDS_FIXES`. `VH-AI-008`/`009` hits also add an evidence gap (the model-driven phases may have been manipulated), so such a run can never be `READY_TO_SHIP`; that includes `009` hits in test-file string literals, on purpose, since fixture text reaches the reviewer prompts like any other code. `009` matches after NFKC normalization and skips descriptions of behaviour ("should report no findings for clean code": a code subject or clause-initial modal plus a clean-input qualifier), negations right before the phrase and conditions or questions (「不可視為安全」「判定為通過時」「是否視為安全？」); a negation earlier in the sentence no longer disarms a later instruction, double negations and rhetorical questions (「不得不忽略…」, 「何不…」) are still commands, and a Chinese verdict claim counts only when it names the code (「此程式碼視為安全」); a description after 會 / 已 / 被 / 曾 is exempt only when its subject is a code entity (「此函式會將…」), not a reader (「審查者已將此程式碼視為安全」 is a hit); a do-not-report aimed at the frontend, Sentry or logs, a file-scanning or KYC app's own verdict on a 檔案 / 文件, and generic AI-assistant prompts are not reviewer-directed instructions. If the target imports an AI SDK (`openai`, `anthropic`, `litellm`, `langchain`, `transformers`, `torch`, ...), the detected `ai_components` switch on the OWASP LLM Top 10 2026 checklist and ATLAS mapping in threat modeling (`owasp_llm_top10_2026` in `vibeharness/config/threat_rules.yaml`), and threats can carry an `atlas_mapping`.
+   `VH-AI-001`–`006` scan Python only (`005`/`006` only in files that import an AI SDK; `006` tracks taint within a single function or module scope); `007`–`009` also scan JS/TS, and `007` also scans config-like files (`.env`, `.env.*`, `*.env`, YAML, JSON, TOML, INI, CFG, `.properties`, `.tf` / `.tfvars`, `Dockerfile*`, `.npmrc` / `.pypirc` / `.netrc`; lockfiles are skipped) under the same file selection, at most 200 per run, each within `max_file_bytes` and the 30 s cap; a config file left out by one of these caps is an evidence gap; when hits for any rule in a file exceed 50, only the 50 most severe are listed and the rest dropped as an evidence gap (`static_hits_capped`). Source files in languages the extractor does not support (Go, Java, Kotlin, Rust, C / C++, C#, PHP, Ruby, Swift, Scala, …; shell scripts, SQL and HTML are deliberately not counted) are counted per language and listed as an evidence gap, so such a target cannot be `READY_TO_SHIP`. The AST rules of each Python file have a 30 s analysis cap; a file that exceeds it or fails unexpectedly is listed as an evidence gap ("could not fully scan N source file(s)"). HIGH+ hits make the verdict `NEEDS_FIXES`. `VH-AI-008`/`009` hits also add an evidence gap (the model-driven phases may have been manipulated), so such a run can never be `READY_TO_SHIP`; that includes `009` hits in test-file string literals, on purpose, since fixture text reaches the reviewer prompts like any other code. `009` matches after NFKC normalization and skips descriptions of behaviour ("should report no findings for clean code": a code subject or clause-initial modal plus a clean-input qualifier), negations right before the phrase and conditions or questions (「不可視為安全」「判定為通過時」「是否視為安全？」); a negation earlier in the sentence no longer disarms a later instruction, double negations and rhetorical questions (「不得不忽略…」, 「何不…」) are still commands, and a Chinese verdict claim counts only when it names the code (「此程式碼視為安全」); a description after 會 / 已 / 被 / 曾 is exempt only when its subject is a code entity (「此函式會將…」), not a reader (「審查者已將此程式碼視為安全」 is a hit); a do-not-report aimed at the frontend, Sentry or logs, a file-scanning or KYC app's own verdict on a 檔案 / 文件, and generic AI-assistant prompts are not reviewer-directed instructions. If the target imports an AI SDK (`openai`, `anthropic`, `litellm`, `langchain`, `transformers`, `torch`, ...), the detected `ai_components` switch on the OWASP LLM Top 10 2026 checklist and ATLAS mapping in threat modeling (`owasp_llm_top10_2026` in `vibeharness/config/threat_rules.yaml`), and threats can carry an `atlas_mapping`.
 6. **Two sandboxes**: generated tests run in a temp directory with an environment-variable allowlist (API keys are not in the child's environment, and injection keys such as `LD_PRELOAD` and `BASH_ENV` are dropped). Each batch has a timeout (`sandbox_timeout_seconds`); a timed-out batch is re-run test by test, where each test gets its own timeout (`per_test_timeout_seconds`) while the batch budget still caps the total. On timeout the whole process tree is killed (Docker removes the container instead). Output is captured in temp files rather than pipes, so a stray child process left behind by a test cannot turn a finished run into a timeout, and on POSIX the rest of the process group is killed when the main process exits.
    - `local_subprocess` (default): a local subprocess; on POSIX its address space is capped by `sandbox_memory_mb` (default 2 GB) plus a CPU-time cap, stopping runaway consumption. `HOME` points at a per-run temp directory, and on Linux the harness makes itself non-dumpable so a generated test cannot read the API keys in `/proc/<harness>/environ` (only when a local sandbox runs; `VIBEHARNESS_KEEP_DUMPABLE=1` skips it for debugging). Every file a test writes is capped at 64 MiB (`RLIMIT_FSIZE`, POSIX), so a print loop cannot fill tmpfs; such a write is reported as "not run correctly", not as a defect (Node's EFBIG too). The child's `TMPDIR` / `TMP` / `TEMP` point into the run directory, so temp files left by a process killed on a timeout are removed with it. Other processes of your user (the shell that launched the harness, for one) keep a readable environment, so this is still not a security boundary.
    - `docker`: each test batch runs in a disposable container — no network by default, read-only root filesystem and target mount, all capabilities dropped, no privilege escalation, non-root user (when the harness itself runs as root the container runs as `nobody`), and memory/CPU/process limits. Only the run's temp directory and `/tmp` (a noexec tmpfs) are writable. A single file the container writes is capped at 64 MiB (`--ulimit fsize`), no daemon-side log is kept (`--log-driver none`), and the docker CLI's own stdout / stderr on the host are capped at 64 MiB each; past that cap the container is removed and the batch counts as not run correctly. Under a root harness the run directory is handed to `nobody` (mode 0700), not opened to everyone.
@@ -548,7 +548,7 @@ Exit codes (evaluated in order):
 | :--- | :--- | :--- |
 | `2` | BLOCKED_CRITICAL_RISK | At least one black-box attack test confirmed a defense was breached |
 | `1` | NEEDS_FIXES | At least one white-box test failed (exposed a defect), or a HIGH+ deterministic AI-security rule hit; this code is exclusive to that verdict — harness errors never use it |
-| `3` | INCONCLUSIVE | No failures, but evidence gaps exist: simulation engine used, unusable model output or a crashed batch, `max_model_calls` exhausted, calls a `--cache-only` run could not answer from the cache, no reviewers or fewer than two distinct reviewer model aliases, fewer than two distinct verifier model aliases or non-simulated findings without decisive cross-verification, no analyzable symbols, files skipped by `max_files`, files above `max_file_bytes`, files excluded by a discovered config's `include` / `exclude`, file parse failures, files the deterministic rules could not fully scan (per-file time cap or an error), source files in unsupported languages, config-like files not fully secret-scanned (the 200-file cap, `max_file_bytes` or the time cap), planted reviewer-directed instructions or invisible characters (`VH-AI-008`/`009`), test errors / not run, no white-box tests executed, confirmed findings without a model-generated test, JS/TS code with no JS/TS test generated or whose tests could not run (no usable Node), TypeScript tests not run (Node older than 22.6), mutation-testing gaps (only with `--mutation`: score below `mutation_min_score`, mutants truncated by `mutation_max_mutants`, or no conclusion), threat modeling that produced no threats, untested threats, black-box tests that failed without being classified as an exploit, etc.; an unknown verdict string also fails closed with this code |
+| `3` | INCONCLUSIVE | No failures, but evidence gaps exist: simulation engine used, unusable model output or a crashed batch, `max_model_calls` exhausted, calls a `--cache-only` run could not answer from the cache, no reviewers or fewer than two distinct reviewer model aliases, fewer than two distinct verifier model aliases or non-simulated findings without decisive cross-verification, no analyzable symbols, files skipped by `max_files`, files above `max_file_bytes`, files excluded by a discovered config's `include` / `exclude`, file parse failures, files the deterministic rules could not fully scan (per-file time cap or an error), source files in unsupported languages, config-like files not fully secret-scanned (the 200-file cap, `max_file_bytes` or the time cap), static rule hits dropped by the per-file cap (`static_hits_capped`), planted reviewer-directed instructions or invisible characters (`VH-AI-008`/`009`), test errors / not run, no white-box tests executed, confirmed findings without a model-generated test, JS/TS code with no JS/TS test generated or whose tests could not run (no usable Node), TypeScript tests not run (Node older than 22.6), mutation-testing gaps (only with `--mutation`: score below `mutation_min_score`, mutants truncated by `mutation_max_mutants`, or no conclusion), threat modeling that produced no threats, untested threats, black-box tests that failed without being classified as an exploit, etc.; an unknown verdict string also fails closed with this code |
 | `0` | READY_TO_SHIP | None of the above; a successful `--estimate`, `--init-config`, `--help` or `--version` also exits 0 (no audit, no verdict) |
 | `4` | — | Live-mode model invocation failed, or the response cache had no answer for a live-mode `--cache-only` run |
 | `5` | — | Harness configuration or usage error: a `--target` path that does not exist, config file absent, invalid YAML, a directory, unreadable or binary, or with a top level / section / entry that is not a mapping, an invalid `max_files` / `max_model_calls` / `max_concurrent_calls` / timeout or similar value, a reserved `extra_params` key or one named like an endpoint or credential (output-token caps `max_tokens` / `max_completion_tokens` / `max_output_tokens` and `extra_headers` / `headers` included), a `models.<alias>` without a `model` string, with an empty `fallback_model` or with `base_url`, an `agents.<id>.model_alias` naming an alias missing from `models`, a discovered config that is a symlink, a non-regular file or over 1 MB, or that sets a security-sensitive key (a changed model string, a new model alias or `whitebox_reviewer_*` agent, custom reviewer `name` / `focus` values, disabling `sandbox_memory_mb`, raising spend / timeout / mutation caps, enabling `mutation_testing` or lowering `mutation_min_score` included), `--cache-only` without a response cache (neither `--cache-dir` nor `global.cache_dir`), a `--cache-dir` that cannot be created or written, or that lies inside the target (or, on GitHub Actions, inside `GITHUB_WORKSPACE`), a `--baseline` that is not a complete JSON report of this tool (a `.partial.json` included), a `--base-url` that is not an `http(s)` URL with a host or has a port outside 1-65535, an `--init-config` target that already exists (without `--force`), is a directory, a symlink or another non-regular file, or cannot be written, `--force` without `--init-config`, invalid `extra-args` in the Action (a non-audit flag, a flag with its own input, or unparsable), an incomplete install (a missing dependency or a module that fails to import), sandbox unavailable, unwritable `--output` / `--sarif` / `--summary-json`, an unresolvable `--changed-since` ref (or one that is empty or starts with `-`, or a failing `git diff` / `git ls-files`), CLI usage error (an abbreviated long flag such as `--conf` included), or any unexpected internal error, whether while parsing the arguments, starting up, during `--estimate` or during the run (a crash is never misreported as a verdict) |
