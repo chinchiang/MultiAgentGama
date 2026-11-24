@@ -280,19 +280,15 @@ def test_titles_naming_different_defects_are_kept_apart(first, second):
     assert all(f.corroborating_models == [] for f in merged)
 
 
-def test_a_symbol_truncated_in_the_review_prompt_is_an_evidence_gap(tmp_path):
-    """超過一個審查批次預算的函式，後半段沒有模型看過：判定不可以是 READY_TO_SHIP，並列出那個符號（#183 第 16 項）。
-    A function beyond one review batch's budget had its rest seen by no model: the verdict must not be
-    READY_TO_SHIP, and the symbol is named (#183 item 16)."""
-    from vibeharness.core.harness import VibeHarnessCommander
-
-    target = tmp_path / "target"
-    target.mkdir()
+def test_a_symbol_truncated_in_the_review_prompt_is_an_evidence_gap(clean_live_run):
+    """超過一個審查批次預算的函式，後半段沒有模型看過：截斷的缺口是唯一的一筆，判定是 INCONCLUSIVE，並列出那個符號。
+    用 `clean_live_run` 跑，所以斷言的是判定本身（#183 第 16 項、#200、#205）。
+    A function beyond one review batch's budget had its rest seen by no model: the truncation gap is the only one, the
+    Verdict is INCONCLUSIVE, and the symbol is named. It runs on `clean_live_run`, so it asserts the Verdict itself
+    (#183 item 16, #200, #205)."""
     body = "".join(f"    total_{i} = value * {i} + offset_{i % 7}\n" for i in range(2500))
-    (target / "app.py").write_text(f"def huge(value):\n{body}    return value\n\ndef small(a):\n    return a\n",
-                                   encoding="utf-8")
-    commander = VibeHarnessCommander(execution_mode="mock")
-    assert commander.multi_reviewer.truncated_symbols(
-        commander.ast_extractor.parse_directory(str(target)), root_dir=str(target)) == ["app.py:huge"]
-    summary = commander.run_full_pipeline(str(target), output_report_path=str(tmp_path / "r.md"))
-    assert any("truncated in the review prompt" in r and "app.py:huge" in r for r in summary.inconclusive_reasons)
+    summary = clean_live_run({"app.py": f"def huge(value):\n{body}    return value\n\ndef small(a):\n    return a\n"})
+    assert summary.overall_status == "INCONCLUSIVE"
+    assert len(summary.inconclusive_reasons) == 1, summary.inconclusive_reasons
+    reason = summary.inconclusive_reasons[0]
+    assert "truncated in the review prompt" in reason and reason.endswith(": app.py:huge"), reason
