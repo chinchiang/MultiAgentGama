@@ -1,9 +1,10 @@
-"""品質閘門（core/gate.py）：多數測試只透過 evaluate()，不需要 pipeline、閘道或沙盒；「pipeline 接線」一節的測試在
-`clean_live_run` 上跑完整個 pipeline，確認各來源的事實確實送進閘門，並改變判定。
+"""品質閘門（core/gate.py）：多數測試只透過 evaluate()，不需要 pipeline、閘道或沙盒；以 `clean_live_run` 為參數的
+測試（擷取器與設定上限的接線、混合語言、突變測試）跑完整個 pipeline，確認各來源的事實確實送進閘門，並改變判定。
 The quality gate (core/gate.py): most tests go through evaluate() only, with no pipeline, gateway or sandbox; the
-tests under "pipeline wiring" run the whole pipeline on `clean_live_run` to check that each source's facts actually
-reach the gate and change the Verdict."""
+tests taking `clean_live_run` (the extractor and limit wiring, the mixed-language and the mutation cases) run the
+whole pipeline to check that each source's facts actually reach the gate and change the Verdict."""
 import json
+import os
 from dataclasses import replace
 
 import pytest
@@ -364,53 +365,65 @@ def _one_reviewer_alias(cfg):
             meta["model_alias"] = "gemini"
 
 
-def _limits(**limits):
-    """把 global 的上限改成 limits 的設定修改函式 ／ A config edit setting the global limits in `limits`."""
+def _set_limits(**limits):
+    """回傳把 global 的上限改成 limits 的設定修改函式 ／ Returns a config edit setting the global limits in `limits`."""
     return lambda cfg: cfg["global"].update(limits)
 
 
-# 每個案例：加進乾淨目標的檔案、設定修改、是否讓掃描器把一個檔案記成沒掃完、預期的唯一缺口（英文片段）
-# Each case: the files added to the clean target, the config edit, whether the scanner marks one file as not fully
-# scanned, and the expected only gap (an English fragment)
+# 每個案例：加進乾淨目標的檔案、設定修改、預期的唯一缺口（英文片段）
+# Each case: the files added to the clean target, the config edit, and the expected only gap (an English fragment)
 _WIRING_CASES = {
-    "single_reviewer_model": ({}, _one_reviewer_alias, False, "Only one distinct reviewer model (gemini)"),
-    "parse_error": ({"bad.py": "def broken(:\n"}, None, False, "1 source file(s) could not be parsed"),
-    "incomplete_scan": ({}, None, True, "could not fully scan 1 source file(s)"),
-    "oversized_file": ({"big.py": "x = 1\n" * 400}, _limits(max_file_bytes=1000), False,
+    "single_reviewer_model": ({}, _one_reviewer_alias, "Only one distinct reviewer model (gemini)"),
+    "parse_error": ({"bad.py": "def broken(:\n"}, None, "1 source file(s) could not be parsed"),
+    "oversized_file": ({"big.py": "x = 1\n" * 400}, _set_limits(max_file_bytes=1000),
                        "1 source file(s) exceed max_file_bytes (1000) and were not analyzed: big.py"),
     "max_files": ({"m1.py": "def f1(x):\n    return x\n", "m2.py": "def f2(x):\n    return x\n"},
-                  _limits(max_files=2), False, "1 source file(s) were skipped by the max_files limit (2)"),
-    "config_not_fully_scanned": ({"a.yaml": "k: v\n", "big.json": '{"k": "' + "v" * 2000 + '"}'},
-                                 _limits(max_file_bytes=1000), False,
+                  _set_limits(max_files=2), "1 source file(s) were skipped by the max_files limit (2)"),
+    "config_not_fully_scanned": ({"big.json": '{"k": "' + "v" * 2000 + '"}'}, _set_limits(max_file_bytes=1000),
                                  "1 configuration-like file(s) were not fully secret-scanned"),
 }
 
 
-@pytest.mark.parametrize("case", list(_WIRING_CASES))
-def test_pipeline_wires_scope_limits_and_review_facts_into_the_gate(case, clean_live_run, monkeypatch):
-    """擷取器、掃描器、設定上限與審查名單的事實各自送進閘門：乾淨目標加上一個案例的條件，那個缺口是唯一的一筆，判定是
-    INCONCLUSIVE（訊息規則本身由上面的測試涵蓋）。不支援語言的缺口見 `tests/test_r5_languages_secrets.py`。原本是一次
-    mock 執行裡同時觸發全部缺口，拿掉任何一個判定都不變；改用 `clean_live_run` 一次一個（#200、#207）。
-    The facts of the extractor, the scanner, the configured limits and the reviewer roster each reach the gate: the
-    clean target plus one case's condition has that gap as the only one and the Verdict INCONCLUSIVE (the message
-    rules themselves are covered by the tests above). The unsupported-language gap is in
-    `tests/test_r5_languages_secrets.py`. This used to be one mock run raising every gap at once, where removing any
-    one left the Verdict as it was; it now runs one case at a time on `clean_live_run` (#200, #207)."""
-    from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
-    files, config, incomplete, expected = _WIRING_CASES[case]
-    if incomplete:
-        original = AISecurityStaticScanner.scan_files
-
-        def scan_files(self, paths):
-            findings = original(self, paths)
-            self.incomplete_files = [p for p in paths if p.endswith("calc.py")]
-            return findings
-        monkeypatch.setattr(AISecurityStaticScanner, "scan_files", scan_files)
-
-    summary = clean_live_run(files, config=config)
+def _assert_only_gap(summary, expected):
+    """判定是 INCONCLUSIVE，唯一的缺口含有 expected ／ The Verdict is INCONCLUSIVE and the only gap contains `expected`."""
     assert summary.overall_status == "INCONCLUSIVE"
     assert len(summary.inconclusive_reasons) == 1, summary.inconclusive_reasons
     assert expected in summary.inconclusive_reasons[0], summary.inconclusive_reasons
+
+
+@pytest.mark.parametrize("case", list(_WIRING_CASES))
+def test_pipeline_wires_scope_limits_and_review_facts_into_the_gate(case, clean_live_run):
+    """擷取器、設定上限與審查名單的事實各自送進閘門：乾淨目標加上一個案例的條件，那個缺口是唯一的一筆，判定是
+    INCONCLUSIVE（訊息規則本身由上面的測試涵蓋）。掃描器沒掃完的缺口見下一個測試，不支援語言的缺口見
+    `tests/test_r5_languages_secrets.py`。原本是一次 mock 執行裡同時觸發全部缺口，拿掉任何一個判定都不變；改用
+    `clean_live_run` 一次一個（#200、#207）。
+    The facts of the extractor, the configured limits and the reviewer roster each reach the gate: the clean target
+    plus one case's condition has that gap as the only one and the Verdict INCONCLUSIVE (the message rules themselves
+    are covered by the tests above). The scanner's incomplete-scan gap is in the next test, the unsupported-language
+    gap in `tests/test_r5_languages_secrets.py`. This used to be one mock run raising every gap at once, where removing
+    any one left the Verdict as it was; it now runs one case at a time on `clean_live_run` (#200, #207)."""
+    files, config, expected = _WIRING_CASES[case]
+    _assert_only_gap(clean_live_run(files, config=config), expected)
+
+
+def test_pipeline_wires_an_incomplete_static_scan_into_the_gate(clean_live_run, monkeypatch):
+    """掃描器把乾淨目標的 calc.py 記成沒掃完：`incomplete_scan` 是唯一的缺口，判定是 INCONCLUSIVE（#200、#207）。
+    The scanner marks the clean target's calc.py as not fully scanned: `incomplete_scan` is the only gap and the
+    Verdict is INCONCLUSIVE (#200, #207)."""
+    from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
+    original = AISecurityStaticScanner.scan_files
+    marked = []
+
+    def scan_files(self, paths):
+        findings = original(self, paths)
+        self.incomplete_files = [p for p in paths if p.endswith("calc.py")]
+        marked.extend(self.incomplete_files)
+        return findings
+    monkeypatch.setattr(AISecurityStaticScanner, "scan_files", scan_files)
+
+    summary = clean_live_run()
+    assert [os.path.basename(p) for p in marked] == ["calc.py"]
+    _assert_only_gap(summary, "could not fully scan 1 source file(s)")
 
 
 def test_discovered_config_scope_filtering_is_an_evidence_gap():
@@ -526,9 +539,7 @@ def test_a_mixed_target_whose_only_white_box_test_is_js_lacks_python_tests(clean
     assert [(r["test_id"], r["language"], r["status"]) for r in report["whitebox"]["test_results"]] == [
         ("WB-TEST-01", "javascript", "PASSED")]
     assert [r["language"] for r in report["blackbox_test_results"]] == ["python"]
-    assert summary.overall_status == "INCONCLUSIVE"
-    assert len(summary.inconclusive_reasons) == 1, summary.inconclusive_reasons
-    assert "Python code got no white-box test" in summary.inconclusive_reasons[0], summary.inconclusive_reasons
+    _assert_only_gap(summary, "Python code got no white-box test")
 
 
 # `return a + b + 1 - 1` 的 5 個變異體，算出 -1、3、4、7 與 6；測試在結果是 6 時斷言失敗（殺死），其他不是 5 的結果
@@ -558,6 +569,4 @@ def test_a_mutation_score_on_mostly_invalid_mutants_is_an_evidence_gap(clean_liv
         "a - b + 1 - 1 invalid", "a + b - 1 - 1 invalid", "a + b + 0 - 1 invalid", "a + b + 1 + 1 invalid",
         "a + b + 1 - 0 killed"]
     assert (mutation["score"], mutation["killed"], mutation["invalid"]) == (100.0, 1, 4)
-    assert summary.overall_status == "INCONCLUSIVE"
-    assert len(summary.inconclusive_reasons) == 1, summary.inconclusive_reasons
-    assert "4 of 5 mutant(s) were invalid" in summary.inconclusive_reasons[0], summary.inconclusive_reasons
+    _assert_only_gap(summary, "4 of 5 mutant(s) were invalid")
