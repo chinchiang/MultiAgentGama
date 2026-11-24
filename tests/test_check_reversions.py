@@ -431,3 +431,33 @@ def test_an_argument_file_among_the_tests_is_refused(repo, tmp_path, capsys):
     assert code == 2, out
     assert "not pytest options" in out and "args.txt" in out, out
     assert "## " not in out, out
+
+
+def test_an_item_that_makes_the_output_unreadable_is_could_not_check(git_repo, tmp_path, capsys):
+    """原始檔案上讀得懂，改回一項之後讀不懂（這裡改回的就是 pytest.ini 的 `addopts`）：那一項無法檢查，結束碼 2，
+    檔案寫回原狀（#209 審查第 2 輪）。
+    Readable on the unmodified file but not after an item (the item here is pytest.ini's `addopts` itself): that item
+    cannot be checked, exit code 2, and the file is written back (#209 review round 2)."""
+    root = _repo_with(git_repo, tmp_path, {"test_calc.py": TESTS})
+    (root / "pytest.ini").write_text("[pytest]\naddopts = -ra\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-qm", "addopts"], cwd=root, check=True, capture_output=True)
+    code = tool.main(["pytest.ini", _reversions(tmp_path, ("quiet", "-ra", "-qq"))], repo=str(root))
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert "`quiet`: could not read pytest's output" in out, out
+    assert (root / "pytest.ini").read_text(encoding="utf-8") == "[pytest]\naddopts = -ra\n"
+    assert _clean(root)
+
+
+def test_failures_reported_but_none_read_is_could_not_check(repo, tmp_path, capsys, monkeypatch):
+    """pytest 以 1 結束（有失敗），卻一個失敗都讀不到（這裡讓摘要的解析什麼都讀不到）：無法檢查，結束碼 2，而不是
+    「turned nothing red」（CODING_STANDARDS 第 8 條；#209 審查第 2 輪）。
+    pytest exits 1 (some failed) but no failure is read (the summary parsing is made to read nothing here): could not
+    check, exit code 2, not "turned nothing red" (CODING_STANDARDS rule 8; #209 review round 2)."""
+    monkeypatch.setattr(tool, "_red", lambda output, known: [])
+    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(repo))
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert "`subtract`: could not read pytest's output (pytest exited 1)" in out, out
+    assert "turned nothing red" not in out, out
