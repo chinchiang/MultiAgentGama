@@ -2,6 +2,7 @@
 空洞的類別測試方法、JS 的逾時預算、Node 的錯誤標籤，以及 0 秒的逐測預算。
 Regression tests for sandbox / test-executor review findings: environment leaks, pipe hangs, NameError
 attribution, vacuous class test methods, the JS timeout budget, Node's error tags and a 0s per-test budget."""
+import json
 import os
 import sys
 import time
@@ -336,25 +337,34 @@ def test_shadowed_runner_modules_lists_every_import_form(tmp_path):
     assert shadowed_runner_modules(str(target)) == sorted([*in_target, str(parent / "sitecustomize.py")])
 
 
-# 目標的 pytest.py：替每個產生的測試模組寫出一筆通過的 JUnit 案例，不執行任何測試
-# The target's pytest.py: writes one passing JUnit case for each generated test module and runs no test
+# 目標的 pytest.py：不執行任何測試，替每個產生的測試模組寫出一筆通過的 JUnit 案例，案例的輸出帶著 _FORGED 記號
+# The target's pytest.py: runs no test and writes one passing JUnit case for each generated test module, whose output
+# carries the _FORGED mark
+_FORGED = "forged-by-the-target-pytest"
 _FORGED_PYTEST = (
     "import glob, re, sys\n"
     "junit = next(a.split('=', 1)[1] for a in sys.argv if a.startswith('--junitxml='))\n"
     "names = sorted({m for a in sys.argv[1:] + glob.glob('test_vh_*.py') for m in re.findall(r'test_vh_\\d+', a)})\n"
-    "cases = ''.join(f'<testcase classname=\"{n}\" name=\"test_ok\" time=\"0.01\"/>' for n in names)\n"
+    "cases = ''.join(f'<testcase classname=\"{n}\" name=\"test_ok\" time=\"0.01\">'\n"
+    f"                '<system-out>{_FORGED}</system-out></testcase>' for n in names)\n"
     "open(junit, 'w').write(f'<testsuites><testsuite name=\"pytest\">{cases}</testsuite></testsuites>')\n")
 
 
-def test_a_target_shadowing_pytest_is_an_evidence_gap(clean_live_run):
-    """目標的 pytest.py 頂替測試執行器，替每個產生的測試寫出「通過」的 JUnit 報告：白箱與黑箱看起來都通過了，
-    所以頂替的缺口是唯一的一筆，判定是 INCONCLUSIVE，而不是 READY_TO_SHIP。用 `clean_live_run` 跑，所以斷言的是
-    判定本身（#183 第 4 項、#200、#205）。
-    The target's pytest.py stands in for the test runner and writes a "passed" JUnit report for every generated test:
-    white-box and black-box both look passed, so the shadowing gap is the only one and the Verdict is INCONCLUSIVE,
-    not READY_TO_SHIP. It runs on `clean_live_run`, so it asserts the Verdict itself (#183 item 4, #200, #205)."""
-    summary = clean_live_run({"pytest.py": _FORGED_PYTEST})
-    assert summary.whitebox_tests_passed >= 1 and summary.whitebox_tests_failed == 0
+def test_a_target_shadowing_pytest_is_an_evidence_gap(clean_live_run, tmp_path):
+    """目標的 pytest.py 頂替測試執行器，替每個產生的白箱與黑箱測試寫出「通過」的 JUnit 報告（每筆結果的輸出都帶著
+    偽造的記號，證明結果來自它，不是真的 pytest）。產生的測試因此不會被記成「從未執行」（空報告會多出那筆缺口），
+    頂替的缺口是唯一的一筆，判定是 INCONCLUSIVE，而不是 READY_TO_SHIP。用 `clean_live_run` 跑，所以斷言的是判定本身
+    （#183 第 4 項、#200、#205）。
+    The target's pytest.py stands in for the test runner and writes a "passed" JUnit report for every generated
+    white-box and black-box test (each result's output carries the forged mark, showing it came from that file and
+    not from the real pytest). So the generated tests are not recorded as never run (an empty report would add that
+    gap), the shadowing gap is the only one, and the Verdict is INCONCLUSIVE, not READY_TO_SHIP. It runs on
+    `clean_live_run`, so it asserts the Verdict itself (#183 item 4, #200, #205)."""
+    summary = clean_live_run({"pytest.py": _FORGED_PYTEST}, report="r.json", output_format="json")
+    report = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
+    results = [*report["whitebox"]["test_results"], *report["blackbox_test_results"]]
+    assert [r["test_id"] for r in results] == ["WB-TEST-01", "BB-TEST-THREAT-01"], results
+    assert all(r["status"] == "PASSED" and _FORGED in r["stdout"] for r in results), results
     assert summary.overall_status == "INCONCLUSIVE"
     assert len(summary.inconclusive_reasons) == 1, summary.inconclusive_reasons
     reason = summary.inconclusive_reasons[0]

@@ -408,7 +408,7 @@ def _target(tmp_path):
     return target
 
 
-def test_go_file_and_dotenv_key_block_ready_to_ship_and_reach_sarif(clean_live_run, tmp_path):
+def test_a_go_file_is_inconclusive_and_a_dotenv_key_blocks_and_reaches_sarif(clean_live_run, tmp_path):
     """只多一個 Go 檔時，不支援語言的缺口是唯一的一筆，判定是 INCONCLUSIVE；再加上含金鑰的 .env，VH-AI-007 是阻擋的
     命中，判定是 NEEDS_FIXES，命中寫進 SARIF，金鑰本身不出現在 SARIF 與報告裡。用 `clean_live_run` 跑，所以斷言的是
     判定本身（#200、#205）。
@@ -422,13 +422,13 @@ def test_go_file_and_dotenv_key_block_ready_to_ship_and_reach_sarif(clean_live_r
     assert len(go_only.inconclusive_reasons) == 1, go_only.inconclusive_reasons
     assert go_only.inconclusive_reasons[0].endswith(unsupported), go_only.inconclusive_reasons
 
-    summary = clean_live_run({".env": f"APP_ENV=prod\nANTHROPIC_API_KEY={ANTHROPIC_KEY}\n",
-                              "deploy/values.yaml": BENIGN_YAML}, sarif="r.sarif")
-    assert summary.overall_status == "NEEDS_FIXES"
-    assert [(f.rule_id, os.path.basename(f.file_path), f.line_number) for f in summary.static_findings] == [
+    with_env = clean_live_run({".env": f"APP_ENV=prod\nANTHROPIC_API_KEY={ANTHROPIC_KEY}\n",
+                               "deploy/values.yaml": BENIGN_YAML}, sarif="r.sarif")
+    assert with_env.overall_status == "NEEDS_FIXES"
+    assert [(f.rule_id, os.path.basename(f.file_path), f.line_number) for f in with_env.static_findings] == [
         ("VH-AI-007", ".env", 2)]
-    assert len(summary.inconclusive_reasons) == 1, summary.inconclusive_reasons
-    assert summary.inconclusive_reasons[0].endswith(unsupported), summary.inconclusive_reasons
+    assert len(with_env.inconclusive_reasons) == 1, with_env.inconclusive_reasons
+    assert with_env.inconclusive_reasons[0].endswith(unsupported), with_env.inconclusive_reasons
     sarif_path = tmp_path / "r.sarif"
     sarif = json.loads(sarif_path.read_text(encoding="utf-8"))
     hits = [r for r in sarif["runs"][0]["results"] if r["ruleId"].endswith("VH-AI-007")]
