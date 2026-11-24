@@ -351,7 +351,7 @@ def test_a_pytest_option_among_the_tests_is_refused(repo, tmp_path, capsys):
                       "tests/test_calc.py"], repo=str(repo))
     out = capsys.readouterr().out
     assert code == 2, out
-    assert "not pytest options: -q" in out, out
+    assert "not pytest options or @argument files: -q" in out, out
     assert "## " not in out and "unmodified" not in out, out
 
 
@@ -386,3 +386,48 @@ def test_every_test_failing_on_the_unmodified_file_is_named(git_repo, tmp_path, 
     out = capsys.readouterr().out
     assert code == 2, out
     assert all(f"   tests/test_calc.py::test_wrong_{i}\n" in out for i in range(8)), out
+
+
+SKIPPED_TARGET = TESTS + '''
+
+import pytest
+
+
+@pytest.mark.skip(reason="not here")
+def test_skipped_here():
+    pass
+'''
+
+
+@pytest.mark.parametrize("addopts", ["-qq", "-p no:terminal"])
+def test_output_the_script_cannot_read_is_could_not_check(git_repo, tmp_path, capsys, addopts):
+    """目標 repo 的 pytest 設定改掉了輸出的形狀（`-qq` 沒有結果行也沒有 `===` 統計行；`-p no:terminal` 什麼都不印）：
+    讀不到最後的統計行就是無法檢查，結束碼 2，而不是把讀不到的略過當成沒有、把讀不到的紅燈當成「turned nothing
+    red」（CODING_STANDARDS 第 8 條；#209 審查第 2 輪）。
+    The target repo's pytest config changes the output's shape (`-qq` has no outcome lines and no `===` count line;
+    `-p no:terminal` prints nothing): no closing count line read means could not check, exit code 2, rather than
+    taking unread skips as none and unread red tests as "turned nothing red" (CODING_STANDARDS rule 8; #209 review
+    round 2)."""
+    root = _repo_with(git_repo, tmp_path, {"test_calc.py": SKIPPED_TARGET})
+    (root / "pytest.ini").write_text(f"[pytest]\naddopts = {addopts}\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-qm", "addopts"], cwd=root, check=True, capture_output=True)
+    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b")), "tests/test_calc.py"],
+                     repo=str(root))
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert "Could not read pytest's output on the unmodified calc.py" in out, out
+    assert "## " not in out, out
+
+
+def test_an_argument_file_among_the_tests_is_refused(repo, tmp_path, capsys):
+    """`@檔案` 讓 pytest 從檔案讀參數，裡面的選項與 node id 都躲過檢查：結束碼 2，什麼都沒跑（#209 審查第 2 輪）。
+    `@file` makes pytest read arguments from a file, hiding options and node ids from the checks: exit code 2 before
+    anything runs (#209 review round 2)."""
+    (tmp_path / "args.txt").write_text("-q\ntests/test_calc.py\n", encoding="utf-8")
+    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b")), f"@{tmp_path / 'args.txt'}"],
+                     repo=str(repo))
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert "not pytest options" in out and "args.txt" in out, out
+    assert "## " not in out, out

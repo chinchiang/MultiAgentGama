@@ -6,16 +6,17 @@
 stderr）；經由檔案、目錄或整個套件跑到而被略過的，列成警告（#209）。之後逐項：把原文換成改壞後的文字、用固定的
 pytest 參數跑測試、從摘要讀出失敗（FAILED）與錯誤（ERROR，例如收集不到）的測試並在每個底下印出失敗的那一行、
 列出被略過（skipped，不算紅燈）的測試，最後用記憶體裡的原內容把檔案寫回去，不靠 git。被略過的測試從 `-v` 的
-結果行讀 ID；數量對不上最後的統計時（例如整個模組被略過），改列摘要裡的每一行略過。pytest 的參數是固定的，
-測試參數裡不接受 pytest 選項（`-q` 之類會改掉輸出的形狀）：`-v` 逐一列出每個測試的結果，`-rfEs` 保證摘要列出
+結果行讀 ID；數量對不上最後的統計時（例如整個模組被略過），改列摘要裡的每一行略過。讀不到最後的統計行（目標
+repo 的 `addopts = -qq`、`-p no:terminal` 會改掉輸出的形狀），或 pytest 回報有失敗卻讀不到任何一個，都是無法
+檢查（結束碼 2）。pytest 的參數是固定的，測試參數裡不接受 pytest 選項與 `@檔案`（`-q` 之類會改掉輸出的形狀）：`-v` 逐一列出每個測試的結果，`-rfEs` 保證摘要列出
 失敗、錯誤與略過（改用 `-rs` 之類的參數會把失敗與錯誤拿掉，讓每一項看起來都沒有紅燈）。
 
 改壞的清單是一個 JSON 檔：`[{"name": "...", "old": "...", "new": "..."}, ...]`；放在 repo 外或 git 忽略的地方，
 否則工作目錄就不乾淨。
 
 結束碼：0 每一項都至少讓一個測試變紅，1 有的一項也沒有（摘要點名它們），2 無法檢查（工作目錄不乾淨、清單讀不了、
-原文不是剛好出現一次、測試參數夾著 pytest 選項、測試在原始檔案上沒有全部通過、pytest 跑不起來或被中斷、檔案沒能
-寫回原狀）。
+原文不是剛好出現一次、測試參數夾著 pytest 選項或 `@檔案`、讀不懂 pytest 的輸出、測試在原始檔案上沒有全部通過、
+pytest 跑不起來或被中斷、檔案沒能寫回原狀）。
 
 用法：
     python scripts/check_reversions.py <檔案> <清單.json> [pytest 的測試路徑或 node id ...]
@@ -33,7 +34,9 @@ runs the tests with fixed pytest arguments, reads the failed (FAILED) and errore
 tests from the summary and prints each one's failure line under it, lists the skipped tests (not counted as red), and
 writes the file back from the original content held in memory, not through git. Skipped test ids are read from the
 `-v` outcome lines; when they do not add up to the closing count (a whole skipped module, for one), every skip line
-of the summary is listed instead. The pytest arguments are fixed, and no pytest option is accepted among the tests
+of the summary is listed instead. No closing count line read (the target repo's `addopts = -qq` or
+`-p no:terminal` changes the output's shape), or pytest reporting failures without one being read, is could not
+check (exit code 2). The pytest arguments are fixed, and no pytest option or `@file` is accepted among the tests
 (`-q` and the like change the output's shape): `-v` puts each test's outcome on its own line, and `-rfEs` keeps the
 failures, errors and skips in the summary (an argument such as `-rs` would drop the failures and errors, making every
 item look as if it turned nothing red).
@@ -43,8 +46,8 @@ somewhere git ignores, or the working tree is not clean.
 
 Exit code: 0 every item turned at least one test red, 1 some turned none red (the summary names them), 2 could not
 check (the working tree is not clean, the list does not read, an old text does not occur exactly once, a pytest
-option is among the tests, the tests do not all pass on the unmodified file, pytest could not run or was
-interrupted, the file was not written back as it was).
+option or `@file` is among the tests, pytest's output does not read, the tests do not all pass on the unmodified
+file, pytest could not run or was interrupted, the file was not written back as it was).
 
 Usage:
     python scripts/check_reversions.py <file> <reversions.json> [pytest test paths or node ids ...]
@@ -75,6 +78,10 @@ _SUMMARY_SKIP_RE = re.compile(r"^SKIPPED \[\d+\] .*$", re.MULTILINE)
 # 最後的統計行，例如 `==== 1 failed, 2 passed, 1 skipped in 0.12s ====`
 # The closing count line, such as `==== 1 failed, 2 passed, 1 skipped in 0.12s ====`
 _SKIP_COUNT_RE = re.compile(r"^=+ .*?\b(\d+) skipped\b.* in [\d.]+s\b.*$", re.MULTILINE)
+# 有沒有統計行：讀不到就表示輸出的形狀被改了（目標 repo 的 `addopts = -qq`、`-p no:terminal`），什麼都讀不準
+# Whether there is a count line: none means the output's shape was changed (the target repo's `addopts = -qq`,
+# `-p no:terminal`), so nothing in it can be read reliably
+_COUNT_LINE_RE = re.compile(r"^=+ .* in [\d.]+s\b.*=+$", re.MULTILINE)
 # pytest 的結束碼裡表示「跑完了」的：0 全部通過、1 有失敗（2 只在摘要有 ERROR 行時算，見 main）
 # The pytest exit codes that mean it ran: 0 all passed, 1 some failed (2 counts only when the summary has ERROR
 # lines, see main)
@@ -84,14 +91,17 @@ _PYTEST_RAN = (0, 1)
 @dataclass
 class _Run:
     """一次 pytest 執行讀出來的結果。`outcomes` 是每個測試 ID 的結果（`-v` 的順序）；`red` 是摘要裡失敗與錯誤的
-    （ID, 原因）；`unlisted_skips` 是 ID 對不上統計數量時，摘要裡的每一行略過（否則是空的）。
+    （ID, 原因）；`unlisted_skips` 是 ID 對不上統計數量時，摘要裡的每一行略過（否則是空的）；`readable` 是有沒有讀到
+    最後的統計行，pytest 以 1 結束（有失敗）時還要讀到失敗。
     What one pytest run reads as. `outcomes` maps each test id to its outcome (in `-v` order); `red` holds the
     (id, reason) pairs of the summary's failures and errors; `unlisted_skips` holds every skip line of the summary when
-    the skipped ids do not add up to the count (empty otherwise)."""
+    the skipped ids do not add up to the count (empty otherwise); `readable` says whether the closing count line was
+    read, and with pytest exiting 1 (some failed) whether a failure was read too."""
     done: subprocess.CompletedProcess[str]
     outcomes: dict[str, str]
     red: list[tuple[str, str]]
     unlisted_skips: list[str]
+    readable: bool
 
     @property
     def skipped(self) -> list[str]:
@@ -134,7 +144,9 @@ def _read(done: subprocess.CompletedProcess[str]) -> _Run:
     skip_count = int(counts[-1]) if counts else 0
     listed = sum(1 for outcome in outcomes.values() if outcome == "SKIPPED")
     unlisted = _SUMMARY_SKIP_RE.findall(done.stdout) if skip_count != listed else []
-    return _Run(done, outcomes, _red(done.stdout, list(outcomes)), unlisted)
+    red = _red(done.stdout, list(outcomes))
+    readable = bool(_COUNT_LINE_RE.search(done.stdout)) and (done.returncode != 1 or bool(red))
+    return _Run(done, outcomes, red, unlisted, readable)
 
 
 def _node_id(test: str, repo: str) -> str:
@@ -203,12 +215,13 @@ def main(argv: list[str] | None = None, repo: str = _REPO) -> int:
     parser.add_argument("tests", nargs="*", help="pytest test paths or node ids (default: the whole suite); no options")
     args = parser.parse_args(argv)
 
-    # 只接受測試路徑與 node id：pytest 的選項（例如 `-q`）會改掉輸出的形狀，讓結果讀不出來
+    # 只接受測試路徑與 node id：pytest 的選項（例如 `-q`）會改掉輸出的形狀，讓結果讀不出來；`@檔案` 從檔案讀參數，
+    # 裡面的選項與 node id 都躲過這裡的檢查
     # Only test paths and node ids: a pytest option (such as `-q`) changes the output's shape, so outcomes cannot be
-    # read
-    options = [test for test in args.tests if test.startswith("-")]
+    # read; `@file` reads arguments from a file, hiding its options and node ids from these checks
+    options = [test for test in args.tests if test.startswith(("-", "@"))]
     if options:
-        print("Only test paths and node ids are accepted after the reversions, not pytest options: "
+        print("Only test paths and node ids are accepted after the reversions, not pytest options or @argument files: "
               f"{' '.join(options)}")
         return 2
     if _dirty(repo):
@@ -234,6 +247,11 @@ def main(argv: list[str] | None = None, repo: str = _REPO) -> int:
     # 先在原始檔案上跑一次：找不到或沒通過的測試，任何一項改回都證明不了什麼
     # One run on the unmodified file first: a test that is not found or does not pass proves nothing under any item
     baseline = _read(_pytest(repo, args.tests))
+    if not baseline.readable:
+        print(f"Could not read pytest's output on the unmodified {args.file} (pytest exited "
+              f"{baseline.done.returncode}; an `addopts` or plugin may change its shape), so nothing was reverted:\n"
+              f"{_excerpt(baseline.done)}")
+        return 2
     if baseline.done.returncode != 0:
         print(f"The tests do not all pass on the unmodified {args.file} (pytest exited {baseline.done.returncode}), "
               "so nothing was reverted:")
@@ -263,6 +281,10 @@ def main(argv: list[str] | None = None, repo: str = _REPO) -> int:
             run = _read(_pytest(repo, args.tests))
             # 收集錯誤時 pytest 也以 2 結束（和被中斷一樣），但摘要有 ERROR 行：那算紅燈
             # On a collection error pytest exits 2 too (as when interrupted), but the summary has ERROR lines: red
+            if not run.readable:
+                failed_run = f"`{name}`: could not read pytest's output (pytest exited {run.done.returncode}):\n" \
+                             f"{_excerpt(run.done)}"
+                break
             if run.done.returncode not in _PYTEST_RAN and not (run.done.returncode == 2 and run.red):
                 failed_run = f"`{name}`: pytest exited {run.done.returncode}, so nothing was checked:\n" \
                              f"{_excerpt(run.done)}"
