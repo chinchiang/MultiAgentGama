@@ -35,8 +35,8 @@ def repo(git_repo, tmp_path):
     A repo with `calc.py` and `tests/test_calc.py` committed; returns its root."""
     root = tmp_path / "repo"
     (root / "tests").mkdir(parents=True)
-    (root / "calc.py").write_text(CALC, encoding="utf-8")
-    (root / "tests" / "test_calc.py").write_text(TESTS, encoding="utf-8")
+    (root / "calc.py").write_text(CALC, encoding="utf-8", newline="\n")
+    (root / "tests" / "test_calc.py").write_text(TESTS, encoding="utf-8", newline="\n")
     git_repo(root)
     return root
 
@@ -45,7 +45,7 @@ def _reversions(tmp_path, *items):
     """把 (名稱, 原文, 改壞後) 寫成 repo 外的 JSON 檔，回傳它的路徑。
     Writes (name, old, new) items to a JSON file outside the repo and returns its path."""
     path = tmp_path / "reversions.json"
-    path.write_text(json.dumps([{"name": n, "old": o, "new": w} for n, o, w in items]), encoding="utf-8")
+    path.write_text(json.dumps([{"name": n, "old": o, "new": w} for n, o, w in items]), encoding="utf-8", newline="\n")
     return str(path)
 
 
@@ -96,7 +96,7 @@ def test_a_dirty_working_tree_is_refused_before_anything_changes(repo, tmp_path,
     A working tree with uncommitted changes is refused: exit code 2, a request to commit first, and the file keeps its
     (uncommitted) content."""
     edited = CALC + "# edited\n"
-    (repo / "calc.py").write_text(edited, encoding="utf-8")
+    (repo / "calc.py").write_text(edited, encoding="utf-8", newline="\n")
     code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(repo))
     out = capsys.readouterr().out
     assert code == 2, out
@@ -146,7 +146,9 @@ def test_a_mistyped_test_id_is_refused_before_any_reversion(repo, tmp_path, caps
     code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b")), typo], repo=str(repo))
     out = capsys.readouterr().out
     assert code == 2, out
-    assert "unmodified" in out and typo in out, out
+    # pytest 回報的路徑隨平台不同（Windows 是反斜線的絕對路徑），所以只比對測試名稱
+    # pytest reports the path per platform (an absolute backslash path on Windows), so only the test name is matched
+    assert "unmodified" in out and "test_adding_two_number_gives_their_sum" in out, out
     assert "## " not in out, out
     assert (repo / "calc.py").read_text(encoding="utf-8") == CALC
 
@@ -187,8 +189,8 @@ def test_a_test_skipped_under_a_reversion_is_listed_as_skipped_not_red(git_repo,
     passed (as #207's Node test did when PATH had no node) (#209)."""
     root = tmp_path / "repo"
     (root / "tests").mkdir(parents=True)
-    (root / "calc.py").write_text(SKIPPING_CALC, encoding="utf-8")
-    (root / "tests" / "test_calc.py").write_text(SKIPPING_TESTS, encoding="utf-8")
+    (root / "calc.py").write_text(SKIPPING_CALC, encoding="utf-8", newline="\n")
+    (root / "tests" / "test_calc.py").write_text(SKIPPING_TESTS, encoding="utf-8", newline="\n")
     git_repo(root)
     code = tool.main(["calc.py", _reversions(tmp_path, ("skip", "SKIP = False", "SKIP = True"))], repo=str(root))
     out = capsys.readouterr().out
@@ -201,20 +203,19 @@ def _skipping_repo(git_repo, tmp_path):
     """測試在原始檔案上就被略過的 repo（`SKIP = True`） ／ A repo whose test skips on the unmodified file (`SKIP = True`)."""
     root = tmp_path / "repo"
     (root / "tests").mkdir(parents=True)
-    (root / "calc.py").write_text(SKIPPING_CALC.replace("SKIP = False", "SKIP = True"), encoding="utf-8")
-    (root / "tests" / "test_calc.py").write_text(SKIPPING_TESTS, encoding="utf-8")
+    (root / "calc.py").write_text(SKIPPING_CALC.replace("SKIP = False", "SKIP = True"), encoding="utf-8", newline="\n")
+    (root / "tests" / "test_calc.py").write_text(SKIPPING_TESTS, encoding="utf-8", newline="\n")
     git_repo(root)
     return root
 
 
-def test_a_test_failing_on_the_unmodified_file_is_refused_before_any_reversion(repo, tmp_path, capsys):
+def test_a_test_failing_on_the_unmodified_file_is_refused_before_any_reversion(git_repo, tmp_path, capsys):
     """測試在原始檔案上就失敗：每一項看起來都會「讓它變紅」，什麼都證明不了。結束碼 2，點出那個測試，沒有改回任何
     一項（#209）。
     A test that already fails on the unmodified file would look turned red by every item and prove nothing: exit code
     2, the test is named, and no item is reverted (#209)."""
-    (repo / "tests" / "test_calc.py").write_text(TESTS.replace("== 3", "== 4"), encoding="utf-8")
-    subprocess.run(["git", "commit", "-qam", "red"], cwd=repo, check=True, capture_output=True)
-    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(repo))
+    root = _repo_with(git_repo, tmp_path, {"test_calc.py": TESTS.replace("== 3", "== 4")})
+    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(root))
     out = capsys.readouterr().out
     assert code == 2, out
     assert "unmodified" in out and "test_adding_two_numbers_gives_their_sum" in out, out
@@ -251,14 +252,20 @@ def test_a_test_reached_through_its_file_that_skips_on_the_unmodified_file_is_a_
     assert "## subtract: 0 red, 1 skipped" in out, out
 
 
-def _repo_with(git_repo, tmp_path, tests):
-    """`calc.py` 加上 `tests/` 底下的 tests（檔名 -> 內容）都已提交的 repo ／ A repo with `calc.py` and `tests` (file
-    name -> content) under `tests/` committed."""
+def _repo_with(git_repo, tmp_path, tests, root_files=None):
+    """`calc.py`、`tests/` 底下的 tests 與根目錄的 root_files（檔名 -> 內容）都已提交的 repo。檔案在 `git_repo` 提交
+    之前寫好：它提交時用自己的身分，測試裡另外跑 `git commit` 在沒有 git 身分的 CI 上會失敗。換行固定是 `\n`，
+    Windows 上的原文才找得到。
+    A repo with `calc.py`, `tests` under `tests/` and `root_files` at the root (file name -> content) committed. The
+    files are written before `git_repo` commits them with its own identity: a separate `git commit` in a test fails on
+    CI, which has no git identity. Newlines are fixed to `\n`, so old texts are found on Windows too."""
     root = tmp_path / "repo"
     (root / "tests").mkdir(parents=True)
-    (root / "calc.py").write_text(CALC, encoding="utf-8")
+    (root / "calc.py").write_text(CALC, encoding="utf-8", newline="\n")
     for name, content in tests.items():
-        (root / "tests" / name).write_text(content, encoding="utf-8")
+        (root / "tests" / name).write_text(content, encoding="utf-8", newline="\n")
+    for name, content in (root_files or {}).items():
+        (root / name).write_text(content, encoding="utf-8", newline="\n")
     git_repo(root)
     return root
 
@@ -312,7 +319,7 @@ def test_a_test_named_in_a_whole_skipped_module_is_refused(git_repo, tmp_path, c
     code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b")), named], repo=str(root))
     out = capsys.readouterr().out
     assert code == 2, out
-    assert "do not all pass on the unmodified calc.py" in out and named in out, out
+    assert "do not all pass on the unmodified calc.py" in out and "test_never_collected" in out, out
     assert "## " not in out, out
 
 
@@ -340,7 +347,8 @@ def test_a_whole_skipped_module_reached_through_the_suite_is_listed(git_repo, tm
     code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(root))
     out = capsys.readouterr().out
     assert code == 0, out
-    line = "   skipped (no test id): SKIPPED [1] tests/test_runtime.py:3: no runtime here"
+    # 摘要的位置用平台的路徑分隔符號 ／ The summary's location uses the platform's path separator
+    line = f"   skipped (no test id): SKIPPED [1] {os.path.join('tests', 'test_runtime.py')}:3: no runtime here"
     assert f"Skipped on the unmodified calc.py, so no item can turn them red:\n{line}" in out, out
     assert "## subtract: 1 red, 1 skipped\n" in out and out.count(line) == 2, out
 
@@ -411,10 +419,8 @@ def test_output_the_script_cannot_read_is_could_not_check(git_repo, tmp_path, ca
     `-p no:terminal` prints nothing): no closing count line read means could not check, exit code 2, rather than
     taking unread skips as none and unread red tests as "turned nothing red" (CODING_STANDARDS rule 8; #209 review
     round 2)."""
-    root = _repo_with(git_repo, tmp_path, {"test_calc.py": SKIPPED_TARGET})
-    (root / "pytest.ini").write_text(f"[pytest]\naddopts = {addopts}\n", encoding="utf-8")
-    subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-qm", "addopts"], cwd=root, check=True, capture_output=True)
+    root = _repo_with(git_repo, tmp_path, {"test_calc.py": SKIPPED_TARGET},
+                      {"pytest.ini": f"[pytest]\naddopts = {addopts}\n"})
     code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b")), "tests/test_calc.py"],
                      repo=str(root))
     out = capsys.readouterr().out
@@ -427,7 +433,7 @@ def test_an_argument_file_among_the_tests_is_refused(repo, tmp_path, capsys):
     """`@檔案` 讓 pytest 從檔案讀參數，裡面的選項與 node id 都躲過檢查：結束碼 2，什麼都沒跑（#209 審查第 2 輪）。
     `@file` makes pytest read arguments from a file, hiding options and node ids from the checks: exit code 2 before
     anything runs (#209 review round 2)."""
-    (tmp_path / "args.txt").write_text("-q\ntests/test_calc.py\n", encoding="utf-8")
+    (tmp_path / "args.txt").write_text("-q\ntests/test_calc.py\n", encoding="utf-8", newline="\n")
     code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b")), f"@{tmp_path / 'args.txt'}"],
                      repo=str(repo))
     out = capsys.readouterr().out
@@ -441,10 +447,7 @@ def test_an_item_that_makes_the_output_unreadable_is_could_not_check(git_repo, t
     檔案寫回原狀（#209 審查第 2 輪）。
     Readable on the unmodified file but not after an item (the item here is pytest.ini's `addopts` itself): that item
     cannot be checked, exit code 2, and the file is written back (#209 review round 2)."""
-    root = _repo_with(git_repo, tmp_path, {"test_calc.py": TESTS})
-    (root / "pytest.ini").write_text("[pytest]\naddopts = -ra\n", encoding="utf-8")
-    subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-qm", "addopts"], cwd=root, check=True, capture_output=True)
+    root = _repo_with(git_repo, tmp_path, {"test_calc.py": TESTS}, {"pytest.ini": "[pytest]\naddopts = -ra\n"})
     code = tool.main(["pytest.ini", _reversions(tmp_path, ("quiet", "-ra", "-qq"))], repo=str(root))
     out = capsys.readouterr().out
     assert code == 2, out
