@@ -9,7 +9,8 @@ from dataclasses import replace
 
 import pytest
 
-from clean_live import respond_with
+from clean_live import assert_only_gap, respond_with
+from node_marks import node_only
 from vibeharness.core.baseline import Baseline, breach_key, finding_key, static_key
 from vibeharness.core.gate import (
     ExecutionEvidence, GapCode, GateEvidence, GateLimits, ReviewEvidence, ScopeDisclosure,
@@ -17,7 +18,6 @@ from vibeharness.core.gate import (
 from vibeharness.core import models as _models
 from vibeharness.core.gate import evaluate as gate_evaluate
 from vibeharness.core.llm_gateway import BUDGET_EXHAUSTED_REASON, CACHE_MISS_REASON
-from vibeharness.core.sandbox import detect_node
 from vibeharness.core.models import (
     AgentCallRecord, FindingSeverity, GeneratedTest, MutantResult, MutationReport, ReviewFinding, STRIDECategory,
     StaticFinding, TestExecutionResult, TestStatus, ThreatItem, ThreatModelReport,
@@ -384,13 +384,6 @@ _WIRING_CASES = {
 }
 
 
-def _assert_only_gap(summary, expected):
-    """判定是 INCONCLUSIVE，唯一的缺口含有 expected ／ The Verdict is INCONCLUSIVE and the only gap contains `expected`."""
-    assert summary.overall_status == "INCONCLUSIVE"
-    assert len(summary.inconclusive_reasons) == 1, summary.inconclusive_reasons
-    assert expected in summary.inconclusive_reasons[0], summary.inconclusive_reasons
-
-
 @pytest.mark.parametrize("case", list(_WIRING_CASES))
 def test_pipeline_wires_scope_limits_and_review_facts_into_the_gate(case, clean_live_run):
     """擷取器、設定上限與審查名單的事實各自送進閘門：乾淨目標加上一個案例的條件，那個缺口是唯一的一筆，判定是
@@ -403,7 +396,7 @@ def test_pipeline_wires_scope_limits_and_review_facts_into_the_gate(case, clean_
     gap in `tests/test_r5_languages_secrets.py`. This used to be one mock run raising every gap at once, where removing
     any one left the Verdict as it was; it now runs one case at a time on `clean_live_run` (#200, #207)."""
     files, config, expected = _WIRING_CASES[case]
-    _assert_only_gap(clean_live_run(files, config=config), expected)
+    assert_only_gap(clean_live_run(files, config=config), expected)
 
 
 def test_pipeline_wires_an_incomplete_static_scan_into_the_gate(clean_live_run, monkeypatch):
@@ -423,7 +416,7 @@ def test_pipeline_wires_an_incomplete_static_scan_into_the_gate(clean_live_run, 
 
     summary = clean_live_run()
     assert [os.path.basename(p) for p in marked] == ["calc.py"]
-    _assert_only_gap(summary, "could not fully scan 1 source file(s)")
+    assert_only_gap(summary, "could not fully scan 1 source file(s)")
 
 
 def test_discovered_config_scope_filtering_is_an_evidence_gap():
@@ -506,8 +499,6 @@ def test_python_black_box_tests_do_not_mask_python_without_white_box_tests():
 # --- clean_live_run 上的混合語言與突變測試缺口（#183 第 17、22 項） ---------------------------------
 # --- Mixed-language and mutation gaps on clean_live_run (#183 items 17 and 22) -----------------------
 
-_NODE_PATH, _, _NODE_PROBLEM = detect_node("node")
-node_only = pytest.mark.skipif(_NODE_PATH is None, reason=f"Node unavailable: {_NODE_PROBLEM}")
 
 _LOGIN_JS = "export function login(user) {\n  if (!user) return 'error';\n  return 'ok';\n}\n"
 _LOGIN_FINDING = {
@@ -539,7 +530,7 @@ def test_a_mixed_target_whose_only_white_box_test_is_js_lacks_python_tests(clean
     assert [(r["test_id"], r["language"], r["status"]) for r in report["whitebox"]["test_results"]] == [
         ("WB-TEST-01", "javascript", "PASSED")]
     assert [r["language"] for r in report["blackbox_test_results"]] == ["python"]
-    _assert_only_gap(summary, "Python code got no white-box test")
+    assert_only_gap(summary, "Python code got no white-box test")
 
 
 # `return a + b + 1 - 1` 的 5 個變異體，算出 -1、3、4、7 與 6；測試在結果是 6 時斷言失敗（殺死），其他不是 5 的結果
@@ -569,4 +560,4 @@ def test_a_mutation_score_on_mostly_invalid_mutants_is_an_evidence_gap(clean_liv
         "a - b + 1 - 1 invalid", "a + b - 1 - 1 invalid", "a + b + 0 - 1 invalid", "a + b + 1 + 1 invalid",
         "a + b + 1 - 0 killed"]
     assert (mutation["score"], mutation["killed"], mutation["invalid"]) == (100.0, 1, 4)
-    _assert_only_gap(summary, "4 of 5 mutant(s) were invalid")
+    assert_only_gap(summary, "4 of 5 mutant(s) were invalid")

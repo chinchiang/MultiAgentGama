@@ -9,6 +9,7 @@ import time
 
 import pytest
 
+from clean_live import assert_only_gap
 from vibeharness.core.codecheck import check_test_code
 from vibeharness.core.models import GeneratedTest, TestStatus
 from vibeharness.core.sandbox import (
@@ -365,10 +366,8 @@ def test_a_target_shadowing_pytest_is_an_evidence_gap(clean_live_run, tmp_path):
     results = [*report["whitebox"]["test_results"], *report["blackbox_test_results"]]
     assert [r["test_id"] for r in results] == ["WB-TEST-01", "BB-TEST-THREAT-01"], results
     assert all(r["status"] == "PASSED" and _FORGED in r["stdout"] for r in results), results
-    assert summary.overall_status == "INCONCLUSIVE"
-    assert len(summary.inconclusive_reasons) == 1, summary.inconclusive_reasons
-    reason = summary.inconclusive_reasons[0]
-    assert "named like the test runner's" in reason and "pytest.py" in reason, reason
+    reason = assert_only_gap(summary, "named like the test runner's")
+    assert "pytest.py" in reason, reason
 
 
 # --- 目標自己拋出的 AssertionError 不是突破（#183 第 10 項） ------------------------------------------

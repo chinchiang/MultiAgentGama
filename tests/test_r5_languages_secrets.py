@@ -9,6 +9,7 @@ import subprocess
 
 import pytest
 
+from clean_live import assert_only_gap
 from vibeharness.agents.whitebox import ai_static_scanner
 from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
 from vibeharness.agents.whitebox.ast_extractor import DEFAULT_MAX_CONFIG_FILES, UNSUPPORTED_SAMPLE_SIZE, ASTExtractor
@@ -418,9 +419,7 @@ def test_a_go_file_is_inconclusive_and_a_dotenv_key_blocks_and_reaches_sarif(cle
     itself (#200, #205)."""
     unsupported = "1 source file(s) in unsupported languages (go: 1) were not analyzed: main.go"
     go_only = clean_live_run({"svc/main.go": "package main\n\nfunc main() {}\n"}, report="go.md")
-    assert go_only.overall_status == "INCONCLUSIVE"
-    assert len(go_only.inconclusive_reasons) == 1, go_only.inconclusive_reasons
-    assert go_only.inconclusive_reasons[0].endswith(unsupported), go_only.inconclusive_reasons
+    assert assert_only_gap(go_only, unsupported).endswith(unsupported), go_only.inconclusive_reasons
 
     with_env = clean_live_run({".env": f"APP_ENV=prod\nANTHROPIC_API_KEY={ANTHROPIC_KEY}\n",
                                "deploy/values.yaml": BENIGN_YAML}, sarif="r.sarif")

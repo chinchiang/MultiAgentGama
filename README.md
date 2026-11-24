@@ -273,6 +273,7 @@ MultiAgentGama/
 │   ├── clean_live.py            # clean_live_run 的乾淨小目標與專用的假模型回答：live＋假 litellm 下沒有任何證據缺口
 │   ├── config_files.py          # 讀出內建設定、寫出修改後的測試用設定檔（load_config／write_config）
 │   ├── conftest.py              # 共用 fixture：以假 litellm 讓 live 路徑離線執行；git_repo 建不受全域 git 設定影響的測試 repo；clean_live_run 跑乾淨目標的 live pipeline
+│   ├── node_marks.py            # 共用 Node 標記（node_only／node_feature）：VIBEHARNESS_REQUIRE_NODE=1 時缺少 Node 是失敗，否則略過
 │   ├── test_agent_call.py       # 透過 ask／ask_text 測試代理呼叫：提示組裝與通道、只有可用的 items 到 mapper、模擬輸出、純文字呼叫
 │   ├── test_ai_security.py      # OWASP LLM Top 10 2026／ATLAS 控制與確定性 AI 安全規則
 │   ├── test_baseline.py                # --baseline：載入與重算、已知問題不計入、action.yml 結構
@@ -345,6 +346,7 @@ MultiAgentGama/
 │   ├── test_review_whitebox_fixes.py   # 路由、Python 巢狀定義、掃描規則、嚴重度、不可信的發現文字
 │   ├── test_sdist_script.py            # test_sdist.py：在解開的 sdist 裡跑 pytest、帶 VIBEHARNESS_SDIST、建置失敗即停、拒絕 .. 路徑
 │   ├── test_settings.py                # 透過 load_settings 測試設定：每個鍵的 null／0 規則、驗證順序、探索到的設定檔政策、覆寫值
+│   ├── test_shared_marks.py            # 共用 Node 標記依規則失敗、略過或執行，assert_only_gap 失敗時仍寫出兩邊的判定
 │   ├── test_threat_symbols.py          # 威脅文字指向哪些符號：攻擊腳本的程式碼與 SARIF 位置同一套規則、只寫路徑的路由、JS 的 `$`、較長的路徑不會對到較短的路由
 │   ├── test_transport.py               # 模型呼叫接縫：每次嘗試一個 ModelRequest、fallback、轉接器不可用、scripted fixture
 │   └── test_windows_env_limit.py       # Windows 環境變數上限 32767 字元：長字串參數改用短 ID，測試不會在 setup 就失敗

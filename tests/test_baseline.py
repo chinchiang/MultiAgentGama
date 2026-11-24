@@ -7,6 +7,7 @@ import sys
 import pytest
 import yaml
 
+from clean_live import assert_only_gap
 from vibeharness.core import baseline as bl
 from vibeharness.core.harness import VibeHarnessCommander
 from vibeharness.core.models import (
@@ -189,10 +190,7 @@ def test_a_new_hit_the_per_file_cap_drops_behind_known_hits_makes_the_run_inconc
 
     capped = clean_live_run({"loads.py": _remote_code_loads(21)}, baseline=baseline, report="capped.md")
     assert capped.new_blocking_rule_hits == 0 and capped.blocking_rule_hits == 20
-    assert capped.overall_status == "INCONCLUSIVE"
-    assert len(capped.inconclusive_reasons) == 1, capped.inconclusive_reasons
-    reasons = capped.inconclusive_reasons[0]
-    assert "1 deterministic rule hit(s) over the per-file cap in 1 rule/file pair(s)" in reasons, reasons
+    reasons = assert_only_gap(capped, "1 deterministic rule hit(s) over the per-file cap in 1 rule/file pair(s)")
     assert "loads.py (VH-AI-001)" in reasons, reasons
     assert "over the per-file cap in 1 rule/file pair(s)" in (tmp_path / "capped.md").read_text(encoding="utf-8")
 

@@ -4,6 +4,7 @@ import json
 import os
 import re
 
+from clean_live import assert_only_gap
 from vibeharness.core.llm_gateway import LLMGateway
 from vibeharness.core.models import ReviewFinding, FindingSeverity, CodeSymbol
 from vibeharness.agents.whitebox.debater import MultiModelDebater
@@ -186,10 +187,7 @@ def test_aliases_on_one_model_are_one_reviewer_model_for_the_gate(clean_live_run
 
     summary = clean_live_run(config=one_model)
     assert summary.reviewer_models == ["claude", "deepseek", "gemini", "glm"]
-    assert summary.overall_status == "INCONCLUSIVE"
-    assert len(summary.inconclusive_reasons) == 1, summary.inconclusive_reasons
-    assert "Only one distinct reviewer model (claude/deepseek/gemini/glm)" in summary.inconclusive_reasons[0], \
-        summary.inconclusive_reasons
+    assert_only_gap(summary, "Only one distinct reviewer model (claude/deepseek/gemini/glm)")
 
 
 def test_a_verifier_on_the_reporters_model_does_not_rule_on_its_finding(scripted, tmp_path):

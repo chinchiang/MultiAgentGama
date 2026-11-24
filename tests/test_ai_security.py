@@ -10,6 +10,7 @@ import os
 import pytest
 import yaml
 
+from clean_live import assert_only_gap
 from config_files import load_config
 from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
 from vibeharness.agents.whitebox.ai_static_scanner import AISecurityStaticScanner
@@ -532,9 +533,7 @@ def test_planted_reviewer_instruction_is_an_evidence_gap(clean_live_run, tmp_pat
         "    return amount\n"
     )})
     assert [f.rule_id for f in summary.static_findings] == ["VH-AI-009"]
-    assert summary.overall_status == "INCONCLUSIVE"
-    assert len(summary.inconclusive_reasons) == 1, summary.inconclusive_reasons
-    assert "may have been manipulated" in summary.inconclusive_reasons[0], summary.inconclusive_reasons
+    assert_only_gap(summary, "may have been manipulated")
     assert "VH-AI-009" in (tmp_path / "r.md").read_text(encoding="utf-8")
 
 
