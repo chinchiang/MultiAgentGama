@@ -12,51 +12,53 @@
 
 ## 🏛️ 系統架構與流程 (Architecture Overview)
 
-`vibeharness/core/harness.py` 以六個階段加上選用的階段 3.5（突變測試）依序調度各子 Agent（沒有狀態機的分支或回退）。所有模型呼叫都經 `vibeharness/core/llm_gateway.py`；所有讀取目標程式碼的 Agent 都先經 `vibeharness/core/sanitize.py` 的不受信任程式碼通道。
+`vibeharness/core/harness.py` 以六個階段加上選用的階段 3.5（突變測試）依序調度各子 Agent（沒有狀態機的分支或回退）。所有代理模型呼叫都經 `vibeharness/core/agent_call.py`（以 `ask`／`ask_batch` 並行扇出，並將目標程式碼與模型輸出經 `vibeharness/core/sanitize.py` 封裝於來源標記通道與安全政策）送往 `vibeharness/core/llm_gateway.py` 與 `transport.py`（LiteLLM 轉接），回答由 `vibeharness/core/model_output.py` 做形狀檢查；生成測試經 `vibeharness/core/codecheck.py` 靜態檢查後於沙盒執行，歸因結果經 `vibeharness/core/tally.py` 計數後交由 `vibeharness/core/gate.py` 品質門禁仲裁。
 
 ```mermaid
 flowchart TD
     ACT["GitHub Action action.yml（選用）<br/>prep step 驗證 inputs → vibeharness/action_runner.py"] -- "在同一個行程內執行 CLI" --> CLI
     CLI["vibeharness CLI（vibeharness/cli.py）<br/>--target / --mode / --config / --desc / --base-url<br/>--format / --sarif / --summary-json / --baseline<br/>--mutation / --cache-dir / --estimate / …"] --> CMD["🧠 總指揮官 Commander<br/>vibeharness/core/harness.py（六個階段＋選用的 Phase 3.5）"]
-    CMD --> AST["階段 1・符號擷取<br/>ast_extractor.py（Python 用 AST；JS/TS 用 lexer）<br/>另計算不支援語言的檔案、收集設定類檔案"]
-    AST --> SAST["階段 1・確定性 AI 安全規則<br/>ai_static_scanner.py（VH-AI-001～009）<br/>VH-AI-007 也掃設定類檔案（只在本機）<br/>並偵測 ai_components"]
+    CMD --> AST["階段 1・符號擷取<br/>ast_extractor.py（Python 用 AST；JS/TS 用 lexer）<br/>計算不支援語言檔案、收集設定類檔案 (ScopeResult)"]
+    AST --> SAST["階段 1・確定性 AI 安全規則<br/>ai_static_scanner.py（VH-AI-001～009）<br/>本機掃設定類檔案、偵測 ai_components<br/>記錄未完整掃描與單檔上限略過 (ScanResult)"]
 
-    GW["LLM 閘道 llm_gateway.py<br/>LiteLLM 路由、fallback_model、模擬回退<br/>回應快取（--cache-dir／--cache-only）<br/>retry_invalid_output 重問、prompt_sha256<br/>max_model_calls、max_concurrent_calls、call_log"]
-    SAN["不受信任通道 sanitize.py<br/>去隱形字元／遮蔽密鑰<br/>&lt;untrusted_target_code&gt; 包目標程式碼<br/>&lt;untrusted_model_output&gt; 包模型寫的文字"]
+    CALL["代理呼叫與扇出 agent_call.py<br/>ask / ask_batch / fan_out 並行執行<br/>Untrusted 標記通道 (sanitize.py) 與政策注入<br/>形狀檢查與物件擷取 (model_output.py)"]
+    GW["LLM 閘道 llm_gateway.py<br/>模型路由、fallback_model、模擬回退<br/>回應快取 (--cache-dir / --cache-only)<br/>retry_invalid_output 重問、prompt_sha256<br/>max_model_calls 預算、call_log 稽核日誌"]
+    TRP["模型傳輸接縫 transport.py<br/>LiteLLMTransport 轉接器（唯一匯入 litellm 處）"]
+    CALL --> GW --> TRP
 
     subgraph WB ["階段 2–3・白箱：多模型評議 → 交叉驗證 → 沙盒實測（模型呼叫平行）"]
         R1["邏輯與狀態審查<br/>Claude"]
         R2["防禦與資源審查<br/>DeepSeek"]
         R3["規格與合約審查<br/>GLM"]
         R4["AI 整合與供應鏈審查<br/>Gemini（OWASP LLM Top 10 2026）"]
-        DEDUP["去重合併<br/>deduplicator.py"]
-        DEB["交叉驗證：非作者模型投票<br/>confirm / reject / unsure"]
+        DEDUP["去重合併<br/>deduplicator.py (complete-linkage)"]
+        DEB["交叉驗證：非作者模型投票<br/>debater.py (confirm / reject / unsure)"]
         GEN["白箱測試生成 test_generator.py<br/>無效測試自癒重試 2 次；<br/>無可用測試時補 WB-PROBE 探針"]
-        SBX["沙盒執行 test_executor.py<br/>pytest／node --test → local_subprocess / docker<br/>行涵蓋率：Python＋JS/TS（jscoverage.py）"]
+        CHK1["測試靜態檢查 codecheck.py<br/>斷言檢查、圍欄剝除、拒絕套件安裝"]
+        SBX["沙盒執行 test_executor.py<br/>pytest / node --test → local_subprocess / docker<br/>行涵蓋率：Python + JS/TS (jscoverage.py)"]
+        ATT1["結果歸因 attribution.py<br/>JUnit 解析、狀態判定、失敗 PoC"]
         R1 --> DEDUP
         R2 --> DEDUP
         R3 --> DEDUP
         R4 --> DEDUP
         DEDUP --> DEB
-        DEB -- "確認＋同票保留<br/>（未套用驗證時為全部，皆未經驗證）" --> GEN --> SBX
+        DEB -- "確認＋未決平手<br/>（未驗證時為全部假設）" --> GEN --> CHK1 --> SBX --> ATT1
     end
 
     MUT["階段 3.5・突變測試（選用，--mutation）<br/>mutation.py：對涵蓋到的函式做變異，<br/>在複本上重跑通過的測試，不呼叫模型"]
     SBX -. "選用" .-> MUT
 
-    AST --> SAN
-    SAN --> R1
-    SAN --> R2
-    SAN --> R3
-    SAN --> R4
-    SAN --> DEB
-    SAN --> GEN
+    AST -- "符號與原始碼" --> R1 & R2 & R3 & R4
+    AST -- "符號與原始碼" --> DEB
+    AST -- "符號與 import 指引" --> GEN
 
     subgraph BB ["階段 4–5・黑箱：威脅建模驅動的攻擊測試（模型呼叫平行）"]
         TM["STRIDE / OWASP API／LLM 威脅建模<br/>（+ MITRE ATLAS 對應）threat_modeler.py<br/>符號分批送審、跨批次去重"]
-        ATK["攻擊腳本生成 scenario_builder.py<br/>無效測試修復 1 次"]
+        ATK["攻擊腳本生成 scenario_builder.py<br/>無效測試自癒修復 1 次"]
+        CHK2["測試靜態檢查 codecheck.py<br/>斷言檢查、圍欄剝除、拒絕套件安裝"]
         BEX["黑箱測試執行<br/>test_executor.py → 同一沙盒；HTTP / in-process"]
-        TM --> ATK --> BEX
+        ATT2["結果歸因 attribution.py<br/>JUnit 解析、突破確認判定 (Breach)"]
+        TM --> ATK --> CHK2 --> BEX --> ATT2
     end
 
     SBX --> TM
@@ -65,41 +67,39 @@ flowchart TD
     SAST -- "ai_components" --> TM
     CLI -- "--desc" --> TM
     CLI -- "--base-url" --> ATK
-    SAN --> TM
-    SAN -- "威脅項目與待修復測試放在 &lt;untrusted_model_output&gt;" --> ATK
 
-    GATE["階段 6・品質門禁<br/>READY_TO_SHIP / NEEDS_FIXES /<br/>INCONCLUSIVE / BLOCKED_CRITICAL_RISK"]
-    BASE["基準載入 baseline.py<br/>證據計數 tally.py 比對（--baseline）"]
-    CMD -- "審查者／驗證者設定：沒有 whitebox_reviewer_*、<br/>審查者或驗證者少於兩個不同的模型別名" --> GATE
-    AST -- "解析失敗、略過／過大的檔案、<br/>不支援語言的檔案、超過上限的設定類檔案" --> GATE
-    SAST -- "HIGH 以上命中；VH-AI-008／009 完整性命中；<br/>未完整掃描（30 秒上限）" --> GATE
+    TALLY["證據計數 tally.py<br/>載入基準 baseline.py (identity.py 指紋)<br/>拆分全部、新出現與已知問題"]
+    GATE["階段 6・品質門禁 gate.py (evaluate)<br/>READY_TO_SHIP / NEEDS_FIXES /<br/>INCONCLUSIVE / BLOCKED_CRITICAL_RISK"]
+    CMD -- "審查者／驗證者設定：無 whitebox_reviewer_*、<br/>少於 2 個相異模型別名" --> GATE
+    AST -- "解析失敗、略過／過大檔案、不支援語言檔案、<br/>設定類檔案超限、自動發現設定檔排除" --> GATE
+    SAST -- "HIGH+ 命中；VH-AI-008/009 完整性命中；<br/>未完整掃描 (30 秒)；單檔上限略過 (static_hits_capped)" --> GATE
     GEN -- "沒有模型測試的發現" --> GATE
-    SBX -- "FAILED；未執行、<br/>JS/TS 未執行" --> GATE
+    ATT1 -- "白箱 FAILED；未執行、JS/TS 未執行" --> TALLY
     MUT -- "證據缺口：分數過低、被截斷、沒有結論" --> GATE
-    TM -- "未測試的威脅／沒有威脅" --> GATE
-    BEX -- "突破；未分類的 FAILED；<br/>未執行" --> GATE
-    BASE -- "已知問題不計入" --> GATE
+    TM -- "未測試的威脅／沒有威脅" --> TALLY
+    ATT2 -- "資安突破；未分類 FAILED；未執行" --> TALLY
+    TALLY -- "計數與已知問題分離後交由閘門" --> GATE
     GW -- "call_log：模擬、invalid、預算用盡、快取未命中" --> GATE
-    GATE --> OUT["審計報告 report_generator.py<br/>md / json / SARIF；CLI 的 --summary-json<br/>崩潰時寫 &lt;output&gt;.partial.json"]
+    GATE --> OUT["審計報告 report_generator.py<br/>md / json (含指紋) / SARIF；CLI 的 --summary-json<br/>崩潰時寫 &lt;output&gt;.partial.json"]
 
-    WB -. "所有模型呼叫" .-> GW
-    BB -. "所有模型呼叫" .-> GW
+    WB -. "模型呼叫經 ask/ask_batch" .-> CALL
+    BB -. "模型呼叫經 ask/ask_batch" .-> CALL
 ```
 
 ### 🤖 各 Agent 分工
 
 每個 Agent 的模型與提示詞都定義在 [`vibeharness/config/agents_config.yaml`](https://github.com/chinchiang/MultiAgentGama/blob/master/vibeharness/config/agents_config.yaml)，可自由改派模型；白箱審查者由設定檔中所有 `whitebox_reviewer_*` 項目組成，每個項目各自使用自己的 `name`、`model_alias`、`temperature` 與 `focus`（focus 文字會帶入它的提示詞），新增或刪除項目即可調整評議陣容（欄位細節見 [docs/configuration.md](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/configuration.md)）：
 
-| 子 Agent（agent_id） | 預設模型 | 職責 | temperature |
+| 子 Agent（agent_id） | 預設模型別名（底層預設模型） | 職責 | temperature |
 | :--- | :--- | :--- | :--- |
-| 邏輯與狀態審查（`whitebox_reviewer_claude`） | claude | 深度邏輯邊界、未處理例外、狀態不一致、空指標／型別缺陷 | 0.2 |
-| 防禦與資源審查（`whitebox_reviewer_deepseek`） | deepseek | 輸入清洗、注入（SQL／命令／路徑）、防禦護欄、資源耗盡、並行安全 | 0.1 |
-| 規格與合約審查（`whitebox_reviewer_glm`） | glm | API 簽章合規、業務規格、契約違反、授權檢查（BOLA／BFLA） | 0.2 |
-| AI 整合與供應鏈審查（`whitebox_reviewer_gemini`） | gemini | 依 OWASP Top 10 for LLM Applications 2026 審查呼叫模型的程式（LLM01～LLM08、LLM10）：提示注入、提示／日誌中的密鑰、工具越權、模型與套件供應鏈、無上限消耗、未驗證的模型輸出；另查寫死的憑證與未固定版本的第三方依賴 | 0.2 |
+| 邏輯與狀態審查（`whitebox_reviewer_claude`） | claude (`claude-sonnet-5-5`) | 深度邏輯邊界、未處理例外、狀態不一致、空指標／型別缺陷 | 0.2 |
+| 防禦與資源審查（`whitebox_reviewer_deepseek`） | deepseek (`deepseek/deepseek-v4-pro`) | 輸入清洗、注入（SQL／命令／路徑）、防禦護欄、資源耗盡、並行安全 | 0.1 |
+| 規格與合約審查（`whitebox_reviewer_glm`） | glm (`zai/glm-5.3`) | API 簽章合規、業務規格、契約違反、授權檢查（BOLA／BFLA） | 0.2 |
+| AI 整合與供應鏈審查（`whitebox_reviewer_gemini`） | gemini (`gemini/gemini-3.8-flash`) | 依 OWASP Top 10 for LLM Applications 2026 審查呼叫模型的程式（LLM01～LLM08、LLM10）：提示注入、提示／日誌中的密鑰、工具越權、模型與套件供應鏈、無上限消耗、未驗證的模型輸出；另查寫死的憑證與未固定版本的第三方依賴 | 0.2 |
 | 交叉驗證投票（`whitebox_verifier_*` ×4） | claude／deepseek／glm／gemini | 只對「別的模型」回報的發現投票：confirm／reject／unsure；每個 model alias 只投一票（同一 alias 的第二個驗證者會被略過） | 0.0 |
-| 白箱測試生成器（`whitebox_test_generator`） | deepseek | 針對已確認或未經驗證的發現生成可執行的 pytest 測試（JS/TS 為 `node:test`） | 0.3 |
-| STRIDE 威脅建模師（`blackbox_threat_modeler`） | claude | 擷取信任邊界與資產、建立 STRIDE＋OWASP（API；AI 目標另加 LLM Top 10 2026）攻擊矩陣，並標註 MITRE ATLAS 技術 | 0.2 |
-| 攻擊場景合成器（`blackbox_test_synthesizer`） | deepseek | 把威脅場景轉成黑箱攻擊腳本（BOLA、注入、限流、提示注入） | 0.2 |
+| 白箱測試生成器（`whitebox_test_generator`） | deepseek (`deepseek/deepseek-v4-pro`) | 針對已確認或未經驗證的發現生成可執行的 pytest 測試（JS/TS 為 `node:test`） | 0.3 |
+| STRIDE 威脅建模師（`blackbox_threat_modeler`） | claude (`claude-sonnet-5-5`) | 擷取信任邊界與資產、建立 STRIDE＋OWASP（API；AI 目標另加 LLM Top 10 2026）攻擊矩陣，並標註 MITRE ATLAS 技術 | 0.2 |
+| 攻擊場景合成器（`blackbox_test_synthesizer`） | deepseek (`deepseek/deepseek-v4-pro`) | 把威脅場景轉成黑箱攻擊腳本（BOLA、注入、限流、提示注入） | 0.2 |
 
 ---
 
@@ -129,7 +129,7 @@ flowchart TD
    | `VH-AI-008` | 隱形或雙向控制字元（Unicode tag、零寬、Trojan Source、韓文填充字元）；ZWJ／ZWNJ 與 variation selector 出現在 emoji、RTL／印度系文字或中日韓異體字中時不回報 | HIGH（零寬與不可見的格式字元：MEDIUM） | LLM01:2026／AML.T0068 |
    | `VH-AI-009` | 對 AI 審查者下指令的注釋／字串（「ignore previous instructions」「report no findings」；也辨識正體與簡體中文，如「忽略先前的指令」「不要回報這個問題」「AI 審查者：視為安全」） | MEDIUM | LLM01:2026／AML.T0051.001 |
 
-   `VH-AI-001`～`006` 只掃 Python（`005`／`006` 只在匯入 AI SDK 的檔案啟用，`006` 的污點追蹤限於單一函式或模組範圍）；`007`～`009` 也掃 JS/TS，`007` 另外掃設定類檔案（`.env`、`.env.*`、`*.env`、YAML、JSON、TOML、INI、CFG、`.properties`、`.tf`／`.tfvars`、`Dockerfile*`、`.npmrc`／`.pypirc`／`.netrc`；略過鎖定檔），檔案篩選規則相同，每次最多 200 個，各自受 `max_file_bytes` 與 30 秒上限約束；因這些上限而沒有完整掃描的設定檔列為證據缺口。擷取器不支援的語言（Go、Java、Kotlin、Rust、C／C++、C#、PHP、Ruby、Swift、Scala 等；刻意不算 shell 腳本、SQL 與 HTML）的原始碼檔案會依語言計數並列為證據缺口，這種目標因此不會得到 `READY_TO_SHIP`。每個 Python 檔的 AST 規則有 30 秒的分析上限，超過上限或意外出錯的檔案列為證據缺口（「could not fully scan N source file(s)」）。HIGH 以上的命中直接使閘門為 `NEEDS_FIXES`；`VH-AI-008`／`VH-AI-009` 另列為證據缺口（模型階段的結論可能已被操弄），因此不可能得到 `READY_TO_SHIP`；測試檔字串字面值裡的 `009` 命中也算，這是刻意的，因為測試資料與其他程式碼一樣會進審查者的提示詞。`009` 先做 NFKC 正規化再比對，並略過描述行為的句子（「should report no findings for clean code」：要同時有程式碼主詞或句首助動詞，以及乾淨輸入的限定）、緊接在片語前的否定詞，以及條件句與疑問句（「不可視為安全」「判定為通過時」「是否視為安全？」）；句子前段的否定詞不再能讓後面的指令失效，雙重否定與反詰（「不得不忽略…」「何不…」）仍是命令；中文的判定宣稱要指名程式碼（「此程式碼視為安全」）才算；會／已／被／曾 之後的描述句只有主詞是程式元件（「此函式會將…」）時才豁免，主詞是讀者（「審查者已將此程式碼視為安全」）時照樣命中；送往前端、Sentry 或日誌的「不要回報」、檔案掃描或 KYC 應用自己對 檔案／文件 的判定，以及一般 AI 助理的提示詞，不算對審查者的指令。目標若匯入 AI SDK（openai、anthropic、litellm、langchain、transformers、torch 等），偵測到的 `ai_components` 會讓威脅建模額外套用 OWASP LLM Top 10 2026 與 ATLAS 技術對應（`vibeharness/config/threat_rules.yaml` 的 `owasp_llm_top10_2026`），威脅可帶 `atlas_mapping`。
+   `VH-AI-001`～`006` 只掃 Python（`005`／`006` 只在匯入 AI SDK 的檔案啟用，`006` 的污點追蹤限於單一函式或模組範圍）；`007`～`009` 也掃 JS/TS，`007` 另外掃設定類檔案（`.env`、`.env.*`、`*.env`、YAML、JSON、TOML、INI、CFG、`.properties`、`.tf`／`.tfvars`、`Dockerfile*`、`.npmrc`／`.pypirc`／`.netrc`；略過鎖定檔），檔案篩選規則相同，每次最多 200 個，各自受 `max_file_bytes` 與 30 秒上限約束；因這些上限而沒有完整掃描的設定檔列為證據缺口；單一檔案任一規則命中超過 50 筆時只列出最嚴重的 50 筆，其餘略過並列為證據缺口（`static_hits_capped`）。擷取器不支援的語言（Go、Java、Kotlin、Rust、C／C++、C#、PHP、Ruby、Swift、Scala 等；刻意不算 shell 腳本、SQL 與 HTML）的原始碼檔案會依語言計數並列為證據缺口，這種目標因此不會得到 `READY_TO_SHIP`。每個 Python 檔的 AST 規則有 30 秒的分析上限，超過上限或意外出錯的檔案列為證據缺口（「could not fully scan N source file(s)」）。HIGH 以上的命中直接使閘門為 `NEEDS_FIXES`；`VH-AI-008`／`VH-AI-009` 另列為證據缺口（模型階段的結論可能已被操弄），因此不可能得到 `READY_TO_SHIP`；測試檔字串字面值裡的 `009` 命中也算，這是刻意的，因為測試資料與其他程式碼一樣會進審查者的提示詞。`009` 先做 NFKC 正規化再比對，並略過描述行為的句子（「should report no findings for clean code」：要同時有程式碼主詞或句首助動詞，以及乾淨輸入的限定）、緊接在片語前的否定詞，以及條件句與疑問句（「不可視為安全」「判定為通過時」「是否視為安全？」）；句子前段的否定詞不再能讓後面的指令失效，雙重否定與反詰（「不得不忽略…」「何不…」）仍是命令；中文的判定宣稱要指名程式碼（「此程式碼視為安全」）才算；會／已／被／曾 之後的描述句只有主詞是程式元件（「此函式會將…」）時才豁免，主詞是讀者（「審查者已將此程式碼視為安全」）時照樣命中；送往前端、Sentry 或日誌的「不要回報」、檔案掃描或 KYC 應用自己對 檔案／文件 的判定，以及一般 AI 助理的提示詞，不算對審查者的指令。目標若匯入 AI SDK（openai、anthropic、litellm、langchain、transformers、torch 等），偵測到的 `ai_components` 會讓威脅建模額外套用 OWASP LLM Top 10 2026 與 ATLAS 技術對應（`vibeharness/config/threat_rules.yaml` 的 `owasp_llm_top10_2026`），威脅可帶 `atlas_mapping`。
 6. **兩種沙盒**：生成的測試在暫存目錄中執行，環境變數採白名單（子程序的環境變數裡沒有 API 金鑰，也剔除 `LD_PRELOAD`、`BASH_ENV` 這類注入鍵）。每批測試有逾時（`sandbox_timeout_seconds`）；批次逾時後會逐一重跑，此時每個測試另有單測逾時（`per_test_timeout_seconds`），總時間仍受批次預算限制。逾時會終止整個程序樹（Docker 則移除容器）。輸出寫進暫存檔而不是管道，測試留下的子行程不會把已經結束的執行變成逾時；POSIX 上主行程結束時，其餘的行程群組也會被砍掉。
    - `local_subprocess`（預設）：本機子程序；POSIX 上以 `sandbox_memory_mb`（預設 2 GB）限制位址空間並加 CPU 時間上限，擋住失控的消耗。`HOME` 指向每次執行專用的暫存目錄；Linux 上 harness 會讓自己不可 dump，生成的測試讀不到 `/proc/<harness>/environ` 裡的 API 金鑰（只在本機沙盒執行時；除錯時可用 `VIBEHARNESS_KEEP_DUMPABLE=1` 跳過）。測試寫出的每個檔案上限 64 MiB（`RLIMIT_FSIZE`，POSIX），print 迴圈塞不滿 tmpfs；這種寫入失敗回報為「無法正常執行」，不算缺陷（Node 的 EFBIG 也一樣）。子行程的 `TMPDIR`／`TMP`／`TEMP` 指向執行目錄，逾時被砍掉的行程留下的暫存檔會隨執行目錄一起刪除。你這個使用者的其他行程（例如啟動 harness 的 shell）的環境變數仍然可讀，所以這仍然不是安全邊界。
    - `docker`：每批測試在一次性容器中執行——預設無網路、根檔案系統與目標目錄唯讀、移除所有 capabilities、禁止提權、非 root 使用者（harness 以 root 執行時容器改用 `nobody`）、記憶體／CPU／程序數上限。只有該次執行的暫存目錄與 `/tmp`（noexec 的 tmpfs）可寫。容器寫出的單一檔案上限 64 MiB（`--ulimit fsize`），不留 daemon 端日誌（`--log-driver none`），主機上 docker CLI 自己的 stdout／stderr 也各以 64 MiB 為上限；超過時移除容器，該批次算無法正常執行。harness 以 root 執行時，執行目錄交給 `nobody`（權限 0700），而不是開放給所有人。
@@ -548,7 +548,7 @@ Exit code（依序判定）：
 | :--- | :--- | :--- |
 | `2` | BLOCKED_CRITICAL_RISK | 至少一個黑箱攻擊測試確認防禦被突破 |
 | `1` | NEEDS_FIXES | 至少一個白箱測試失敗（暴露缺陷），或確定性 AI 安全規則有 HIGH 以上的命中；此碼專屬於此判定，harness 自身的錯誤不會使用它 |
-| `3` | INCONCLUSIVE | 無失敗，但有證據缺口：使用模擬引擎、模型輸出無效或批次崩潰、`max_model_calls` 用盡、`--cache-only` 執行時快取答不出的呼叫、沒有審查者或審查者少於兩個不同的模型別名、驗證者少於兩個不同的模型別名或非模擬發現缺乏有效跨模型裁決、找不到可分析的符號、`max_files` 略過了檔案、檔案超過 `max_file_bytes`、自動發現的設定檔以 `include`／`exclude` 排除了檔案、檔案解析失敗、確定性規則未能完整掃描某些檔案（超過單檔時間上限或出錯）、不支援語言的原始碼檔案、設定類檔案沒有完整做密鑰掃描（超過 200 個的上限、`max_file_bytes` 或時間上限）、目標中植入了對 AI 審查者的指令或隱形字元（`VH-AI-008`／`009`）、測試錯誤／未執行、沒有執行任何白箱測試、確認的發現沒有模型生成的測試、JS/TS 程式碼沒有生成任何 JS/TS 測試或測試無法執行（沒有可用的 Node）、TypeScript 測試未執行（Node 低於 22.6）、突變測試的缺口（只在 `--mutation` 時：分數低於 `mutation_min_score`、變異體被 `mutation_max_mutants` 截斷，或沒有結論）、威脅建模沒有產生任何威脅、威脅未測試、黑箱測試失敗但未分類為 exploit 等；未知的判定字串也以此碼 fail closed |
+| `3` | INCONCLUSIVE | 無失敗，但有證據缺口：使用模擬引擎、模型輸出無效或批次崩潰、`max_model_calls` 用盡、`--cache-only` 執行時快取答不出的呼叫、沒有審查者或審查者少於兩個不同的模型別名、驗證者少於兩個不同的模型別名或非模擬發現缺乏有效跨模型裁決、找不到可分析的符號、`max_files` 略過了檔案、檔案超過 `max_file_bytes`、自動發現的設定檔以 `include`／`exclude` 排除了檔案、檔案解析失敗、確定性規則未能完整掃描某些檔案（超過單檔時間上限或出錯）、不支援語言的原始碼檔案、設定類檔案沒有完整做密鑰掃描（超過 200 個的上限、`max_file_bytes` 或時間上限）、確定性規則單檔命中超限而略過其餘命中（`static_hits_capped`）、目標中植入了對 AI 審查者的指令或隱形字元（`VH-AI-008`／`009`）、測試錯誤／未執行、沒有執行任何白箱測試、確認的發現沒有模型生成的測試、JS/TS 程式碼沒有生成任何 JS/TS 測試或測試無法執行（沒有可用的 Node）、TypeScript 測試未執行（Node 低於 22.6）、突變測試的缺口（只在 `--mutation` 時：分數低於 `mutation_min_score`、變異體被 `mutation_max_mutants` 截斷，或沒有結論）、威脅建模沒有產生任何威脅、威脅未測試、黑箱測試失敗但未分類為 exploit 等；未知的判定字串也以此碼 fail closed |
 | `0` | READY_TO_SHIP | 以上皆無；成功的 `--estimate`、`--init-config`、`--help` 或 `--version` 也以 0 結束（沒有稽核，也沒有判定） |
 | `4` | — | live 模式模型呼叫失敗，或在 live 模式以 `--cache-only` 執行時回應快取沒有答案 |
 | `5` | — | harness 設定或使用錯誤：`--target` 指定的路徑不存在、config 檔缺失、YAML 損壞、是目錄、無法讀取或是二進位檔，或最上層／區段／項目不是 mapping、`max_files`／`max_model_calls`／`max_concurrent_calls`／逾時等值不合法、`extra_params` 用了保留鍵或名稱像端點／憑證的鍵（含輸出 token 上限 `max_tokens`／`max_completion_tokens`／`max_output_tokens`，以及 `extra_headers`／`headers`）、`models.<alias>` 沒有 `model` 字串、`fallback_model` 為空或設了 `base_url`、`agents.<id>.model_alias` 指向 `models` 區段沒有的別名、自動發現的設定檔是符號連結、非一般檔案或超過 1 MB，或設定了安全敏感的鍵（含改了模型字串、新增模型別名或 `whitebox_reviewer_*` agent、自訂審查者 `name`／`focus`、關閉 `sandbox_memory_mb`、拉高花費／逾時／突變上限、開啟 `mutation_testing` 或調低 `mutation_min_score`）、`--cache-only` 卻沒有回應快取（沒有 `--cache-dir` 也沒設 `global.cache_dir`）、`--cache-dir` 無法建立或寫入，或位於目標之內（GitHub Actions 上則是 `GITHUB_WORKSPACE` 之內）、`--baseline` 不是本工具完整的 JSON 報告（含 `.partial.json`）、`--base-url` 不是含主機的 `http(s)` 網址或連接埠不在 1–65535、`--init-config` 的目標已存在（沒加 `--force`）、是目錄、符號連結或其他不是一般檔案的東西，或無法寫入、`--force` 沒有搭配 `--init-config`、Action 的 `extra-args` 不合法（不執行稽核的旗標、有專屬 input 的旗標或無法解析）、安裝不完整（缺少相依套件或模組匯入失敗）、沙盒不可用、`--output`／`--sarif`／`--summary-json` 不可寫、`--changed-since` 的 ref 無法解析、CLI 用法錯誤（含 `--conf` 這類縮寫的長旗標），或任何未預期的內部錯誤，不論發生在解析參數、啟動、`--estimate` 或執行期間（崩潰不會誤報成 verdict） |
