@@ -171,31 +171,30 @@ def _remote_code_loads(n):
         f"m{i} = AutoModel.from_pretrained('acme/m{i}', revision='abc', trust_remote_code=True)\n" for i in range(n))
 
 
-def test_a_new_hit_the_per_file_cap_drops_behind_known_hits_is_disclosed(tmp_path):
-    """基準報告已有一個檔案的 20 筆 HIGH；之後在它們後面多一筆 HIGH：每檔上限留下 20 筆已知的、略過新的那筆，
-    新的阻擋命中是 0。閘門要把略過的命中記成證據缺口，不然 live 模式會判成 READY_TO_SHIP（#195）。mock 模式本來就因為
-    SIMULATED 缺口而是 INCONCLUSIVE，所以這裡檢查缺口有進到摘要與寫出的報告；缺口單獨就讓乾淨的執行變成
-    INCONCLUSIVE，由閘門的測試檢查。
+def test_a_new_hit_the_per_file_cap_drops_behind_known_hits_makes_the_run_inconclusive(clean_live_run, tmp_path):
+    """基準報告已有一個檔案的 20 筆 HIGH；之後在它們後面多一筆 HIGH：每檔上限留下 20 筆已知的、略過新的那筆，新的阻擋
+    命中是 0。閘門把略過的命中記成 `static_hits_capped` 證據缺口，判定是 INCONCLUSIVE；沒有超過上限的同一個目標是
+    READY_TO_SHIP。用 `clean_live_run`（live 模式＋假 litellm）跑，所以斷言的是判定本身（#195、#200）。
     The baseline report holds 20 HIGH hits of one file; then a 21st HIGH hit follows them: the per-file cap keeps the
-    20 known ones and drops the new one, leaving 0 new blocking hits. The gate must record the dropped hit as an
-    evidence gap, or a live run would be READY_TO_SHIP (#195). Mock mode is INCONCLUSIVE anyway (its SIMULATED gap),
-    so this checks that the gap reaches the summary and the written report; the gate tests check that the gap alone
-    turns an otherwise clean run INCONCLUSIVE."""
-    target = tmp_path / "t"
-    target.mkdir()
-    (target / "loads.py").write_text(_remote_code_loads(20), encoding="utf-8")
-    first = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
-    first.run_full_pipeline(target_dir=str(target), output_report_path=str(tmp_path / "base.json"), output_format="json")
+    20 known ones and drops the new one, leaving 0 new blocking hits. The gate records the dropped hit as the
+    `static_hits_capped` evidence gap and the Verdict is INCONCLUSIVE; the same target without the overflow is
+    READY_TO_SHIP. It runs on `clean_live_run` (live mode with the fake litellm), so it asserts the Verdict itself
+    (#195, #200)."""
+    first = clean_live_run({"loads.py": _remote_code_loads(20)}, report="base.json", output_format="json")
+    assert first.overall_status == "NEEDS_FIXES" and first.new_blocking_rule_hits == 20
+    baseline = bl.load_baseline(str(tmp_path / "base.json"))
 
-    (target / "loads.py").write_text(_remote_code_loads(21), encoding="utf-8")
-    second = VibeHarnessCommander(config_path=CONFIG, execution_mode="mock")
-    second.baseline = bl.load_baseline(str(tmp_path / "base.json"))
-    summary = second.run_full_pipeline(target_dir=str(target), output_report_path=str(tmp_path / "r.md"))
-    assert summary.new_blocking_rule_hits == 0 and summary.blocking_rule_hits == 20
-    reasons = "\n".join(summary.inconclusive_reasons)
+    known = clean_live_run({"loads.py": _remote_code_loads(20)}, baseline=baseline, report="known.md")
+    assert (known.overall_status, known.inconclusive_reasons) == ("READY_TO_SHIP", [])
+
+    capped = clean_live_run({"loads.py": _remote_code_loads(21)}, baseline=baseline, report="capped.md")
+    assert capped.new_blocking_rule_hits == 0 and capped.blocking_rule_hits == 20
+    assert capped.overall_status == "INCONCLUSIVE"
+    assert len(capped.inconclusive_reasons) == 1, capped.inconclusive_reasons
+    reasons = capped.inconclusive_reasons[0]
     assert "1 deterministic rule hit(s) over the per-file cap in 1 rule/file pair(s)" in reasons, reasons
     assert "loads.py (VH-AI-001)" in reasons, reasons
-    assert "over the per-file cap in 1 rule/file pair(s)" in (tmp_path / "r.md").read_text(encoding="utf-8")
+    assert "over the per-file cap in 1 rule/file pair(s)" in (tmp_path / "capped.md").read_text(encoding="utf-8")
 
 
 def test_cli_baseline_flag_is_validated_before_the_run(monkeypatch, tmp_path):
