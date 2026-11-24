@@ -20,6 +20,9 @@
       "Bash(git push -u origin feat/*)",
       "Bash(git push -u origin docs/*)",
       "Bash(git push -u origin chore/*)",
+      "Bash(git push -u origin test/*)",
+      "Bash(git push -u origin ci/*)",
+      "Bash(git push -u origin refactor/*)",
       "Bash(gh pr create --base master *)"
     ],
     "deny": [
