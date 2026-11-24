@@ -150,11 +150,14 @@ def test_a_mistyped_test_id_is_refused_before_any_reversion(repo, tmp_path, caps
     assert (repo / "calc.py").read_text(encoding="utf-8") == CALC
 
 
-def test_each_red_test_shows_its_failure_line(repo, tmp_path, capsys):
+def test_each_red_test_shows_its_failure_line(repo, tmp_path, capsys, monkeypatch):
     """每個紅燈測試底下印出它失敗的那一行，不必再跑一次就能確認紅燈的原因是改回的那一項（#205、#207 各寫了一段臨時
-    迴圈做這件事）。
+    迴圈做這件事）。終端機很窄（`COLUMNS=40`）時原因也不會被截斷；設窄是因為外層的 pytest 可能已經被設成很寬
+    （例如本身就在 check_reversions.py 底下執行）。
     Under each red test its failure line is printed, so the cause can be read without running again (#205 and #207
-    each wrote an ad-hoc loop for this)."""
+    each wrote an ad-hoc loop for this). A narrow terminal (`COLUMNS=40`) does not cut the reason; it is set narrow
+    because the outer pytest may already run wide (under check_reversions.py itself, for one)."""
+    monkeypatch.setenv("COLUMNS", "40")
     code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(repo))
     out = capsys.readouterr().out
     assert code == 0, out
