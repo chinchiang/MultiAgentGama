@@ -426,6 +426,7 @@ def test_output_the_script_cannot_read_is_could_not_check(git_repo, tmp_path, ca
     out = capsys.readouterr().out
     assert code == 2, out
     assert "Could not read pytest's output on the unmodified calc.py" in out, out
+    assert "no closing count line as the output's last line" in out, _lines(out, "Could not read")
     assert "## " not in out, out
 
 
@@ -468,6 +469,7 @@ def test_failures_reported_but_none_read_is_could_not_check(repo, tmp_path, caps
     out = capsys.readouterr().out
     assert code == 2, out
     assert "`subtract`: could not read pytest's output (pytest exited 1)" in out, out
+    assert "pytest exited 1 but no red test was read" in out, _lines(out, "could not read")
     assert "turned nothing red" not in out, out
 
 
@@ -796,12 +798,12 @@ def test_a_message_that_is_a_separator_wider_than_the_line():
 
 
 def test_a_separator_reason_cut_to_the_line_width_shows_the_exception_alone(git_repo, tmp_path, capsys, monkeypatch):
-    """pytest 把摘要行截到終端機寬度、結尾加 `...`（script 拿掉 `CI`，所以在 CI 上也一樣）：被截斷的分隔線看不到
-    結尾，只要以分隔線開頭就只印例外名稱（#214 審查第 2、3 輪）。
-    pytest cuts a summary line to the terminal width and ends it with `...` (the script drops `CI`, so on CI too): a
-    cut separator has no visible end, so starting with a separator is enough to print the exception name alone (#214
-    review rounds 2 and 3)."""
-    # pytest 在 CI 上不截斷摘要行，script 自己拿掉 `CI` ／ pytest does not cut summary lines on CI, so the script drops `CI`
+    """pytest 把摘要行截到終端機寬度、結尾加 `...`（script 用 `--force-short-summary`，在 CI 上也一樣）：被截斷的
+    分隔線看不到結尾，只要以分隔線開頭就只印例外名稱（#214 審查第 2、3 輪）。
+    pytest cuts a summary line to the terminal width and ends it with `...` (the script passes
+    `--force-short-summary`, so on CI too): a cut separator has no visible end, so starting with a separator is enough
+    to print the exception name alone (#214 review rounds 2 and 3)."""
+    # 沒有 `--force-short-summary` 時 pytest 在 CI 上不截斷 ／ Without `--force-short-summary` pytest does not cut on CI
     monkeypatch.setenv("CI", "1")
     root = _repo_with(git_repo, tmp_path, {"test_calc.py": WIDE_SEPARATOR})
     printed = _printing(monkeypatch, "====...")
@@ -822,14 +824,23 @@ def test_a_message_carrying_an_inner_summary():
 '''
 
 
-def test_on_ci_a_multi_line_message_does_not_become_the_summary(git_repo, tmp_path, capsys, monkeypatch):
-    """在 CI 上（`CI` 有設）pytest 把整段多行訊息印進摘要，內層的摘要標題就成了最後一段：script 跑 pytest 時拿掉
-    `CI`、`BUILD_NUMBER`，摘要一個測試一行，兩個紅燈都列出來（CODING_STANDARDS 第 8 條；#214 審查第 3 輪）。
-    On CI (`CI` set) pytest prints a whole multi-line message into the summary, so an inner summary header becomes the
-    last section: the script drops `CI` and `BUILD_NUMBER` when it runs pytest, so the summary has one line per test
-    and both red tests are listed (CODING_STANDARDS rule 8; #214 review round 3)."""
-    monkeypatch.setenv("CI", "1")
-    root = _repo_with(git_repo, tmp_path, {"test_calc.py": MULTI_LINE_INNER})
+@pytest.mark.parametrize(("env", "ini"), [({"CI": "1"}, None), ({"BUILD_NUMBER": "1"}, None),
+                                         ({"PYTEST_ADDOPTS": "-v"}, None), ({}, "[pytest]\naddopts = -v\n")],
+                         ids=["CI", "BUILD_NUMBER", "PYTEST_ADDOPTS", "ini addopts"])
+def test_a_multi_line_message_does_not_become_the_summary(git_repo, tmp_path, capsys, monkeypatch, env, ini):
+    """在 CI 上（`CI`、`BUILD_NUMBER`），或 verbose 到 2 時（目標 repo 的 `addopts = -v`、`PYTEST_ADDOPTS=-v`，加上
+    script 自己的 `-v`），pytest 把整段多行訊息印進摘要，內層的摘要標題就成了最後一段：script 用
+    `--force-short-summary` 跑 pytest，摘要一個測試一行，兩個紅燈都列出來（CODING_STANDARDS 第 8 條；#214 審查第 3、4
+    輪）。
+    On CI (`CI`, `BUILD_NUMBER`), or at verbosity 2 (the target repo's `addopts = -v` or `PYTEST_ADDOPTS=-v` on top
+    of the script's own `-v`), pytest prints a whole multi-line message into the summary, so an inner summary header
+    becomes the last section: the script runs pytest with `--force-short-summary`, so the summary has one line per test
+    and both red tests are listed (CODING_STANDARDS rule 8; #214 review rounds 3 and 4)."""
+    for name in ("CI", "BUILD_NUMBER", "PYTEST_ADDOPTS"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    root = _repo_with(git_repo, tmp_path, {"test_calc.py": MULTI_LINE_INNER}, {"pytest.ini": ini} if ini else None)
     code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(root))
     out = capsys.readouterr().out
     assert "   tests/test_calc.py::test_adding_two_numbers_gives_their_sum\n" in out, _lines(out, "test_")
