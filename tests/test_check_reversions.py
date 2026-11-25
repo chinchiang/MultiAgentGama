@@ -559,17 +559,17 @@ def _with_inserted(monkeypatch, line, always=False):
 
 
 def _with_red_line(monkeypatch, line, replacing="FAILED "):
-    """把真正的 pytest 輸出裡外層摘要中以 replacing 開頭的那一行（只在有失敗時）換成 line：紅燈的數量和統計行仍然
-    對得上，測試才只檢查 ID 本身的那條規則，不會被統計數量的規則先擋下。
+    """把真正的 pytest 輸出裡外層摘要中以 replacing 開頭的那一行（只在有失敗或收集錯誤時）換成 line：紅燈的
+    數量和統計行仍然對得上，測試才只檢查 ID 本身的那條規則，不會被統計數量的規則先擋下。
     Replaces the outer summary's one line starting with `replacing` in the real pytest output (only when something
-    failed) with `line`: the number of red tests still agrees with the count line, so the test checks the rule on the
-    id itself, not the count rule first."""
+    failed or did not collect) with `line`: the number of red tests still agrees with the count line, so the test
+    checks the rule on the id itself, not the count rule first."""
     real = tool._pytest
 
     # 任意參數：簽章改了，紅燈的原因仍是行為本身 ／ Any arguments, so a changed signature still goes red on the behaviour
     def replaced(*args, **kwargs):
         done = real(*args, **kwargs)
-        if done.returncode == 1:
+        if done.returncode in (1, 2):
             head, header, summary = done.stdout.rpartition("short test summary info")
             lines = summary.split("\n")
             failed = [i for i, text in enumerate(lines) if text.startswith(replacing)]
@@ -582,18 +582,19 @@ def _with_red_line(monkeypatch, line, replacing="FAILED "):
 
 
 def test_a_red_id_that_matches_no_test_is_could_not_check(repo, tmp_path, capsys, monkeypatch):
-    """外層摘要裡的失敗 ID 不是任何一個讀到結果的測試（這裡換掉真正輸出裡的紅燈行）：讀錯的紅燈只能讓
-    檢查拒絕，所以是無法檢查，結束碼 2，並寫出那個 ID（CODING_STANDARDS 第 8 條；#214）。訊息寫出那個 ID，也就證明
-    換上的那行真的被讀到了。
-    A failed id in the outer summary that is none of the tests whose outcome was read (the real output's red
-    line replaced here): a misread red may only refuse, so it is could not check, exit code 2, naming that id
+    """外層摘要裡的失敗 ID 不是任何一個讀到結果的測試（這裡用讓收集失敗的改壞，換掉真正輸出裡那行收集錯誤：
+    數量和其他規則都對得上，只剩這條擋得住）：讀錯的紅燈只能讓檢查拒絕，所以是無法檢查，結束碼 2，並寫出那個 ID
+    （CODING_STANDARDS 第 8 條；#214）。訊息寫出那個 ID，也就證明換上的那行真的被讀到了。
+    A failed id in the outer summary that is none of the tests whose outcome was read (a reversion that breaks
+    collection, with the real collection error line replaced here: the count and the other rules all agree, so only
+    this one can refuse it): a misread red may only refuse, so it is could not check, exit code 2, naming that id
     (CODING_STANDARDS rule 8; #214). The message naming the id also shows the replaced line was read."""
-    _with_red_line(monkeypatch, "FAILED ghost.py::test_ghost - boom")
-    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(repo))
+    _with_red_line(monkeypatch, "FAILED ghost.py::test_ghost - boom", replacing="ERROR ")
+    code = tool.main(["calc.py", _reversions(tmp_path, ("syntax", "a + b", "a +"))], repo=str(repo))
     out = capsys.readouterr().out
-    assert "## subtract" not in out, _lines(out, "ghost.py")
+    assert "## syntax" not in out, _lines(out, "ghost.py")
     assert code == 2, out
-    assert "`subtract`: " in out and "ghost.py::test_ghost" in out, out
+    assert "red ids not read as failing a test it ran: ghost.py::test_ghost" in out, out
 
 
 SEPARATOR_FIRST = TESTS + '''
@@ -624,13 +625,13 @@ def test_a_collection_error_outside_the_given_tests_is_could_not_check(git_repo,
     `tests/test_other.py`, which exists in the repo but was not given) is a misread, so could not check, exit code 2,
     naming that id (#214)."""
     root = _repo_with(git_repo, tmp_path, {"test_calc.py": TESTS, "test_other.py": TESTS})
-    _with_red_line(monkeypatch, "ERROR tests/test_other.py - boom")
-    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b")), "tests/test_calc.py"],
+    _with_red_line(monkeypatch, "ERROR tests/test_other.py - boom", replacing="ERROR ")
+    code = tool.main(["calc.py", _reversions(tmp_path, ("syntax", "a + b", "a +")), "tests/test_calc.py"],
                      repo=str(root))
     out = capsys.readouterr().out
-    assert "## subtract" not in out, _lines(out, "test_other.py")
+    assert "## syntax" not in out, _lines(out, "test_other.py")
     assert code == 2, out
-    assert "`subtract`: " in out and "tests/test_other.py" in out, out
+    assert "red ids not read as failing a test it ran: tests/test_other.py" in out, out
 
 
 SEPARATOR_THEN_TEXT = TESTS + '''
@@ -685,12 +686,12 @@ def test_a_collection_error_at_no_existing_path_is_could_not_check(repo, tmp_pat
     Running the whole suite, a collection error's id (an ERROR without `::`) must still be a path in the repo;
     `ERROR boom.py` is a misread, so could not check, exit code 2, naming that id (CODING_STANDARDS rule 8; #214
     review round 1)."""
-    _with_red_line(monkeypatch, "ERROR boom.py - boom")
-    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(repo))
+    _with_red_line(monkeypatch, "ERROR boom.py - boom", replacing="ERROR ")
+    code = tool.main(["calc.py", _reversions(tmp_path, ("syntax", "a + b", "a +"))], repo=str(repo))
     out = capsys.readouterr().out
-    assert "## subtract" not in out, _lines(out, "boom.py")
+    assert "## syntax" not in out, _lines(out, "boom.py")
     assert code == 2, out
-    assert "`subtract`: " in out and "boom.py" in out, out
+    assert "red ids not read as failing a test it ran: boom.py" in out, out
 
 
 def test_a_red_id_matching_no_test_on_the_unmodified_file_is_named_without_the_addopts_hint(git_repo, tmp_path, capsys,
@@ -717,28 +718,33 @@ def test_unrelated():
 
 
 def test_a_red_id_whose_outcome_line_passed_is_could_not_check(git_repo, tmp_path, capsys, monkeypatch):
-    """紅燈 ID 是讀到結果的測試，但它的結果是 PASSED（這裡把真正的紅燈行換成通過的那個測試）：紅燈的結果行要是
-    FAILED 或 ERROR，否則是讀錯，無法檢查，結束碼 2，並寫出那個 ID 與它的結果（CODING_STANDARDS 第 8 條；#214 審查
-    第 2 輪）。
-    A red id that is a test whose outcome was read, but whose outcome is PASSED (the real red line replaced with the
-    passing test here): a red test's outcome line must be FAILED or ERROR, or it is a misread, so could not check,
-    exit code 2, naming that id and its outcome (CODING_STANDARDS rule 8; #214 review round 2)."""
-    root = _repo_with(git_repo, tmp_path, {"test_calc.py": TWO_TESTS})
-    _with_red_line(monkeypatch, "FAILED tests/test_calc.py::test_unrelated - boom")
+    """紅燈 ID 是讀到結果的測試，但它的結果是 PASSED（這裡把一個同時有 `FAILED` 的測試在 teardown 的 `ERROR`
+    那行換成通過的測試：數量對得上、每個失敗的測試都讀到了，只剩結果行這條擋得住）：紅燈的結果行要是 FAILED 或
+    ERROR，否則是讀錯，無法檢查，結束碼 2，並寫出那個 ID 與它的結果（CODING_STANDARDS 第 8 條；#214 審查第 2 輪）。
+    A red id that is a test whose outcome was read, but whose outcome is PASSED (the teardown `ERROR` line of a test
+    that also has a `FAILED` one replaced with the passing test here: the count agrees and every failing test is read,
+    so only the outcome rule can refuse it): a red test's outcome line must be FAILED or ERROR, or it is a misread,
+    so could not check, exit code 2, naming that id and its outcome (CODING_STANDARDS rule 8; #214 review round
+    2)."""
+    root = _repo_with(git_repo, tmp_path, {"test_calc.py": TEARDOWN})
+    _with_red_line(monkeypatch, "FAILED tests/test_calc.py::test_unrelated - boom",
+                   replacing="ERROR tests/test_calc.py::test_with_teardown")
     code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(root))
     out = capsys.readouterr().out
     assert "## subtract" not in out, _lines(out, "test_unrelated")
     assert code == 2, out
-    assert "`subtract`: " in out and "tests/test_calc.py::test_unrelated (PASSED)" in out, out
+    assert "red ids not read as failing a test it ran: tests/test_calc.py::test_unrelated (PASSED)" in out, out
 
 
 def test_more_red_tests_than_the_count_line_says_is_could_not_check(repo, tmp_path, capsys, monkeypatch):
-    """摘要讀到的紅燈比統計行的 `failed` 加 `error` 多（這裡把真正的紅燈行再插入一次）：數量對不上就是讀錯，無法檢查，
-    結束碼 2，並寫出兩個數量（CODING_STANDARDS 第 8 條；#214 審查第 2 輪）。
-    More red tests read from the summary than the count line's `failed` plus `error` (the real red line inserted once
-    more here): counts that disagree are a misread, so could not check, exit code 2, naming both numbers
-    (CODING_STANDARDS rule 8; #214 review round 2)."""
-    _with_inserted(monkeypatch, "FAILED tests/test_calc.py::test_adding_two_numbers_gives_their_sum - again")
+    """摘要讀到的紅燈比統計行的 `failed` 加 `error` 多（這裡插入一行傳入路徑底下的收集錯誤：ID 本身、讀到幾次
+    都對得上，只剩數量擋得住）：數量對不上就是讀錯，無法檢查，結束碼 2，並寫出兩個數量（CODING_STANDARDS 第 8 條；
+    #214 審查第 2 輪）。
+    More red tests read from the summary than the count line's `failed` plus `error` (a collection error under the
+    given paths inserted here: the id itself and how often it is read agree, so only the count can refuse it):
+    counts that disagree are a misread, so could not check, exit code 2, naming both numbers (CODING_STANDARDS rule
+    8; #214 review round 2)."""
+    _with_inserted(monkeypatch, "ERROR tests/test_calc.py - extra")
     code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(repo))
     out = capsys.readouterr().out
     assert "## subtract" not in out, _lines(out, "## subtract")
@@ -747,16 +753,16 @@ def test_more_red_tests_than_the_count_line_says_is_could_not_check(repo, tmp_pa
 
 
 def test_a_failed_line_without_a_test_id_is_not_a_collection_error(repo, tmp_path, capsys, monkeypatch):
-    """沒有 `::` 的 ID 只在 `ERROR` 行算收集錯誤；`FAILED tests/test_calc.py`（這裡換掉真正的紅燈行）是讀錯，無法
-    檢查，結束碼 2，並寫出那個 ID（CODING_STANDARDS 第 8 條；#214 審查第 2 輪）。
-    An id without `::` counts as a collection error only on an `ERROR` line; `FAILED tests/test_calc.py` (the real red
-    line replaced here) is a misread, so could not check, exit code 2, naming that id (CODING_STANDARDS rule 8; #214
-    review round 2)."""
-    _with_red_line(monkeypatch, "FAILED tests/test_calc.py - boom")
-    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b")), "tests/test_calc.py"],
+    """沒有 `::` 的 ID 只在 `ERROR` 行算收集錯誤；`FAILED tests/test_calc.py`（這裡換掉收集失敗時那行 `ERROR`）
+    是讀錯，無法檢查，結束碼 2，並寫出那個 ID（CODING_STANDARDS 第 8 條；#214 審查第 2 輪）。
+    An id without `::` counts as a collection error only on an `ERROR` line; `FAILED tests/test_calc.py` (the real
+    collection error line replaced here) is a misread, so could not check, exit code 2, naming that id
+    (CODING_STANDARDS rule 8; #214 review round 2)."""
+    _with_red_line(monkeypatch, "FAILED tests/test_calc.py - boom", replacing="ERROR ")
+    code = tool.main(["calc.py", _reversions(tmp_path, ("syntax", "a + b", "a +")), "tests/test_calc.py"],
                      repo=str(repo))
     out = capsys.readouterr().out
-    assert "## subtract" not in out, _lines(out, "## subtract")
+    assert "## syntax" not in out, _lines(out, "## syntax")
     assert code == 2, out
     assert "red ids not read as failing a test it ran: tests/test_calc.py" in out, out
 
@@ -838,24 +844,60 @@ def test_also_adding():
 '''
 
 
-def test_a_red_test_read_twice_and_one_not_read_is_could_not_check(git_repo, tmp_path, capsys, monkeypatch):
-    """紅燈數量和統計行對得上，但一個測試讀到兩次、另一個失敗的測試沒讀到（這裡把真正的一行紅燈換成另一個的 ID）：
-    結果行是 FAILED 或 ERROR 的每個測試都要剛好讀到一次，否則是讀錯，無法檢查，結束碼 2，並寫出兩個 ID
+TEARDOWN = TWO_TESTS + '''
+
+import pytest
+
+
+@pytest.fixture
+def breaks_on_teardown():
+    yield
+    if add(2, 2) != 4:
+        raise RuntimeError("teardown")
+
+
+def test_with_teardown(breaks_on_teardown):
+    assert add(1, 2) == 3
+
+
+def test_passes_then_breaks(breaks_on_teardown):
+    pass
+'''
+
+
+def test_a_red_test_read_twice_is_could_not_check(git_repo, tmp_path, capsys, monkeypatch):
+    """同一個種類的同一個 ID 讀到兩次（這裡把 teardown 出錯的那行 `ERROR` 換成同一個測試的 `FAILED`）：數量和統計行
+    對得上，每個失敗的測試也都讀到了，只剩「剛好讀到一次」擋得住；讀錯，無法檢查，結束碼 2，並寫出那個 ID
     （CODING_STANDARDS 第 8 條；#214 審查第 3 輪）。
-    The number of red tests agrees with the count line, but one test is read twice and another failing test not at all
-    (one real red line replaced with the other's id here): every test whose outcome is FAILED or ERROR must be read
-    exactly once, or it is a misread, so could not check, exit code 2, naming both ids (CODING_STANDARDS rule 8; #214
-    review round 3)."""
-    root = _repo_with(git_repo, tmp_path, {"test_calc.py": TWO_FAILING})
-    _with_red_line(monkeypatch, "FAILED tests/test_calc.py::test_adding_two_numbers_gives_their_sum - again",
-                   replacing="FAILED tests/test_calc.py::test_also_adding")
+    The same kind and id read twice (the teardown error's `ERROR` line replaced with the same test's `FAILED` here):
+    the count agrees and every failing test is read, so only "read exactly once" can refuse it; a misread, so could
+    not check, exit code 2, naming that id (CODING_STANDARDS rule 8; #214 review round 3)."""
+    root = _repo_with(git_repo, tmp_path, {"test_calc.py": TEARDOWN})
+    _with_red_line(monkeypatch, "FAILED tests/test_calc.py::test_with_teardown - again",
+                   replacing="ERROR tests/test_calc.py::test_with_teardown")
     code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(root))
     out = capsys.readouterr().out
     assert "## subtract" not in out, _lines(out, "## subtract")
     assert code == 2, out
-    assert "red tests read more than once: tests/test_calc.py::test_adding_two_numbers_gives_their_sum" in out, out
-    assert "failing tests not read as red: tests/test_calc.py::test_also_adding" in out, out
+    assert "red tests read more than once: tests/test_calc.py::test_with_teardown" in out, out
 
+
+def test_a_failing_test_not_read_as_red_is_could_not_check(git_repo, tmp_path, capsys, monkeypatch):
+    """結果是 FAILED 的測試沒有紅燈行（這裡把它那行換成另一個只在 teardown 出錯的測試的 `FAILED`）：數量對得上、
+    換上的 ID 結果是 ERROR、也沒有讀到兩次，只剩「每個失敗的測試都要讀到」擋得住；讀錯，無法檢查，結束碼 2，並寫出
+    沒讀到的那個 ID（CODING_STANDARDS 第 8 條；#214 審查第 3 輪）。
+    A test whose outcome is FAILED has no red line (its line replaced with a `FAILED` for another test that only errors
+    in teardown here): the count agrees, the new id's outcome is ERROR and nothing is read twice, so only "every
+    failing test is read" can refuse it; a misread, so could not check, exit code 2, naming the id not read
+    (CODING_STANDARDS rule 8; #214 review round 3)."""
+    root = _repo_with(git_repo, tmp_path, {"test_calc.py": TEARDOWN})
+    _with_red_line(monkeypatch, "FAILED tests/test_calc.py::test_passes_then_breaks - again",
+                   replacing="FAILED tests/test_calc.py::test_adding_two_numbers_gives_their_sum")
+    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(root))
+    out = capsys.readouterr().out
+    assert "## subtract" not in out, _lines(out, "## subtract")
+    assert code == 2, out
+    assert "failing tests not read as red: tests/test_calc.py::test_adding_two_numbers_gives_their_sum" in out, out
 
 DOTS_AT_THE_END = TESTS + '''
 
@@ -923,9 +965,9 @@ def test_a_collection_error_at_a_path_outside_the_repo_is_could_not_check(repo, 
     A collection error id that walks out of the repo through `..` (to the reversions file, which exists, here): once
     resolved it is not under the given test paths (or the repo), so it is a misread, could not check, exit code 2,
     naming that id (CODING_STANDARDS rule 8; #214 review round 3)."""
-    _with_red_line(monkeypatch, f"ERROR {error_id} - boom")
-    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b")), *tests], repo=str(repo))
+    _with_red_line(monkeypatch, f"ERROR {error_id} - boom", replacing="ERROR ")
+    code = tool.main(["calc.py", _reversions(tmp_path, ("syntax", "a + b", "a +")), *tests], repo=str(repo))
     out = capsys.readouterr().out
-    assert "## subtract" not in out, _lines(out, "reversions.json")
+    assert "## syntax" not in out, _lines(out, "reversions.json")
     assert code == 2, out
     assert f"red ids not read as failing a test it ran: {error_id}" in out, out
