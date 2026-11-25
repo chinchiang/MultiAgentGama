@@ -156,11 +156,9 @@ def _red(output: str, known: list[str]) -> list[tuple[str, str]]:
 
 
 def _meaningful(reason: str) -> str:
-    """原因裡分隔線開頭的部分拿掉：`AssertionError: =====…` 只剩例外名稱，整個是分隔線時是空字串（#214）。
-    Drops a reason's part that starts with a separator: `AssertionError: =====...` keeps the exception name alone, and
-    a reason that is all separator is empty (#214)."""
-    if _SEPARATOR_RE.match(reason):
-        return ""
+    """原因的內容以分隔線開頭時只留例外名稱：`AssertionError: =====…` 印成 `AssertionError`（#214）。
+    A reason whose text starts with a separator keeps the exception name alone: `AssertionError: =====...` prints as
+    `AssertionError` (#214)."""
     name, colon, text = reason.partition(": ")
     return name if colon and _SEPARATOR_RE.match(text.strip()) else reason
 

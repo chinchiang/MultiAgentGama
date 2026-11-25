@@ -509,6 +509,21 @@ def test_an_inner_pytest_runs_skips_are_not_listed(git_repo, tmp_path, capsys):
 
 
 
+def _with_appended(monkeypatch, line):
+    """真正的 pytest 輸出最後補上 line（只在有失敗時），模擬外層摘要裡多出一行。
+    Appends `line` to the real pytest output (only when something failed), as an extra line in the outer summary."""
+    real = tool._pytest
+
+    # 任意參數：簽章改了，紅燈的原因仍是行為本身 ／ Any arguments, so a changed signature still goes red on the behaviour
+    def appended(*args, **kwargs):
+        done = real(*args, **kwargs)
+        if done.returncode == 1:
+            done.stdout += line + "\n"
+        return done
+
+    monkeypatch.setattr(tool, "_pytest", appended)
+
+
 def test_a_red_id_that_matches_no_test_is_could_not_check(repo, tmp_path, capsys, monkeypatch):
     """外層摘要裡的失敗 ID 不是任何一個讀到結果的測試（這裡在真正的輸出最後補上一行）：讀錯的紅燈只能讓檢查拒絕，
     所以是無法檢查，結束碼 2，並寫出那個 ID（CODING_STANDARDS 第 8 條；#214）。訊息寫出那個 ID，也就證明補上的
@@ -516,16 +531,7 @@ def test_a_red_id_that_matches_no_test_is_could_not_check(repo, tmp_path, capsys
     A failed id in the outer summary that is none of the tests whose outcome was read (one line appended to the real
     output here): a misread red may only refuse, so it is could not check, exit code 2, naming that id
     (CODING_STANDARDS rule 8; #214). The message naming the id also shows the appended line was read."""
-    real = tool._pytest
-
-    # 任意參數：簽章改了，紅燈的原因仍是行為本身 ／ Any arguments, so a changed signature still goes red on the behaviour
-    def with_a_ghost(*args, **kwargs):
-        done = real(*args, **kwargs)
-        if done.returncode == 1:
-            done.stdout += "FAILED ghost.py::test_ghost - boom\n"
-        return done
-
-    monkeypatch.setattr(tool, "_pytest", with_a_ghost)
+    _with_appended(monkeypatch, "FAILED ghost.py::test_ghost - boom")
     code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(repo))
     out = capsys.readouterr().out
     assert code == 2, out
@@ -549,3 +555,16 @@ def test_a_reason_that_is_only_a_separator_shows_the_exception_alone(git_repo, t
     out = capsys.readouterr().out
     assert code == 0, out
     assert "   tests/test_calc.py::test_a_message_that_starts_with_a_separator\n      AssertionError\n" in out, out
+
+
+def test_a_collection_error_outside_the_given_tests_is_could_not_check(repo, tmp_path, capsys, monkeypatch):
+    """收集錯誤（沒有 `::` 的 ERROR）只在落在傳入的測試路徑底下時算紅燈；外面的那個是讀錯，無法檢查，結束碼 2，並
+    寫出那個 ID（#214）。
+    A collection error (an ERROR without `::`) counts as red only under the given test paths; one outside them is a
+    misread, so could not check, exit code 2, naming that id (#214)."""
+    _with_appended(monkeypatch, "ERROR elsewhere.py - boom")
+    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b")), "tests/test_calc.py"],
+                     repo=str(repo))
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert "`subtract`: " in out and "elsewhere.py" in out and "## subtract" not in out, out
