@@ -594,18 +594,20 @@ def test_a_reason_that_is_a_separator_line_shows_the_exception_alone(git_repo, t
     assert code == 0, out
 
 
-def test_a_collection_error_outside_the_given_tests_is_could_not_check(repo, tmp_path, capsys, monkeypatch):
-    """收集錯誤（沒有 `::` 的 ERROR）只在落在傳入的測試路徑底下時算紅燈；外面的那個是讀錯，無法檢查，結束碼 2，並
-    寫出那個 ID（#214）。
-    A collection error (an ERROR without `::`) counts as red only under the given test paths; one outside them is a
-    misread, so could not check, exit code 2, naming that id (#214)."""
-    _with_inserted(monkeypatch, "ERROR elsewhere.py - boom")
+def test_a_collection_error_outside_the_given_tests_is_could_not_check(git_repo, tmp_path, capsys, monkeypatch):
+    """收集錯誤（沒有 `::` 的 ERROR）只在落在傳入的測試路徑底下時算紅燈；外面的那個（這裡是 repo 裡存在、但沒有
+    傳入的 `tests/test_other.py`）是讀錯，無法檢查，結束碼 2，並寫出那個 ID（#214）。
+    A collection error (an ERROR without `::`) counts as red only under the given test paths; one outside them (here
+    `tests/test_other.py`, which exists in the repo but was not given) is a misread, so could not check, exit code 2,
+    naming that id (#214)."""
+    root = _repo_with(git_repo, tmp_path, {"test_calc.py": TESTS, "test_other.py": TESTS})
+    _with_inserted(monkeypatch, "ERROR tests/test_other.py - boom")
     code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b")), "tests/test_calc.py"],
-                     repo=str(repo))
+                     repo=str(root))
     out = capsys.readouterr().out
-    assert "## subtract" not in out, _lines(out, "elsewhere.py")
+    assert "## subtract" not in out, _lines(out, "test_other.py")
     assert code == 2, out
-    assert "`subtract`: " in out and "elsewhere.py" in out, out
+    assert "`subtract`: " in out and "tests/test_other.py" in out, out
 
 
 SEPARATOR_THEN_TEXT = TESTS + '''
