@@ -10,7 +10,8 @@ pytest 參數跑測試、從摘要讀出失敗（FAILED）與錯誤（ERROR，�
 repo 的 `addopts = -qq`、`-p no:terminal` 會改掉輸出的形狀），或 pytest 回報有失敗卻讀不到任何一個，都是無法
 檢查（結束碼 2）。結果行、摘要與統計行都只讀外層這次執行自己的：結果行在開頭標題與下一個區段標題之間，摘要在最後
 一個摘要標題之後，統計行是輸出的最後一個非空白行；測試在自己裡面跑 pytest 時印進輸出的那些不算。紅燈 ID 不是讀到
-結果的測試、也不是 repo 裡存在、落在傳入測試路徑底下的收集錯誤時，同樣是無法檢查（#214）。pytest 的參數是固定的，測試參數裡不接受 pytest 選項與 `@檔案`（`-q` 之類會改掉輸出的形狀）：`-v` 逐一列出每個測試的結果，`-rfEs` 保證摘要列出
+結果是 FAILED 或 ERROR 的測試、也不是 `ERROR` 行上 repo 裡存在、落在傳入測試路徑底下的收集錯誤，或紅燈數量和統計行的
+`failed` 加 `error` 不同時，同樣是無法檢查（#214）。pytest 的參數是固定的，測試參數裡不接受 pytest 選項與 `@檔案`（`-q` 之類會改掉輸出的形狀）：`-v` 逐一列出每個測試的結果，`-rfEs` 保證摘要列出
 失敗、錯誤與略過（改用 `-rs` 之類的參數會把失敗與錯誤拿掉，讓每一項看起來都沒有紅燈）。
 
 改壞的清單是一個 JSON 檔：`[{"name": "...", "old": "...", "new": "..."}, ...]`；放在 repo 外或 git 忽略的地方，
@@ -41,8 +42,9 @@ of the summary is listed instead. No closing count line read (the target repo's 
 check (exit code 2). Outcome lines, the summary and the count line are read from the outer run's own output only:
 outcome lines between the opening header and the next section header, the summary after the last summary header,
 and the count line as the output's last non-blank line; those a test prints from a pytest run inside it do not count.
-A red id that is neither a test whose outcome was read nor a collection error at a path in the repo under the given
-test paths is could not check too (#214). The pytest arguments are fixed, and no pytest option or `@file` is accepted among the tests
+A red id that is neither a test whose outcome is FAILED or ERROR nor a collection error (an `ERROR` line) at a path
+in the repo under the given test paths, or a number of red tests other than the count line's `failed` plus `error`,
+is could not check too (#214). The pytest arguments are fixed, and no pytest option or `@file` is accepted among the tests
 (`-q` and the like change the output's shape): `-v` puts each test's outcome on its own line, and `-rfEs` keeps the
 failures, errors and skips in the summary (an argument such as `-rs` would drop the failures and errors, making every
 item look as if it turned nothing red).
@@ -91,10 +93,16 @@ _SECTION_HEADER_RE = re.compile(r"^=+ .* =+\s*$", re.MULTILINE)
 # (in a failure's captured output), so only the last one is read (#214)
 _SUMMARY_HEADER_RE = re.compile(r"^=+ short test summary info =+\s*$", re.MULTILINE)
 # 整行分隔線，中間可以有標題（例如 pytester 內層執行的 `==== test session starts ====`）：當成原因什麼都沒說；
-# `----- diff` 之類後面還有文字的不算
+# `----- diff` 之類後面還有文字的不算。分隔字元和 `_excerpt` 縮短的一樣（`!` 是 `!!!! Interrupted !!!!`）
 # A whole separator line, a title in the middle allowed (such as a pytester inner run's
-# `==== test session starts ====`): says nothing as a reason; one with more text after it, such as `----- diff`, is not
-_SEPARATOR_RE = re.compile(r"([=_-])\1{3,}(?: .* \1{4,})?")
+# `==== test session starts ====`): says nothing as a reason; one with more text after it, such as `----- diff`, is
+# not. The separator characters are the ones `_excerpt` shortens (`!` for `!!!! Interrupted !!!!`)
+_SEPARATOR_RUN = r"([=_!-])\1{3,}"
+_SEPARATOR_RE = re.compile(_SEPARATOR_RUN + r"(?: .* \1{4,})?")
+# 不在 CI 上時 pytest 把摘要行截到終端機寬度、結尾加 `...`：被截斷的看不到結尾，以分隔線開頭就算（#214 審查第 2 輪）
+# Off CI, pytest cuts a summary line to the terminal width and ends it with `...`: a cut one has no visible end, so
+# starting with a separator is enough (#214 review round 2)
+_CUT_SEPARATOR_RE = re.compile(_SEPARATOR_RUN + r"(?: .*)?")
 # 摘要裡的略過：`SKIPPED [1] <檔案>:<行>: <原因>` ／ A skip in the summary: `SKIPPED [1] <file>:<line>: <reason>`
 _SUMMARY_SKIP_RE = re.compile(r"^SKIPPED \[\d+\] .*$", re.MULTILINE)
 # 最後的統計行（輸出的最後一個非空白行），例如 `==== 1 failed, 2 passed, 1 skipped in 0.12s ====`；不是統計行就表示
@@ -106,6 +114,10 @@ _SUMMARY_SKIP_RE = re.compile(r"^SKIPPED \[\d+\] .*$", re.MULTILINE)
 # is not last, so it does not count (#214 review round 1)
 _COUNT_LINE_RE = re.compile(r"=+ .* in [\d.]+s\b.*=+")
 _SKIP_COUNT_RE = re.compile(r"\b(\d+) skipped\b")
+# 統計行裡失敗與錯誤的數量：要和摘要讀到的紅燈數量一樣，否則是讀錯（#214 審查第 2 輪）
+# The count line's failures and errors: they must equal the number of red tests read from the summary, or it is a
+# misread (#214 review round 2)
+_RED_COUNT_RE = re.compile(r"\b(\d+) (?:failed|errors?)\b")
 # pytest 的結束碼裡表示「跑完了」的：0 全部通過、1 有失敗（2 只在摘要有 ERROR 行時算，見 main）
 # The pytest exit codes that mean it ran: 0 all passed, 1 some failed (2 counts only when the summary has ERROR
 # lines, see main)
@@ -115,17 +127,21 @@ _PYTEST_RAN = (0, 1)
 @dataclass
 class _Run:
     """一次 pytest 執行讀出來的結果。`outcomes` 是每個測試 ID 的結果（`-v` 的順序）；`red` 是摘要裡失敗與錯誤的
-    （ID, 原因）；`unlisted_skips` 是 ID 對不上統計數量時，摘要裡的每一行略過（否則是空的）；`unmatched` 是 `red` 裡
-    對不上任何測試的 ID（見 `_unmatched`）；`readable` 是有沒有讀到最後的統計行、沒有對不上的紅燈，pytest 以 1 結束
-    （有失敗）時還要讀到失敗。
+    （種類, ID, 原因），種類是 `FAILED` 或 `ERROR`；`counted_red` 是統計行裡 `failed` 加 `error` 的數量；
+    `unlisted_skips` 是 ID 對不上統計數量時，摘要裡的每一行略過（否則是空的）；`unmatched` 是 `red` 裡對不上任何
+    失敗測試的 ID（見 `_unmatched`）；`readable` 是有沒有讀到最後的統計行、沒有對不上的紅燈、紅燈數量等於
+    `counted_red`，pytest 以 1 結束（有失敗）時還要讀到失敗。
     What one pytest run reads as. `outcomes` maps each test id to its outcome (in `-v` order); `red` holds the
-    (id, reason) pairs of the summary's failures and errors; `unlisted_skips` holds every skip line of the summary when
-    the skipped ids do not add up to the count (empty otherwise); `unmatched` holds the ids in `red` that match no test
-    (see `_unmatched`); `readable` says whether the closing count line was read with no unmatched red id, and with
-    pytest exiting 1 (some failed) whether a failure was read too."""
+    (kind, id, reason) triples of the summary's failures and errors, the kind being `FAILED` or `ERROR`;
+    `counted_red` is the count line's `failed` plus `error`; `unlisted_skips` holds every skip line of the summary
+    when the skipped ids do not add up to the count (empty otherwise); `unmatched` holds the ids in `red` that match
+    no failing test (see `_unmatched`); `readable` says whether the closing count line was read with no unmatched red
+    id and as many red tests as `counted_red`, and with pytest exiting 1 (some failed) whether a failure was read
+    too."""
     done: subprocess.CompletedProcess[str]
     outcomes: dict[str, str]
-    red: list[tuple[str, str]]
+    red: list[tuple[str, str, str]]
+    counted_red: int
     unlisted_skips: list[str]
     unmatched: list[str]
     readable: bool
@@ -156,8 +172,8 @@ def _results(output: str) -> str:
 def _count_line(output: str) -> str:
     """輸出的最後一個非空白行，是統計行時；否則是空字串。
     The output's last non-blank line when it is the count line; empty otherwise."""
-    lines = output.strip().splitlines()
-    return lines[-1].strip() if lines and _COUNT_LINE_RE.fullmatch(lines[-1].strip()) else ""
+    lines = output.rstrip().split("\n")
+    return lines[-1].strip() if _COUNT_LINE_RE.fullmatch(lines[-1].strip()) else ""
 
 
 def _summary(output: str) -> str:
@@ -167,16 +183,19 @@ def _summary(output: str) -> str:
     return output[headers[-1].end():] if headers else ""
 
 
-def _red(output: str, known: list[str]) -> list[tuple[str, str]]:
-    """pytest 摘要裡失敗與錯誤的測試與它們的原因（`FAILED <id> - <原因>`、`ERROR <id>[ - <原因>]`）；沒有原因時是空字串。
-    只讀外層這次執行自己的摘要段（`_summary`），原因經過 `_meaningful`。
+def _red(summary: str, known: list[str]) -> list[tuple[str, str, str]]:
+    """外層這次執行自己的摘要段（`_summary`）裡失敗與錯誤的種類、測試與原因（`FAILED <id> - <原因>`、
+    `ERROR <id>[ - <原因>]`）；沒有原因時是空字串，原因經過 `_meaningful`。只在 `\n` 切行：pytest 只在那裡換行，
+    失敗訊息裡的 form feed、U+2028 之類不是另一行（`str.splitlines` 會在那裡切）。
     ID 取 `known` 裡最長的、剛好接在前面的那個（參數化的 ID 本身可能含有 ` - `），沒有時才切在第一個 ` - `。
-    The failed and errored tests in pytest's summary with their reasons (`FAILED <id> - <reason>`,
-    `ERROR <id>[ - <reason>]`); the reason is empty when there is none. The id is the longest one in `known` that the
-    line starts with (a parametrized id may itself contain ` - `), and only without one is the line cut at the first
-    ` - `. Only the outer run's own summary section is read (`_summary`), and reasons go through `_meaningful`."""
+    The kind, test and reason of each failure and error in the outer run's own summary section (`_summary`)
+    (`FAILED <id> - <reason>`, `ERROR <id>[ - <reason>]`); the reason is empty when there is none, and goes through
+    `_meaningful`. Lines are cut at `\n` only: pytest breaks lines there only, so a form feed, U+2028 and the like in
+    a failure message do not start another line (`str.splitlines` would cut there). The id is the longest one in
+    `known` that the line starts with (a parametrized id may itself contain ` - `), and only without one is the line
+    cut at the first ` - `."""
     red = []
-    for line in _summary(output).splitlines():
+    for line in summary.split("\n"):
         for prefix in ("FAILED ", "ERROR "):
             if line.startswith(prefix):
                 rest = line[len(prefix):]
@@ -186,33 +205,40 @@ def _red(output: str, known: list[str]) -> list[tuple[str, str]]:
                     reason = rest[len(test) + 3:]
                 else:
                     test, _, reason = rest.partition(" - ")
-                red.append((test.strip(), _meaningful(reason.strip())))
+                red.append((prefix.strip(), test.strip(), _meaningful(reason.strip())))
     return red
 
 
 def _meaningful(reason: str) -> str:
     """原因的內容是整行分隔線時只留例外名稱：`AssertionError: ==== test session starts ====` 印成
-    `AssertionError`；`AssertionError: ----- diff` 原樣印出（#214）。
+    `AssertionError`；`AssertionError: ----- diff` 原樣印出。被 pytest 截斷（結尾是 `...`）的，以分隔線開頭就算（#214）。
     A reason whose text is a whole separator line keeps the exception name alone:
     `AssertionError: ==== test session starts ====` prints as `AssertionError`, while `AssertionError: ----- diff`
-    prints as it is (#214)."""
+    prints as it is. One cut by pytest (ending `...`) counts when it starts with a separator (#214)."""
     name, colon, text = reason.partition(": ")
-    return name if colon and _SEPARATOR_RE.fullmatch(text.strip()) else reason
+    text = text.strip()
+    cut = text.endswith("...")
+    separator = _CUT_SEPARATOR_RE.fullmatch(text[:-3]) if cut else _SEPARATOR_RE.fullmatch(text)
+    return name if colon and separator else reason
 
 
-def _unmatched(red: list[tuple[str, str]], outcomes: dict[str, str], tests: list[str], repo: str) -> list[str]:
-    """紅燈 ID 只接受兩種：讀到結果行的測試，或沒有 `::`、是 repo 裡存在的路徑、落在傳入的測試路徑底下（沒有傳入時是
-    整個 repo）的收集錯誤；其餘的回傳，讓這次執行算成讀不懂（CODING_STANDARDS 第 8 條；#214）。
-    A red id is accepted in two forms only: a test whose outcome line was read, or a collection error (no `::`) at a
-    path that exists in the repo, under one of the given test paths (the whole repo when none are given); the rest are
-    returned, so the run counts as unreadable (CODING_STANDARDS rule 8; #214)."""
+def _unmatched(red: list[tuple[str, str, str]], outcomes: dict[str, str], tests: list[str], repo: str) -> list[str]:
+    """紅燈 ID 只接受兩種：結果行是 FAILED 或 ERROR 的測試，或 `ERROR` 行上沒有 `::`、是 repo 裡存在的路徑、落在傳入的
+    測試路徑底下（沒有傳入時是整個 repo）的收集錯誤；其餘的回傳（讀到結果行的附上它的結果），讓這次執行算成讀不懂
+    （CODING_STANDARDS 第 8 條；#214）。
+    A red id is accepted in two forms only: a test whose outcome line is FAILED or ERROR, or a collection error (an
+    `ERROR` line without `::`) at a path that exists in the repo, under one of the given test paths (the whole repo
+    when none are given); the rest are returned (with the outcome read, if any), so the run counts as unreadable
+    (CODING_STANDARDS rule 8; #214)."""
     roots = [_node_id(test, repo).partition("::")[0] for test in tests]
     whole_repo = not roots or "." in roots
     bad = []
-    for test, _reason in red:
+    for kind, test, _reason in red:
         if test in outcomes:
+            if outcomes[test] not in ("FAILED", "ERROR"):
+                bad.append(f"{test} ({outcomes[test]})")
             continue
-        if "::" not in test and os.path.exists(os.path.join(repo, test)) and (whole_repo or any(test == root or test.startswith(root.rstrip("/") + "/")
+        if kind == "ERROR" and "::" not in test and os.path.exists(os.path.join(repo, test)) and (whole_repo or any(test == root or test.startswith(root.rstrip("/") + "/")
                                                    for root in roots)):
             continue
         bad.append(test)
@@ -226,16 +252,23 @@ def _read(done: subprocess.CompletedProcess[str], tests: list[str], repo: str) -
     counts = _SKIP_COUNT_RE.findall(count_line)
     skip_count = int(counts[0]) if counts else 0
     listed = sum(1 for outcome in outcomes.values() if outcome == "SKIPPED")
-    unlisted = _SUMMARY_SKIP_RE.findall(_summary(done.stdout)) if skip_count != listed else []
-    red = _red(done.stdout, list(outcomes))
+    summary = _summary(done.stdout)
+    unlisted = _SUMMARY_SKIP_RE.findall(summary) if skip_count != listed else []
+    red = _red(summary, list(outcomes))
+    counted_red = sum(int(n) for n in _RED_COUNT_RE.findall(count_line))
     unmatched = _unmatched(red, outcomes, tests, repo)
-    readable = bool(count_line) and not unmatched and (done.returncode != 1 or bool(red))
-    return _Run(done, outcomes, red, unlisted, unmatched, readable)
+    readable = bool(count_line) and not unmatched and len(red) == counted_red and (done.returncode != 1 or bool(red))
+    return _Run(done, outcomes, red, counted_red, unlisted, unmatched, readable)
 
 
 def _why_unreadable(run: _Run) -> str:
-    """讀不懂時補上的原因：對不上任何測試的紅燈 ID ／ What to add when unreadable: the red ids that match no test."""
-    return f"; red ids matching no test it ran: {', '.join(run.unmatched)}" if run.unmatched else ""
+    """讀不懂時補上的原因：對不上任何失敗測試的紅燈 ID、和統計行對不上的紅燈數量。
+    What to add when unreadable: the red ids that match no failing test, a number of red tests the count line does not
+    agree with."""
+    why = f"; red ids not read as failing a test it ran: {', '.join(run.unmatched)}" if run.unmatched else ""
+    if run.counted_red != len(run.red):
+        why += f"; the count line has {run.counted_red} failed or errored, but {len(run.red)} red were read"
+    return why
 
 
 def _node_id(test: str, repo: str) -> str:
@@ -276,7 +309,7 @@ def _excerpt(done: subprocess.CompletedProcess[str]) -> str:
     `COLUMNS` 很寬時才不會拉成上千個字元。
     pytest's stderr (such as "ERROR: not found: <id>") plus the last 5 lines of its stdout; separator lines such as
     `=====` are shortened, so a wide `COLUMNS` does not stretch them to a thousand characters."""
-    lines = [re.sub(r"^([=_!-])\1{3,} ?(.*?) ?\1*$", lambda m: f"== {m.group(2)} ==" if m.group(2) else "==", line)
+    lines = [re.sub("^" + _SEPARATOR_RUN + r" ?(.*?) ?\1*$", lambda m: f"== {m.group(2)} ==" if m.group(2) else "==", line)
              for line in done.stdout.strip().splitlines()[-5:]]
     return "\n".join(part for part in (done.stderr.strip(), "\n".join(lines)) if part)
 
@@ -285,7 +318,7 @@ def _print_run(run: _Run) -> None:
     """列出一次執行的紅燈（各附原因）、被略過的測試，以及對不上 ID 的略過摘要。
     Lists one run's red tests (each with its reason), its skipped tests, and the skip summary lines no id accounts
     for."""
-    for test, reason in run.red:
+    for _kind, test, reason in run.red:
         print(f"   {test}")
         if reason:
             print(f"      {reason}")
