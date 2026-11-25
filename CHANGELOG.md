@@ -79,6 +79,7 @@
 
 ### 工程
 
+- `scripts/check_reversions.py` 的紅燈與摘要裡的略過，只從它自己這次 pytest 執行的最後一段 `short test summary info` 讀：在自己裡面跑 pytest 的測試（pytester、子行程）失敗時，內層的摘要會出現在輸出裡，它的 `FAILED`／`ERROR`／`SKIPPED` 行原本被列成外層的結果。紅燈的 ID 既不是讀到結果的測試、也不是落在傳入測試路徑底下的收集錯誤時，這次執行算成無法檢查（結束碼 2，點名那個 ID）；失敗原因的內容以分隔線開頭（例如內層執行的 `==== test session starts ====`）時只印例外名稱（#214）。
 - `scripts/check_reversions.py` 改壞之前先在原始檔案上跑一次指定的測試：有找不到或沒通過的測試，或用 node id 指定的測試（class 與沒寫參數的參數化函式含底下每一個測試）沒有讀到以 PASSED 結束，就什麼都不改、結束碼 2，點名每一個並附上 pytest 的 stderr（例如 `ERROR: not found: <id>`）；經由檔案、目錄或整個套件跑到而被略過的，列成警告後照常進行。每一項改壞後，紅燈測試底下印出它失敗的那一行，被略過的測試列成 `skipped`、不算紅燈（整個模組被略過時從摘要的略過行列出）。測試參數裡夾帶 pytest 選項（例如 `-- -q`，會讓結果讀不出來）或 `@檔案`，或讀不到 pytest 最後的統計行（目標 repo 的 `addopts = -qq`、`-p no:terminal`）、pytest 回報有失敗卻讀不到任何一個，都是結束碼 2。原本測試 ID 打錯時，第一項就停在「pytest exited 4 ... no tests ran」，看不出是哪個 ID；紅燈的原因要另外寫迴圈重跑才看得到，被略過的測試也只顯示成「0 red」（#207 的 Node 測試在 PATH 找不到 node 時就是這樣）（#209）。
 - `scripts/check_new_tests_red_on_base.py` 逾時時，在基準上收集失敗的檔案裡選到的測試也帶出收集錯誤（進度外掛記下最後一行 `E   …`，和 JUnit 路徑相同），不再一律寫「failed to collect on the base」，stderr 也像收集不到測試時一樣點名每個這樣的檔案與錯誤：只因為模組在基準上匯入失敗而紅的測試，逾時時也看得出是因為錯的理由紅（#197）。
 - `scripts/check_all.py` 一開始就把檔頭 `== HEAD <sha> against <rev>` 寫進摘要 log 與 `.full.log`：原本要等第一步（pytest，約 5 分鐘）跑完才寫進檔案，這段時間 `scratch/checks-<HEAD>.log` 是空的，看起來像 script 沒有在跑（#191）。

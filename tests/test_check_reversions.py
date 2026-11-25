@@ -469,3 +469,83 @@ def test_failures_reported_but_none_read_is_could_not_check(repo, tmp_path, caps
     assert code == 2, out
     assert "`subtract`: could not read pytest's output (pytest exited 1)" in out, out
     assert "turned nothing red" not in out, out
+
+
+INNER_RUN = TESTS + '''
+
+def test_runs_an_inner_pytest():
+    # 像 pytester 或子行程裡的 pytest 一樣印出自己的摘要 ／ Prints its own summary, as an inner pytest run would
+    print("=========================== short test summary info ============================")
+    print("FAILED inner.py::test_inner - boom")
+    print("ERROR inner.py::test_other")
+    print("SKIPPED [1] inner.py:3: an inner skip")
+    assert add(1, 2) == 3
+'''
+
+
+def test_an_inner_pytest_runs_summary_is_not_read_as_red(git_repo, tmp_path, capsys):
+    """測試在自己裡面跑 pytest（pytester、子行程），失敗時內層的摘要會出現在外層的輸出裡：紅燈只從外層自己的摘要讀，
+    內層的 `FAILED`／`ERROR` 行不算（#214）。
+    A test that runs pytest inside itself (pytester, a subprocess) prints the inner summary into the outer output when
+    it fails: red tests are read from the outer run's own summary only, and the inner `FAILED` / `ERROR` lines do not
+    count (#214)."""
+    root = _repo_with(git_repo, tmp_path, {"test_calc.py": INNER_RUN})
+    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(root))
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "## subtract: 2 red" in out, out
+    assert "inner.py" not in out, out
+
+
+def test_an_inner_pytest_runs_skips_are_not_listed(git_repo, tmp_path, capsys):
+    """整個模組被略過（摘要裡才有）時，略過從外層自己的摘要讀，內層摘要的 `SKIPPED` 行不列出（#214）。
+    With a whole module skipped (only the summary has it), skips are read from the outer run's own summary, and the
+    inner summary's `SKIPPED` line is not listed (#214)."""
+    root = _repo_with(git_repo, tmp_path, {"test_calc.py": INNER_RUN, "test_never.py": WHOLE_MODULE_SKIP})
+    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(root))
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "test_never.py" in out and "inner.py" not in out, out
+
+
+
+def test_a_red_id_that_matches_no_test_is_could_not_check(repo, tmp_path, capsys, monkeypatch):
+    """外層摘要裡的失敗 ID 不是任何一個讀到結果的測試（這裡在真正的輸出最後補上一行）：讀錯的紅燈只能讓檢查拒絕，
+    所以是無法檢查，結束碼 2，並寫出那個 ID（CODING_STANDARDS 第 8 條；#214）。訊息寫出那個 ID，也就證明補上的
+    那行真的被讀到了。
+    A failed id in the outer summary that is none of the tests whose outcome was read (one line appended to the real
+    output here): a misread red may only refuse, so it is could not check, exit code 2, naming that id
+    (CODING_STANDARDS rule 8; #214). The message naming the id also shows the appended line was read."""
+    real = tool._pytest
+
+    # 任意參數：簽章改了，紅燈的原因仍是行為本身 ／ Any arguments, so a changed signature still goes red on the behaviour
+    def with_a_ghost(*args, **kwargs):
+        done = real(*args, **kwargs)
+        if done.returncode == 1:
+            done.stdout += "FAILED ghost.py::test_ghost - boom\n"
+        return done
+
+    monkeypatch.setattr(tool, "_pytest", with_a_ghost)
+    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(repo))
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert "`subtract`: " in out and "ghost.py::test_ghost" in out and "## subtract" not in out, out
+
+
+SEPARATOR_FIRST = TESTS + '''
+
+def test_a_message_that_starts_with_a_separator():
+    # 像 pytester 的失敗訊息一樣，第一行是內層執行的分隔線 ／ As in a pytester failure, the first line is an inner separator
+    assert add(2, 2) == 4, "=" * 30 + " test session starts " + "=" * 30 + "\\nthe rest"
+'''
+
+
+def test_a_reason_that_is_only_a_separator_shows_the_exception_alone(git_repo, tmp_path, capsys):
+    """失敗原因的第一行只有分隔線（例如 pytester 內層執行的標題）時，只印例外名稱，不印那條分隔線（#214）。
+    When a failure reason's first line is only a separator (such as a pytester inner run's header), only the
+    exception name is printed, not the separator (#214)."""
+    root = _repo_with(git_repo, tmp_path, {"test_calc.py": SEPARATOR_FIRST})
+    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(root))
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "   tests/test_calc.py::test_a_message_that_starts_with_a_separator\n      AssertionError\n" in out, out
