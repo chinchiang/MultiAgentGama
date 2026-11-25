@@ -483,6 +483,12 @@ def test_runs_an_inner_pytest():
 '''
 
 
+def _lines(out, text):
+    """輸出裡含有 text 的每一行，當失敗訊息用，紅燈的那一行才寫得出原因。
+    Every output line containing `text`, used as a failure message so the red line names the cause."""
+    return [line.strip() for line in out.splitlines() if text in line]
+
+
 def test_an_inner_pytest_runs_summary_is_not_read_as_red(git_repo, tmp_path, capsys):
     """測試在自己裡面跑 pytest（pytester、子行程），失敗時內層的摘要會出現在外層的輸出裡：紅燈只從外層自己的摘要讀，
     內層的 `FAILED`／`ERROR` 行不算（#214）。
@@ -492,9 +498,9 @@ def test_an_inner_pytest_runs_summary_is_not_read_as_red(git_repo, tmp_path, cap
     root = _repo_with(git_repo, tmp_path, {"test_calc.py": INNER_RUN})
     code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(root))
     out = capsys.readouterr().out
+    assert "inner.py" not in out, _lines(out, "inner.py")
     assert code == 0, out
     assert "## subtract: 2 red" in out, out
-    assert "inner.py" not in out, out
 
 
 def test_an_inner_pytest_runs_skips_are_not_listed(git_repo, tmp_path, capsys):
@@ -504,8 +510,9 @@ def test_an_inner_pytest_runs_skips_are_not_listed(git_repo, tmp_path, capsys):
     root = _repo_with(git_repo, tmp_path, {"test_calc.py": INNER_RUN, "test_never.py": WHOLE_MODULE_SKIP})
     code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(root))
     out = capsys.readouterr().out
+    assert "inner.py" not in out, _lines(out, "inner.py")
     assert code == 0, out
-    assert "test_never.py" in out and "inner.py" not in out, out
+    assert "test_never.py" in out, out
 
 
 
@@ -534,8 +541,9 @@ def test_a_red_id_that_matches_no_test_is_could_not_check(repo, tmp_path, capsys
     _with_appended(monkeypatch, "FAILED ghost.py::test_ghost - boom")
     code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(repo))
     out = capsys.readouterr().out
+    assert "## subtract" not in out, _lines(out, "ghost.py")
     assert code == 2, out
-    assert "`subtract`: " in out and "ghost.py::test_ghost" in out and "## subtract" not in out, out
+    assert "`subtract`: " in out and "ghost.py::test_ghost" in out, out
 
 
 SEPARATOR_FIRST = TESTS + '''
@@ -553,8 +561,9 @@ def test_a_reason_that_is_only_a_separator_shows_the_exception_alone(git_repo, t
     root = _repo_with(git_repo, tmp_path, {"test_calc.py": SEPARATOR_FIRST})
     code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(root))
     out = capsys.readouterr().out
+    assert "   tests/test_calc.py::test_a_message_that_starts_with_a_separator\n      AssertionError\n" in out, \
+        _lines(out, "AssertionError")
     assert code == 0, out
-    assert "   tests/test_calc.py::test_a_message_that_starts_with_a_separator\n      AssertionError\n" in out, out
 
 
 def test_a_collection_error_outside_the_given_tests_is_could_not_check(repo, tmp_path, capsys, monkeypatch):
@@ -566,5 +575,6 @@ def test_a_collection_error_outside_the_given_tests_is_could_not_check(repo, tmp
     code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b")), "tests/test_calc.py"],
                      repo=str(repo))
     out = capsys.readouterr().out
+    assert "## subtract" not in out, _lines(out, "elsewhere.py")
     assert code == 2, out
-    assert "`subtract`: " in out and "elsewhere.py" in out and "## subtract" not in out, out
+    assert "`subtract`: " in out and "elsewhere.py" in out, out
