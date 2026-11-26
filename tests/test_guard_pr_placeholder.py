@@ -79,6 +79,7 @@ def bodies(tmp_path):
     pytest.param("gh pr cre''ate --title t --body-file draft.md", id="round2-spec-quotes-inside-a-word"),
     pytest.param("gh pr create --title t -F=draft.md", id="round3-spec-short-option-with-equals"),
     pytest.param("gh pr merge 1 --squash --body-file draft.md", id="round3-standards-3-merge-body-file"),
+    pytest.param("gh pr create --title -h --body-file draft.md", id="round4-spec-help-as-a-value-is-no-help"),
 ])
 def test_a_body_file_with_a_placeholder_is_denied_naming_it(bodies, command):
     """`--body-file`／`-F` 指到的檔案還有佔位符時擋下，原因寫出檔名與佔位符。`\\` 續行（第一輪 Spec 第 1 點）、
@@ -103,15 +104,21 @@ def test_a_body_file_with_a_placeholder_is_denied_naming_it(bodies, command):
     pytest.param("gh pr create --title t --body 'a <<EOF b' --body-file filled.md",
                  id="round2-spec-heredoc-operator-inside-quotes"),
     pytest.param("gh pr merge 217 --merge", id="round3-merge-without-a-body"),
+    pytest.param("gh pr create --help", id="round4-spec-create-help"),
+    pytest.param("gh pr merge --help", id="round4-spec-merge-help"),
+    pytest.param("gh pr create -h", id="round4-spec-create-short-help"),
+    pytest.param("gh pr --help", id="round4-spec-pr-help"),
 ])
 def test_the_allowed_form_without_placeholders_is_allowed(bodies, command):
     """唯一允許的寫法、沒有佔位符時放行：小寫的 `<step>` 不算佔位符；引號裡的 `;`、`|` 不是運算子；沒送內文的
     `gh pr edit`、`gh pr merge` 照樣放行（第一輪 Spec 第 5 點）；參數裡的 `cd` 不是換目錄（第一輪 Spec 第 6 點）；
-    引號裡的 `<<EOF` 不是 heredoc（第二輪 Spec：第二版把它當成 heredoc 擋下）。
+    引號裡的 `<<EOF` 不是 heredoc（第二輪 Spec：第二版把它當成 heredoc 擋下）；以選項身分出現的 `--help`／`-h` 只印說明
+    （第四輪 Spec：第四版把它當成清單外的選項擋下）。
     The allowed form without placeholders is allowed: a lower-case `<step>` is no placeholder; a quoted `;` or `|` is
     no operator; a `gh pr edit` or `gh pr merge` that sends no body goes through (round 1, spec item 5); a `cd` among
     the args is no change of directory (round 1, spec item 6); a quoted `<<EOF` is no heredoc (round 2, spec: the
-    second version denied it as one)."""
+    second version denied it as one); `--help`/`-h` given as an option only prints the help (round 4, spec: the
+    fourth version denied it as an option off the list)."""
     assert _decide(bodies, command) is None
 
 
@@ -235,6 +242,21 @@ def test_a_placeholder_in_a_heredoc_body_is_denied(bodies):
                  "the command holds `[` outside quotes, which the shell expands", id="round3-spec-untested-bracket"),
     pytest.param("gh pr create --body-file ~/draft.md", "`~/draft.md` holds `~`, which the hook does not expand",
                  id="round3-spec-untested-bare-tilde"),
+    pytest.param("gh pr create --fill-first", "`--fill-first` is not an option the hook reads for `gh pr create`",
+                 id="round4-spec-fill-first"),
+    pytest.param("gh pr create --title t --editor", "`--editor` is not an option the hook reads for `gh pr create`",
+                 id="round4-spec-editor"),
+    pytest.param("gh pr create -f", "`-f` is not an option the hook reads for `gh pr create`",
+                 id="round4-spec-short-fill"),
+    pytest.param("gh pr create --title t -e", "`-e` is not an option the hook reads for `gh pr create`",
+                 id="round4-spec-short-editor"),
+    pytest.param("gh pr create --title t -w", "`-w` is not an option the hook reads for `gh pr create`",
+                 id="round4-spec-short-web"),
+    pytest.param("gh pr create --title t --body 'line one\nline two'",
+                 "the command spans several lines that are not `\\` continuations",
+                 id="round4-spec-multi-line-literal-is-an-accepted-cost"),
+    pytest.param("echo $((1<<2)) gh pr", "a heredoc's terminator could not be read",
+                 id="round4-spec-unreadable-heredoc-without-override"),
     ("gh pr create --draft=true --body-file filled.md", "`--draft=true` gives a value to a flag"),
     ("gh pr merge 217 --merge && gh pr view 217 --json state -q .state", "the command holds the shell operator `&&`"),
     ("gh pr create --body-file missing.md", "`missing.md` cannot be read (FileNotFoundError"),
@@ -297,10 +319,14 @@ def test_a_deny_names_the_override_as_the_code_accepts_it(bodies):
     "gh pr create --body-file draft.md  # placeholder-ok",
     "true\ngh pr create --body-file draft.md  # placeholder-ok",
     "git commit -F - <<'EOF'  # placeholder-ok\nchore: guard gh pr create\nEOF",
+    pytest.param("echo $((1<<2)) gh pr  # placeholder-ok", id="round4-spec-override-before-parsing"),
 ])
 def test_the_override_comment_lets_the_command_through(bodies, command):
-    """heredoc 以外的某一行以引號外的 `# placeholder-ok` 結尾時放行。
-    A line outside the heredoc bodies ending with `# placeholder-ok`, outside quotes, lets the command through."""
+    """heredoc 以外的某一行以引號外的 `# placeholder-ok` 結尾時放行；指令讀不懂時也一樣（第四輪 Spec：第四版先解析，
+    heredoc 的結束字讀不懂就擋下，沒看到跳過標記）。
+    A line outside the heredoc bodies ending with `# placeholder-ok`, outside quotes, lets the command through, even
+    when the hook cannot read the command (round 4, spec: the fourth version parsed first and denied on a heredoc
+    terminator it could not read, never seeing the override)."""
     assert _decide(bodies, command) is None
 
 

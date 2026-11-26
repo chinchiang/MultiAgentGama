@@ -5,11 +5,14 @@
 出來再填的段落用這個寫法。
 規則很粗。指令的 `\\` 續行先照 bash 直接接起來（中間不加空白），每一行再拿掉引號與反斜線；只要有一行依序出現
 `gh`、`pr` 這兩個字（連字號連著的不算一個字，例如 `chore/gh-pr-x`；heredoc 的內文、引號裡的文字也算），就要檢查：
-- 這樣的每一行都沒有 `$` 與反引號，而且每一個 `gh` 後面（只隔著 `-R`／`--repo <repo>`）都緊接 `pr` 與唯讀的子指令
-  （`view`、`list`、`checks`、`diff`、`status`）時，放行，指令的其他部分不看；
+- 這樣的每一行都沒有 `$` 與反引號，而且同一行裡每一個後面還有 `pr` 的 `gh`，都只隔著 `-R`／`--repo <repo>` 緊接
+  `pr` 與唯讀的子指令（`view`、`list`、`checks`、`diff`、`status`）時，放行，指令的其他部分不看（後面沒有 `pr` 的
+  `gh`，例如 `gh issue create`，不影響這個判斷）；
 - 否則整條指令必須是唯一允許的寫法，不然以「無法檢查」擋下：
-  - 一條指令就是 `gh [-R <repo>] pr <子指令> <參數>`，可以用 `\\` 續行，最後可以有 `# 註解`；子指令是唯讀的就放行，
-    是 `create`、`edit`、`new`、`merge` 的就檢查，其他（`comment`、別名等）以「無法檢查」擋下；
+  - 一條指令就是 `gh [-R <repo>] pr <子指令> <參數>`，可以用 `\\` 續行，最後可以有 `# 註解`；子指令是唯讀的、或以
+    選項的身分出現 `--help`／`-h` 時放行，是 `create`、`edit`、`new`、`merge` 的就檢查，其他（`comment`、別名等）以
+    「無法檢查」擋下；
+  - 只有一行：引號裡的換行（多行的字面文字）也算跨行，以「無法檢查」擋下；
   - 沒有 `$` 與反引號（hook 不展開變數與指令替換，單引號裡的也一樣不收）；引號外沒有 `;`、`&`、`|`、`(`、`)`、
     `<`、`>`，也沒有 shell 會展開的 `{`、`}`、`*`、`?`、`[`；
   - 每個選項都在那個子指令的允許清單（`SUBCOMMAND_OPTIONS`）裡：內文、標題或合併訊息只能來自 `--body`／`-b`、
@@ -21,7 +24,7 @@
   不是一般檔案（`/dev/stdin`、FIFO）也以「無法檢查」擋下。
 hook 自己出錯時（含讀不懂的輸入）也擋下。
 真的要照原樣執行時（包括只是提到 `gh pr` 的 commit 訊息），讓 heredoc 內文以外的某一行以引號外的
-`# placeholder-ok` 註解結尾。
+`# placeholder-ok` 註解結尾；這在檢查寫法之前就看，所以指令讀不懂時也有效。
 已知限制：hook 防的是一般寫法裡不小心帶著佔位符送出，不防刻意拼出來的指令。以下寫法不會觸發檢查：
 - `gh api` 或別的工具建立 PR、`gh` 的別名；
 - 在觸發的那一行以外把 `gh` 或 `pr` 存進變數；
@@ -39,13 +42,16 @@ The rule is coarse. The command's `\\` continuations are first joined as bash jo
 and each line has its quotes and backslashes taken out; when any line then holds the words `gh` and `pr` in that
 order (a hyphen joins words, so `chore/gh-pr-x` is not them; heredoc bodies and quoted text count too), the command
 is checked:
-- when no such line holds `$` or a backtick and every `gh` is followed (past only `-R`/`--repo <repo>`) by `pr` and
-  a read-only subcommand (`view`, `list`, `checks`, `diff`, `status`), it is allowed, and the rest of the command is
-  not looked at;
+- when no such line holds `$` or a backtick, and on each every `gh` that `pr` follows is followed (past only
+  `-R`/`--repo <repo>`) by `pr` and a read-only subcommand (`view`, `list`, `checks`, `diff`, `status`), it is
+  allowed, and the rest of the command is not looked at (a `gh` with no `pr` after it, such as `gh issue create`,
+  does not affect this);
 - otherwise the whole command must take the one allowed form, or it is denied as unchecked:
   - a single command `gh [-R <repo>] pr <subcommand> <args>`, optionally continued with `\\` and ending in a
-    `# comment`; a read-only subcommand is allowed, `create`, `edit`, `new` and `merge` are checked, and any other
-    (`comment`, an alias) is denied as unchecked;
+    `# comment`; a read-only subcommand, or `--help`/`-h` given as an option, is allowed, `create`, `edit`, `new`
+    and `merge` are checked, and any other (`comment`, an alias) is denied as unchecked;
+  - a single line: a newline inside quotes (a multi-line literal) counts as spanning lines too, and is denied as
+    unchecked;
   - no `$` and no backtick (the hook does not expand variables or command substitutions, and refuses them inside
     single quotes too); outside quotes, no `;`, `&`, `|`, `(`, `)`, `<` or `>`, and none of the `{`, `}`, `*`, `?`
     and `[` the shell expands;
@@ -62,7 +68,8 @@ is checked:
   as unchecked too.
 It also denies when the hook itself fails (unreadable input included).
 A command meant to run as it is (a commit message that only mentions `gh pr`, say) ends one line outside the heredoc
-bodies with the comment `# placeholder-ok`, outside quotes.
+bodies with the comment `# placeholder-ok`, outside quotes; this is looked at before the form is checked, so it
+works for a command the hook cannot read too.
 Known limits: the hook guards against a placeholder sent by accident in an ordinary command, not against a command
 spelled out to dodge it. These do not trigger the check:
 - a PR created through `gh api` or another tool, or a `gh` alias;
@@ -99,27 +106,29 @@ HEREDOC_START = re.compile(r"(?<!<)<<(?!<)(-?)\s*")
 HEREDOC_WORD = re.compile(r"(['\"]?)([A-Za-z_]\w*)\1")
 OPERATOR_CHARS = set("();<>|&")
 EXPANDING_CHARS = "{}*?["
-# 每個檢查的子指令允許的選項：flag 不帶值，value 帶一個值（照樣掃描），file 帶一個內文檔；`-R`／`--repo` 每個都收
-# The options each checked subcommand allows: a flag takes no value, a value option takes one (scanned like any
-# argument), a file option takes a body file; `-R`/`--repo` is allowed for each
-_BODY = {"--body": "value", "-b": "value", "--body-file": "file", "-F": "file", "--title": "value", "-t": "value",
-         "--repo": "value", "-R": "value"}
-_CREATE = {**_BODY, "--assignee": "value", "-a": "value", "--base": "value", "-B": "value", "--draft": "flag",
-           "-d": "flag", "--dry-run": "flag", "--head": "value", "-H": "value", "--label": "value", "-l": "value",
-           "--milestone": "value", "-m": "value", "--no-maintainer-edit": "flag", "--project": "value",
-           "-p": "value", "--reviewer": "value", "-r": "value"}
+# 選項的種類：FLAG 不帶值，VALUE 帶一個值（照樣掃描），FILE 帶一個內文檔
+# The kinds of option: a FLAG takes no value, a VALUE option takes one (scanned like any argument), a FILE option
+# takes a body file
+FLAG, VALUE, FILE = "flag", "value", "file"
+HELP = ("--help", "-h")
+# 每個檢查的子指令都收的選項：內文、內文檔與 `-R`／`--repo`
+# The options every checked subcommand allows: the body, the body file and `-R`/`--repo`
+_COMMON = {"--body": VALUE, "-b": VALUE, "--body-file": FILE, "-F": FILE, "--repo": VALUE, "-R": VALUE}
+_CREATE = {**_COMMON, "--title": VALUE, "-t": VALUE, "--assignee": VALUE, "-a": VALUE, "--base": VALUE, "-B": VALUE,
+           "--draft": FLAG, "-d": FLAG, "--dry-run": FLAG, "--head": VALUE, "-H": VALUE, "--label": VALUE,
+           "-l": VALUE, "--milestone": VALUE, "-m": VALUE, "--no-maintainer-edit": FLAG, "--project": VALUE,
+           "-p": VALUE, "--reviewer": VALUE, "-r": VALUE}
 SUBCOMMAND_OPTIONS = {
     "create": _CREATE,
     "new": _CREATE,
-    "edit": {**_BODY, "--add-assignee": "value", "--add-label": "value", "--add-project": "value",
-             "--add-reviewer": "value", "--base": "value", "-B": "value", "--milestone": "value", "-m": "value",
-             "--remove-assignee": "value", "--remove-label": "value", "--remove-milestone": "flag",
-             "--remove-project": "value", "--remove-reviewer": "value"},
-    "merge": {"--body": "value", "-b": "value", "--body-file": "file", "-F": "file", "--subject": "value",
-              "-t": "value", "--repo": "value", "-R": "value", "--admin": "flag", "--author-email": "value",
-              "-A": "value", "--auto": "flag", "--delete-branch": "flag", "-d": "flag", "--disable-auto": "flag",
-              "--match-head-commit": "value", "--merge": "flag", "-m": "flag", "--rebase": "flag", "-r": "flag",
-              "--squash": "flag", "-s": "flag"},
+    "edit": {**_COMMON, "--title": VALUE, "-t": VALUE, "--add-assignee": VALUE, "--add-label": VALUE,
+             "--add-project": VALUE, "--add-reviewer": VALUE, "--base": VALUE, "-B": VALUE, "--milestone": VALUE,
+             "-m": VALUE, "--remove-assignee": VALUE, "--remove-label": VALUE, "--remove-milestone": FLAG,
+             "--remove-project": VALUE, "--remove-reviewer": VALUE},
+    "merge": {**_COMMON, "--subject": VALUE, "-t": VALUE, "--admin": FLAG, "--author-email": VALUE, "-A": VALUE,
+              "--auto": FLAG, "--delete-branch": FLAG, "-d": FLAG, "--disable-auto": FLAG,
+              "--match-head-commit": VALUE, "--merge": FLAG, "-m": FLAG, "--rebase": FLAG, "-r": FLAG,
+              "--squash": FLAG, "-s": FLAG},
 }
 ALLOWED_FORM_HINT = ("write it as one command `gh [-R <repo>] pr create|edit|new|merge ...` with only the options the "
                      "hook reads, whose body comes from `--body '<text>'`, `--body-file <path>` or a quoted heredoc "
@@ -141,12 +150,32 @@ class Heredoc(NamedTuple):
     closed: bool
 
 
+class PendingHeredoc(NamedTuple):
+    """開頭已經讀到、內文還沒讀的 heredoc：開頭所在的 shell 行號、運算子的範圍、結束字有沒有引號、`<<-`（去掉行首
+    tab）、結束字。
+    A heredoc whose start has been read but not yet its body: the index of the shell line holding its start, the
+    operator's span, whether its terminator is quoted, whether it is `<<-` (leading tabs stripped), the terminator."""
+    index: int
+    span: Tuple[int, int]
+    quoted: bool
+    strip_tabs: bool
+    terminator: str
+
+
 class Shell(NamedTuple):
-    """指令拆成 shell 的行（原文與引號遮好的版本）與 heredoc。
-    The command split into shell lines (as written and with quotes masked) and heredocs."""
+    """指令拆成 shell 的行（原文與引號遮好的版本）、heredoc，以及讀的時候遇到、要以「無法檢查」擋下的問題。
+    The command split into shell lines (as written and with quotes masked) and heredocs, with the problems met while
+    reading it that deny it as unchecked."""
     lines: List[str]
     masks: List[str]
     heredocs: List[Heredoc]
+    problems: List[str]
+
+
+def has_expansion(text):
+    """文字裡有 `$` 或反引號，hook 不展開它們。
+    The text holds `$` or a backtick, which the hook does not expand."""
+    return "$" in text or "`" in text
 
 
 def join_continuations(text):
@@ -173,7 +202,7 @@ def all_read_only(lines):
     No triggering line holds `$` or a backtick, and on each every `gh` that `pr` follows is followed past only
     `-R`/`--repo` by `pr` and a read-only subcommand."""
     for line, plain in lines:
-        if "$" in line or "`" in line:
+        if has_expansion(line):
             return False
         for gh in re.finditer(GH, plain):
             if not re.search(PR, plain[gh.end():]):
@@ -223,10 +252,12 @@ def comment_start(mask):
 
 
 def parse_shell(command):
-    """把指令分成 shell 的行與 heredoc；heredoc 的結束字讀不懂時丟出 Unchecked。
-    Splits the command into shell lines and heredocs; raises Unchecked when a heredoc's terminator cannot be read."""
-    shell = Shell([], [], [])
-    pending = []
+    """把指令分成 shell 的行與 heredoc。heredoc 的結束字讀不懂時記成問題，那一行之後照 shell 的行讀，跳過標記照樣
+    找得到。
+    Splits the command into shell lines and heredocs. A heredoc terminator it cannot read is recorded as a problem and
+    the lines after it are read as shell lines, so the override is still found."""
+    shell = Shell([], [], [], [])
+    pending: List[PendingHeredoc] = []
     lines, k, quote = command.split("\n"), 0, None
     while k < len(lines):
         line = lines[k]
@@ -237,20 +268,20 @@ def parse_shell(command):
         for match in HEREDOC_START.finditer(mask[:comment_start(mask)]):
             word = HEREDOC_WORD.match(line, match.end())
             if not word:
-                raise Unchecked("a heredoc's terminator could not be read")
-            # (行號, 範圍, 有沒有引號, `<<-` 去掉 tab, 結束字) ／ (index, span, quoted, `<<-` strips tabs, terminator)
-            pending.append((len(shell.lines) - 1, (match.start(), word.end()), bool(word.group(1)),
-                            bool(match.group(1)), word.group(2)))
+                shell.problems.append("a heredoc's terminator could not be read")
+                continue
+            pending.append(PendingHeredoc(len(shell.lines) - 1, (match.start(), word.end()), bool(word.group(1)),
+                                          bool(match.group(1)), word.group(2)))
         if quote:
             continue
-        for index, span, quoted, strip, terminator in pending:
+        for heredoc in pending:
             body = []
-            while k < len(lines) and (lines[k].lstrip("\t") if strip else lines[k]) != terminator:
+            while k < len(lines) and (lines[k].lstrip("\t") if heredoc.strip_tabs else lines[k]) != heredoc.terminator:
                 body.append(lines[k])
                 k += 1
             closed = k < len(lines)
             k += 1 if closed else 0
-            shell.heredocs.append(Heredoc(index, span, quoted, "\n".join(body), closed))
+            shell.heredocs.append(Heredoc(heredoc.index, heredoc.span, heredoc.quoted, "\n".join(body), closed))
         pending = []
     return shell
 
@@ -275,6 +306,8 @@ def pr_call(shell):
     """確認指令是唯一允許的寫法，回傳 (子指令, 它之後的參數, heredoc 的內文或 None)；不是就丟出 Unchecked。
     Checks that the command takes the one allowed form and returns (the subcommand, the args after it, the heredoc
     body or None); raises Unchecked otherwise."""
+    if shell.problems:
+        raise Unchecked(shell.problems[0])
     lines, masks = list(shell.lines), list(shell.masks)
     while lines and not lines[-1].strip():
         lines.pop()
@@ -297,7 +330,7 @@ def pr_call(shell):
     masked = join_continuations("\n".join(mask[:c] for mask, c in zip(masks, cut, strict=True)))
     if "\n" in text.strip():
         raise Unchecked("the command spans several lines that are not `\\` continuations")
-    if "$" in text or "`" in text:
+    if has_expansion(text):
         raise Unchecked("the command holds `$` or a backtick, which the hook does not expand")
     expanding = [ch for ch in EXPANDING_CHARS if ch in masked]
     if expanding:
@@ -314,7 +347,19 @@ def pr_call(shell):
         raise Unchecked(f"the command holds the shell operator `{operators[0]}`")
     if not tokens or tokens[0] != "gh":
         raise Unchecked("the command does not start with `gh`")
-    i = 1
+    i = skip_repo_options(tokens, 1)
+    if tokens[i:i + 1] != ["pr"] or len(tokens) < i + 2:
+        raise Unchecked("the command is not `gh [-R <repo>] pr <subcommand> ...`")
+    sub = tokens[i + 1]
+    if sub not in READ_ONLY + HELP and sub not in SUBCOMMAND_OPTIONS:
+        raise Unchecked(f"`gh pr {sub}` is neither a read-only subcommand nor create, edit, new or merge")
+    return sub, tokens[i + 2:], heredoc_body
+
+
+def skip_repo_options(tokens, i):
+    """從 tokens[i] 起跳過 `-R`／`--repo <repo>`，回傳下一個 token 的位置（和 `GH_PR` 前綴的規則相同）。
+    Skips `-R`/`--repo <repo>` from tokens[i] on and returns where the next token is (the same rule as `GH_PR`'s
+    prefix)."""
     while i < len(tokens):
         if tokens[i] in ("-R", "--repo"):
             i += 2
@@ -322,12 +367,7 @@ def pr_call(shell):
             i += 1
         else:
             break
-    if tokens[i:i + 1] != ["pr"] or len(tokens) < i + 2:
-        raise Unchecked("the command is not `gh [-R <repo>] pr <subcommand> ...`")
-    sub = tokens[i + 1]
-    if sub not in READ_ONLY and sub not in SUBCOMMAND_OPTIONS:
-        raise Unchecked(f"`gh pr {sub}` is neither a read-only subcommand nor create, edit, new or merge")
-    return sub, tokens[i + 2:], heredoc_body
+    return i
 
 
 def read_body_file(value, cwd):
@@ -346,10 +386,12 @@ def read_body_file(value, cwd):
 
 
 def option_values(sub, args):
-    """照子指令的允許清單讀參數，回傳每一個 file 選項的值；清單外的選項、併在一起的短選項、缺值都丟出 Unchecked。
-    Reads the args by the subcommand's allow list and returns the value of every file option; an option off the list,
-    bundled short options and a missing value raise Unchecked."""
-    options, files, i = SUBCOMMAND_OPTIONS[sub], [], 0
+    """照子指令的允許清單讀參數，回傳 (每一個 FILE 選項的 (名稱, 值), 有沒有以選項的身分出現 `--help`／`-h`)；清單外的
+    選項、併在一起的短選項、缺值都丟出 Unchecked。
+    Reads the args by the subcommand's allow list and returns (the (name, value) of every FILE option, whether
+    `--help`/`-h` appears as an option); an option off the list, bundled short options and a missing value raise
+    Unchecked."""
+    options, files, asked_help, i = SUBCOMMAND_OPTIONS[sub], [], False, 0
     while i < len(args):
         token, value = args[i], None
         i += 1
@@ -360,14 +402,17 @@ def option_values(sub, args):
             value = value if "=" in token else None
         elif len(token) > 2:
             name, value = token[:2], token[2:]
-            if options.get(name) == "flag" or name not in options:
+            if options.get(name) == FLAG or name not in options:
                 raise Unchecked(f"`{token}` bundles short options")
             value = value[1:] if value.startswith("=") else value
         else:
             name = token
+        if name in HELP and value is None:
+            asked_help = True
+            continue
         if name not in options:
             raise Unchecked(f"`{name}` is not an option the hook reads for `gh pr {sub}`")
-        if options[name] == "flag":
+        if options[name] == FLAG:
             if value is not None:
                 raise Unchecked(f"`{token}` gives a value to a flag")
             continue
@@ -376,17 +421,21 @@ def option_values(sub, args):
                 raise Unchecked(f"`{name}` has no value")
             value = args[i]
             i += 1
-        if options[name] == "file":
+        if options[name] == FILE:
             files.append((name, value))
-    return files
+    return files, asked_help
 
 
 def body_texts(sub, args, heredoc_body, cwd):
     """參數裡每一個要掃描的文字：(名稱, 文字)。參數本身、內文檔、heredoc 的內文都算。
-    Every text to scan among the args, as (name, text): the args themselves, the body files and the heredoc body."""
+    Every text to scan among the args, as (name, text): the args themselves, the body files and the heredoc body.
+    None when `--help`/`-h` is given, as gh then only prints its help."""
+    files, asked_help = option_values(sub, args)
+    if asked_help:
+        return None
     texts = [("the command's arguments", "\n".join(args))]
     stdin_used = False
-    for name, value in option_values(sub, args):
+    for name, value in files:
         if value == "-":
             if heredoc_body is None:
                 raise Unchecked(f"`{name} -` reads stdin, and no heredoc at the end of the command feeds it")
@@ -414,9 +463,11 @@ def main():
         if overridden(shell):
             return 0
         sub, args, heredoc_body = pr_call(shell)
-        if sub in READ_ONLY:
+        if sub in READ_ONLY + HELP:
             return 0
         texts = body_texts(sub, args, heredoc_body, payload.get("cwd") or os.getcwd())
+        if texts is None:
+            return 0
     except Unchecked as error:
         deny(f"the PR title or body could not be checked: {error}.\nTo open, edit or merge a PR, {ALLOWED_FORM_HINT}.")
         return 0

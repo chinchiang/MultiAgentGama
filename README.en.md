@@ -294,7 +294,7 @@ MultiAgentGama/
 │   ├── test_git_repo_fixture.py        # The shared git_repo fixture: the test repos it builds ignore the developer's global git config
 │   ├── test_golden.py                  # Golden diff: normalisation, comparison, scenario determinism, --against's cleanup path (skips without scripts/golden/)
 │   ├── test_guard_discard.py           # The .claude/ guard_discard hook: denies git commands that would discard uncommitted changes (skips without .claude/)
-│   ├── test_guard_pr_placeholder.py    # The .claude/ guard_pr_placeholder hook: denies gh pr create/edit/new while the PR title or body holds a placeholder (skips without .claude/)
+│   ├── test_guard_pr_placeholder.py    # The .claude/ guard_pr_placeholder hook: denies gh pr create/edit/new/merge while the PR title, body or merge message holds a placeholder (skips without .claude/)
 │   ├── test_harness_components.py      # Component integration tests in mock mode
 │   ├── test_i18n.py                    # Bilingual helpers, report / console / CLI strings, bilingual docstrings and comments
 │   ├── test_i18n_output.py             # Prompts stay English, bilingual rule titles, executor reasons and PoCs
