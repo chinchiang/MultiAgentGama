@@ -9,6 +9,12 @@
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard_discard.py\"",
             "timeout": 10,
             "statusMessage": "Checking for discarded uncommitted changes"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard_pr_placeholder.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking the PR body for placeholders"
           }
         ]
       }
@@ -37,7 +43,8 @@
       "Bash(git push *--delete*)"
     ],
     "ask": [
-      "Bash(gh pr merge * --merge)"
+      "Bash(gh pr merge * --merge)",
+      "Bash(git stash drop *)"
     ]
   }
 }
