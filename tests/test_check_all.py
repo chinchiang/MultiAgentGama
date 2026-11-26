@@ -188,11 +188,11 @@ def test_a_tracked_file_edited_during_a_step_is_could_not_check(git_repo, tmp_pa
 
 def test_the_against_ref_moving_during_a_step_is_could_not_check(git_repo, tmp_path):
     """有一步跑的時候 `--against` 的 ref（預設 `master`）移動了，例如另一個終端機合併了 PR 再
-    `git fetch . origin/master:master`：HEAD 與工作目錄都沒變，但 bi_english、golden、red_on_base 比對的 merge-base
+    `git fetch . origin/master:master`：HEAD 與工作目錄都沒變，但 golden、red_on_base 比對的 merge-base
     跟著變了，前後步驟比的不是同一個基準。停在那一步，最後一行點名 ref，結束碼 2（#216 第一輪審查 Spec (c)2）。
     The `--against` ref (`master` by default) moving while a step runs, say when another terminal merges a PR and runs
     `git fetch . origin/master:master`: HEAD and the working tree stay as they were, but the merge-base that
-    bi_english, golden and red_on_base compare against moves with it, so the steps no longer share one base. The run
+    golden and red_on_base compare against moves with it, so the steps no longer share one base. The run
     stops after that step, its last line names the ref, and the exit code is 2 (#216 round-1 review, spec (c)2)."""
     root = tmp_path / "repo"
     root.mkdir()
@@ -210,6 +210,30 @@ def test_the_against_ref_moving_during_a_step_is_could_not_check(git_repo, tmp_p
     assert summary[-1] == "== could not check: `master` moved during golden", summary
     full = (tmp_path / "checks.full.log").read_text(encoding="utf-8")
     assert "== could not check: `master` moved during golden" in full, full
+    assert code == 2, summary
+
+
+def test_origin_master_moving_during_a_step_is_could_not_check(git_repo, tmp_path):
+    """有一步跑的時候 `git fetch` 移動了 `origin/master`：bi_english 一律比對 HEAD 和 `origin/master` 的 merge-base，
+    `--against` 是預設的 `master` 也一樣，所以前後步驟比的不是同一個基準。HEAD、工作目錄與 `master` 都沒變，停在
+    那一步，最後一行點名 `origin/master`，結束碼 2（#216 第一輪審查 Spec (c)2，第二次審查補上）。
+    `git fetch` moving `origin/master` while a step runs: bi_english always compares against the merge-base of HEAD
+    and `origin/master`, even with the default `--against master`, so the steps no longer share one base. HEAD, the
+    working tree and `master` stay as they were; the run stops after that step, its last line names `origin/master`,
+    and the exit code is 2 (#216 round-1 review, spec (c)2, completed after the second review)."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "calc.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+    git = git_repo(root)
+    git("branch", "-M", "master")
+    git("update-ref", "refs/remotes/origin/master", "HEAD")
+    fetched = git("commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "fetched").stdout.strip()
+    run, called = _changing("pytest", lambda: git("update-ref", "refs/remotes/origin/master", fetched))
+    log = tmp_path / "checks.log"
+    code = tool.main(["--log", str(log)], repo=str(root), run=run)
+    summary = log.read_text(encoding="utf-8").splitlines()
+    assert called[-1] == "pytest", called
+    assert summary[-1] == "== could not check: `origin/master` moved during pytest", summary
     assert code == 2, summary
 
 
