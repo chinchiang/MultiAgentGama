@@ -505,7 +505,7 @@ def test_red_read_when_pytest_exited_0_is_could_not_check(git_repo, tmp_path, ca
     assert any(printed), printed
     assert "## swap" not in out, _lines(out, "## swap")
     assert code == 2, out
-    assert "pytest exited 0 but 1 red were read" in out, _lines(out, "could not read")
+    assert "pytest exited 0 but 1 red were read" in out, out
 
 
 INTERRUPTED = TESTS + '''
@@ -566,7 +566,7 @@ def test_a_multi_line_skip_reason_is_not_read_as_red(git_repo, tmp_path, capsys,
     assert "## swap" not in out, _lines(out, "## swap")
     assert code == 2, out
     assert "red ids not read as failing a test it ran: tests/test_calc.py::test_adding_two_numbers_gives_their_sum" \
-        in out, _lines(out, "could not read")
+        in out, out
 
 
 INNER_RUN = TESTS + '''
