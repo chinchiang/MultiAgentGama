@@ -14,7 +14,8 @@ golden、test_sdist 與 red-on-base 都讀工作目錄，跑的時候不要改�
 都不算）；和開始時不同就停在那一步，摘要與 `.full.log` 的最後一行寫出是哪一步跑的時候變的（#216）。比對用的
 ref 指到的 commit 也一樣比對：golden 與 red-on-base 比對 `--against` 的 ref，bi_english 一律比對 `origin/master`；
 它們移動了（例如另一個終端機 `git fetch` 或 `git fetch . origin/master:master`；被建立或刪除也算），比對的
-merge-base 就跟著變，最後一行寫「`<ref>` moved during <步驟>」。同一步裡工作目錄也變了時，只寫工作目錄。
+merge-base 就跟著變，最後一行寫「`<ref>` moved during <步驟>」。兩個都移動時只點名 `--against` 的 ref；同一步裡
+工作目錄也變了時，只寫工作目錄。
 
 結束碼：0 每一個有跑的步驟都是 0；1 有步驟不是 0 或逾時（red-on-base 有綠燈或略過的測試時也是 1，要讀 log 判斷
 那些是不是預期中的守護）；2 跑的期間工作目錄、HEAD、`--against` 的 ref 或 `origin/master` 變了，無法檢查。
@@ -42,8 +43,8 @@ of the summary and of the `.full.log` names the step during which the tree chang
 compared against point at are compared too: golden and red-on-base compare against the `--against` ref, bi_english
 always against `origin/master`. When one moves (another terminal running `git fetch` or
 `git fetch . origin/master:master`, say; being created or deleted counts), the merge-base compared against moves with
-it, and the last line reads "`<ref>` moved during <step>". When the working tree changed in the same step, only that
-is named.
+it, and the last line reads "`<ref>` moved during <step>". When both moved, only the `--against` ref is named; when
+the working tree changed in the same step, only that is named.
 
 Exit code: 0 every step that ran exited 0; 1 some step did not or timed out (red-on-base also exits 1 when a test is
 green or skipped, so read the log to judge whether those are expected guards); 2 the working tree, HEAD, the
@@ -244,7 +245,7 @@ def main(argv: Optional[List[str]] = None, repo: str = _REPO, run: Runner = run_
     header = f"== HEAD {head} against {args.against}" + (" (uncommitted changes in the working tree)"
                                                           if _dirty(repo) else "")
     failed_steps: List[str] = []
-    could_not_check = ""
+    could_not_check_reason = ""
     own_files = (os.path.abspath(log), os.path.abspath(full))
     start = _tree_state(repo, own_files)
     # golden 與 red-on-base 比對 `--against`，bi_english 一律比對 `origin/master`；同一個 ref 只比一次
@@ -287,20 +288,20 @@ def main(argv: Optional[List[str]] = None, repo: str = _REPO, run: Runner = run_
                 continue
             moved = [ref for ref in watched if _ref_state(repo, ref) != refs_start[ref]]
             if _tree_state(repo, own_files) != start:
-                could_not_check = f"the working tree changed during {name}"
+                could_not_check_reason = f"the working tree changed during {name}"
             elif moved:
-                could_not_check = f"`{moved[0]}` moved during {name}"
-            if could_not_check:
+                could_not_check_reason = f"`{moved[0]}` moved during {name}"
+            if could_not_check_reason:
                 break
-        if could_not_check:
-            verdict = f"== could not check: {could_not_check}"
+        if could_not_check_reason:
+            verdict = f"== could not check: {could_not_check_reason}"
         else:
             verdict = "== all steps exited 0" if not failed_steps else "== not 0: " + ", ".join(failed_steps)
         summary.write(verdict + "\n")
-        if could_not_check:
+        if could_not_check_reason:
             everything.write(verdict + "\n")
     print(f"{verdict}\nsummary: {log}\nfull output: {full}")
-    if could_not_check:
+    if could_not_check_reason:
         return 2
     return 1 if failed_steps else 0
 
