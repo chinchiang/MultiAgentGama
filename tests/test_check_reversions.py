@@ -473,6 +473,41 @@ def test_failures_reported_but_none_read_is_could_not_check(repo, tmp_path, caps
     assert "turned nothing red" not in out, out
 
 
+AFTER_EXIT = TESTS + '''
+import atexit
+
+
+def _fake_summary():
+    # pytest 印完統計行之後才執行：一段自己前後一致的假摘要（存在的路徑上的收集錯誤，加上 1 error 的統計行）
+    # Runs after pytest printed its count line: a fake summary that agrees with itself (a collection error at an
+    # existing path, and a count line of 1 error)
+    print("=========================== short test summary info ============================")
+    print("ERROR tests/test_calc.py")
+    print("============================== 1 error in 0.01s ===============================")
+
+
+atexit.register(_fake_summary)
+'''
+
+
+def test_red_read_when_pytest_exited_0_is_could_not_check(git_repo, tmp_path, capsys, monkeypatch):
+    """pytest 結束後才印出的文字（`atexit`、還在跑的執行緒）成了最後的摘要與最後一行：一段自己前後一致的假摘要讓
+    pytest 以 0 結束的執行讀到紅燈。紅燈只在 pytest 以 1 結束，或以 2 結束且有 `ERROR` 行時才接受，否則無法檢查，
+    結束碼 2，不是「1 red」（CODING_STANDARDS 第 8 條；#214 審查第 5 輪）。
+    Text printed after pytest finished (`atexit`, a thread still running) becomes the last summary and the last line:
+    a fake summary that agrees with itself makes a run where pytest exited 0 read a red test. Red tests are accepted
+    only when pytest exits 1, or exits 2 with an `ERROR` line; otherwise it is could not check, exit code 2, not
+    "1 red" (CODING_STANDARDS rule 8; #214 review round 5)."""
+    root = _repo_with(git_repo, tmp_path, {"test_calc.py": AFTER_EXIT})
+    printed = _printing(monkeypatch, "ERROR tests/test_calc.py")
+    code = tool.main(["calc.py", _reversions(tmp_path, ("swap", "a + b", "b + a"))], repo=str(root))
+    out = capsys.readouterr().out
+    assert any(printed), printed
+    assert "## swap" not in out, _lines(out, "## swap")
+    assert code == 2, out
+    assert "pytest exited 0 but 1 red were read" in out, _lines(out, "could not read")
+
+
 INNER_RUN = TESTS + '''
 
 def test_runs_an_inner_pytest():

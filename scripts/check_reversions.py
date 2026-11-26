@@ -7,8 +7,9 @@ stderr）；經由檔案、目錄或整個套件跑到而被略過的，列成�
 pytest 參數跑測試、從摘要讀出失敗（FAILED）與錯誤（ERROR，例如收集不到）的測試並在每個底下印出失敗的那一行、
 列出被略過（skipped，不算紅燈）的測試，最後用記憶體裡的原內容把檔案寫回去，不靠 git。被略過的測試從 `-v` 的
 結果行讀 ID；數量對不上最後的統計時（例如整個模組被略過），改列摘要裡的每一行略過。讀不到最後的統計行（目標
-repo 的 `addopts = -qq`、`-p no:terminal` 會改掉輸出的形狀），或 pytest 回報有失敗卻讀不到任何一個，都是無法
-檢查（結束碼 2）。結果行、摘要與統計行都只讀外層這次執行自己的：結果行在開頭標題與下一個區段標題之間，摘要在最後
+repo 的 `addopts = -qq`、`-p no:terminal` 會改掉輸出的形狀），pytest 回報有失敗卻讀不到任何一個，或讀到
+紅燈，pytest 卻沒有回報失敗（不是以 1 結束，也不是以 2 結束且有 `ERROR` 行），都是無法檢查（結束碼 2）。
+結果行、摘要與統計行都只讀外層這次執行自己的：結果行在開頭標題與下一個區段標題之間，摘要在最後
 一個摘要標題之後，統計行是輸出的最後一個非空白行；測試在自己裡面跑 pytest 時印進輸出的那些不算。pytest 以
 `--force-short-summary` 跑，摘要一個測試一行（不然在 CI 上或 verbose 到 2 時，pytest 把整段多行訊息印進摘要）。
 紅燈要和其他部分一致，否則同樣是無法檢查：紅燈 ID 要是結果為 FAILED 或 ERROR 的測試，或 `ERROR` 行上解析後存在、
@@ -41,18 +42,19 @@ tests from the summary and prints each one's failure line under it, lists the sk
 writes the file back from the original content held in memory, not through git. Skipped test ids are read from the
 `-v` outcome lines; when they do not add up to the closing count (a whole skipped module, for one), every skip line
 of the summary is listed instead. No closing count line read (the target repo's `addopts = -qq` or
-`-p no:terminal` changes the output's shape), or pytest reporting failures without one being read, is could not
-check (exit code 2). Outcome lines, the summary and the count line are read from the outer run's own output only:
-outcome lines between the opening header and the next section header, the summary after the last summary header,
-and the count line as the output's last non-blank line; those a test prints from a pytest run inside it do not count.
-pytest runs with `--force-short-summary`, so the summary has one line per test (otherwise, on CI or at verbosity 2,
-pytest prints a whole multi-line message into the summary). Red tests must agree with the rest, or it is could not check
-too: a red id must be a test whose outcome is FAILED or ERROR, or a collection error (an `ERROR` line) at a path that,
-once resolved, exists under the given test paths (or the repo); each test whose outcome is FAILED or ERROR must be read
-exactly once; and the number of red tests must equal the count line's `failed` plus `error` (#214). The pytest arguments
-are fixed, and no pytest option or `@file` is accepted among the tests (`-q` and the like change the output's shape):
-`-v` puts each test's outcome on its own line, and `-rfEs` keeps the failures, errors and skips in the summary (an
-argument such as `-rs` would drop the failures and errors, making every item look as if it turned nothing red).
+`-p no:terminal` changes the output's shape), pytest reporting failures without one being read, or red tests read while
+pytest reported none (it exited neither 1 nor 2 with an `ERROR` line), is could not check (exit code 2). Outcome lines,
+the summary and the count line are read from the outer run's own output only: outcome lines between the opening header
+and the next section header, the summary after the last summary header, and the count line as the output's last
+non-blank line; those a test prints from a pytest run inside it do not count. pytest runs with `--force-short-summary`,
+so the summary has one line per test (otherwise, on CI or at verbosity 2, pytest prints a whole multi-line message into
+the summary). Red tests must agree with the rest, or it is could not check too: a red id must be a test whose outcome is
+FAILED or ERROR, or a collection error (an `ERROR` line) at a path that, once resolved, exists under the given test
+paths (or the repo); each test whose outcome is FAILED or ERROR must be read exactly once; and the number of red tests
+must equal the count line's `failed` plus `error` (#214). The pytest arguments are fixed, and no pytest option or
+`@file` is accepted among the tests (`-q` and the like change the output's shape): `-v` puts each test's outcome on its
+own line, and `-rfEs` keeps the failures, errors and skips in the summary (an argument such as `-rs` would drop the
+failures and errors, making every item look as if it turned nothing red).
 
 The reversions are a JSON file: `[{"name": "...", "old": "...", "new": "..."}, ...]`; keep it outside the repo or
 somewhere git ignores, or the working tree is not clean.
@@ -303,11 +305,14 @@ def _problems(done: subprocess.CompletedProcess[str], count_line: str, outcomes:
               red: list[tuple[str, str, str]], tests: list[str], repo: str) -> list[str]:
     """讓一次執行讀不懂的每一個原因，各是一句可以直接印出的話；規則與訊息只寫在這裡（CODING_STANDARDS 第 8 條；#214）：
     讀不到統計行；紅燈 ID 對不上失敗的測試（`_unmatched`）；紅燈讀到不止一次，或結果是 FAILED 或 ERROR 的測試沒讀到；
-    紅燈數量和統計行的 `failed` 加 `error` 不同；pytest 以 1 結束（有失敗）卻沒讀到紅燈。
+    紅燈數量和統計行的 `failed` 加 `error` 不同；pytest 以 1 結束（有失敗）卻沒讀到紅燈；讀到紅燈，pytest 卻不是以 1
+    結束，也不是以 2 結束且有 `ERROR` 行（pytest 結束後才印的文字，例如 `atexit`，會成為最後的摘要與最後一行）。
     Each reason a run does not read, each a sentence ready to print; the rules and their messages live here only
     (CODING_STANDARDS rule 8; #214): no count line; a red id matching no failing test (`_unmatched`); a red test read
     more than once, or a test whose outcome is FAILED or ERROR not read; a number of red tests other than the count
-    line's `failed` plus `error`; pytest exiting 1 (some failed) with no red test read."""
+    line's `failed` plus `error`; pytest exiting 1 (some failed) with no red test read; red tests read while pytest
+    exited neither 1 nor 2 with an `ERROR` line (text printed after pytest finished, such as from `atexit`, becomes the
+    last summary and the last line)."""
     problems = []
     if not count_line:
         problems.append("no closing count line as the output's last line (an `addopts` or plugin may change its "
@@ -331,6 +336,8 @@ def _problems(done: subprocess.CompletedProcess[str], count_line: str, outcomes:
         problems.append(f"the count line has {counted_red} failed or errored, but {len(red)} red were read")
     if done.returncode == 1 and not red:
         problems.append("pytest exited 1 but no red test was read")
+    if red and not (done.returncode == 1 or (done.returncode == 2 and any(kind == "ERROR" for kind, _test in pairs))):
+        problems.append(f"pytest exited {done.returncode} but {len(red)} red were read")
     return problems
 
 
