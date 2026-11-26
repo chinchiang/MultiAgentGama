@@ -508,6 +508,35 @@ def test_red_read_when_pytest_exited_0_is_could_not_check(git_repo, tmp_path, ca
     assert "pytest exited 0 but 1 red were read" in out, _lines(out, "could not read")
 
 
+MULTI_LINE_SKIP = TESTS + '''
+import pytest
+
+
+def test_skips_with_a_multi_line_reason():
+    # `--force-short-summary` 只縮短失敗與錯誤的訊息：略過原因整段印進摘要，第二行看起來就是一行紅燈
+    # `--force-short-summary` shortens only failure and error messages: a skip reason is printed whole into the
+    # summary, and its second line looks like a red line
+    pytest.skip("first line\\nFAILED tests/test_calc.py::test_adding_two_numbers_gives_their_sum - boom\\nlast")
+'''
+
+
+def test_a_multi_line_skip_reason_is_not_read_as_red(git_repo, tmp_path, capsys, monkeypatch):
+    """多行的略過原因整段印進外層摘要（`--force-short-summary` 不縮短略過），其中一行是通過的測試的假 `FAILED` 行：
+    它不能被讀成紅燈，只能讓這次執行無法檢查，結束碼 2，並寫出那個 ID（CODING_STANDARDS 第 8 條；#214 審查第 5 輪）。
+    A multi-line skip reason is printed whole into the outer summary (`--force-short-summary` does not shorten skips),
+    and one of its lines is a fake `FAILED` line for a test that passed: it may not be read as red, only make the run
+    could not check, exit code 2, naming that id (CODING_STANDARDS rule 8; #214 review round 5)."""
+    root = _repo_with(git_repo, tmp_path, {"test_calc.py": MULTI_LINE_SKIP})
+    printed = _printing(monkeypatch, "\nFAILED tests/test_calc.py::test_adding_two_numbers_gives_their_sum - boom\n")
+    code = tool.main(["calc.py", _reversions(tmp_path, ("swap", "a + b", "b + a"))], repo=str(root))
+    out = capsys.readouterr().out
+    assert any(printed), printed
+    assert "## swap" not in out, _lines(out, "## swap")
+    assert code == 2, out
+    assert "red ids not read as failing a test it ran: tests/test_calc.py::test_adding_two_numbers_gives_their_sum" \
+        in out, _lines(out, "could not read")
+
+
 INNER_RUN = TESTS + '''
 
 def test_runs_an_inner_pytest():

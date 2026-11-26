@@ -11,7 +11,8 @@ repo 的 `addopts = -qq`、`-p no:terminal` 會改掉輸出的形狀），pytest
 紅燈，pytest 卻沒有回報失敗（不是以 1 結束，也不是以 2 結束且有 `ERROR` 行），都是無法檢查（結束碼 2）。
 結果行、摘要與統計行都只讀外層這次執行自己的：結果行在開頭標題與下一個區段標題之間，摘要在最後
 一個摘要標題之後，統計行是輸出的最後一個非空白行；測試在自己裡面跑 pytest 時印進輸出的那些不算。pytest 以
-`--force-short-summary` 跑，摘要一個測試一行（不然在 CI 上或 verbose 到 2 時，pytest 把整段多行訊息印進摘要）。
+`--force-short-summary` 跑，失敗與錯誤在摘要裡各一行（不然在 CI 上或 verbose 到 2 時，pytest 把整段多行訊息印進
+摘要）；這個選項不縮短略過的原因，多行的原因仍整段印出，其中看起來像紅燈的行由下面的一致性規則擋下。
 紅燈要和其他部分一致，否則同樣是無法檢查：紅燈 ID 要是結果為 FAILED 或 ERROR 的測試，或 `ERROR` 行上解析後存在、
 落在傳入測試路徑（或 repo）底下的收集錯誤；結果為 FAILED 或 ERROR 的測試都要剛好讀到一次；紅燈數量要等於統計行的
 `failed` 加 `error`（#214）。pytest 的參數是固定的，測試參數裡不接受 pytest 選項與 `@檔案`（`-q` 之類會改掉
@@ -47,14 +48,15 @@ pytest reported none (it exited neither 1 nor 2 with an `ERROR` line), is could 
 the summary and the count line are read from the outer run's own output only: outcome lines between the opening header
 and the next section header, the summary after the last summary header, and the count line as the output's last
 non-blank line; those a test prints from a pytest run inside it do not count. pytest runs with `--force-short-summary`,
-so the summary has one line per test (otherwise, on CI or at verbosity 2, pytest prints a whole multi-line message into
-the summary). Red tests must agree with the rest, or it is could not check too: a red id must be a test whose outcome is
-FAILED or ERROR, or a collection error (an `ERROR` line) at a path that, once resolved, exists under the given test
-paths (or the repo); each test whose outcome is FAILED or ERROR must be read exactly once; and the number of red tests
-must equal the count line's `failed` plus `error` (#214). The pytest arguments are fixed, and no pytest option or
-`@file` is accepted among the tests (`-q` and the like change the output's shape): `-v` puts each test's outcome on its
-own line, and `-rfEs` keeps the failures, errors and skips in the summary (an argument such as `-rs` would drop the
-failures and errors, making every item look as if it turned nothing red).
+so each failure and error has one summary line (otherwise, on CI or at verbosity 2, pytest prints a whole multi-line
+message into the summary); it does not shorten a skip reason, so a multi-line one is still printed whole, and a line in
+it that looks red is refused by the agreement rules below. Red tests must agree with the rest, or it is could not check
+too: a red id must be a test whose outcome is FAILED or ERROR, or a collection error (an `ERROR` line) at a path that,
+once resolved, exists under the given test paths (or the repo); each test whose outcome is FAILED or ERROR must be read
+exactly once; and the number of red tests must equal the count line's `failed` plus `error` (#214). The pytest arguments
+are fixed, and no pytest option or `@file` is accepted among the tests (`-q` and the like change the output's shape):
+`-v` puts each test's outcome on its own line, and `-rfEs` keeps the failures, errors and skips in the summary (an
+argument such as `-rs` would drop the failures and errors, making every item look as if it turned nothing red).
 
 The reversions are a JSON file: `[{"name": "...", "old": "...", "new": "..."}, ...]`; keep it outside the repo or
 somewhere git ignores, or the working tree is not clean.
@@ -81,15 +83,17 @@ from dataclasses import dataclass
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 固定的 pytest 參數：逐一列出每個測試的結果（讀得到每個測試 ID 與它的結果）、不寫快取、摘要列出失敗、錯誤與略過
-# （`-rfEs`：沒有逐一結果行的略過，例如整個模組被略過，只出現在摘要）、摘要一個測試一行（`--force-short-summary`：
-# 在 CI 上或 verbose 到 2 時，例如目標 repo 的 `addopts = -v`，pytest 會把整段多行訊息印進摘要，訊息裡的摘要標題與
-# `FAILED` 行就成了摘要的一部分；#214 審查第 3、4 輪）
+# （`-rfEs`：沒有逐一結果行的略過，例如整個模組被略過，只出現在摘要）、摘要裡每個失敗與錯誤一行
+# （`--force-short-summary`：在 CI 上或 verbose 到 2 時，例如目標 repo 的 `addopts = -v`，pytest 會把整段多行訊息
+# 印進摘要，訊息裡的摘要標題與 `FAILED` 行就成了摘要的一部分；#214 審查第 3、4 輪）。略過的原因不受這個選項影響，
+# 多行的原因仍整段印進摘要，由紅燈的一致性規則擋下（#214 審查第 5 輪）
 # The fixed pytest arguments: each test's outcome on its own line (so every test id and its outcome can be read), no
 # cache written, failures, errors and skips listed in the summary (`-rfEs`: a skip with no outcome line of its own,
-# such as a whole skipped module, appears only there), one summary line per test (`--force-short-summary`: on CI or
-# at verbosity 2, such as under a target repo's `addopts = -v`, pytest prints a whole multi-line message into the
-# summary, making a summary header or `FAILED` line inside the message part of the summary; #214 review rounds 3 and
-# 4)
+# such as a whole skipped module, appears only there), one summary line per failure and error
+# (`--force-short-summary`: on CI or at verbosity 2, such as under a target repo's `addopts = -v`, pytest prints a
+# whole multi-line message into the summary, making a summary header or `FAILED` line inside the message part of the
+# summary; #214 review rounds 3 and 4). Skip reasons are not shortened by it: a multi-line one is still printed whole
+# into the summary, and the agreement rules on red tests refuse it (#214 review round 5)
 PYTEST_ARGS = ("-v", "-p", "no:cacheprovider", "-rfEs", "--force-short-summary")
 # `-v` 的結果行：`<id> <結果> (<原因>)   [ 50%]` ／ A `-v` outcome line: `<id> <outcome> (<reason>)   [ 50%]`
 _OUTCOME_RE = re.compile(r"^(\S.*::.*?) (PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)(?: \(.*\))?\s+\[\s*\d+%\]\s*$",
