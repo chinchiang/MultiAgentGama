@@ -7,6 +7,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _spec = importlib.util.spec_from_file_location("check_all", os.path.join(REPO_ROOT, "scripts", "check_all.py"))
 assert _spec and _spec.loader
@@ -332,6 +334,35 @@ def test_bi_english_without_a_base_compares_against_bi_english_base(monkeypatch)
     monkeypatch.setattr(bi_english, "_git", fake_git)
     bi_english.main([])
     assert calls[:1] == [("merge-base", "HEAD", tool.BI_ENGLISH_BASE)], calls
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0,
+                    reason="needs POSIX file modes and a user that mode 000 locks out")
+def test_an_untracked_file_that_cannot_be_read_stops_before_any_step(git_repo, tmp_path):
+    """開始時就有讀不到的未追蹤檔（權限 000）：它的內容不在雜湊裡，途中改了也看不出來，所以一步都不跑，最後一行
+    點名那個檔案，結束碼 2（#216 第一輪審查 Standards 第 3 條；原本只雜湊例外名稱，兩次都讀不到就算沒變）。
+    An untracked file that cannot be read at the start (mode 000): its content is not in the hash, so a change to it
+    would go unseen, and no step runs; the last line names the file and the exit code is 2 (#216 round-1 review,
+    standards item 3; it used to hash only the exception's name, so two failed reads counted as no change)."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "calc.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+    git_repo(root)
+    locked = root / "notes.txt"
+    locked.write_text("draft\n", encoding="utf-8")
+    locked.chmod(0)
+    try:
+        run, called = _changing("golden", lambda: None)
+        log = tmp_path / "checks.log"
+        code = tool.main(["--log", str(log)], repo=str(root), run=run)
+    finally:
+        locked.chmod(0o600)
+    summary = log.read_text(encoding="utf-8").splitlines()
+    assert called == [], called
+    assert summary[-1] == "== could not check: `notes.txt` cannot be read (PermissionError)", summary
+    full = (tmp_path / "checks.full.log").read_text(encoding="utf-8")
+    assert "== could not check: `notes.txt` cannot be read (PermissionError)" in full, full
+    assert code == 2, summary
 
 
 def test_a_commit_made_during_a_step_is_could_not_check(git_repo, tmp_path):

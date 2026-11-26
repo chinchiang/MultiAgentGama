@@ -15,7 +15,8 @@ golden、test_sdist 與 red-on-base 都讀工作目錄，跑的時候不要改�
 ref 指到的 commit 也一樣比對：golden 與 red-on-base 比對 `--against` 的 ref，bi_english 一律比對 `origin/master`；
 它們移動了（例如另一個終端機 `git fetch` 或 `git fetch . origin/master:master`；被建立或刪除也算），比對的
 merge-base 就跟著變，最後一行寫「`<ref>` moved during <步驟>」。兩個都移動時只點名 `--against` 的 ref；同一步裡
-工作目錄也變了時，只寫工作目錄。
+工作目錄也變了時，只寫工作目錄。開始時就有讀不到的未追蹤檔案（例如權限不足）時一步都不跑：它的改動看不出來，
+最後一行寫「`<檔名>` cannot be read (<例外名稱>)」。
 
 結束碼：0 每一個有跑的步驟都是 0；1 有步驟不是 0 或逾時（red-on-base 有綠燈或略過的測試時也是 1，要讀 log 判斷
 那些是不是預期中的守護）；2 跑的期間工作目錄、HEAD、`--against` 的 ref 或 `origin/master` 變了，無法檢查。
@@ -44,7 +45,9 @@ compared against point at are compared too: golden and red-on-base compare again
 always against `origin/master`. When one moves (another terminal running `git fetch` or
 `git fetch . origin/master:master`, say; being created or deleted counts), the merge-base compared against moves with
 it, and the last line reads "`<ref>` moved during <step>". When both moved, only the `--against` ref is named; when
-the working tree changed in the same step, only that is named.
+the working tree changed in the same step, only that is named. When an untracked file cannot be read at the start
+(no permission, say), no step runs, as a change to it would go unseen, and the last line reads "`<name>` cannot be
+read (<exception name>)".
 
 Exit code: 0 every step that ran exited 0; 1 some step did not or timed out (red-on-base also exits 1 when a test is
 green or skipped, so read the log to judge whether those are expected guards); 2 the working tree, HEAD, the
@@ -171,7 +174,7 @@ def _dirty(repo: str) -> bool:
     return bool(done.stdout.strip())
 
 
-def _tree_state(repo: str, own_files: Sequence[str] = ()) -> str:
+def _tree_state(repo: str, own_files: Sequence[str] = ()) -> Tuple[str, List[str]]:
     """工作目錄目前狀態的雜湊：HEAD、`git diff HEAD`（已追蹤檔案的 staged 與未 staged 改動），以及 git 沒忽略的
     未追蹤檔案的清單與內容。git 忽略的檔案（`.venv/`、快取、`scratch/`）不在其中，那裡的改動看不到；own_files
     （script 自己寫的 log，`--log` 可以指到 repo 裡任何地方）也不算（#216）。不是 git repo 時每次都一樣。不算
@@ -183,7 +186,12 @@ def _tree_state(repo: str, own_files: Sequence[str] = ()) -> str:
     anywhere in the repo) are left out too (#216). Outside a git repo it reads the same every time.
     `git status --porcelain` is left out: these three parts already see every change to tracked or non-ignored files,
     and it adds only a `git add` that changes no content. `git diff` runs without the user's external diff and
-    textconv, so its output depends on the content alone."""
+    textconv, so its output depends on the content alone.
+    回傳 (雜湊, 讀不到的未追蹤檔案)，後者每一項是「`<檔名>` cannot be read (<例外名稱>)」：讀不到的檔案只有例外名稱
+    進了雜湊，內容改了也看不出來，呼叫的一方要以無法檢查停下（#216 第一輪審查 Standards 第 3 條）。
+    Returns (the hash, the untracked files that cannot be read), each of the latter as "`<name>` cannot be read
+    (<exception name>)": only the exception's name of such a file goes into the hash, so a change to its content would
+    go unseen, and the caller must stop as could not check (#216 round-1 review, standards item 3)."""
     # 只排除 repo 裡的路徑（Windows 上不同磁碟的路徑沒有相對路徑，也不在 repo 裡）；pathspec 用 literal，
     # 檔名裡的 `*` 之類不會被當成萬用字元
     # Only paths inside the repo are left out (on Windows a path on another drive has no relative path and is not in
@@ -197,6 +205,7 @@ def _tree_state(repo: str, own_files: Sequence[str] = ()) -> str:
         if rel != os.pardir and not rel.startswith(os.pardir + os.sep):
             pathspec.append(f":(exclude,literal){rel}")
     digest = hashlib.sha256()
+    unreadable: List[str] = []
     for args in (["rev-parse", "HEAD"],
                  ["diff", "HEAD", "--no-ext-diff", "--no-textconv", "--binary", "--", *pathspec],
                  ["ls-files", "-z", "--others", "--exclude-standard", "--", *pathspec]):
@@ -209,7 +218,8 @@ def _tree_state(repo: str, own_files: Sequence[str] = ()) -> str:
                         digest.update(name + b"\0" + hashlib.sha256(f.read()).digest())
                 except OSError as e:
                     digest.update(name + b"\0" + type(e).__name__.encode())
-    return digest.hexdigest()
+                    unreadable.append(f"`{os.fsdecode(name)}` cannot be read ({type(e).__name__})")
+    return digest.hexdigest(), unreadable
 
 
 # `scripts/check_bi_english.py` 沒給 `--base` 時比對的 ref（它的 merge-base 和 HEAD）
@@ -247,7 +257,7 @@ def main(argv: Optional[List[str]] = None, repo: str = _REPO, run: Runner = run_
     failed_steps: List[str] = []
     could_not_check_reason = ""
     own_files = (os.path.abspath(log), os.path.abspath(full))
-    start = _tree_state(repo, own_files)
+    start, unreadable = _tree_state(repo, own_files)
     # golden 與 red-on-base 比對 `--against`，bi_english 一律比對 `origin/master`；同一個 ref 只比一次
     # golden and red-on-base compare against `--against`, bi_english always against `origin/master`; each ref is
     # compared once
@@ -261,7 +271,12 @@ def main(argv: Optional[List[str]] = None, repo: str = _REPO, run: Runner = run_
             f.write(header + "\n")
             f.flush()
         print(header, flush=True)
-        for name, cmd in steps(sys.executable, args.against):
+        # 開始時就有讀不到的未追蹤檔案：它的改動看不出來，一步都不跑（#216 第一輪審查 Standards 第 3 條）
+        # An untracked file that cannot be read at the start: a change to it would go unseen, so no step runs (#216
+        # round-1 review, standards item 3)
+        if unreadable:
+            could_not_check_reason = unreadable[0] + (f" (+{len(unreadable) - 1} more)" if len(unreadable) > 1 else "")
+        for name, cmd in ([] if unreadable else steps(sys.executable, args.against)):
             if name in args.skip:
                 lines = [f"{name} skipped (--skip)"]
             else:
@@ -287,7 +302,7 @@ def main(argv: Optional[List[str]] = None, repo: str = _REPO, run: Runner = run_
             if name in args.skip:
                 continue
             moved = [ref for ref in watched if _ref_state(repo, ref) != refs_start[ref]]
-            if _tree_state(repo, own_files) != start:
+            if _tree_state(repo, own_files)[0] != start:
                 could_not_check_reason = f"the working tree changed during {name}"
             elif moved:
                 could_not_check_reason = f"`{moved[0]}` moved during {name}"
