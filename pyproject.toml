@@ -47,7 +47,8 @@ dependencies = [
     "litellm>=1.40.0,<2.0",
     # litellm 不會自己帶入這個套件；沒有它 live 模式的重試會失敗 ／ litellm does not pull this in itself; live mode with retries fails without it
     "tenacity>=8.2.0",
-    "pytest>=8.0.0",
+    # 8.4.0 起才有 `--force-short-summary`，scripts/check_reversions.py 靠它讀摘要（#214） ／ `--force-short-summary`, which scripts/check_reversions.py relies on to read the summary, is new in 8.4.0 (#214)
+    "pytest>=8.4.0",
     "pytest-cov>=5.0.0",
     "rich>=13.0.0",
     "requests>=2.31.0",
