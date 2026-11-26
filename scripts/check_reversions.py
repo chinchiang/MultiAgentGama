@@ -13,8 +13,9 @@ repo 的 `addopts = -qq`、`-p no:terminal` 會改掉輸出的形狀），或 py
 `--force-short-summary` 跑，摘要一個測試一行（不然在 CI 上或 verbose 到 2 時，pytest 把整段多行訊息印進摘要）。
 紅燈要和其他部分一致，否則同樣是無法檢查：紅燈 ID 要是結果為 FAILED 或 ERROR 的測試，或 `ERROR` 行上解析後存在、
 落在傳入測試路徑（或 repo）底下的收集錯誤；結果為 FAILED 或 ERROR 的測試都要剛好讀到一次；紅燈數量要等於統計行的
-`failed` 加 `error`（#214）。pytest 的參數是固定的，測試參數裡不接受 pytest 選項與 `@檔案`（`-q` 之類會改掉輸出的形狀）：`-v` 逐一列出每個測試的結果，`-rfEs` 保證摘要列出
-失敗、錯誤與略過（改用 `-rs` 之類的參數會把失敗與錯誤拿掉，讓每一項看起來都沒有紅燈）。
+`failed` 加 `error`（#214）。pytest 的參數是固定的，測試參數裡不接受 pytest 選項與 `@檔案`（`-q` 之類會改掉
+輸出的形狀）：`-v` 逐一列出每個測試的結果，`-rfEs` 保證摘要列出失敗、錯誤與略過（改用 `-rs` 之類的參數會把失敗與
+錯誤拿掉，讓每一項看起來都沒有紅燈）。
 
 改壞的清單是一個 JSON 檔：`[{"name": "...", "old": "...", "new": "..."}, ...]`；放在 repo 外或 git 忽略的地方，
 否則工作目錄就不乾淨。
@@ -45,14 +46,13 @@ check (exit code 2). Outcome lines, the summary and the count line are read from
 outcome lines between the opening header and the next section header, the summary after the last summary header,
 and the count line as the output's last non-blank line; those a test prints from a pytest run inside it do not count.
 pytest runs with `--force-short-summary`, so the summary has one line per test (otherwise, on CI or at verbosity 2,
-pytest prints a whole multi-line message into the summary). Red
-tests must agree with the rest, or it is could not check too: a red id must be a test whose outcome is FAILED or
-ERROR, or a collection error (an `ERROR` line) at a path that, once resolved, exists under the given test paths (or
-the repo); each test whose outcome is FAILED or ERROR must be read exactly once; and the number of red tests must
-equal the count line's `failed` plus `error` (#214). The pytest arguments are fixed, and no pytest option or `@file` is accepted among the tests
-(`-q` and the like change the output's shape): `-v` puts each test's outcome on its own line, and `-rfEs` keeps the
-failures, errors and skips in the summary (an argument such as `-rs` would drop the failures and errors, making every
-item look as if it turned nothing red).
+pytest prints a whole multi-line message into the summary). Red tests must agree with the rest, or it is could not check
+too: a red id must be a test whose outcome is FAILED or ERROR, or a collection error (an `ERROR` line) at a path that,
+once resolved, exists under the given test paths (or the repo); each test whose outcome is FAILED or ERROR must be read
+exactly once; and the number of red tests must equal the count line's `failed` plus `error` (#214). The pytest arguments
+are fixed, and no pytest option or `@file` is accepted among the tests (`-q` and the like change the output's shape):
+`-v` puts each test's outcome on its own line, and `-rfEs` keeps the failures, errors and skips in the summary (an
+argument such as `-rs` would drop the failures and errors, making every item look as if it turned nothing red).
 
 The reversions are a JSON file: `[{"name": "...", "old": "...", "new": "..."}, ...]`; keep it outside the repo or
 somewhere git ignores, or the working tree is not clean.
@@ -377,7 +377,8 @@ def _excerpt(done: subprocess.CompletedProcess[str]) -> str:
     `COLUMNS` 很寬時才不會拉成上千個字元。
     pytest's stderr (such as "ERROR: not found: <id>") plus the last 5 lines of its stdout; separator lines such as
     `=====` are shortened, so a wide `COLUMNS` does not stretch them to a thousand characters."""
-    lines = [re.sub("^" + _SEPARATOR_RUN + r" ?(.*?) ?\1*$", lambda m: f"== {m.group(2)} ==" if m.group(2) else "==", line)
+    lines = [re.sub("^" + _SEPARATOR_RUN + r" ?(.*?) ?\1*$",
+                    lambda m: f"== {m.group(2)} ==" if m.group(2) else "==", line)
              for line in done.stdout.strip().splitlines()[-5:]]
     return "\n".join(part for part in (done.stderr.strip(), "\n".join(lines)) if part)
 
