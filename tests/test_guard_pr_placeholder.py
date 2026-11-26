@@ -1,12 +1,12 @@
-"""`.claude/hooks/guard_pr_placeholder.py`：Claude Code 的 PreToolUse hook，PR 的標題或內文還有佔位符時擋下
-`gh pr create`／`edit`／`new`，提到 `gh pr` 卻不是唯讀子指令、也不是唯一允許寫法的指令以「無法檢查」擋下。測試照
-Claude Code 呼叫它的方式執行它：stdin 餵 hook 的 JSON，看 stdout 有沒有拒絕的決定。參數化的 id 寫出審查找到的缺口
-（`standards-N`、`spec-N` 是第一輪，`round2-` 開頭的是第二輪）。
-`.claude/hooks/guard_pr_placeholder.py`: the Claude Code PreToolUse hook that denies `gh pr create`/`edit`/`new`
-while the PR's title or body still holds a placeholder, and denies as unchecked a command that mentions `gh pr` with
-neither a read-only subcommand nor the one allowed form. The tests run it the way Claude Code does: the hook's JSON
-on stdin, a deny decision or nothing on stdout. The parametrize ids name the review findings (`standards-N` and
-`spec-N` from round 1, those starting `round2-` from round 2)."""
+"""`.claude/hooks/guard_pr_placeholder.py`：Claude Code 的 PreToolUse hook，PR 的標題、內文或合併訊息還有佔位符時擋下
+`gh pr create`／`edit`／`new`／`merge`，提到 `gh pr` 卻不是唯讀子指令、也不是唯一允許寫法的指令以「無法檢查」擋下。
+測試照 Claude Code 呼叫它的方式執行它：stdin 餵 hook 的 JSON，看 stdout 有沒有拒絕的決定。參數化的 id 寫出審查找到
+的缺口（`standards-N`、`spec-N` 是第一輪，`round2-`、`round3-` 開頭的是第二、三輪）。
+`.claude/hooks/guard_pr_placeholder.py`: the Claude Code PreToolUse hook that denies `gh pr create`/`edit`/`new`/
+`merge` while the PR's title, body or merge message still holds a placeholder, and denies as unchecked a command that
+mentions `gh pr` with neither a read-only subcommand nor the one allowed form. The tests run it the way Claude Code
+does: the hook's JSON on stdin, a deny decision or nothing on stdout. The parametrize ids name the review findings
+(`standards-N` and `spec-N` from round 1, those starting `round2-` and `round3-` from rounds 2 and 3)."""
 
 import json
 import os
@@ -48,6 +48,14 @@ def _decide(cwd, command, payload_text=None):
     return output["permissionDecisionReason"]
 
 
+def _denied(cwd, command, payload_text=None):
+    """執行 hook 並回傳拒絕的原因；放行時失敗，訊息寫出被放行的指令。
+    Runs the hook and returns the deny reason; fails when it allows, naming the command that was allowed."""
+    reason = _decide(cwd, command, payload_text)
+    assert reason is not None, f"the command was allowed: {command!r}"
+    return reason
+
+
 @pytest.fixture
 def bodies(tmp_path):
     """`draft.md` 有佔位符、`filled.md` 沒有（只有小寫的角括號）；回傳它們所在的目錄。
@@ -63,24 +71,26 @@ def bodies(tmp_path):
     "gh pr edit 217 -F draft.md",
     "gh pr edit 217 -Fdraft.md",
     "gh -R owner/repo pr edit 217 --body-file draft.md",
-    "gh --repo=owner/repo pr create -T draft.md",
-    "gh pr create --template draft.md",
+    "gh --repo=owner/repo pr create -F draft.md",
     pytest.param("gh pr create --title t \\\n  --body-file draft.md", id="spec-1-line-continuation"),
     pytest.param("gh pr new --title t --body-file draft.md", id="round2-standards-1-pr-new-alias"),
     pytest.param("gh pr cre\\\nate --title t --body-file draft.md", id="round2-spec-1-continuation-inside-a-word"),
     pytest.param("g\\\nh pr create --title t --body-file draft.md", id="round2-spec-1-continuation-inside-gh"),
     pytest.param("gh pr cre''ate --title t --body-file draft.md", id="round2-spec-quotes-inside-a-word"),
+    pytest.param("gh pr create --title t -F=draft.md", id="round3-spec-short-option-with-equals"),
+    pytest.param("gh pr merge 1 --squash --body-file draft.md", id="round3-standards-3-merge-body-file"),
 ])
 def test_a_body_file_with_a_placeholder_is_denied_naming_it(bodies, command):
-    """`--body-file`／`-F`／`--template` 指到的檔案還有佔位符時擋下，原因寫出檔名與佔位符。`\\` 續行（第一輪 Spec
-    第 1 點）、`gh pr new`（第二輪 Standards 第 1 點）、從字中間切開的續行（第二輪 Spec 第 1 點）與字中間的引號也一樣：
-    第二版只在文字裡出現 `create`、`edit` 時檢查，續行也接成空白。
-    A file named by `--body-file`/`-F`/`--template` that still holds a placeholder is denied, naming the file and the
-    placeholder. So is one in a `\\` continuation (round 1, spec item 1), in `gh pr new` (round 2, standards item 1),
-    in a continuation that splits a word (round 2, spec item 1) and with quotes inside a word: the second version
-    checked only when the text held `create` or `edit`, and joined continuations with a space."""
-    reason = _decide(bodies, command)
-    assert reason is not None and "`draft.md` still holds placeholders: <FULL_CHECK_3DD1FC6>" in reason, reason
+    """`--body-file`／`-F` 指到的檔案還有佔位符時擋下，原因寫出檔名與佔位符。`\\` 續行（第一輪 Spec 第 1 點）、
+    `gh pr new`（第二輪 Standards 第 1 點）、從字中間切開的續行（第二輪 Spec 第 1 點）、字中間的引號、`-F=x`（第三輪
+    Spec：第三版讀成 `=x`）與 `gh pr merge` 的內文（第三輪 Standards 第 3 點：第三版把 merge 當成唯讀放行）也一樣。
+    A file named by `--body-file`/`-F` that still holds a placeholder is denied, naming the file and the placeholder.
+    So is one in a `\\` continuation (round 1, spec item 1), in `gh pr new` (round 2, standards item 1), in a
+    continuation that splits a word (round 2, spec item 1), with quotes inside a word, given as `-F=x` (round 3, spec:
+    the third version read it as `=x`) and in the body of `gh pr merge` (round 3, standards item 3: the third version
+    let merge through as read-only)."""
+    reason = _denied(bodies, command)
+    assert "`draft.md` still holds placeholders: <FULL_CHECK_3DD1FC6>" in reason, reason
 
 
 @pytest.mark.parametrize("command", [
@@ -92,15 +102,16 @@ def test_a_body_file_with_a_placeholder_is_denied_naming_it(bodies, command):
     pytest.param("gh pr create --title cd --body-file filled.md", id="spec-6-cd-as-an-argument"),
     pytest.param("gh pr create --title t --body 'a <<EOF b' --body-file filled.md",
                  id="round2-spec-heredoc-operator-inside-quotes"),
+    pytest.param("gh pr merge 217 --merge", id="round3-merge-without-a-body"),
 ])
 def test_the_allowed_form_without_placeholders_is_allowed(bodies, command):
     """唯一允許的寫法、沒有佔位符時放行：小寫的 `<step>` 不算佔位符；引號裡的 `;`、`|` 不是運算子；沒送內文的
-    `gh pr edit` 照樣放行（第一輪 Spec 第 5 點）；參數裡的 `cd` 不是換目錄（第一輪 Spec 第 6 點）；引號裡的 `<<EOF`
-    不是 heredoc（第二輪 Spec：第二版把它當成 heredoc 擋下）。
+    `gh pr edit`、`gh pr merge` 照樣放行（第一輪 Spec 第 5 點）；參數裡的 `cd` 不是換目錄（第一輪 Spec 第 6 點）；
+    引號裡的 `<<EOF` 不是 heredoc（第二輪 Spec：第二版把它當成 heredoc 擋下）。
     The allowed form without placeholders is allowed: a lower-case `<step>` is no placeholder; a quoted `;` or `|` is
-    no operator; a `gh pr edit` that sends no body goes through (round 1, spec item 5); a `cd` among the args is no
-    change of directory (round 1, spec item 6); a quoted `<<EOF` is no heredoc (round 2, spec: the second version
-    denied it as one)."""
+    no operator; a `gh pr edit` or `gh pr merge` that sends no body goes through (round 1, spec item 5); a `cd` among
+    the args is no change of directory (round 1, spec item 6); a quoted `<<EOF` is no heredoc (round 2, spec: the
+    second version denied it as one)."""
     assert _decide(bodies, command) is None
 
 
@@ -108,7 +119,7 @@ def test_the_allowed_form_without_placeholders_is_allowed(bodies, command):
     pytest.param("gh pr list --search 'edit'", id="round2-spec-read-only-mentioning-edit"),
     "gh pr view 217 --json body | grep '<RED_ON_BASE>'",
     "gh pr checks 217 2>&1 | tail -3",
-    "gh pr merge 217 --merge && gh pr view 217 --json state -q .state",
+    "gh pr view 217 --json state -q .state && gh pr checks 217",
     "gh -R owner/repo pr diff 5",
 ])
 def test_read_only_subcommands_are_allowed_in_any_command(bodies, command):
@@ -121,8 +132,9 @@ def test_read_only_subcommands_are_allowed_in_any_command(bodies, command):
 def test_an_absolute_body_file_path_is_read(bodies):
     """絕對路徑的內文檔也讀得到。
     A body file at an absolute path is read too."""
-    reason = _decide(bodies, f"gh pr edit 1 --body-file '{bodies / 'draft.md'}'")
-    assert reason is not None and "<FULL_CHECK_3DD1FC6>" in reason, reason
+    command = f"gh pr edit 1 --body-file '{bodies / 'draft.md'}'"
+    reason = _denied(bodies, command)
+    assert "<FULL_CHECK_3DD1FC6>" in reason, reason
 
 
 @pytest.mark.parametrize("command, mark", [
@@ -132,22 +144,24 @@ def test_an_absolute_body_file_path_is_read(bodies):
     pytest.param("gh pr create --title t --body 'see <1ST_RUN>'", "<1ST_RUN>", id="spec-2-starts-with-a-digit"),
     pytest.param("gh pr create --title t --body 'item <N>'", "<N>", id="spec-2-one-letter"),
     pytest.param("gh pr create --title t --body 'item <_X>'", "<_X>", id="spec-2-starts-with-an-underscore"),
+    pytest.param("gh pr merge 1 --merge --body '<TODO_X>'", "<TODO_X>", id="round3-standards-3-merge-body"),
+    pytest.param("gh pr merge 1 --squash --subject '<TODO_X>'", "<TODO_X>", id="round3-standards-3-merge-subject"),
 ])
 def test_a_placeholder_in_the_arguments_is_denied(bodies, command, mark):
-    """標題與 `--body` 裡的佔位符擋下；樣式是 spec 的 `<[A-Z0-9_]+>`，數字或底線開頭、少於三個字元的也算（第一輪
-    Spec 第 2 點：第一版要求大寫字母開頭、至少三個字元）。
-    A placeholder in the title or `--body` is denied; the pattern is the spec's `<[A-Z0-9_]+>`, so one starting with
-    a digit or underscore, or shorter than three characters, counts (round 1, spec item 2: the first version required
-    an upper-case first letter and three characters)."""
-    reason = _decide(bodies, command)
-    assert reason is not None and f"the command's arguments still holds placeholders: {mark}" in reason, reason
+    """標題、`--body` 與合併訊息裡的佔位符擋下；樣式是 spec 的 `<[A-Z0-9_]+>`，數字或底線開頭、少於三個字元的也算
+    （第一輪 Spec 第 2 點）；`gh pr merge` 的 `--body`、`--subject` 也掃描（第三輪 Standards 第 3 點）。
+    A placeholder in the title, `--body` or the merge message is denied; the pattern is the spec's `<[A-Z0-9_]+>`, so
+    one starting with a digit or underscore, or shorter than three characters, counts (round 1, spec item 2); the
+    `--body` and `--subject` of `gh pr merge` are scanned too (round 3, standards item 3)."""
+    reason = _denied(bodies, command)
+    assert f"the command's arguments still holds placeholders: {mark}" in reason, reason
 
 
 def test_a_placeholder_in_a_heredoc_body_is_denied(bodies):
     """heredoc 送進 `--body-file -` 的內文有佔位符時擋下。
     A heredoc body fed to `--body-file -` holding a placeholder is denied."""
-    reason = _decide(bodies, "gh pr create --title t --body-file - <<'EOF'\n## Evidence\n<RED_ON_BASE>\nEOF")
-    assert reason is not None and "the heredoc body still holds placeholders: <RED_ON_BASE>" in reason, reason
+    reason = _denied(bodies, "gh pr create --title t --body-file - <<'EOF'\n## Evidence\n<RED_ON_BASE>\nEOF")
+    assert "the heredoc body still holds placeholders: <RED_ON_BASE>" in reason, reason
 
 
 @pytest.mark.parametrize("command, cause", [
@@ -189,7 +203,7 @@ def test_a_placeholder_in_a_heredoc_body_is_denied(bodies):
     pytest.param("echo it's done; grep gh pr.log", "the command does not split into tokens",
                  id="spec-7-now-a-mention-of-gh-pr"),
     pytest.param("gh pr comment 5 --body-file draft.md",
-                 "`gh pr comment` is neither a read-only subcommand nor create, edit or new",
+                 "`gh pr comment` is neither a read-only subcommand nor create, edit, new or merge",
                  id="round2-standards-1-other-subcommand"),
     pytest.param("gh pr create --title t {--body-file,draft.md}",
                  "the command holds `{` outside quotes, which the shell expands", id="round2-spec-2-brace-expansion"),
@@ -199,6 +213,30 @@ def test_a_placeholder_in_a_heredoc_body_is_denied(bodies):
                  id="round2-spec-3-quoted-tilde"),
     pytest.param("gh pr create --body-file=~/draft.md", "`~/draft.md` holds `~`, which the hook does not expand",
                  id="round2-spec-3-tilde-after-equals"),
+    pytest.param("gh pr create --title t --recover draft.md",
+                 "`--recover` is not an option the hook reads for `gh pr create`", id="round3-standards-1-recover"),
+    pytest.param("gh pr create --fill", "`--fill` is not an option the hook reads for `gh pr create`",
+                 id="round3-standards-1-fill"),
+    pytest.param("gh pr create --fill-verbose", "`--fill-verbose` is not an option the hook reads for `gh pr create`",
+                 id="round3-standards-1-fill-verbose"),
+    pytest.param("gh pr create --title t --web", "`--web` is not an option the hook reads for `gh pr create`",
+                 id="round3-standards-1-web"),
+    pytest.param("gh pr create --title t --template filled.md",
+                 "`--template` is not an option the hook reads for `gh pr create`", id="round3-spec-template"),
+    pytest.param("gh pr create --title t -T filled.md", "`-T` is not an option the hook reads for `gh pr create`",
+                 id="round3-spec-template-short"),
+    pytest.param("X=pr; gh pr view 1 && gh $X create --title t --body-file draft.md",
+                 "the command holds `$` or a backtick", id="round3-spec-3-variable-on-a-read-only-line"),
+    pytest.param("gh pr view 1 && gh $SUB --body-file draft.md", "the command holds `$` or a backtick",
+                 id="round3-standards-7-variable-subcommand"),
+    pytest.param("gh pr create --body-file draft.m?", "the command holds `?` outside quotes, which the shell expands",
+                 id="round3-spec-untested-question-mark"),
+    pytest.param("gh pr create --body-file draft.[m]d",
+                 "the command holds `[` outside quotes, which the shell expands", id="round3-spec-untested-bracket"),
+    pytest.param("gh pr create --body-file ~/draft.md", "`~/draft.md` holds `~`, which the hook does not expand",
+                 id="round3-spec-untested-bare-tilde"),
+    ("gh pr create --draft=true --body-file filled.md", "`--draft=true` gives a value to a flag"),
+    ("gh pr merge 217 --merge && gh pr view 217 --json state -q .state", "the command holds the shell operator `&&`"),
     ("gh pr create --body-file missing.md", "`missing.md` cannot be read (FileNotFoundError"),
     ("gh pr create --body-file -", "`--body-file -` reads stdin, and no heredoc at the end of the command feeds it"),
     ("gh pr create --body-file - <<EOF\nDone.\nEOF", "the heredoc's terminator is not quoted"),
@@ -210,16 +248,17 @@ def test_a_placeholder_in_a_heredoc_body_is_denied(bodies):
 ])
 def test_a_command_outside_the_allowed_form_is_denied_as_unchecked(bodies, command, cause):
     """提到 `gh pr` 卻不是唯讀子指令、也不是唯一允許寫法的指令，或讀不到的內文，以「無法檢查」擋下，原因寫出是哪一種。
-    第一版放行了 `$(…)`、`env gh`、`pushd`、`if … then`、別的指令的 heredoc 等，或用錯的理由擋下；第二版放行了
-    `gh pr comment`、大括號展開，對萬用字元與 `~` 用錯的理由擋下或讀錯檔案。只是提到 `gh pr` 的指令被擋，是粗規則
-    接受的代價。
+    第一版放行了 `$(…)`、`env gh`、`pushd`、`if … then`、別的指令的 heredoc 等；第二版放行了 `gh pr comment`、大括號
+    展開；第三版放行了清單外的選項（`--recover`、`--fill`、`--web`）與觸發行裡的變數，把 `--template` 當成檔案讀。
+    只是提到 `gh pr` 的指令被擋、`gh pr merge … && …` 要拆成兩條指令，是粗規則接受的代價。
     A command that mentions `gh pr` with neither a read-only subcommand nor the one allowed form, or a body the hook
     cannot read, is denied as unchecked, naming which kind. The first version let `$(…)`, `env gh`, `pushd`,
-    `if … then`, another command's heredoc and the like through, or denied for the wrong reason; the second let
-    `gh pr comment` and brace expansion through, and denied a glob or a `~` for the wrong reason or read the wrong
-    file. Denying a command that only mentions `gh pr` is the cost the coarse rule accepts."""
-    reason = _decide(bodies, command)
-    assert reason is not None and UNCHECKED + cause in reason, reason
+    `if … then`, another command's heredoc and the like through; the second let `gh pr comment` and brace expansion
+    through; the third let options off the lists (`--recover`, `--fill`, `--web`) and a variable on the triggering
+    line through, and read `--template` as a file. Denying a command that only mentions `gh pr`, and splitting
+    `gh pr merge … && …` into two commands, are costs the coarse rule accepts."""
+    reason = _denied(bodies, command)
+    assert UNCHECKED + cause in reason, reason
 
 
 @POSIX_ONLY
@@ -232,8 +271,8 @@ def test_a_body_file_that_is_not_a_regular_file_is_denied_as_unchecked(bodies, p
     已經讀完的 stdin，得到空字串就放行）。
     A body file that is not a regular file (`/dev/stdin`, a device) is denied as unchecked (round 2, standards item 2:
     the second version read the hook's own stdin, already used up, got empty text and allowed)."""
-    reason = _decide(bodies, f"gh pr create --title t --body-file {path}")
-    assert reason is not None and UNCHECKED + f"`{path}` is not a regular file" in reason, reason
+    reason = _denied(bodies, f"gh pr create --title t --body-file {path}")
+    assert UNCHECKED + f"`{path}` is not a regular file" in reason, reason
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
@@ -242,17 +281,15 @@ def test_a_fifo_body_file_is_denied_without_blocking(bodies):
     A FIFO body file is denied as unchecked without waiting for a writer (round 2, standards item 2: the second
     version blocked on opening it until the timeout)."""
     os.mkfifo(bodies / "body.fifo")
-    reason = _decide(bodies, "gh pr create --title t --body-file body.fifo")
-    assert reason is not None and UNCHECKED + "`body.fifo` is not a regular file" in reason, reason
+    reason = _denied(bodies, "gh pr create --title t --body-file body.fifo")
+    assert UNCHECKED + "`body.fifo` is not a regular file" in reason, reason
 
 
 def test_a_deny_names_the_override_as_the_code_accepts_it(bodies):
     """拒絕的訊息照實寫出跳過標記的用法：heredoc 以外的任何一行，不只第一行（第二輪：第二版寫「第一行」）。
     The deny message describes the override as the code accepts it, any line outside the heredoc bodies rather than
     only the first (round 2: the second version said "first line")."""
-    reason = _decide(bodies, "gh pr create --body-file draft.md")
-    assert reason is not None, "the command was allowed"
-    hint = reason.splitlines()[-1]
+    hint = _denied(bodies, "gh pr create --body-file draft.md").splitlines()[-1]
     assert "end a line outside the heredoc bodies with the comment `# placeholder-ok`" in hint, hint
 
 
@@ -275,26 +312,31 @@ def test_the_override_inside_quotes_or_a_heredoc_body_does_not_count(bodies, com
     """引號裡或 heredoc 內文裡的 `# placeholder-ok` 不算（第一輪 Spec：第一版在指令任何地方出現都放行）。
     A `# placeholder-ok` inside quotes or a heredoc body does not count (round 1, spec: the first version let it
     through from anywhere in the command)."""
-    reason = _decide(bodies, command)
-    assert reason is not None and "still holds placeholders" in reason, reason
+    reason = _denied(bodies, command)
+    assert "still holds placeholders" in reason, reason
 
 
 @pytest.mark.parametrize("command", [
     "cat draft.md",
     "gh issue create --title t --body-file draft.md",
     "echo it's done; grep gh notes.log",
+    pytest.param("git checkout -b chore/gh-pr-x", id="round3-spec-hyphenated-branch-name"),
+    pytest.param("cat scratch/handoff-gh-pr-notes.md", id="round3-spec-hyphenated-file-name"),
 ])
 def test_commands_that_do_not_mention_gh_pr_are_not_checked(bodies, command):
-    """沒有依序提到 `gh`、`pr` 的指令不檢查，拆不成 token 的也一樣。
-    Commands that do not mention `gh` and `pr` in order are not checked, even ones that do not split into tokens."""
+    """沒有依序提到 `gh`、`pr` 這兩個字的指令不檢查，拆不成 token 的也一樣；連字號連著的 `gh-pr` 不算（第三輪 Spec：
+    第三版擋下 `git checkout -b chore/gh-pr-x`）。
+    Commands that do not mention the words `gh` and `pr` in order are not checked, even ones that do not split into
+    tokens; a hyphenated `gh-pr` is not those words (round 3, spec: the third version denied
+    `git checkout -b chore/gh-pr-x`)."""
     assert _decide(bodies, command) is None
 
 
 def test_unreadable_input_is_denied(tmp_path):
     """讀不懂的輸入（不是 JSON）也擋下，不以非 0 結束讓 Claude Code 放行。
     Unreadable input (not JSON) is denied too, rather than exiting non-zero, which Claude Code would let run."""
-    reason = _decide(tmp_path, "", payload_text="not json")
-    assert reason is not None and "guard_pr_placeholder failed, so the command was not checked" in reason, reason
+    reason = _denied(tmp_path, "", payload_text="not json")
+    assert "guard_pr_placeholder failed, so the command was not checked" in reason, reason
 
 
 def test_settings_run_the_hook_and_ask_before_dropping_a_stash():
