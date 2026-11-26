@@ -147,3 +147,159 @@ def test_the_log_header_is_written_before_the_first_step_runs(tmp_path):
     assert tool.main(["--log", str(log)], repo=str(tmp_path), run=run) == 0
     assert seen["summary"].startswith("== HEAD "), seen
     assert seen["full"].startswith("== HEAD "), seen
+
+
+def _changing(step, change):
+    """跑到 step 那一步時呼叫 change() 改動 repo 的假 runner（其他步驟照常回 0），並記下被呼叫的步驟。
+    A fake runner that calls `change()` to alter the repo while running `step` (every other step returns 0),
+    recording the steps it was called for."""
+    called = []
+
+    def run(cmd, cwd, timeout):
+        name = next(n for n, c in tool.steps(sys.executable, "master") if c == list(cmd))
+        called.append(name)
+        if name == step:
+            change()
+        return 0, "ok\n"
+
+    return run, called
+
+
+def test_a_tracked_file_edited_during_a_step_is_could_not_check(git_repo, tmp_path):
+    """有一步跑的時候，已追蹤的檔案被改了：後面讀工作目錄的步驟（test_sdist、golden、red_on_base）會讀到改過的
+    內容，結果不屬於任何一個狀態。這次執行在那一步停下，摘要點名那一步，最後一行說無法檢查，結束碼 2（#216）。
+    A tracked file edited while a step runs: the later steps that read the working tree (test_sdist, golden,
+    red_on_base) would read the edited content, so the results belong to no single state. The run stops after that
+    step, the summary names it, its last line says could not check, and the exit code is 2 (#216)."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "calc.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+    git_repo(root)
+    run, called = _changing("test_sdist", lambda: (root / "calc.py").write_text("x = 2\n", encoding="utf-8"))
+    log = tmp_path / "checks.log"
+    code = tool.main(["--log", str(log)], repo=str(root), run=run)
+    summary = log.read_text(encoding="utf-8").splitlines()
+    assert called[-1] == "test_sdist", called
+    assert summary[-1] == "== could not check: the working tree changed during test_sdist", summary
+    full = (tmp_path / "checks.full.log").read_text(encoding="utf-8")
+    assert "== could not check: the working tree changed during test_sdist" in full, full
+    assert code == 2, summary
+
+
+def test_a_commit_made_during_a_step_is_could_not_check(git_repo, tmp_path):
+    """有一步跑的時候提交了一筆改動：工作目錄前後都是乾淨的，只有 HEAD 變了，摘要卻還寫著開始時的 HEAD。同樣停在
+    那一步，結束碼 2（#216）。
+    A change committed while a step runs: the working tree is clean before and after, only HEAD moved, yet the summary
+    still names the HEAD it started at. The run stops after that step too, exit code 2 (#216)."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "calc.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+    git = git_repo(root)
+
+    def commit():
+        (root / "calc.py").write_text("x = 2\n", encoding="utf-8", newline="\n")
+        git("commit", "-q", "-am", "meanwhile")
+
+    run, called = _changing("golden", commit)
+    log = tmp_path / "checks.log"
+    code = tool.main(["--log", str(log)], repo=str(root), run=run)
+    summary = log.read_text(encoding="utf-8").splitlines()
+    assert called[-1] == "golden", called
+    assert summary[-1] == "== could not check: the working tree changed during golden", summary
+    assert code == 2, summary
+
+
+def test_an_untracked_file_whose_content_changes_during_a_step_is_could_not_check(git_repo, tmp_path):
+    """還沒提交的新檔案（例如正在寫的測試）在某一步跑的時候內容變了：HEAD、`git diff HEAD` 與未追蹤檔案的清單
+    前後都一樣，只有檔案內容不同，red_on_base 這類步驟仍會讀到它。同樣停在那一步，結束碼 2（#216）。
+    A new, uncommitted file (such as a test being written) whose content changes while a step runs: HEAD,
+    `git diff HEAD` and the list of untracked files read the same before and after, only the content differs, and steps
+    such as red_on_base still read it. The run stops after that step too, exit code 2 (#216)."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "calc.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+    git_repo(root)
+    (root / "test_new.py").write_text("def test_a():\n    pass\n", encoding="utf-8", newline="\n")
+    run, called = _changing("mypy", lambda: (root / "test_new.py").write_text("def test_b():\n    pass\n",
+                                                                               encoding="utf-8", newline="\n"))
+    log = tmp_path / "checks.log"
+    code = tool.main(["--log", str(log)], repo=str(root), run=run)
+    summary = log.read_text(encoding="utf-8").splitlines()
+    assert called[-1] == "mypy", called
+    assert summary[-1] == "== could not check: the working tree changed during mypy", summary
+    assert code == 2, summary
+
+
+def test_a_run_during_which_nothing_changes_still_exits_zero_in_a_git_repo(git_repo, tmp_path):
+    """在 git repo 裡，跑的期間什麼都沒改（只有 git 忽略的 log 寫進 repo）：每一步都跑，結束碼照舊是 0（#216）。
+    In a git repo where nothing changes during the run (only a log git ignores is written inside the repo): every
+    step runs and the exit code is still 0 (#216)."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "calc.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+    (root / ".gitignore").write_text("scratch/\n", encoding="utf-8", newline="\n")
+    git_repo(root)
+    run, called = _changing("golden", lambda: None)
+    assert tool.main([], repo=str(root), run=run) == 0
+    assert called == list(tool.STEP_NAMES)
+
+
+def test_a_file_already_modified_at_the_start_and_edited_again_during_a_step_is_could_not_check(git_repo, tmp_path):
+    """開始時已經有未提交改動的檔案，在某一步跑的時候又被改了：HEAD 與檔案清單前後都一樣，只有 `git diff HEAD`
+    看得出內容又變了。同樣停在那一步，結束碼 2（#216）。
+    A file with uncommitted changes at the start, edited again while a step runs: HEAD and the file list read the same
+    before and after, and only `git diff HEAD` shows the content moved again. The run stops after that step too, exit
+    code 2 (#216)."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "calc.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+    git_repo(root)
+    (root / "calc.py").write_text("x = 2\n", encoding="utf-8", newline="\n")
+    run, called = _changing("ruff", lambda: (root / "calc.py").write_text("x = 3\n", encoding="utf-8", newline="\n"))
+    log = tmp_path / "checks.log"
+    code = tool.main(["--log", str(log)], repo=str(root), run=run)
+    summary = log.read_text(encoding="utf-8").splitlines()
+    assert called[-1] == "ruff", called
+    assert summary[-1] == "== could not check: the working tree changed during ruff", summary
+    assert code == 2, summary
+
+
+def test_a_log_inside_the_repo_at_a_path_git_does_not_ignore_is_no_change(git_repo, tmp_path):
+    """`--log` 指到 repo 裡 git 沒忽略的路徑：script 自己寫的摘要與 `.full.log` 是未追蹤檔案，跑的期間一直在變，
+    但它們不是讓結果不可信的改動。每一步都跑，結束碼照舊是 0，而不是每次都在第一步誤報「changed during pytest」
+    （#216 審查）。
+    `--log` pointing inside the repo at a path git does not ignore: the summary and `.full.log` the script writes are
+    untracked files that keep changing during the run, but they are no change that makes the results untrustworthy.
+    Every step runs and the exit code is still 0, not a false "changed during pytest" on every run (#216 review)."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "calc.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+    git_repo(root)
+    run, called = _changing("golden", lambda: None)
+    log = root / "out" / "checks.log"
+    code = tool.main(["--log", str(log)], repo=str(root), run=run)
+    summary = log.read_text(encoding="utf-8").splitlines()
+    assert summary[-1] == "== all steps exited 0", summary
+    assert called == list(tool.STEP_NAMES), called
+    assert code == 0, summary
+
+
+def test_a_log_at_a_tracked_file_in_the_repo_is_no_change(git_repo, tmp_path):
+    """`--log` 指到 repo 裡已追蹤的檔案：script 覆寫它，`git diff HEAD` 看得到這個改動，但那是 script 自己寫的
+    log，不是讓結果不可信的改動。每一步都跑，結束碼照舊是 0；`git diff HEAD` 也要排除 script 自己的 log，只排除
+    未追蹤檔案的清單不夠（#216 審查）。
+    `--log` pointing at a tracked file in the repo: the script overwrites it and `git diff HEAD` shows that change,
+    but it is the script's own log, no change that makes the results untrustworthy. Every step runs and the exit code
+    is still 0; `git diff HEAD` has to leave the script's own logs out too, not only the untracked list (#216 review)."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "calc.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+    (root / "checks.log").write_text("an older summary\n", encoding="utf-8", newline="\n")
+    git_repo(root)
+    run, called = _changing("golden", lambda: None)
+    log = root / "checks.log"
+    code = tool.main(["--log", str(log)], repo=str(root), run=run)
+    summary = log.read_text(encoding="utf-8").splitlines()
+    assert summary[-1] == "== all steps exited 0", summary
+    assert called == list(tool.STEP_NAMES), called
+    assert code == 0, summary

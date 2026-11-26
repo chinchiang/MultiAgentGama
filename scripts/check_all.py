@@ -9,10 +9,12 @@
 `TOTAL` 覆蓋率與通過數、golden 的差異數與每一種差異、red-on-base 的 `red=N green=M skipped=K hang=H` 與每一行結果，
 不截斷）；某一步失敗卻沒有任何關鍵行時，留它的最後 20 行。每一步的完整輸出寫在同名的 `.full.log`。
 
-golden、test_sdist 與 red-on-base 都讀工作目錄，跑的時候不要改檔案。
+golden、test_sdist 與 red-on-base 都讀工作目錄，跑的時候不要改檔案。每一個有跑的步驟跑完，都比對 HEAD、
+`git diff HEAD` 與未追蹤檔案的清單和內容（git 忽略的不算，例如 `scratch/` 裡的 log；script 自己寫的 log 放在哪裡
+都不算）；和開始時不同就停在那一步，摘要與 `.full.log` 的最後一行寫出是哪一步跑的時候變的（#216）。
 
 結束碼：0 每一個有跑的步驟都是 0；1 有步驟不是 0 或逾時（red-on-base 有綠燈或略過的測試時也是 1，要讀 log 判斷
-那些是不是預期中的守護）。
+那些是不是預期中的守護）；2 跑的期間工作目錄或 HEAD 變了，無法檢查。
 
 用法：
     python scripts/check_all.py [--against master] [--skip STEP ...] [--timeout 1800] [--log PATH]
@@ -30,10 +32,14 @@ the step's key lines (pytest's `TOTAL` coverage and counts, golden's difference 
 red-on-base's `red=N green=M skipped=K hang=H` and every result line, never cut); a failed step with no key line keeps its
 last 20 lines. Each step's full output goes to the `.full.log` of the same name.
 
-golden, test_sdist and red-on-base read the working tree: change no file while they run.
+golden, test_sdist and red-on-base read the working tree: change no file while they run. After each step that
+runs, the script compares HEAD, `git diff HEAD` and the list and content of untracked files (not those git ignores,
+such as the logs in `scratch/`, nor the logs the script writes, wherever they are) with the start; when they differ it stops after that step, and the last line
+of the summary and of the `.full.log` names the step during which the tree changed (#216).
 
 Exit code: 0 every step that ran exited 0; 1 some step did not or timed out (red-on-base also exits 1 when a test is
-green or skipped, so read the log to judge whether those are expected guards).
+green or skipped, so read the log to judge whether those are expected guards); 2 the working tree or HEAD changed
+during the run, so it could not check.
 
 Usage:
     python scripts/check_all.py [--against master] [--skip STEP ...] [--timeout 1800] [--log PATH]
@@ -42,6 +48,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import signal
@@ -155,6 +162,47 @@ def _dirty(repo: str) -> bool:
     return bool(done.stdout.strip())
 
 
+def _tree_state(repo: str, own_files: Sequence[str] = ()) -> str:
+    """工作目錄目前狀態的雜湊：HEAD、`git diff HEAD`（已追蹤檔案的 staged 與未 staged 改動），以及 git 沒忽略的
+    未追蹤檔案的清單與內容。git 忽略的檔案（`.venv/`、快取、`scratch/`）不在其中，那裡的改動看不到；own_files
+    （script 自己寫的 log，`--log` 可以指到 repo 裡任何地方）也不算（#216）。不是 git repo 時每次都一樣。不算
+    `git status --porcelain`：已追蹤或未被忽略的檔案的每一個改動，這三部分都已看得到，它只多看出不動任何內容的
+    `git add`。`git diff` 不用使用者設定的外部 diff 與 textconv，輸出才只取決於內容。
+    A hash of the working tree's current state: HEAD, `git diff HEAD` (staged and unstaged changes to tracked files)
+    and the list and content of untracked files git does not ignore. Files git ignores (`.venv/`, caches, `scratch/`)
+    are not part of it, so a change there goes unseen; `own_files` (the logs the script writes, which `--log` can put
+    anywhere in the repo) are left out too (#216). Outside a git repo it reads the same every time.
+    `git status --porcelain` is left out: these three parts already see every change to tracked or non-ignored files,
+    and it adds only a `git add` that changes no content. `git diff` runs without the user's external diff and
+    textconv, so its output depends on the content alone."""
+    # 只排除 repo 裡的路徑（Windows 上不同磁碟的路徑沒有相對路徑，也不在 repo 裡）；pathspec 用 literal，
+    # 檔名裡的 `*` 之類不會被當成萬用字元
+    # Only paths inside the repo are left out (on Windows a path on another drive has no relative path and is not in
+    # the repo either); the pathspecs are literal, so a `*` in a file name is no wildcard
+    pathspec = ["."]
+    for path in own_files:
+        try:
+            rel = os.path.relpath(path, repo)
+        except ValueError:
+            continue
+        if rel != os.pardir and not rel.startswith(os.pardir + os.sep):
+            pathspec.append(f":(exclude,literal){rel}")
+    digest = hashlib.sha256()
+    for args in (["rev-parse", "HEAD"],
+                 ["diff", "HEAD", "--no-ext-diff", "--no-textconv", "--binary", "--", *pathspec],
+                 ["ls-files", "-z", "--others", "--exclude-standard", "--", *pathspec]):
+        done = subprocess.run(["git", *args], cwd=repo, capture_output=True)
+        digest.update(b"%d\0%s\0%s\0" % (done.returncode, done.stdout, done.stderr))
+        if args[0] == "ls-files" and done.returncode == 0:
+            for name in filter(None, done.stdout.split(b"\0")):
+                try:
+                    with open(os.path.join(repo, os.fsdecode(name)), "rb") as f:
+                        digest.update(name + b"\0" + hashlib.sha256(f.read()).digest())
+                except OSError as e:
+                    digest.update(name + b"\0" + type(e).__name__.encode())
+    return digest.hexdigest()
+
+
 def main(argv: Optional[List[str]] = None, repo: str = _REPO, run: Runner = run_command) -> int:
     """命令列進入點，回傳結束碼。
     Command-line entry point; returns the exit code."""
@@ -174,6 +222,9 @@ def main(argv: Optional[List[str]] = None, repo: str = _REPO, run: Runner = run_
     header = f"== HEAD {head} against {args.against}" + (" (uncommitted changes in the working tree)"
                                                           if _dirty(repo) else "")
     failed_steps: List[str] = []
+    changed_during = ""
+    own_files = (os.path.abspath(log), os.path.abspath(full))
+    start = _tree_state(repo, own_files)
     with open(log, "w", encoding="utf-8") as summary, open(full, "w", encoding="utf-8") as everything:
         # 檔頭立刻寫進檔案：第一步（pytest）要跑好幾分鐘，這段時間 log 不能看起來是空的（#191）
         # The header reaches the files at once: the first step (pytest) runs for minutes, and the log must not look
@@ -196,9 +247,23 @@ def main(argv: Optional[List[str]] = None, repo: str = _REPO, run: Runner = run_
             summary.write("\n".join(lines) + "\n")
             summary.flush()
             print(lines[0], flush=True)
-        verdict = "== all steps exited 0" if not failed_steps else "== not 0: " + ", ".join(failed_steps)
+            # 讀工作目錄的步驟（test_sdist、golden、red_on_base）會讀到途中的改動：狀態一變就停，
+            # 後面的結果不可信（#216）
+            # The steps that read the working tree (test_sdist, golden, red_on_base) would read a change made meanwhile:
+            # stop as soon as the state differs, as later results could not be trusted (#216)
+            if name not in args.skip and _tree_state(repo, own_files) != start:
+                changed_during = name
+                break
+        if changed_during:
+            verdict = f"== could not check: the working tree changed during {changed_during}"
+        else:
+            verdict = "== all steps exited 0" if not failed_steps else "== not 0: " + ", ".join(failed_steps)
         summary.write(verdict + "\n")
+        if changed_during:
+            everything.write(verdict + "\n")
     print(f"{verdict}\nsummary: {log}\nfull output: {full}")
+    if changed_during:
+        return 2
     return 1 if failed_steps else 0
 
 
