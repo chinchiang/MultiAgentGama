@@ -15,11 +15,15 @@ golden、test_sdist 與 red-on-base 都讀工作目錄，跑的時候不要改�
 ref 指到的 commit 也一樣比對：golden 與 red-on-base 比對 `--against` 的 ref，bi_english 一律比對 `origin/master`；
 它們移動了（例如另一個終端機 `git fetch` 或 `git fetch . origin/master:master`；被建立或刪除也算），比對的
 merge-base 就跟著變，最後一行寫「`<ref>` moved during <步驟>」。兩個都移動時只點名 `--against` 的 ref；同一步裡
-工作目錄也變了時，只寫工作目錄。開始時就有讀不到的未追蹤檔案（例如權限不足）時一步都不跑：它的改動看不出來，
-最後一行寫「`<檔名>` cannot be read (<例外名稱>)」。
+工作目錄也變了時，只寫工作目錄。未追蹤的 symlink 比對它指向的文字（git 追蹤的就是它），未追蹤的目錄（例如巢狀的
+git repo，git 列成 `x/`）只比對名稱，裡面的改動看不到。開始時就有讀不到的未追蹤檔案（例如權限不足），或 `git
+ls-files` 有警告、列不出某些未追蹤檔案（例如打不開的目錄）時，一步都不跑：那些檔案的改動看不出來，最後一行寫
+「`<檔名>` cannot be read (<例外名稱>)」或「could not list untracked files: <git 的警告>」，不只一個時只點名第一個，
+後面加「(+N more)」。
 
 結束碼：0 每一個有跑的步驟都是 0；1 有步驟不是 0 或逾時（red-on-base 有綠燈或略過的測試時也是 1，要讀 log 判斷
-那些是不是預期中的守護）；2 跑的期間工作目錄、HEAD、`--against` 的 ref 或 `origin/master` 變了，無法檢查。
+那些是不是預期中的守護）；2 無法檢查：跑的期間工作目錄、HEAD、`--against` 的 ref 或 `origin/master` 變了，或開始時
+就有讀不到或列不出的未追蹤檔案。
 
 用法：
     python scripts/check_all.py [--against master] [--skip STEP ...] [--timeout 1800] [--log PATH]
@@ -45,13 +49,17 @@ compared against point at are compared too: golden and red-on-base compare again
 always against `origin/master`. When one moves (another terminal running `git fetch` or
 `git fetch . origin/master:master`, say; being created or deleted counts), the merge-base compared against moves with
 it, and the last line reads "`<ref>` moved during <step>". When both moved, only the `--against` ref is named; when
-the working tree changed in the same step, only that is named. When an untracked file cannot be read at the start
-(no permission, say), no step runs, as a change to it would go unseen, and the last line reads "`<name>` cannot be
-read (<exception name>)".
+the working tree changed in the same step, only that is named. An untracked symlink is compared by the text it
+points at (what git tracks), and an untracked directory (a nested git repo, which git lists as `x/`) by its name
+alone, so changes inside it go unseen. When an untracked file cannot be read at the start (no permission, say), or
+`git ls-files` warns and cannot list some untracked files (a directory it cannot open, say), no step runs, as a
+change to them would go unseen, and the last line reads "`<name>` cannot be read (<exception name>)" or "could not
+list untracked files: <git's warning>"; when there is more than one, the first is named and "(+N more)" follows.
 
 Exit code: 0 every step that ran exited 0; 1 some step did not or timed out (red-on-base also exits 1 when a test is
-green or skipped, so read the log to judge whether those are expected guards); 2 the working tree, HEAD, the
-`--against` ref or `origin/master` changed during the run, so it could not check.
+green or skipped, so read the log to judge whether those are expected guards); 2 it could not check: the working
+tree, HEAD, the `--against` ref or `origin/master` changed during the run, or an untracked file could not be read or
+listed at the start.
 
 Usage:
     python scripts/check_all.py [--against master] [--skip STEP ...] [--timeout 1800] [--log PATH]
@@ -64,9 +72,10 @@ import hashlib
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, List, NamedTuple, Optional, Sequence, Tuple
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 失敗卻沒有關鍵行時留下的最後幾行 ／ The last lines kept for a failed step with no key line
@@ -174,7 +183,25 @@ def _dirty(repo: str) -> bool:
     return bool(done.stdout.strip())
 
 
-def _tree_state(repo: str, own_files: Sequence[str] = ()) -> Tuple[str, List[str]]:
+class TreeProblem(NamedTuple):
+    """`_tree_state` 讀不到的東西：path 是讀不到的未追蹤檔案（例外名稱在 error），None 時是 `git ls-files` 列不出
+    未追蹤檔案（它的警告在 error）。
+    What `_tree_state` could not read: path is an untracked file it could not read (the exception's name in error),
+    or None when `git ls-files` could not list the untracked files (its warning in error)."""
+    path: Optional[str]
+    error: str
+
+
+def _describe(problems: Sequence[TreeProblem]) -> str:
+    """停下的原因：點名第一個問題，其餘只寫個數。
+    The reason the run stops: the first problem named, the rest only counted."""
+    first = problems[0]
+    text = (f"could not list untracked files: {first.error}" if first.path is None
+            else f"`{first.path}` cannot be read ({first.error})")
+    return text + (f" (+{len(problems) - 1} more)" if len(problems) > 1 else "")
+
+
+def _tree_state(repo: str, own_files: Sequence[str] = ()) -> Tuple[str, List[TreeProblem]]:
     """工作目錄目前狀態的雜湊：HEAD、`git diff HEAD`（已追蹤檔案的 staged 與未 staged 改動），以及 git 沒忽略的
     未追蹤檔案的清單與內容。git 忽略的檔案（`.venv/`、快取、`scratch/`）不在其中，那裡的改動看不到；own_files
     （script 自己寫的 log，`--log` 可以指到 repo 裡任何地方）也不算（#216）。不是 git repo 時每次都一樣。不算
@@ -187,11 +214,14 @@ def _tree_state(repo: str, own_files: Sequence[str] = ()) -> Tuple[str, List[str
     `git status --porcelain` is left out: these three parts already see every change to tracked or non-ignored files,
     and it adds only a `git add` that changes no content. `git diff` runs without the user's external diff and
     textconv, so its output depends on the content alone.
-    回傳 (雜湊, 讀不到的未追蹤檔案)，後者每一項是「`<檔名>` cannot be read (<例外名稱>)」：讀不到的檔案只有例外名稱
-    進了雜湊，內容改了也看不出來，呼叫的一方要以無法檢查停下（#216 第一輪審查 Standards 第 3 條）。
-    Returns (the hash, the untracked files that cannot be read), each of the latter as "`<name>` cannot be read
-    (<exception name>)": only the exception's name of such a file goes into the hash, so a change to its content would
-    go unseen, and the caller must stop as could not check (#216 round-1 review, standards item 3)."""
+    未追蹤的 symlink 雜湊它指向的文字，目錄（巢狀的 git repo）只雜湊名稱，其他照內容雜湊。回傳 (雜湊, 問題)：每個
+    問題是一個讀不到的未追蹤檔案（只有例外名稱進了雜湊），或 `git ls-files` 的警告（有些檔案沒被列出），它們的改動
+    都看不出來，呼叫的一方要以無法檢查停下（#216 第一輪審查 Standards 第 3 條）。
+    An untracked symlink is hashed by the text it points at, a directory (a nested git repo) by its name alone, and
+    anything else by its content. Returns (the hash, the problems): each problem is an untracked file it could not
+    read (only the exception's name goes into the hash) or a warning from `git ls-files` (some files went unlisted);
+    a change to them would go unseen either way, so the caller must stop as could not check (#216 round-1 review,
+    standards item 3)."""
     # 只排除 repo 裡的路徑（Windows 上不同磁碟的路徑沒有相對路徑，也不在 repo 裡）；pathspec 用 literal，
     # 檔名裡的 `*` 之類不會被當成萬用字元
     # Only paths inside the repo are left out (on Windows a path on another drive has no relative path and is not in
@@ -205,21 +235,39 @@ def _tree_state(repo: str, own_files: Sequence[str] = ()) -> Tuple[str, List[str
         if rel != os.pardir and not rel.startswith(os.pardir + os.sep):
             pathspec.append(f":(exclude,literal){rel}")
     digest = hashlib.sha256()
-    unreadable: List[str] = []
+    problems: List[TreeProblem] = []
     for args in (["rev-parse", "HEAD"],
                  ["diff", "HEAD", "--no-ext-diff", "--no-textconv", "--binary", "--", *pathspec],
                  ["ls-files", "-z", "--others", "--exclude-standard", "--", *pathspec]):
-        done = subprocess.run(["git", *args], cwd=repo, capture_output=True)
+        # C 語系：git 的警告是英文，停下時引用的那一行才不隨使用者的語系變
+        # The C locale keeps git's warnings in English, so the line quoted when the run stops does not vary by locale
+        done = subprocess.run(["git", *args], cwd=repo, capture_output=True, env={**os.environ, "LC_ALL": "C"})
         digest.update(b"%d\0%s\0%s\0" % (done.returncode, done.stdout, done.stderr))
         if args[0] == "ls-files" and done.returncode == 0:
+            # 結束碼 0 卻有警告（例如打不開的目錄）：裡面的檔案沒被列出來，它們的改動看不到
+            # A warning with exit code 0 (a directory it cannot open, say): the files inside are not listed, so a change
+            # to them would go unseen
+            if done.stderr.strip():
+                problems.append(TreeProblem(None, done.stderr.decode("utf-8", "replace").strip().splitlines()[0]))
             for name in filter(None, done.stdout.split(b"\0")):
+                path = os.path.join(repo, os.fsdecode(name))
                 try:
-                    with open(os.path.join(repo, os.fsdecode(name)), "rb") as f:
-                        digest.update(name + b"\0" + hashlib.sha256(f.read()).digest())
+                    mode = os.lstat(path).st_mode
+                    # symlink 雜湊目標文字（git 追蹤的就是它）；目錄（巢狀的 git repo，列成 `x/`）只雜湊名稱
+                    # A symlink is hashed by its target text (what git tracks); a directory (a nested git repo, listed
+                    # as `x/`) by its name alone
+                    if stat.S_ISLNK(mode):
+                        kind, data = b"l", os.fsencode(os.readlink(path))
+                    elif stat.S_ISDIR(mode):
+                        kind, data = b"d", b""
+                    else:
+                        with open(path, "rb") as f:
+                            kind, data = b"f", f.read()
+                    digest.update(name + b"\0" + kind + hashlib.sha256(data).digest())
                 except OSError as e:
                     digest.update(name + b"\0" + type(e).__name__.encode())
-                    unreadable.append(f"`{os.fsdecode(name)}` cannot be read ({type(e).__name__})")
-    return digest.hexdigest(), unreadable
+                    problems.append(TreeProblem(os.fsdecode(name), type(e).__name__))
+    return digest.hexdigest(), problems
 
 
 # `scripts/check_bi_english.py` 沒給 `--base` 時比對的 ref（它的 merge-base 和 HEAD）
@@ -257,7 +305,7 @@ def main(argv: Optional[List[str]] = None, repo: str = _REPO, run: Runner = run_
     failed_steps: List[str] = []
     could_not_check_reason = ""
     own_files = (os.path.abspath(log), os.path.abspath(full))
-    start, unreadable = _tree_state(repo, own_files)
+    start, problems = _tree_state(repo, own_files)
     # golden 與 red-on-base 比對 `--against`，bi_english 一律比對 `origin/master`；同一個 ref 只比一次
     # golden and red-on-base compare against `--against`, bi_english always against `origin/master`; each ref is
     # compared once
@@ -271,43 +319,44 @@ def main(argv: Optional[List[str]] = None, repo: str = _REPO, run: Runner = run_
             f.write(header + "\n")
             f.flush()
         print(header, flush=True)
-        # 開始時就有讀不到的未追蹤檔案：它的改動看不出來，一步都不跑（#216 第一輪審查 Standards 第 3 條）
-        # An untracked file that cannot be read at the start: a change to it would go unseen, so no step runs (#216
-        # round-1 review, standards item 3)
-        if unreadable:
-            could_not_check_reason = unreadable[0] + (f" (+{len(unreadable) - 1} more)" if len(unreadable) > 1 else "")
-        for name, cmd in ([] if unreadable else steps(sys.executable, args.against)):
-            if name in args.skip:
-                lines = [f"{name} skipped (--skip)"]
-            else:
-                code, out = run(cmd, repo, args.timeout)
-                status = f"timeout after {args.timeout:g}s" if code is None else f"exit={code}"
-                if code != 0:
-                    failed_steps.append(name)
-                lines = [f"{name} {status}", *key_lines(name, out, code != 0)]
-                everything.write(f"== {name} {status}: {' '.join(cmd)}\n{out}\n")
-                everything.flush()
-            summary.write("\n".join(lines) + "\n")
-            summary.flush()
-            print(lines[0], flush=True)
-            # 讀工作目錄的步驟（test_sdist、golden、red_on_base）會讀到途中的改動：狀態一變就停，
-            # 後面的結果不可信（#216）
-            # The steps that read the working tree (test_sdist, golden, red_on_base) would read a change made meanwhile:
-            # stop as soon as the state differs, as later results could not be trusted (#216)
-            # 比對用的 ref 移動了（含被建立或刪除），前後步驟比的就不是同一個基準，也停下；工作目錄也變了時只寫工作目錄
-            # （#216 第一輪審查 Spec (c)2）
-            # When a ref compared against moves (being created or deleted included), the steps no longer share one
-            # base, so the run stops too; when the working tree changed as well, only that is named (#216 round-1
-            # review, spec (c)2)
-            if name in args.skip:
-                continue
-            moved = [ref for ref in watched if _ref_state(repo, ref) != refs_start[ref]]
-            if _tree_state(repo, own_files)[0] != start:
-                could_not_check_reason = f"the working tree changed during {name}"
-            elif moved:
-                could_not_check_reason = f"`{moved[0]}` moved during {name}"
-            if could_not_check_reason:
-                break
+        # 開始時就有讀不到或列不出的未追蹤檔案：它們的改動看不出來，一步都不跑（#216 第一輪審查 Standards 第 3 條）
+        # Untracked files that cannot be read or listed at the start: a change to them would go unseen, so no step runs
+        # (#216 round-1 review, standards item 3)
+        if problems:
+            could_not_check_reason = _describe(problems)
+        else:
+            for name, cmd in steps(sys.executable, args.against):
+                if name in args.skip:
+                    lines = [f"{name} skipped (--skip)"]
+                else:
+                    code, out = run(cmd, repo, args.timeout)
+                    status = f"timeout after {args.timeout:g}s" if code is None else f"exit={code}"
+                    if code != 0:
+                        failed_steps.append(name)
+                    lines = [f"{name} {status}", *key_lines(name, out, code != 0)]
+                    everything.write(f"== {name} {status}: {' '.join(cmd)}\n{out}\n")
+                    everything.flush()
+                summary.write("\n".join(lines) + "\n")
+                summary.flush()
+                print(lines[0], flush=True)
+                # 讀工作目錄的步驟（test_sdist、golden、red_on_base）會讀到途中的改動：狀態一變就停，
+                # 後面的結果不可信（#216）
+                # The steps that read the working tree (test_sdist, golden, red_on_base) would read a change made meanwhile:
+                # stop as soon as the state differs, as later results could not be trusted (#216)
+                # 比對用的 ref 移動了（含被建立或刪除），前後步驟比的就不是同一個基準，也停下；工作目錄也變了時只寫工作目錄
+                # （#216 第一輪審查 Spec (c)2）
+                # When a ref compared against moves (being created or deleted included), the steps no longer share one
+                # base, so the run stops too; when the working tree changed as well, only that is named (#216 round-1
+                # review, spec (c)2)
+                if name in args.skip:
+                    continue
+                moved = [ref for ref in watched if _ref_state(repo, ref) != refs_start[ref]]
+                if _tree_state(repo, own_files)[0] != start:
+                    could_not_check_reason = f"the working tree changed during {name}"
+                elif moved:
+                    could_not_check_reason = f"`{moved[0]}` moved during {name}"
+                if could_not_check_reason:
+                    break
         if could_not_check_reason:
             verdict = f"== could not check: {could_not_check_reason}"
         else:
