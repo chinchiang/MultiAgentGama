@@ -4,6 +4,7 @@ names failures, timeouts and skipped steps."""
 
 import importlib.util
 import os
+import subprocess
 import sys
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -12,6 +13,15 @@ assert _spec and _spec.loader
 tool = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = tool
 _spec.loader.exec_module(tool)
+# bi_english 的基準要和 `tool.BI_ENGLISH_BASE` 一致；另取一個模組名，不蓋掉 tests/test_bi_english.py 載入的那一份
+# bi_english's base must match `tool.BI_ENGLISH_BASE`; loaded under its own name so the copy tests/test_bi_english.py
+# loads is left alone
+_bi_spec = importlib.util.spec_from_file_location("check_bi_english_for_check_all",
+                                                  os.path.join(REPO_ROOT, "scripts", "check_bi_english.py"))
+assert _bi_spec and _bi_spec.loader
+bi_english = importlib.util.module_from_spec(_bi_spec)
+sys.modules[_bi_spec.name] = bi_english
+_bi_spec.loader.exec_module(bi_english)
 
 PYTEST_OUTPUT = """\
 ........................................................................ [ 99%]
@@ -149,14 +159,16 @@ def test_the_log_header_is_written_before_the_first_step_runs(tmp_path):
     assert seen["full"].startswith("== HEAD "), seen
 
 
-def _changing(step, change):
-    """跑到 step 那一步時呼叫 change() 改動 repo 的假 runner（其他步驟照常回 0），並記下被呼叫的步驟。
+def _changing(step, change, against="master"):
+    """跑到 step 那一步時呼叫 change() 改動 repo 的假 runner（其他步驟照常回 0），並記下被呼叫的步驟；against 要和
+    傳給 `main` 的 `--against` 相同，才認得出每一步的指令。
     A fake runner that calls `change()` to alter the repo while running `step` (every other step returns 0),
-    recording the steps it was called for."""
+    recording the steps it was called for; `against` must match the `--against` given to `main`, so each step's
+    command is recognised."""
     called = []
 
     def run(cmd, cwd, timeout):
-        name = next(n for n, c in tool.steps(sys.executable, "master") if c == list(cmd))
+        name = next(n for n, c in tool.steps(sys.executable, against) if c == list(cmd))
         called.append(name)
         if name == step:
             change()
@@ -184,6 +196,142 @@ def test_a_tracked_file_edited_during_a_step_is_could_not_check(git_repo, tmp_pa
     full = (tmp_path / "checks.full.log").read_text(encoding="utf-8")
     assert "== could not check: the working tree changed during test_sdist" in full, full
     assert code == 2, summary
+
+
+def test_the_against_ref_moving_during_a_step_is_could_not_check(git_repo, tmp_path):
+    """有一步跑的時候 `--against` 的 ref（預設 `master`）移動了，例如另一個終端機合併了 PR 再
+    `git fetch . origin/master:master`：HEAD 與工作目錄都沒變，但 golden、red_on_base 比對的 merge-base
+    跟著變了，前後步驟比的不是同一個基準。停在那一步，最後一行點名 ref，結束碼 2（#216 第一輪審查 Spec (c)2）。
+    The `--against` ref (`master` by default) moving while a step runs, say when another terminal merges a PR and runs
+    `git fetch . origin/master:master`: HEAD and the working tree stay as they were, but the merge-base that
+    golden and red_on_base compare against moves with it, so the steps no longer share one base. The run
+    stops after that step, its last line names the ref, and the exit code is 2 (#216 round-1 review, spec (c)2)."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "calc.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+    git = git_repo(root)
+    git("branch", "-M", "master")
+    git("checkout", "-q", "-b", "work")
+    (root / "calc.py").write_text("x = 2\n", encoding="utf-8", newline="\n")
+    git("commit", "-q", "-am", "work")
+    run, called = _changing("golden", lambda: git("branch", "-f", "master", "work"))
+    log = tmp_path / "checks.log"
+    code = tool.main(["--log", str(log)], repo=str(root), run=run)
+    summary = log.read_text(encoding="utf-8").splitlines()
+    assert called[-1] == "golden", called
+    assert summary[-1] == "== could not check: `master` moved during golden", summary
+    full = (tmp_path / "checks.full.log").read_text(encoding="utf-8")
+    assert "== could not check: `master` moved during golden" in full, full
+    assert code == 2, summary
+
+
+def test_origin_master_moving_during_a_step_is_could_not_check(git_repo, tmp_path):
+    """有一步跑的時候 `git fetch` 移動了 `origin/master`：bi_english 一律比對 HEAD 和 `origin/master` 的 merge-base，
+    `--against` 是預設的 `master` 也一樣，所以前後步驟比的不是同一個基準。HEAD、工作目錄與 `master` 都沒變，停在
+    那一步，最後一行點名 `origin/master`，結束碼 2（#216 第一輪審查 Spec (c)2）。
+    `git fetch` moving `origin/master` while a step runs: bi_english always compares against the merge-base of HEAD
+    and `origin/master`, even with the default `--against master`, so the steps no longer share one base. HEAD, the
+    working tree and `master` stay as they were; the run stops after that step, its last line names `origin/master`,
+    and the exit code is 2 (#216 round-1 review, spec (c)2)."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "calc.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+    git = git_repo(root)
+    git("branch", "-M", "master")
+    git("update-ref", "refs/remotes/origin/master", "HEAD")
+    fetched = git("commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "fetched").stdout.strip()
+    run, called = _changing("pytest", lambda: git("update-ref", "refs/remotes/origin/master", fetched))
+    log = tmp_path / "checks.log"
+    code = tool.main(["--log", str(log)], repo=str(root), run=run)
+    summary = log.read_text(encoding="utf-8").splitlines()
+    assert called[-1] == "pytest", called
+    assert summary[-1] == "== could not check: `origin/master` moved during pytest", summary
+    full = (tmp_path / "checks.full.log").read_text(encoding="utf-8")
+    assert "== could not check: `origin/master` moved during pytest" in full, full
+    assert code == 2, summary
+
+
+def _repo_with_origin_master(git_repo, tmp_path, origin=True):
+    """`master` 上有一筆 commit 的 repo，origin 為真時 `origin/master` 也指著它；回傳 (根目錄, git, 另一筆 commit)，
+    另一筆 commit 用 `commit-tree` 做出來，HEAD 不動。
+    A repo with one commit on `master`, and `origin/master` pointing at it when origin is true; returns (root, git,
+    another commit), the other commit made with `commit-tree` so HEAD stays put."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "calc.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+    git = git_repo(root)
+    git("branch", "-M", "master")
+    if origin:
+        git("update-ref", "refs/remotes/origin/master", "HEAD")
+    other = git("commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "fetched").stdout.strip()
+    return root, git, other
+
+
+def test_a_ref_moving_with_a_working_tree_change_in_one_step_names_the_working_tree(git_repo, tmp_path):
+    """同一步裡工作目錄變了、`origin/master` 也移動了：最後一行只寫工作目錄，結束碼 2（#216 第一輪審查 Spec (c)2）。
+    The working tree changing and `origin/master` moving in one step: the last line names only the working tree, and
+    the exit code is 2 (#216 round-1 review, spec (c)2)."""
+    root, git, other = _repo_with_origin_master(git_repo, tmp_path)
+
+    def both():
+        (root / "calc.py").write_text("x = 2\n", encoding="utf-8", newline="\n")
+        git("update-ref", "refs/remotes/origin/master", other)
+
+    run, called = _changing("golden", both)
+    log = tmp_path / "checks.log"
+    code = tool.main(["--log", str(log)], repo=str(root), run=run)
+    summary = log.read_text(encoding="utf-8").splitlines()
+    assert summary[-1] == "== could not check: the working tree changed during golden", summary
+    assert code == 2, summary
+
+
+def test_against_origin_master_names_origin_master_when_it_moves(git_repo, tmp_path):
+    """`--against origin/master` 時 `--against` 和 bi_english 的基準是同一個 ref，只比一次；它移動時最後一行點名
+    `origin/master`，結束碼 2（#216 第一輪審查 Spec (c)2）。
+    With `--against origin/master` the `--against` ref and bi_english's base are one ref, compared once; when it moves
+    the last line names `origin/master`, and the exit code is 2 (#216 round-1 review, spec (c)2)."""
+    root, git, other = _repo_with_origin_master(git_repo, tmp_path)
+    run, called = _changing("ruff", lambda: git("update-ref", "refs/remotes/origin/master", other),
+                            against="origin/master")
+    log = tmp_path / "checks.log"
+    code = tool.main(["--log", str(log), "--against", "origin/master"], repo=str(root), run=run)
+    summary = log.read_text(encoding="utf-8").splitlines()
+    assert called[-1] == "ruff", called
+    assert summary[-1] == "== could not check: `origin/master` moved during ruff", summary
+    assert code == 2, summary
+
+
+def test_origin_master_created_during_a_step_counts_as_moving(git_repo, tmp_path):
+    """開始時還沒有 `origin/master`，跑到一半 `git fetch` 建立了它：被建立也算移動，最後一行點名它，結束碼 2
+    （#216 第一輪審查 Spec (c)2）。
+    No `origin/master` at the start, and a `git fetch` creates it midway: being created counts as moving, so the last
+    line names it and the exit code is 2 (#216 round-1 review, spec (c)2)."""
+    root, git, other = _repo_with_origin_master(git_repo, tmp_path, origin=False)
+    run, called = _changing("mypy", lambda: git("update-ref", "refs/remotes/origin/master", other))
+    log = tmp_path / "checks.log"
+    code = tool.main(["--log", str(log)], repo=str(root), run=run)
+    summary = log.read_text(encoding="utf-8").splitlines()
+    assert called[-1] == "mypy", called
+    assert summary[-1] == "== could not check: `origin/master` moved during mypy", summary
+    assert code == 2, summary
+
+
+def test_bi_english_without_a_base_compares_against_bi_english_base(monkeypatch):
+    """`steps()` 跑 `scripts/check_bi_english.py` 時沒給 `--base`，它就取 HEAD 和 `origin/master` 的 merge-base；
+    `BI_ENGLISH_BASE` 必須是同一個 ref，兩邊有一邊改了，這裡就會紅（#216 第一輪審查 Spec (c)2）。換掉的 `_git`
+    記下第一個 git 呼叫後就丟錯結束。
+    `steps()` runs `scripts/check_bi_english.py` without `--base`, so it takes the merge-base of HEAD and
+    `origin/master`; `BI_ENGLISH_BASE` must be the same ref, and this turns red when either side changes (#216
+    round-1 review, spec (c)2). The replaced `_git` records the first git call, then raises to end the run."""
+    calls = []
+
+    def fake_git(*args):
+        calls.append(args)
+        raise subprocess.CalledProcessError(1, ["git", *args], stderr="stopped by the test")
+
+    monkeypatch.setattr(bi_english, "_git", fake_git)
+    bi_english.main([])
+    assert calls[:1] == [("merge-base", "HEAD", tool.BI_ENGLISH_BASE)], calls
 
 
 def test_a_commit_made_during_a_step_is_could_not_check(git_repo, tmp_path):
