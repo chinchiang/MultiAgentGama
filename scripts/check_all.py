@@ -11,10 +11,12 @@
 
 golden、test_sdist 與 red-on-base 都讀工作目錄，跑的時候不要改檔案。每一個有跑的步驟跑完，都比對 HEAD、
 `git diff HEAD` 與未追蹤檔案的清單和內容（git 忽略的不算，例如 `scratch/` 裡的 log；script 自己寫的 log 放在哪裡
-都不算）；和開始時不同就停在那一步，摘要與 `.full.log` 的最後一行寫出是哪一步跑的時候變的（#216）。
+都不算）；和開始時不同就停在那一步，摘要與 `.full.log` 的最後一行寫出是哪一步跑的時候變的（#216）。`--against`
+的 ref 指到的 commit 也一樣比對：它移動了（例如另一個終端機 `git fetch . origin/master:master`），bi_english、
+golden 與 red-on-base 比對的 merge-base 就跟著變，最後一行寫「`master` moved during <步驟>」。
 
 結束碼：0 每一個有跑的步驟都是 0；1 有步驟不是 0 或逾時（red-on-base 有綠燈或略過的測試時也是 1，要讀 log 判斷
-那些是不是預期中的守護）；2 跑的期間工作目錄或 HEAD 變了，無法檢查。
+那些是不是預期中的守護）；2 跑的期間工作目錄、HEAD 或 `--against` 的 ref 變了，無法檢查。
 
 用法：
     python scripts/check_all.py [--against master] [--skip STEP ...] [--timeout 1800] [--log PATH]
@@ -35,11 +37,14 @@ last 20 lines. Each step's full output goes to the `.full.log` of the same name.
 golden, test_sdist and red-on-base read the working tree: change no file while they run. After each step that
 runs, the script compares HEAD, `git diff HEAD` and the list and content of untracked files (not those git ignores,
 such as the logs in `scratch/`, nor the logs the script writes, wherever they are) with the start; when they differ it stops after that step, and the last line
-of the summary and of the `.full.log` names the step during which the tree changed (#216).
+of the summary and of the `.full.log` names the step during which the tree changed (#216). The commit the `--against`
+ref points at is compared too: when it moves (another terminal running `git fetch . origin/master:master`, say), the
+merge-base bi_english, golden and red-on-base compare against moves with it, and the last line reads "`master` moved
+during <step>".
 
 Exit code: 0 every step that ran exited 0; 1 some step did not or timed out (red-on-base also exits 1 when a test is
-green or skipped, so read the log to judge whether those are expected guards); 2 the working tree or HEAD changed
-during the run, so it could not check.
+green or skipped, so read the log to judge whether those are expected guards); 2 the working tree, HEAD or the
+`--against` ref changed during the run, so it could not check.
 
 Usage:
     python scripts/check_all.py [--against master] [--skip STEP ...] [--timeout 1800] [--log PATH]
@@ -203,6 +208,15 @@ def _tree_state(repo: str, own_files: Sequence[str] = ()) -> str:
     return digest.hexdigest()
 
 
+def _ref_state(repo: str, ref: str) -> str:
+    """`ref` 目前指到的 commit（`git rev-parse` 的結束碼、輸出與錯誤）；ref 不存在時每次都一樣。
+    The commit `ref` points at now (`git rev-parse`'s exit code, output and error); the same every time when the ref
+    does not exist."""
+    done = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=repo,
+                          capture_output=True, text=True)
+    return f"{done.returncode}\0{done.stdout}\0{done.stderr}"
+
+
 def main(argv: Optional[List[str]] = None, repo: str = _REPO, run: Runner = run_command) -> int:
     """命令列進入點，回傳結束碼。
     Command-line entry point; returns the exit code."""
@@ -222,9 +236,10 @@ def main(argv: Optional[List[str]] = None, repo: str = _REPO, run: Runner = run_
     header = f"== HEAD {head} against {args.against}" + (" (uncommitted changes in the working tree)"
                                                           if _dirty(repo) else "")
     failed_steps: List[str] = []
-    changed_during = ""
+    stop = ""
     own_files = (os.path.abspath(log), os.path.abspath(full))
     start = _tree_state(repo, own_files)
+    against_start = _ref_state(repo, args.against)
     with open(log, "w", encoding="utf-8") as summary, open(full, "w", encoding="utf-8") as everything:
         # 檔頭立刻寫進檔案：第一步（pytest）要跑好幾分鐘，這段時間 log 不能看起來是空的（#191）
         # The header reaches the files at once: the first step (pytest) runs for minutes, and the log must not look
@@ -251,18 +266,27 @@ def main(argv: Optional[List[str]] = None, repo: str = _REPO, run: Runner = run_
             # 後面的結果不可信（#216）
             # The steps that read the working tree (test_sdist, golden, red_on_base) would read a change made meanwhile:
             # stop as soon as the state differs, as later results could not be trusted (#216)
-            if name not in args.skip and _tree_state(repo, own_files) != start:
-                changed_during = name
+            # bi_english、golden、red_on_base 比對 `--against` 的 merge-base：那個 ref 移動了，前後步驟比的就不是同一個
+            # 基準，也停下（#216 第一輪審查 Spec (c)2）
+            # bi_english, golden and red_on_base compare against the merge-base with `--against`: when that ref moves,
+            # the steps no longer share one base, so the run stops too (#216 round-1 review, spec (c)2)
+            if name in args.skip:
+                continue
+            if _tree_state(repo, own_files) != start:
+                stop = f"the working tree changed during {name}"
+            elif _ref_state(repo, args.against) != against_start:
+                stop = f"`{args.against}` moved during {name}"
+            if stop:
                 break
-        if changed_during:
-            verdict = f"== could not check: the working tree changed during {changed_during}"
+        if stop:
+            verdict = f"== could not check: {stop}"
         else:
             verdict = "== all steps exited 0" if not failed_steps else "== not 0: " + ", ".join(failed_steps)
         summary.write(verdict + "\n")
-        if changed_during:
+        if stop:
             everything.write(verdict + "\n")
     print(f"{verdict}\nsummary: {log}\nfull output: {full}")
-    if changed_during:
+    if stop:
         return 2
     return 1 if failed_steps else 0
 

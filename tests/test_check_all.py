@@ -186,6 +186,33 @@ def test_a_tracked_file_edited_during_a_step_is_could_not_check(git_repo, tmp_pa
     assert code == 2, summary
 
 
+def test_the_against_ref_moving_during_a_step_is_could_not_check(git_repo, tmp_path):
+    """有一步跑的時候 `--against` 的 ref（預設 `master`）移動了，例如另一個終端機合併了 PR 再
+    `git fetch . origin/master:master`：HEAD 與工作目錄都沒變，但 bi_english、golden、red_on_base 比對的 merge-base
+    跟著變了，前後步驟比的不是同一個基準。停在那一步，最後一行點名 ref，結束碼 2（#216 第一輪審查 Spec (c)2）。
+    The `--against` ref (`master` by default) moving while a step runs, say when another terminal merges a PR and runs
+    `git fetch . origin/master:master`: HEAD and the working tree stay as they were, but the merge-base that
+    bi_english, golden and red_on_base compare against moves with it, so the steps no longer share one base. The run
+    stops after that step, its last line names the ref, and the exit code is 2 (#216 round-1 review, spec (c)2)."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "calc.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+    git = git_repo(root)
+    git("branch", "-M", "master")
+    git("checkout", "-q", "-b", "work")
+    (root / "calc.py").write_text("x = 2\n", encoding="utf-8", newline="\n")
+    git("commit", "-q", "-am", "work")
+    run, called = _changing("golden", lambda: git("branch", "-f", "master", "work"))
+    log = tmp_path / "checks.log"
+    code = tool.main(["--log", str(log)], repo=str(root), run=run)
+    summary = log.read_text(encoding="utf-8").splitlines()
+    assert called[-1] == "golden", called
+    assert summary[-1] == "== could not check: `master` moved during golden", summary
+    full = (tmp_path / "checks.full.log").read_text(encoding="utf-8")
+    assert "== could not check: `master` moved during golden" in full, full
+    assert code == 2, summary
+
+
 def test_a_commit_made_during_a_step_is_could_not_check(git_repo, tmp_path):
     """有一步跑的時候提交了一筆改動：工作目錄前後都是乾淨的，只有 HEAD 變了，摘要卻還寫著開始時的 HEAD。同樣停在
     那一步，結束碼 2（#216）。
