@@ -469,7 +469,7 @@ def test_failures_reported_but_none_read_is_could_not_check(repo, tmp_path, caps
     out = capsys.readouterr().out
     assert code == 2, out
     assert "`subtract`: could not read pytest's output (pytest exited 1)" in out, out
-    assert "pytest exited 1 but no red test was read" in out, _lines(out, "could not read")
+    assert "pytest exited 1 but no red test was read" in out, out
     assert "turned nothing red" not in out, out
 
 
