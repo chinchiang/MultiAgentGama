@@ -9,9 +9,9 @@
 `TOTAL` 覆蓋率與通過數、golden 的差異數與每一種差異、red-on-base 的 `red=N green=M skipped=K hang=H` 與每一行結果，
 不截斷）；某一步失敗卻沒有任何關鍵行時，留它的最後 20 行。每一步的完整輸出寫在同名的 `.full.log`。
 
-golden、test_sdist 與 red-on-base 都讀工作目錄，跑的時候不要改檔案。每一步跑完都比對 HEAD、`git status --porcelain`、
-`git diff HEAD` 與未追蹤檔案的內容（git 忽略的不算，例如 `scratch/` 裡的 log）；和開始時不同就停在那一步，摘要與
-`.full.log` 的最後一行寫出是哪一步跑的時候變的（#216）。
+golden、test_sdist 與 red-on-base 都讀工作目錄，跑的時候不要改檔案。每一步跑完都比對 HEAD、`git diff HEAD` 與
+未追蹤檔案的清單和內容（git 忽略的不算，例如 `scratch/` 裡的 log）；和開始時不同就停在那一步，摘要與 `.full.log`
+的最後一行寫出是哪一步跑的時候變的（#216）。
 
 結束碼：0 每一個有跑的步驟都是 0；1 有步驟不是 0 或逾時（red-on-base 有綠燈或略過的測試時也是 1，要讀 log 判斷
 那些是不是預期中的守護）；2 跑的期間工作目錄或 HEAD 變了，無法檢查。
@@ -33,8 +33,8 @@ red-on-base's `red=N green=M skipped=K hang=H` and every result line, never cut)
 last 20 lines. Each step's full output goes to the `.full.log` of the same name.
 
 golden, test_sdist and red-on-base read the working tree: change no file while they run. After each step the
-script compares HEAD, `git status --porcelain`, `git diff HEAD` and the content of untracked files (not those git
-ignores, such as the logs in `scratch/`) with the start; when they differ it stops after that step, and the last line
+script compares HEAD, `git diff HEAD` and the list and content of untracked files (not those git ignores, such as
+the logs in `scratch/`) with the start; when they differ it stops after that step, and the last line
 of the summary and of the `.full.log` names the step during which the tree changed (#216).
 
 Exit code: 0 every step that ran exited 0; 1 some step did not or timed out (red-on-base also exits 1 when a test is
@@ -163,13 +163,16 @@ def _dirty(repo: str) -> bool:
 
 
 def _tree_state(repo: str) -> str:
-    """工作目錄目前狀態的雜湊：HEAD、`git status --porcelain`、`git diff HEAD`（已追蹤檔案的 staged 與未 staged
-    改動），以及 git 沒忽略的未追蹤檔案內容；`scratch/` 被忽略，自己寫的 log 不算改動。不是 git repo 時每次都一樣（#216）。
-    A hash of the working tree's current state: HEAD, `git status --porcelain`, `git diff HEAD` (staged and unstaged
-    changes to tracked files) and the content of untracked files git does not ignore; `scratch/` is ignored, so the
-    script's own logs are no change. Outside a git repo it reads the same every time (#216)."""
+    """工作目錄目前狀態的雜湊：HEAD、`git diff HEAD`（已追蹤檔案的 staged 與未 staged 改動），以及 git 沒忽略的
+    未追蹤檔案的清單與內容；`scratch/` 被忽略，自己寫的 log 不算改動。不是 git repo 時每次都一樣（#216）。不算
+    `git status --porcelain`：會影響步驟結果的改動，這三部分都已看得到，它只多看出不動任何內容的 `git add`。
+    A hash of the working tree's current state: HEAD, `git diff HEAD` (staged and unstaged changes to tracked files)
+    and the list and content of untracked files git does not ignore; `scratch/` is ignored, so the script's own logs
+    are no change. Outside a git repo it reads the same every time (#216). `git status --porcelain` is left out: these
+    three parts already see every change that can affect a step's result, and it adds only a `git add` that changes no
+    content."""
     digest = hashlib.sha256()
-    for args in (["rev-parse", "HEAD"], ["status", "--porcelain"], ["diff", "HEAD", "--binary"],
+    for args in (["rev-parse", "HEAD"], ["diff", "HEAD", "--binary"],
                  ["ls-files", "-z", "--others", "--exclude-standard"]):
         done = subprocess.run(["git", *args], cwd=repo, capture_output=True)
         digest.update(b"%d\0%s\0%s\0" % (done.returncode, done.stdout, done.stderr))
@@ -226,7 +229,8 @@ def main(argv: Optional[List[str]] = None, repo: str = _REPO, run: Runner = run_
             summary.write("\n".join(lines) + "\n")
             summary.flush()
             print(lines[0], flush=True)
-            # 讀工作目錄的步驟（test_sdist、golden、red_on_base）會讀到途中的改動：狀態一變就停，後面的結果不可信（#216）
+            # 讀工作目錄的步驟（test_sdist、golden、red_on_base）會讀到途中的改動：狀態一變就停，
+            # 後面的結果不可信（#216）
             # The steps that read the working tree (test_sdist, golden, red_on_base) would read a change made meanwhile:
             # stop as soon as the state differs, as later results could not be trusted (#216)
             if name not in args.skip and _tree_state(repo) != start:
