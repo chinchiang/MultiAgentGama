@@ -508,6 +508,38 @@ def test_red_read_when_pytest_exited_0_is_could_not_check(git_repo, tmp_path, ca
     assert "pytest exited 0 but 1 red were read" in out, _lines(out, "could not read")
 
 
+INTERRUPTED = TESTS + '''
+
+def test_interrupts_when_the_sum_is_wrong():
+    # 只在改壞之後中斷：pytest 停在這裡、以 2 結束，前一個測試的 FAILED 行、結果行與統計行都對得上
+    # Interrupts only once reverted: pytest stops here and exits 2, while the previous test's FAILED line, outcome
+    # line and count line all agree
+    if add(1, 2) != 3:
+        raise KeyboardInterrupt
+
+
+def test_never_reached():
+    pass
+'''
+
+
+def test_red_read_when_pytest_exited_2_without_an_error_line_is_could_not_check(git_repo, tmp_path, capsys):
+    """pytest 被中斷（`KeyboardInterrupt`）時以 2 結束，摘要只有中斷之前的 `FAILED` 行，後面的測試沒有跑：紅燈的 ID、
+    數量與結果行都對得上，但這份紅燈清單不完整，所以結束碼 2 只在有 `ERROR` 行（收集錯誤）時才接受，否則無法檢查，
+    結束碼 2，不是「1 red」（CODING_STANDARDS 第 8 條；#214 審查第 5 輪）。
+    pytest interrupted (`KeyboardInterrupt`) exits 2, and its summary has only the `FAILED` lines from before the
+    interrupt, with the later tests never run: the red ids, the count and the outcome lines all agree, but the red
+    list is incomplete, so exit code 2 is accepted only with an `ERROR` line (a collection error); otherwise it is
+    could not check, exit code 2, not "1 red" (CODING_STANDARDS rule 8; #214 review round 5)."""
+    root = _repo_with(git_repo, tmp_path, {"test_calc.py": INTERRUPTED})
+    code = tool.main(["calc.py", _reversions(tmp_path, ("subtract", "a + b", "a - b"))], repo=str(root))
+    out = capsys.readouterr().out
+    assert "## subtract" not in out, _lines(out, "## subtract")
+    assert code == 2, out
+    assert "`subtract`: could not read pytest's output (pytest exited 2)" in out, out
+    assert "pytest exited 2 but 1 red were read" in out, _lines(out, "pytest exited")
+
+
 MULTI_LINE_SKIP = TESTS + '''
 import pytest
 
