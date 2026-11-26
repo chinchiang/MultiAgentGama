@@ -242,3 +242,23 @@ def test_a_run_during_which_nothing_changes_still_exits_zero_in_a_git_repo(git_r
     run, called = _changing("golden", lambda: None)
     assert tool.main([], repo=str(root), run=run) == 0
     assert called == list(tool.STEP_NAMES)
+
+
+def test_a_file_already_modified_at_the_start_and_edited_again_during_a_step_is_could_not_check(git_repo, tmp_path):
+    """開始時已經有未提交改動的檔案，在某一步跑的時候又被改了：`git status --porcelain` 前後都是 ` M`，只有
+    `git diff HEAD` 看得出內容又變了。同樣停在那一步，結束碼 2（#216）。
+    A file with uncommitted changes at the start, edited again while a step runs: `git status --porcelain` reads
+    ` M` before and after, and only `git diff HEAD` shows the content moved again. The run stops after that step too,
+    exit code 2 (#216)."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "calc.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+    git_repo(root)
+    (root / "calc.py").write_text("x = 2\n", encoding="utf-8", newline="\n")
+    run, called = _changing("ruff", lambda: (root / "calc.py").write_text("x = 3\n", encoding="utf-8", newline="\n"))
+    log = tmp_path / "checks.log"
+    code = tool.main(["--log", str(log)], repo=str(root), run=run)
+    summary = log.read_text(encoding="utf-8").splitlines()
+    assert called[-1] == "ruff", called
+    assert summary[-1] == "== could not check: the working tree changed during ruff", summary
+    assert code == 2, summary
