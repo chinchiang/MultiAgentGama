@@ -282,3 +282,24 @@ def test_a_log_inside_the_repo_at_a_path_git_does_not_ignore_is_no_change(git_re
     assert summary[-1] == "== all steps exited 0", summary
     assert called == list(tool.STEP_NAMES), called
     assert code == 0, summary
+
+
+def test_a_log_at_a_tracked_file_in_the_repo_is_no_change(git_repo, tmp_path):
+    """`--log` 指到 repo 裡已追蹤的檔案：script 覆寫它，`git diff HEAD` 看得到這個改動，但那是 script 自己寫的
+    log，不是讓結果不可信的改動。每一步都跑，結束碼照舊是 0；`git diff HEAD` 也要排除 script 自己的 log，只排除
+    未追蹤檔案的清單不夠（#216 審查）。
+    `--log` pointing at a tracked file in the repo: the script overwrites it and `git diff HEAD` shows that change,
+    but it is the script's own log, no change that makes the results untrustworthy. Every step runs and the exit code
+    is still 0; `git diff HEAD` has to leave the script's own logs out too, not only the untracked list (#216 review)."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "calc.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+    (root / "checks.log").write_text("an older summary\n", encoding="utf-8", newline="\n")
+    git_repo(root)
+    run, called = _changing("golden", lambda: None)
+    log = root / "checks.log"
+    code = tool.main(["--log", str(log)], repo=str(root), run=run)
+    summary = log.read_text(encoding="utf-8").splitlines()
+    assert summary[-1] == "== all steps exited 0", summary
+    assert called == list(tool.STEP_NAMES), called
+    assert code == 0, summary
