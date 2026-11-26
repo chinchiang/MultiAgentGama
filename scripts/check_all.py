@@ -17,13 +17,14 @@ ref 指到的 commit 也一樣比對：golden 與 red-on-base 比對 `--against`
 merge-base 就跟著變，最後一行寫「`<ref>` moved during <步驟>」。兩個都移動時只點名 `--against` 的 ref；同一步裡
 工作目錄也變了時，只寫工作目錄。未追蹤的 symlink 比對它指向的文字（git 追蹤的就是它），未追蹤的目錄（例如巢狀的
 git repo，git 列成 `x/`）只比對名稱，裡面的改動看不到。開始時就有讀不到的未追蹤檔案（例如權限不足），或 `git
-ls-files` 有警告、列不出某些未追蹤檔案（例如打不開的目錄）時，一步都不跑：那些檔案的改動看不出來，最後一行寫
-「`<檔名>` cannot be read (<例外名稱>)」或「could not list untracked files: <git 的警告>」，不只一個時只點名第一個，
-後面加「(+N more)」。
+ls-files` 列出未追蹤檔案時有警告（例如打不開的目錄、讀不到的 `.gitignore`：可能有檔案沒被列出，或忽略規則和預期
+不同）時，一步都不跑：那些檔案的改動看不出來，最後一行寫「`<檔名>` cannot be read (<例外名稱>)」或「git warned
+while listing untracked files: <git 的警告>」。git 的警告每一行各算一個，照 git 印出的順序排在讀不到的檔案前面；
+不只一個時只點名第一個，後面加「(+N more)」。
 
 結束碼：0 每一個有跑的步驟都是 0；1 有步驟不是 0 或逾時（red-on-base 有綠燈或略過的測試時也是 1，要讀 log 判斷
 那些是不是預期中的守護）；2 無法檢查：跑的期間工作目錄、HEAD、`--against` 的 ref 或 `origin/master` 變了，或開始時
-就有讀不到或列不出的未追蹤檔案。
+就有讀不到的未追蹤檔案、或 git 列出未追蹤檔案時有警告。
 
 用法：
     python scripts/check_all.py [--against master] [--skip STEP ...] [--timeout 1800] [--log PATH]
@@ -52,14 +53,16 @@ it, and the last line reads "`<ref>` moved during <step>". When both moved, only
 the working tree changed in the same step, only that is named. An untracked symlink is compared by the text it
 points at (what git tracks), and an untracked directory (a nested git repo, which git lists as `x/`) by its name
 alone, so changes inside it go unseen. When an untracked file cannot be read at the start (no permission, say), or
-`git ls-files` warns and cannot list some untracked files (a directory it cannot open, say), no step runs, as a
-change to them would go unseen, and the last line reads "`<name>` cannot be read (<exception name>)" or "could not
-list untracked files: <git's warning>"; when there is more than one, the first is named and "(+N more)" follows.
+`git ls-files` warns while listing the untracked files (a directory it cannot open, or a `.gitignore` it cannot
+read, say: files may go unlisted or be ignored by other rules than meant), no step runs, as a change to them would go
+unseen, and the last line reads "`<name>` cannot be read (<exception name>)" or "git warned while listing untracked
+files: <git's warning>". Each warning line from git counts as one, placed before the unreadable files in the order
+git printed them; when there is more than one, the first is named and "(+N more)" follows.
 
 Exit code: 0 every step that ran exited 0; 1 some step did not or timed out (red-on-base also exits 1 when a test is
 green or skipped, so read the log to judge whether those are expected guards); 2 it could not check: the working
-tree, HEAD, the `--against` ref or `origin/master` changed during the run, or an untracked file could not be read or
-listed at the start.
+tree, HEAD, the `--against` ref or `origin/master` changed during the run, or at the start an untracked file could
+not be read or git warned while listing the untracked files.
 
 Usage:
     python scripts/check_all.py [--against master] [--skip STEP ...] [--timeout 1800] [--log PATH]
@@ -184,10 +187,10 @@ def _dirty(repo: str) -> bool:
 
 
 class TreeProblem(NamedTuple):
-    """`_tree_state` 讀不到的東西：path 是讀不到的未追蹤檔案（例外名稱在 error），None 時是 `git ls-files` 列不出
-    未追蹤檔案（它的警告在 error）。
+    """`_tree_state` 讀不到的東西：path 是讀不到的未追蹤檔案（例外名稱在 error），None 時是 `git ls-files` 列出未追蹤
+    檔案時印出的一行警告（那一行在 error）。
     What `_tree_state` could not read: path is an untracked file it could not read (the exception's name in error),
-    or None when `git ls-files` could not list the untracked files (its warning in error)."""
+    or None for a line `git ls-files` warned with while listing the untracked files (the line in error)."""
     path: Optional[str]
     error: str
 
@@ -196,7 +199,7 @@ def _describe(problems: Sequence[TreeProblem]) -> str:
     """停下的原因：點名第一個問題，其餘只寫個數。
     The reason the run stops: the first problem named, the rest only counted."""
     first = problems[0]
-    text = (f"could not list untracked files: {first.error}" if first.path is None
+    text = (f"git warned while listing untracked files: {first.error}" if first.path is None
             else f"`{first.path}` cannot be read ({first.error})")
     return text + (f" (+{len(problems) - 1} more)" if len(problems) > 1 else "")
 
@@ -244,11 +247,14 @@ def _tree_state(repo: str, own_files: Sequence[str] = ()) -> Tuple[str, List[Tre
         done = subprocess.run(["git", *args], cwd=repo, capture_output=True, env={**os.environ, "LC_ALL": "C"})
         digest.update(b"%d\0%s\0%s\0" % (done.returncode, done.stdout, done.stderr))
         if args[0] == "ls-files" and done.returncode == 0:
-            # 結束碼 0 卻有警告（例如打不開的目錄）：裡面的檔案沒被列出來，它們的改動看不到
-            # A warning with exit code 0 (a directory it cannot open, say): the files inside are not listed, so a change
-            # to them would go unseen
-            if done.stderr.strip():
-                problems.append(TreeProblem(None, done.stderr.decode("utf-8", "replace").strip().splitlines()[0]))
+            # 結束碼 0 卻有警告（例如打不開的目錄、讀不到的 `.gitignore`）：可能有檔案沒被列出，或忽略規則和預期不同，
+            # 它們的改動看不到；每一行警告各算一個問題，照 git 印出的順序
+            # A warning with exit code 0 (a directory it cannot open, a `.gitignore` it cannot read, say): files may go
+            # unlisted or be ignored by other rules than meant, so a change to them would go unseen; each warning line
+            # is a problem of its own, in the order git printed them
+            for warning in done.stderr.decode("utf-8", "replace").splitlines():
+                if warning.strip():
+                    problems.append(TreeProblem(None, warning.strip()))
             for name in filter(None, done.stdout.split(b"\0")):
                 path = os.path.join(repo, os.fsdecode(name))
                 try:
@@ -319,9 +325,10 @@ def main(argv: Optional[List[str]] = None, repo: str = _REPO, run: Runner = run_
             f.write(header + "\n")
             f.flush()
         print(header, flush=True)
-        # 開始時就有讀不到或列不出的未追蹤檔案：它們的改動看不出來，一步都不跑（#216 第一輪審查 Standards 第 3 條）
-        # Untracked files that cannot be read or listed at the start: a change to them would go unseen, so no step runs
-        # (#216 round-1 review, standards item 3)
+        # 開始時就有讀不到的未追蹤檔案，或 git 列出時有警告：它們的改動看不出來，一步都不跑（#216 第一輪審查
+        # Standards 第 3 條）
+        # Untracked files that cannot be read, or git warning while listing them, at the start: a change to them would
+        # go unseen, so no step runs (#216 round-1 review, standards item 3)
         if problems:
             could_not_check_reason = _describe(problems)
         else:
