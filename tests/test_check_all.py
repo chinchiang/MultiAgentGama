@@ -262,3 +262,23 @@ def test_a_file_already_modified_at_the_start_and_edited_again_during_a_step_is_
     assert called[-1] == "ruff", called
     assert summary[-1] == "== could not check: the working tree changed during ruff", summary
     assert code == 2, summary
+
+
+def test_a_log_inside_the_repo_at_a_path_git_does_not_ignore_is_no_change(git_repo, tmp_path):
+    """`--log` 指到 repo 裡 git 沒忽略的路徑：script 自己寫的摘要與 `.full.log` 是未追蹤檔案，跑的期間一直在變，
+    但它們不是讓結果不可信的改動。每一步都跑，結束碼照舊是 0，而不是每次都在第一步誤報「changed during pytest」
+    （#216 審查）。
+    `--log` pointing inside the repo at a path git does not ignore: the summary and `.full.log` the script writes are
+    untracked files that keep changing during the run, but they are no change that makes the results untrustworthy.
+    Every step runs and the exit code is still 0, not a false "changed during pytest" on every run (#216 review)."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "calc.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+    git_repo(root)
+    run, called = _changing("golden", lambda: None)
+    log = root / "out" / "checks.log"
+    code = tool.main(["--log", str(log)], repo=str(root), run=run)
+    summary = log.read_text(encoding="utf-8").splitlines()
+    assert summary[-1] == "== all steps exited 0", summary
+    assert called == list(tool.STEP_NAMES), called
+    assert code == 0, summary
