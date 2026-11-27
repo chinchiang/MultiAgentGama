@@ -157,7 +157,7 @@ def test_a_failing_or_timed_out_step_makes_the_exit_code_non_zero(tmp_path):
     summary = log.read_text(encoding="utf-8").splitlines()
     assert "mypy exit=1" in summary and "Found 2 errors in 1 file" in summary
     assert "golden timeout after 5s" in summary
-    assert summary[-2] == "== not 0: mypy, golden"
+    assert _verdict(summary) == "== not 0: mypy, golden"
     assert "partial" in (tmp_path / "checks.full.log").read_text(encoding="utf-8")
 
 
@@ -231,7 +231,7 @@ def test_a_tracked_file_edited_during_a_step_is_could_not_check(git_repo, tmp_pa
     code = tool.main(["--log", str(log)], repo=str(root), run=run)
     summary = log.read_text(encoding="utf-8").splitlines()
     assert called[-1] == "test_sdist", called
-    assert summary[-2] == "== could not check: the working tree changed during test_sdist", summary
+    assert _verdict(summary) == "== could not check: the working tree changed during test_sdist", summary
     full = (tmp_path / "checks.full.log").read_text(encoding="utf-8")
     assert "== could not check: the working tree changed during test_sdist" in full, full
     assert code == 2, summary
@@ -258,7 +258,7 @@ def test_the_against_ref_moving_during_a_step_is_could_not_check(git_repo, tmp_p
     code = tool.main(["--log", str(log)], repo=str(root), run=run)
     summary = log.read_text(encoding="utf-8").splitlines()
     assert called[-1] == "golden", called
-    assert summary[-2] == "== could not check: `master` moved during golden", summary
+    assert _verdict(summary) == "== could not check: `master` moved during golden", summary
     full = (tmp_path / "checks.full.log").read_text(encoding="utf-8")
     assert "== could not check: `master` moved during golden" in full, full
     assert code == 2, summary
@@ -284,7 +284,7 @@ def test_origin_master_moving_during_a_step_is_could_not_check(git_repo, tmp_pat
     code = tool.main(["--log", str(log)], repo=str(root), run=run)
     summary = log.read_text(encoding="utf-8").splitlines()
     assert called[-1] == "pytest", called
-    assert summary[-2] == "== could not check: `origin/master` moved during pytest", summary
+    assert _verdict(summary) == "== could not check: `origin/master` moved during pytest", summary
     full = (tmp_path / "checks.full.log").read_text(encoding="utf-8")
     assert "== could not check: `origin/master` moved during pytest" in full, full
     assert code == 2, summary
@@ -320,7 +320,7 @@ def test_a_ref_moving_with_a_working_tree_change_in_one_step_names_the_working_t
     log = tmp_path / "checks.log"
     code = tool.main(["--log", str(log)], repo=str(root), run=run)
     summary = log.read_text(encoding="utf-8").splitlines()
-    assert summary[-2] == "== could not check: the working tree changed during golden", summary
+    assert _verdict(summary) == "== could not check: the working tree changed during golden", summary
     assert code == 2, summary
 
 
@@ -336,7 +336,7 @@ def test_against_origin_master_names_origin_master_when_it_moves(git_repo, tmp_p
     code = tool.main(["--log", str(log), "--against", "origin/master"], repo=str(root), run=run)
     summary = log.read_text(encoding="utf-8").splitlines()
     assert called[-1] == "ruff", called
-    assert summary[-2] == "== could not check: `origin/master` moved during ruff", summary
+    assert _verdict(summary) == "== could not check: `origin/master` moved during ruff", summary
     assert code == 2, summary
 
 
@@ -351,7 +351,7 @@ def test_origin_master_created_during_a_step_counts_as_moving(git_repo, tmp_path
     code = tool.main(["--log", str(log)], repo=str(root), run=run)
     summary = log.read_text(encoding="utf-8").splitlines()
     assert called[-1] == "mypy", called
-    assert summary[-2] == "== could not check: `origin/master` moved during mypy", summary
+    assert _verdict(summary) == "== could not check: `origin/master` moved during mypy", summary
     assert code == 2, summary
 
 
@@ -387,6 +387,14 @@ def _plain_repo(git_repo, tmp_path):
     return root, git_repo(root)
 
 
+def _verdict(summary):
+    """摘要的結論行：最後一行 `exit=<結束碼>` 的前一行。最後一行不是 `exit=` 時直接失敗，摘要格式再變時只要改這裡。
+    The summary's verdict line: the line before the last one, `exit=<exit code>`. Fails at once when the last line is
+    not `exit=`, so a later change to the summary's layout is made here alone."""
+    assert summary and summary[-1].startswith("exit="), summary[-2:]
+    return summary[-2]
+
+
 def _run_main(root, tmp_path, change=lambda: None, step="golden"):
     """在 root 跑 `main`，step 那一步呼叫 change()；回傳 (結束碼, 摘要的每一行, `.full.log` 的內容, 被呼叫的步驟)。
     Runs `main` in root, calling change() during step; returns (exit code, the summary's lines, the `.full.log`
@@ -401,10 +409,12 @@ def _run_main(root, tmp_path, change=lambda: None, step="golden"):
 @POSIX_USER
 def test_an_untracked_file_that_cannot_be_read_stops_before_any_step(git_repo, tmp_path):
     """開始時就有讀不到的未追蹤檔（權限 000）：它的內容不在雜湊裡，途中改了也看不出來，所以一步都不跑，結論行
-    點名那個檔案，結束碼 2（#216 第一輪審查 Standards 第 3 條；原本只雜湊例外名稱，兩次都讀不到就算沒變）。
+    點名那個檔案，結束碼 2，摘要最後一行是 `exit=2`（#216 第一輪審查 Standards 第 3 條；原本只雜湊例外名稱，兩次
+    都讀不到就算沒變）。
     An untracked file that cannot be read at the start (mode 000): its content is not in the hash, so a change to it
-    would go unseen, and no step runs; the verdict line names the file and the exit code is 2 (#216 round-1 review,
-    standards item 3; it used to hash only the exception's name, so two failed reads counted as no change)."""
+    would go unseen, and no step runs; the verdict line names the file, the exit code is 2 and the summary's last line
+    is `exit=2` (#216 round-1 review, standards item 3; it used to hash only the exception's name, so two failed reads
+    counted as no change)."""
     root, _ = _plain_repo(git_repo, tmp_path)
     locked = root / "notes.txt"
     locked.write_text("draft\n", encoding="utf-8")
@@ -414,7 +424,8 @@ def test_an_untracked_file_that_cannot_be_read_stops_before_any_step(git_repo, t
     finally:
         locked.chmod(0o600)
     assert called == [], called
-    assert summary[-2] == "== could not check: `notes.txt` cannot be read (PermissionError)", summary
+    assert summary[-1] == "exit=2", summary[-2:]
+    assert _verdict(summary) == "== could not check: `notes.txt` cannot be read (PermissionError)", summary
     assert "== could not check: `notes.txt` cannot be read (PermissionError)" in full, full
     assert code == 2, summary
 
@@ -436,7 +447,7 @@ def test_two_untracked_files_that_cannot_be_read_name_the_first_and_count_the_re
         for path in locked:
             path.chmod(0o600)
     assert called == [], called
-    assert summary[-2] == "== could not check: `a.txt` cannot be read (PermissionError) (+1 more)", summary
+    assert _verdict(summary) == "== could not check: `a.txt` cannot be read (PermissionError) (+1 more)", summary
     assert code == 2, summary
 
 
@@ -453,7 +464,7 @@ def test_an_untracked_symlink_is_hashed_by_its_target_and_does_not_stop_the_run(
     (root / "subdir" / "inner.txt").write_text("x\n", encoding="utf-8")
     os.symlink(target, root / "link")
     code, summary, _, called = _run_main(root, tmp_path)
-    assert called[-1:] == ["red_on_base"], summary[-2]
+    assert called[-1:] == ["red_on_base"], _verdict(summary)
     assert code == 0, summary
 
 
@@ -471,8 +482,8 @@ def test_an_untracked_symlink_pointed_elsewhere_during_a_step_is_could_not_check
         os.symlink("two", root / "link")
 
     code, summary, _, called = _run_main(root, tmp_path, repoint)
-    assert called[-1:] == ["golden"], summary[-2]
-    assert summary[-2] == "== could not check: the working tree changed during golden", summary
+    assert called[-1:] == ["golden"], _verdict(summary)
+    assert _verdict(summary) == "== could not check: the working tree changed during golden", summary
     assert code == 2, summary
 
 
@@ -488,7 +499,7 @@ def test_an_untracked_nested_git_repo_is_hashed_by_name_and_does_not_stop_the_ru
     (root / "nested" / "inner.py").write_text("y = 1\n", encoding="utf-8")
     git_repo(root / "nested")
     code, summary, _, called = _run_main(root, tmp_path)
-    assert called[-1:] == ["red_on_base"], summary[-2]
+    assert called[-1:] == ["red_on_base"], _verdict(summary)
     assert code == 0, summary
 
 
@@ -510,9 +521,9 @@ def test_an_untracked_directory_git_cannot_list_stops_before_any_step(git_repo, 
     finally:
         (root / "sub").chmod(0o700)
     assert called == [], called
-    assert summary[-2].startswith("== could not check: git warned while listing untracked files: "), summary
-    assert "sub/" in summary[-2], summary
-    assert summary[-2] in full, full
+    assert _verdict(summary).startswith("== could not check: git warned while listing untracked files: "), summary
+    assert "sub/" in _verdict(summary), summary
+    assert _verdict(summary) in full, full
     assert code == 2, summary
 
 
@@ -536,9 +547,9 @@ def test_two_untracked_directories_git_cannot_list_count_every_warning(git_repo,
     finally:
         for path in dirs:
             path.chmod(0o700)
-    assert summary[-2].endswith(" (+1 more)"), summary[-2]
-    assert summary[-2].startswith("== could not check: git warned while listing untracked files: warning: could not "
-                                  "open directory 'd"), summary[-2]
+    assert _verdict(summary).endswith(" (+1 more)"), _verdict(summary)
+    assert _verdict(summary).startswith("== could not check: git warned while listing untracked files: warning: "
+                                        "could not open directory 'd"), _verdict(summary)
     assert called == [], called
     assert code == 2, summary
 
@@ -562,7 +573,7 @@ def test_a_commit_made_during_a_step_is_could_not_check(git_repo, tmp_path):
     code = tool.main(["--log", str(log)], repo=str(root), run=run)
     summary = log.read_text(encoding="utf-8").splitlines()
     assert called[-1] == "golden", called
-    assert summary[-2] == "== could not check: the working tree changed during golden", summary
+    assert _verdict(summary) == "== could not check: the working tree changed during golden", summary
     assert code == 2, summary
 
 
@@ -583,7 +594,7 @@ def test_an_untracked_file_whose_content_changes_during_a_step_is_could_not_chec
     code = tool.main(["--log", str(log)], repo=str(root), run=run)
     summary = log.read_text(encoding="utf-8").splitlines()
     assert called[-1] == "mypy", called
-    assert summary[-2] == "== could not check: the working tree changed during mypy", summary
+    assert _verdict(summary) == "== could not check: the working tree changed during mypy", summary
     assert code == 2, summary
 
 
@@ -617,7 +628,7 @@ def test_a_file_already_modified_at_the_start_and_edited_again_during_a_step_is_
     code = tool.main(["--log", str(log)], repo=str(root), run=run)
     summary = log.read_text(encoding="utf-8").splitlines()
     assert called[-1] == "ruff", called
-    assert summary[-2] == "== could not check: the working tree changed during ruff", summary
+    assert _verdict(summary) == "== could not check: the working tree changed during ruff", summary
     assert code == 2, summary
 
 
@@ -636,7 +647,7 @@ def test_a_log_inside_the_repo_at_a_path_git_does_not_ignore_is_no_change(git_re
     log = root / "out" / "checks.log"
     code = tool.main(["--log", str(log)], repo=str(root), run=run)
     summary = log.read_text(encoding="utf-8").splitlines()
-    assert summary[-2] == "== all steps exited 0", summary
+    assert _verdict(summary) == "== all steps exited 0", summary
     assert called == list(tool.STEP_NAMES), called
     assert code == 0, summary
 
@@ -657,6 +668,6 @@ def test_a_log_at_a_tracked_file_in_the_repo_is_no_change(git_repo, tmp_path):
     log = root / "checks.log"
     code = tool.main(["--log", str(log)], repo=str(root), run=run)
     summary = log.read_text(encoding="utf-8").splitlines()
-    assert summary[-2] == "== all steps exited 0", summary
+    assert _verdict(summary) == "== all steps exited 0", summary
     assert called == list(tool.STEP_NAMES), called
     assert code == 0, summary
