@@ -8,7 +8,8 @@
 摘要 log（預設 `scratch/checks-<HEAD 短 SHA>.log`）在每一步跑完就寫入：結束碼，加上該步的關鍵行（pytest 的
 `TOTAL` 覆蓋率與通過數、golden 的差異數與每一種差異、red-on-base 的 `red=N green=M skipped=K hang=H` 與每一行結果，
 不截斷）；某一步失敗卻沒有任何關鍵行時，留它的最後 20 行。摘要的倒數第二行是結論行，最後一行是 `exit=<結束碼>`：
-`grep '^exit='` 就知道跑完了沒，中斷時沒有這一行。每一步的完整輸出寫在同名的 `.full.log`。
+`grep '^exit='` 就知道跑完了沒，中斷時沒有這一行（步驟輸出裡以 `exit=` 開頭的行，摘要裡前面加兩個空白）。
+每一步的完整輸出寫在同名的 `.full.log`。
 
 golden、test_sdist 與 red-on-base 都讀工作目錄，跑的時候不要改檔案。每一個有跑的步驟跑完，都比對 HEAD、
 `git diff HEAD` 與未追蹤檔案的清單和內容（git 忽略的不算，例如 `scratch/` 裡的 log；script 自己寫的 log 放在哪裡
@@ -42,7 +43,8 @@ The summary log (default `scratch/checks-<short HEAD SHA>.log`) is written as ea
 the step's key lines (pytest's `TOTAL` coverage and counts, golden's difference count and each difference,
 red-on-base's `red=N green=M skipped=K hang=H` and every result line, never cut); a failed step with no key line keeps its
 last 20 lines. The summary's last line but one is the verdict and its last line is `exit=<exit code>`, so
-`grep '^exit='` tells whether the run is over; an interrupted run has no such line. Each step's full output goes to
+`grep '^exit='` tells whether the run is over; an interrupted run has no such line (a line of step output starting
+with `exit=` is indented by two spaces in the summary). Each step's full output goes to
 the `.full.log` of the same name.
 
 golden, test_sdist and red-on-base read the working tree: change no file while they run. After each step that
@@ -130,9 +132,11 @@ STEP_NAMES = tuple(name for name, _ in steps(sys.executable, "master"))
 
 
 def key_lines(name: str, output: str, failed: bool) -> List[str]:
-    """一步的輸出裡要寫進摘要的行；red-on-base 另外在最前面加上紅、綠、略過與 hang 的數量。
+    """一步的輸出裡要寫進摘要的行；red-on-base 另外在最前面加上紅、綠、略過與 hang 的數量。以 `exit=` 開頭的行前面
+    加兩個空白，摘要裡以 `exit=` 開頭的就只有最後的結束碼那一行。
     The lines of a step's output that go into the summary; red-on-base also gets its red, green, skipped and hang counts
-    first."""
+    first. A line starting with `exit=` is indented by two spaces, so the exit-code line at the end is the only summary
+    line that starts with `exit=`."""
     lines = [line.rstrip() for line in output.splitlines() if line.strip()]
     pattern = _KEYS.get(name)
     kept = lines if pattern is None else [line for line in lines if pattern.search(line)]
@@ -142,7 +146,7 @@ def key_lines(name: str, output: str, failed: bool) -> List[str]:
         kept = [counts, *kept]
     if failed and (not kept or (name == "red_on_base" and len(kept) == 1)):
         kept += lines[-TAIL_LINES:]
-    return kept
+    return [f"  {line}" if line.startswith("exit=") else line for line in kept]
 
 
 Runner = Callable[[Sequence[str], str, Optional[float]], Tuple[Optional[int], str]]
@@ -368,13 +372,14 @@ def main(argv: Optional[List[str]] = None, repo: str = _REPO, run: Runner = run_
                 if could_not_check_reason:
                     break
         if could_not_check_reason:
-            verdict = f"== could not check: {could_not_check_reason}"
+            verdict, exit_code = f"== could not check: {could_not_check_reason}", 2
+        elif failed_steps:
+            verdict, exit_code = "== not 0: " + ", ".join(failed_steps), 1
         else:
-            verdict = "== all steps exited 0" if not failed_steps else "== not 0: " + ", ".join(failed_steps)
-        exit_code = 2 if could_not_check_reason else 1 if failed_steps else 0
-        # 最後一行是結束碼：`grep '^exit='` 就知道跑完了沒（中斷時沒有這一行）（回顧第 5 項）
-        # The last line is the exit code: `grep '^exit='` tells whether the run is over (an interrupted run has no
-        # such line) (retro item 5)
+            verdict, exit_code = "== all steps exited 0", 0
+        # 最後一行是結束碼：`grep '^exit='` 就知道跑完了沒，中斷時沒有這一行
+        # The last line is the exit code: `grep '^exit='` tells whether the run is over; an interrupted run has no such
+        # line
         summary.write(f"{verdict}\nexit={exit_code}\n")
         if could_not_check_reason:
             everything.write(verdict + "\n")

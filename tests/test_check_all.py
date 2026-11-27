@@ -53,12 +53,10 @@ def _fake_runner(results):
 @pytest.mark.parametrize("outcome, expected", [("all pass", 0), ("ruff fails", 1), ("tree changes", 2)])
 def test_the_summary_ends_with_the_exit_code(git_repo, tmp_path, outcome, expected):
     """摘要的最後一行是 `exit=<結束碼>`：只看 `grep '^exit=' scratch/checks-<sha>.log` 就知道跑完了沒、結果是什麼；
-    程序被中斷時沒有這一行。0、1、2 三種結束碼各跑一次（回顧第 5 項：之前要自己在背景指令後面加
-    `echo "exit=$?"`）。
+    程序被中斷時沒有這一行。0、1、2 三種結束碼各跑一次。
     The summary's last line is `exit=<exit code>`: `grep '^exit=' scratch/checks-<sha>.log` alone tells whether the
     run is over and how it ended, and an interrupted run has no such line. Each of the exit codes 0, 1 and 2 is run
-    once (retro item 5: the exit code used to be appended by hand with `echo "exit=$?"` after the background
-    command)."""
+    once."""
     root = tmp_path / "repo"
     root.mkdir()
     (root / "calc.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
@@ -72,6 +70,21 @@ def test_the_summary_ends_with_the_exit_code(git_repo, tmp_path, outcome, expect
     summary = log.read_text(encoding="utf-8").splitlines()
     assert summary[-1] == f"exit={expected}", summary[-2:]
     assert code == expected, summary
+
+
+def test_a_kept_output_line_starting_with_exit_is_indented_so_only_the_last_line_matches(tmp_path):
+    """步驟整段保留的輸出（例如 golden）裡有一行以 `exit=` 開頭：摘要照樣留下它，但前面加兩個空白，所以
+    `grep '^exit='` 只比對到最後的結束碼那一行，還在跑或被中斷時不會誤判成跑完了。
+    A step whose output is kept whole (golden, say) prints a line starting with `exit=`: the summary keeps it,
+    indented by two spaces, so `grep '^exit='` matches only the exit-code line at the end, and a run still going or
+    interrupted is not taken for finished."""
+    run, _ = _fake_runner({"golden": (0, "exit=0\n0 differing line(s), 0 distinct\n")})
+    log = tmp_path / "checks.log"
+    assert tool.main(["--log", str(log)], repo=str(tmp_path), run=run) == 0
+    summary = log.read_text(encoding="utf-8").splitlines()
+    matching = [line for line in summary if line.startswith("exit=")]
+    assert matching == ["exit=0"], matching
+    assert "  exit=0" in summary, summary
 
 
 def test_pytest_keeps_the_coverage_total_the_counts_and_the_failures():
@@ -330,8 +343,8 @@ def test_against_origin_master_names_origin_master_when_it_moves(git_repo, tmp_p
 def test_origin_master_created_during_a_step_counts_as_moving(git_repo, tmp_path):
     """開始時還沒有 `origin/master`，跑到一半 `git fetch` 建立了它：被建立也算移動，結論行點名它，結束碼 2
     （#216 第一輪審查 Spec (c)2）。
-    No `origin/master` at the start, and a `git fetch` creates it midway: being created counts as moving, so the last
-    line names it and the exit code is 2 (#216 round-1 review, spec (c)2)."""
+    No `origin/master` at the start, and a `git fetch` creates it midway: being created counts as moving, so the
+    verdict line names it and the exit code is 2 (#216 round-1 review, spec (c)2)."""
     root, git, other = _repo_with_origin_master(git_repo, tmp_path, origin=False)
     run, called = _changing("mypy", lambda: git("update-ref", "refs/remotes/origin/master", other))
     log = tmp_path / "checks.log"
