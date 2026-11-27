@@ -241,9 +241,9 @@ def test_non_string_generator_tests_fall_back_to_probes(fake_live, tmp_path):
     finding = finding.model_copy(update={"file_path": str(tmp_path / "svc.py"), "symbol_name": "f"})
     fake_live(lambda s, u: '{"tests": "not a list"}')
     gen = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="live"))
-    tests = gen.generate_tests_for_findings([finding], symbols, root_dir=str(tmp_path))
-    assert tests and all(t.test_type == "whitebox_probe" for t in tests)
-    assert gen.findings_without_model_tests == ["A"]
+    generated = gen.generate_tests_for_findings([finding], symbols, root_dir=str(tmp_path))
+    assert generated.tests and all(t.test_type == "whitebox_probe" for t in generated.tests)
+    assert generated.findings_without_model_tests == ["A"]
 
 
 def test_generator_tracks_findings_with_and_without_model_tests(fake_live, tmp_path):
@@ -253,13 +253,13 @@ def test_generator_tracks_findings_with_and_without_model_tests(fake_live, tmp_p
     gen = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="live"))
 
     fake_live(lambda s, u: '{"unrelated": true}')
-    gen.generate_tests_for_findings([finding], symbols, root_dir=str(tmp_path))
-    assert gen.findings_without_model_tests == ["A"]
+    generated = gen.generate_tests_for_findings([finding], symbols, root_dir=str(tmp_path))
+    assert generated.findings_without_model_tests == ["A"]
 
     fake_live(lambda s, u: json.dumps({"code": "def test_ok():\n    assert True\n", "title": "t"}))
-    tests = gen.generate_tests_for_findings([finding], symbols, root_dir=str(tmp_path))
-    assert [t.test_type for t in tests] == ["whitebox_unit"]
-    assert gen.findings_without_model_tests == []
+    generated = gen.generate_tests_for_findings([finding], symbols, root_dir=str(tmp_path))
+    assert [t.test_type for t in generated.tests] == ["whitebox_unit"]
+    assert generated.findings_without_model_tests == []
 
 
 # --- 測試框架：探針退回是證據缺口，絕不是通往 READY_TO_SHIP 的無聲捷徑 ---------------------
@@ -669,11 +669,11 @@ def test_test_generation_falls_back_to_code_when_tests_has_no_usable_item(script
     def generator(answer):
         return WhiteboxTestGenerator(_live(scripted({"whitebox_test_generator": answer})))
     fallback = generator({"tests": ["not an object", {"title": "no code"}], "code": code})
-    tests = fallback.generate_tests_for_findings([finding], symbols, root_dir=str(tmp_path))
-    assert [t.code.strip() for t in tests if t.test_type == "whitebox_unit"] == [code.strip()]
-    assert fallback.findings_without_model_tests == []
+    generated = fallback.generate_tests_for_findings([finding], symbols, root_dir=str(tmp_path))
+    assert [t.code.strip() for t in generated.tests if t.test_type == "whitebox_unit"] == [code.strip()]
+    assert generated.findings_without_model_tests == []
     preferred = generator({"tests": [{"title": "from tests", "code": code}], "code": "def test_other():\n    assert 2\n"})
-    tests = preferred.generate_tests_for_findings([finding], symbols, root_dir=str(tmp_path))
+    tests = preferred.generate_tests_for_findings([finding], symbols, root_dir=str(tmp_path)).tests
     assert [t.title for t in tests if t.test_type == "whitebox_unit"] == ["from tests"]
 
 

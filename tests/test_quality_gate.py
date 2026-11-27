@@ -419,6 +419,31 @@ def test_pipeline_wires_an_incomplete_static_scan_into_the_gate(clean_live_run, 
     assert_only_gap(summary, "could not fully scan 1 source file(s)")
 
 
+def test_pipeline_wires_findings_without_model_tests_into_the_gate(clean_live_run):
+    """白箱測試產生器寫的測試修復之後仍然無效：Quality Gate 的原因點名那個發現（WB-CLA-01）沒有可用的模型測試
+    （#226：harness 讀 generate_tests_for_findings 的回傳值，不再讀 agent 的屬性）。這個缺口一定和另一個一起出現
+    （這裡是那支測試的 ERROR），所以不用 assert_only_gap，只檢查它在、而且點名那個發現。
+    The white-box test generator's test is still invalid after healing: a Quality Gate reason names the finding
+    (WB-CLA-01) as having no usable model-generated test (#226: the harness reads generate_tests_for_findings' return
+    value, not an attribute of the agent). This gap always comes with another (here the test's ERROR), so
+    assert_only_gap does not fit; the test checks that it is there and names the finding."""
+    from clean_live import respond
+
+    broken = "def test_never_parses(:\n    pass\n"
+
+    def responder(system, user):
+        if "QA Engineer" in system:
+            return json.dumps({"test_id": "WB-TEST-01", "title": "t", "rationale": "r", "expected_outcome": "e",
+                               "code": broken})
+        if "Fix Python Test Code" in system:
+            return broken
+        return respond(system, user)
+
+    summary = clean_live_run(responder=responder)
+    unmodeled = [r for r in summary.inconclusive_reasons if "had no usable model-generated test" in r]
+    assert [r.rsplit(": ", 1)[-1] for r in unmodeled] == ["WB-CLA-01"], summary.inconclusive_reasons
+
+
 def test_discovered_config_scope_filtering_is_an_evidence_gap():
     """探索到的設定檔實際排除了目標檔案時，記為 DISCOVERED_SCOPE_FILTERED 證據缺口並阻擋 READY_TO_SHIP。
     When a discovered config filters out target files, DISCOVERED_SCOPE_FILTERED forbids READY_TO_SHIP (#169)."""

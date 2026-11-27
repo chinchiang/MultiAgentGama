@@ -5,6 +5,7 @@ import math
 import os
 import re
 import textwrap
+from dataclasses import dataclass, field
 from typing import Any, List, Mapping, Optional, Set, Tuple, Union
 from vibeharness.core.models import ReviewFinding, GeneratedTest, CodeSymbol, text_or
 from vibeharness.core.llm_gateway import LLMGateway
@@ -23,6 +24,18 @@ from vibeharness.core.identity import is_unknown_location
 from vibeharness.core.model_output import LIST_OF_OBJECTS, STRING, OutputSchema
 
 logger = logging.getLogger("VibeHarness.TestGenerator")
+
+
+@dataclass(frozen=True)
+class GeneratedTests:
+    """一次 generate_tests_for_findings 的結果。`tests` 是產生的測試（有發現沒拿到可用模型測試時，後面接著目標推導
+    的探測）；`findings_without_model_tests` 是沒有可用模型測試的發現 id，依發現順序，是證據缺口
+    FINDINGS_WITHOUT_MODEL_TESTS 的來源。
+    The outcome of one generate_tests_for_findings call. `tests` are the generated tests (followed by target-derived
+    probes when a finding got no usable model test); `findings_without_model_tests` are the ids of the findings with
+    no usable model-generated test, in finding order, the source of the FINDINGS_WITHOUT_MODEL_TESTS evidence gap."""
+    tests: List[GeneratedTest] = field(default_factory=list)
+    findings_without_model_tests: List[str] = field(default_factory=list)
 
 
 def is_usable_test(item: Mapping[str, Any]) -> bool:
@@ -78,9 +91,6 @@ class WhiteboxTestGenerator:
 
     def __init__(self, gateway: LLMGateway):
         self.gateway = gateway
-        # 上次執行中沒有產生可用模型測試的發現
-        # Findings from the last run for which no usable model-generated test was produced
-        self.findings_without_model_tests: List[str] = []
 
     def plan(self, finding_count: float, tests_per_finding: float = 1.0) -> List[PlannedCalls]:
         """generate_tests_for_findings 會發出的呼叫：每個發現一次 JSON 呼叫，以及每個產生的測試在無效時最多
@@ -101,10 +111,9 @@ class WhiteboxTestGenerator:
         findings: List[ReviewFinding],
         symbols: List[CodeSymbol],
         root_dir: Optional[str] = None
-    ) -> List[GeneratedTest]:
-        self.findings_without_model_tests = []
+    ) -> GeneratedTests:
         if not findings:
-            return []
+            return GeneratedTests()
 
         target_file = symbols[0].file_path if symbols else "main.py"
         root = target_root(root_dir, target_file)
@@ -124,17 +133,18 @@ class WhiteboxTestGenerator:
         outcomes = fan_out(self.gateway, calls, fallback=([], False), logger=logger)
 
         generated_tests: List[GeneratedTest] = []
+        without_model_tests: List[str] = []
         for finding, (tests, has_valid_test) in zip(findings, outcomes, strict=True):
             generated_tests.extend(tests)
             if not has_valid_test:
                 logger.warning(bi(f"發現 {finding.finding_id} 沒有可執行的模型產生測試；將改用目標推導的探測。",
                                   f"No executable model-generated test for finding {finding.finding_id}; will use target-derived probes."))
-                self.findings_without_model_tests.append(finding.finding_id)
+                without_model_tests.append(finding.finding_id)
 
-        if self.findings_without_model_tests:
+        if without_model_tests:
             generated_tests.extend(self.build_offline_probes(symbols, root))
 
-        return generated_tests
+        return GeneratedTests(tests=generated_tests, findings_without_model_tests=without_model_tests)
 
     def _tests_for_finding(
         self, idx: int, finding: ReviewFinding, symbols: List[CodeSymbol], root: str, target_file: str
