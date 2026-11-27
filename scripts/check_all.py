@@ -7,18 +7,20 @@
 
 摘要 log（預設 `scratch/checks-<HEAD 短 SHA>.log`）在每一步跑完就寫入：結束碼，加上該步的關鍵行（pytest 的
 `TOTAL` 覆蓋率與通過數、golden 的差異數與每一種差異、red-on-base 的 `red=N green=M skipped=K hang=H` 與每一行結果，
-不截斷）；某一步失敗卻沒有任何關鍵行時，留它的最後 20 行。每一步的完整輸出寫在同名的 `.full.log`。
+不截斷）；某一步失敗卻沒有任何關鍵行時，留它的最後 20 行。摘要的倒數第二行是結論行，最後一行是 `exit=<結束碼>`：
+`grep '^exit='` 就知道跑完了沒，中斷時沒有這一行（步驟輸出裡以 `exit=` 開頭的行，摘要裡前面加兩個空白）。
+每一步的完整輸出寫在同名的 `.full.log`。
 
 golden、test_sdist 與 red-on-base 都讀工作目錄，跑的時候不要改檔案。每一個有跑的步驟跑完，都比對 HEAD、
 `git diff HEAD` 與未追蹤檔案的清單和內容（git 忽略的不算，例如 `scratch/` 裡的 log；script 自己寫的 log 放在哪裡
-都不算）；和開始時不同就停在那一步，摘要與 `.full.log` 的最後一行寫出是哪一步跑的時候變的（#216）。比對用的
+都不算）；和開始時不同就停在那一步，摘要的結論行與 `.full.log` 的最後一行寫出是哪一步跑的時候變的（#216）。比對用的
 ref 指到的 commit 也一樣比對：golden 與 red-on-base 比對 `--against` 的 ref，bi_english 一律比對 `origin/master`；
 它們移動了（例如另一個終端機 `git fetch` 或 `git fetch . origin/master:master`；被建立或刪除也算），比對的
-merge-base 就跟著變，最後一行寫「`<ref>` moved during <步驟>」。兩個都移動時只點名 `--against` 的 ref；同一步裡
+merge-base 就跟著變，結論行寫「`<ref>` moved during <步驟>」。兩個都移動時只點名 `--against` 的 ref；同一步裡
 工作目錄也變了時，只寫工作目錄。未追蹤的 symlink 比對它指向的文字（git 追蹤的就是它），未追蹤的目錄（例如巢狀的
 git repo，git 列成 `x/`）只比對名稱，裡面的改動看不到。開始時就有讀不到的未追蹤檔案（例如權限不足），或 `git
 ls-files` 列出未追蹤檔案時有警告（例如打不開的目錄、讀不到的 `.gitignore`：可能有檔案沒被列出，或忽略規則和預期
-不同）時，一步都不跑：那些檔案的改動看不出來，最後一行寫「`<檔名>` cannot be read (<例外名稱>)」或「git warned
+不同）時，一步都不跑：那些檔案的改動看不出來，結論行寫「`<檔名>` cannot be read (<例外名稱>)」或「git warned
 while listing untracked files: <git 的警告>」。git 的警告每一行各算一個，照 git 印出的順序排在讀不到的檔案前面；
 不只一個時只點名第一個，後面加「(+N more)」。
 
@@ -40,22 +42,25 @@ pytest coverage arguments must equal those in `.github/workflows/tests.yml` (`te
 The summary log (default `scratch/checks-<short HEAD SHA>.log`) is written as each step finishes: the exit code plus
 the step's key lines (pytest's `TOTAL` coverage and counts, golden's difference count and each difference,
 red-on-base's `red=N green=M skipped=K hang=H` and every result line, never cut); a failed step with no key line keeps its
-last 20 lines. Each step's full output goes to the `.full.log` of the same name.
+last 20 lines. The summary's last line but one is the verdict and its last line is `exit=<exit code>`, so
+`grep '^exit='` tells whether the run is over; an interrupted run has no such line (a line of step output starting
+with `exit=` is indented by two spaces in the summary). Each step's full output goes to
+the `.full.log` of the same name.
 
 golden, test_sdist and red-on-base read the working tree: change no file while they run. After each step that
 runs, the script compares HEAD, `git diff HEAD` and the list and content of untracked files (not those git ignores,
-such as the logs in `scratch/`, nor the logs the script writes, wherever they are) with the start; when they differ it stops after that step, and the last line
-of the summary and of the `.full.log` names the step during which the tree changed (#216). The commits the refs
+such as the logs in `scratch/`, nor the logs the script writes, wherever they are) with the start; when they differ it stops after that step, and the verdict line
+of the summary and the last line of the `.full.log` name the step during which the tree changed (#216). The commits the refs
 compared against point at are compared too: golden and red-on-base compare against the `--against` ref, bi_english
 always against `origin/master`. When one moves (another terminal running `git fetch` or
 `git fetch . origin/master:master`, say; being created or deleted counts), the merge-base compared against moves with
-it, and the last line reads "`<ref>` moved during <step>". When both moved, only the `--against` ref is named; when
+it, and the verdict line reads "`<ref>` moved during <step>". When both moved, only the `--against` ref is named; when
 the working tree changed in the same step, only that is named. An untracked symlink is compared by the text it
 points at (what git tracks), and an untracked directory (a nested git repo, which git lists as `x/`) by its name
 alone, so changes inside it go unseen. When an untracked file cannot be read at the start (no permission, say), or
 `git ls-files` warns while listing the untracked files (a directory it cannot open, or a `.gitignore` it cannot
 read, say: files may go unlisted or be ignored by other rules than meant), no step runs, as a change to them would go
-unseen, and the last line reads "`<name>` cannot be read (<exception name>)" or "git warned while listing untracked
+unseen, and the verdict line reads "`<name>` cannot be read (<exception name>)" or "git warned while listing untracked
 files: <git's warning>". Each warning line from git counts as one, placed before the unreadable files in the order
 git printed them; when there is more than one, the first is named and "(+N more)" follows.
 
@@ -127,9 +132,11 @@ STEP_NAMES = tuple(name for name, _ in steps(sys.executable, "master"))
 
 
 def key_lines(name: str, output: str, failed: bool) -> List[str]:
-    """一步的輸出裡要寫進摘要的行；red-on-base 另外在最前面加上紅、綠、略過與 hang 的數量。
+    """一步的輸出裡要寫進摘要的行；red-on-base 另外在最前面加上紅、綠、略過與 hang 的數量。以 `exit=` 開頭的行前面
+    加兩個空白，摘要裡以 `exit=` 開頭的就只有最後的結束碼那一行。
     The lines of a step's output that go into the summary; red-on-base also gets its red, green, skipped and hang counts
-    first."""
+    first. A line starting with `exit=` is indented by two spaces, so the exit-code line at the end is the only summary
+    line that starts with `exit=`."""
     lines = [line.rstrip() for line in output.splitlines() if line.strip()]
     pattern = _KEYS.get(name)
     kept = lines if pattern is None else [line for line in lines if pattern.search(line)]
@@ -139,7 +146,7 @@ def key_lines(name: str, output: str, failed: bool) -> List[str]:
         kept = [counts, *kept]
     if failed and (not kept or (name == "red_on_base" and len(kept) == 1)):
         kept += lines[-TAIL_LINES:]
-    return kept
+    return [f"  {line}" if line.startswith("exit=") else line for line in kept]
 
 
 Runner = Callable[[Sequence[str], str, Optional[float]], Tuple[Optional[int], str]]
@@ -365,16 +372,19 @@ def main(argv: Optional[List[str]] = None, repo: str = _REPO, run: Runner = run_
                 if could_not_check_reason:
                     break
         if could_not_check_reason:
-            verdict = f"== could not check: {could_not_check_reason}"
+            verdict, exit_code = f"== could not check: {could_not_check_reason}", 2
+        elif failed_steps:
+            verdict, exit_code = "== not 0: " + ", ".join(failed_steps), 1
         else:
-            verdict = "== all steps exited 0" if not failed_steps else "== not 0: " + ", ".join(failed_steps)
-        summary.write(verdict + "\n")
+            verdict, exit_code = "== all steps exited 0", 0
+        # 最後一行是結束碼：`grep '^exit='` 就知道跑完了沒，中斷時沒有這一行
+        # The last line is the exit code: `grep '^exit='` tells whether the run is over; an interrupted run has no such
+        # line
+        summary.write(f"{verdict}\nexit={exit_code}\n")
         if could_not_check_reason:
             everything.write(verdict + "\n")
     print(f"{verdict}\nsummary: {log}\nfull output: {full}")
-    if could_not_check_reason:
-        return 2
-    return 1 if failed_steps else 0
+    return exit_code
 
 
 if __name__ == "__main__":
