@@ -50,6 +50,30 @@ def _fake_runner(results):
     return run, called
 
 
+@pytest.mark.parametrize("outcome, expected", [("all pass", 0), ("ruff fails", 1), ("tree changes", 2)])
+def test_the_summary_ends_with_the_exit_code(git_repo, tmp_path, outcome, expected):
+    """摘要的最後一行是 `exit=<結束碼>`：只看 `grep '^exit=' scratch/checks-<sha>.log` 就知道跑完了沒、結果是什麼；
+    程序被中斷時沒有這一行。0、1、2 三種結束碼各跑一次（回顧第 5 項：之前要自己在背景指令後面加
+    `echo "exit=$?"`）。
+    The summary's last line is `exit=<exit code>`: `grep '^exit=' scratch/checks-<sha>.log` alone tells whether the
+    run is over and how it ended, and an interrupted run has no such line. Each of the exit codes 0, 1 and 2 is run
+    once (retro item 5: the exit code used to be appended by hand with `echo "exit=$?"` after the background
+    command)."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "calc.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+    git_repo(root)
+    if outcome == "tree changes":
+        run, _ = _changing("golden", lambda: (root / "calc.py").write_text("x = 2\n", encoding="utf-8"))
+    else:
+        run, _ = _fake_runner({"ruff": (1, "E501\n")} if outcome == "ruff fails" else {})
+    log = tmp_path / "checks.log"
+    code = tool.main(["--log", str(log)], repo=str(root), run=run)
+    summary = log.read_text(encoding="utf-8").splitlines()
+    assert summary[-1] == f"exit={expected}", summary[-2:]
+    assert code == expected, summary
+
+
 def test_pytest_keeps_the_coverage_total_the_counts_and_the_failures():
     """pytest 的摘要留下失敗、`TOTAL` 覆蓋率、門檻那行與最後的計數，不留逐檔的覆蓋率表。
     pytest's summary keeps the failures, the `TOTAL` coverage, the threshold line and the final counts, not the per-file
@@ -101,18 +125,18 @@ def test_red_on_base_that_could_not_compare_keeps_its_error():
 
 
 def test_every_step_passing_exits_zero(tmp_path):
-    """每一步都是 0 時結束碼是 0，摘要的最後一行說全部通過。
-    When every step exits 0 the exit code is 0 and the summary's last line says so."""
+    """每一步都是 0 時結束碼是 0，摘要的結論行（`exit=` 前一行）說全部通過。
+    When every step exits 0 the exit code is 0 and the summary's verdict line (the one before `exit=`) says so."""
     run, called = _fake_runner({})
     log = tmp_path / "checks.log"
     assert tool.main(["--log", str(log)], repo=str(tmp_path), run=run) == 0
     assert called == list(tool.STEP_NAMES)
-    assert log.read_text(encoding="utf-8").splitlines()[-1] == "== all steps exited 0"
+    assert log.read_text(encoding="utf-8").splitlines()[-2] == "== all steps exited 0"
 
 
 def test_a_failing_or_timed_out_step_makes_the_exit_code_non_zero(tmp_path):
-    """有一步不是 0、有一步逾時，結束碼是 1，摘要寫出兩者，最後一行點名它們；完整輸出寫進 `.full.log`。
-    One step exiting non-zero and one timing out exit 1; the summary names both, its last line lists them, and the
+    """有一步不是 0、有一步逾時，結束碼是 1，摘要寫出兩者，結論行點名它們；完整輸出寫進 `.full.log`。
+    One step exiting non-zero and one timing out exit 1; the summary names both, its verdict line lists them, and the
     full output goes to the `.full.log`."""
     run, _ = _fake_runner({"mypy": (1, "Found 2 errors in 1 file\n"), "golden": (None, "partial\n")})
     log = tmp_path / "checks.log"
@@ -120,7 +144,7 @@ def test_a_failing_or_timed_out_step_makes_the_exit_code_non_zero(tmp_path):
     summary = log.read_text(encoding="utf-8").splitlines()
     assert "mypy exit=1" in summary and "Found 2 errors in 1 file" in summary
     assert "golden timeout after 5s" in summary
-    assert summary[-1] == "== not 0: mypy, golden"
+    assert summary[-2] == "== not 0: mypy, golden"
     assert "partial" in (tmp_path / "checks.full.log").read_text(encoding="utf-8")
 
 
@@ -181,10 +205,10 @@ def _changing(step, change, against="master"):
 
 def test_a_tracked_file_edited_during_a_step_is_could_not_check(git_repo, tmp_path):
     """有一步跑的時候，已追蹤的檔案被改了：後面讀工作目錄的步驟（test_sdist、golden、red_on_base）會讀到改過的
-    內容，結果不屬於任何一個狀態。這次執行在那一步停下，摘要點名那一步，最後一行說無法檢查，結束碼 2（#216）。
+    內容，結果不屬於任何一個狀態。這次執行在那一步停下，摘要點名那一步，結論行說無法檢查，結束碼 2（#216）。
     A tracked file edited while a step runs: the later steps that read the working tree (test_sdist, golden,
     red_on_base) would read the edited content, so the results belong to no single state. The run stops after that
-    step, the summary names it, its last line says could not check, and the exit code is 2 (#216)."""
+    step, the summary names it, its verdict line says could not check, and the exit code is 2 (#216)."""
     root = tmp_path / "repo"
     root.mkdir()
     (root / "calc.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
@@ -194,7 +218,7 @@ def test_a_tracked_file_edited_during_a_step_is_could_not_check(git_repo, tmp_pa
     code = tool.main(["--log", str(log)], repo=str(root), run=run)
     summary = log.read_text(encoding="utf-8").splitlines()
     assert called[-1] == "test_sdist", called
-    assert summary[-1] == "== could not check: the working tree changed during test_sdist", summary
+    assert summary[-2] == "== could not check: the working tree changed during test_sdist", summary
     full = (tmp_path / "checks.full.log").read_text(encoding="utf-8")
     assert "== could not check: the working tree changed during test_sdist" in full, full
     assert code == 2, summary
@@ -203,11 +227,11 @@ def test_a_tracked_file_edited_during_a_step_is_could_not_check(git_repo, tmp_pa
 def test_the_against_ref_moving_during_a_step_is_could_not_check(git_repo, tmp_path):
     """有一步跑的時候 `--against` 的 ref（預設 `master`）移動了，例如另一個終端機合併了 PR 再
     `git fetch . origin/master:master`：HEAD 與工作目錄都沒變，但 golden、red_on_base 比對的 merge-base
-    跟著變了，前後步驟比的不是同一個基準。停在那一步，最後一行點名 ref，結束碼 2（#216 第一輪審查 Spec (c)2）。
+    跟著變了，前後步驟比的不是同一個基準。停在那一步，結論行點名 ref，結束碼 2（#216 第一輪審查 Spec (c)2）。
     The `--against` ref (`master` by default) moving while a step runs, say when another terminal merges a PR and runs
     `git fetch . origin/master:master`: HEAD and the working tree stay as they were, but the merge-base that
     golden and red_on_base compare against moves with it, so the steps no longer share one base. The run
-    stops after that step, its last line names the ref, and the exit code is 2 (#216 round-1 review, spec (c)2)."""
+    stops after that step, its verdict line names the ref, and the exit code is 2 (#216 round-1 review, spec (c)2)."""
     root = tmp_path / "repo"
     root.mkdir()
     (root / "calc.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
@@ -221,7 +245,7 @@ def test_the_against_ref_moving_during_a_step_is_could_not_check(git_repo, tmp_p
     code = tool.main(["--log", str(log)], repo=str(root), run=run)
     summary = log.read_text(encoding="utf-8").splitlines()
     assert called[-1] == "golden", called
-    assert summary[-1] == "== could not check: `master` moved during golden", summary
+    assert summary[-2] == "== could not check: `master` moved during golden", summary
     full = (tmp_path / "checks.full.log").read_text(encoding="utf-8")
     assert "== could not check: `master` moved during golden" in full, full
     assert code == 2, summary
@@ -230,10 +254,10 @@ def test_the_against_ref_moving_during_a_step_is_could_not_check(git_repo, tmp_p
 def test_origin_master_moving_during_a_step_is_could_not_check(git_repo, tmp_path):
     """有一步跑的時候 `git fetch` 移動了 `origin/master`：bi_english 一律比對 HEAD 和 `origin/master` 的 merge-base，
     `--against` 是預設的 `master` 也一樣，所以前後步驟比的不是同一個基準。HEAD、工作目錄與 `master` 都沒變，停在
-    那一步，最後一行點名 `origin/master`，結束碼 2（#216 第一輪審查 Spec (c)2）。
+    那一步，結論行點名 `origin/master`，結束碼 2（#216 第一輪審查 Spec (c)2）。
     `git fetch` moving `origin/master` while a step runs: bi_english always compares against the merge-base of HEAD
     and `origin/master`, even with the default `--against master`, so the steps no longer share one base. HEAD, the
-    working tree and `master` stay as they were; the run stops after that step, its last line names `origin/master`,
+    working tree and `master` stay as they were; the run stops after that step, its verdict line names `origin/master`,
     and the exit code is 2 (#216 round-1 review, spec (c)2)."""
     root = tmp_path / "repo"
     root.mkdir()
@@ -247,7 +271,7 @@ def test_origin_master_moving_during_a_step_is_could_not_check(git_repo, tmp_pat
     code = tool.main(["--log", str(log)], repo=str(root), run=run)
     summary = log.read_text(encoding="utf-8").splitlines()
     assert called[-1] == "pytest", called
-    assert summary[-1] == "== could not check: `origin/master` moved during pytest", summary
+    assert summary[-2] == "== could not check: `origin/master` moved during pytest", summary
     full = (tmp_path / "checks.full.log").read_text(encoding="utf-8")
     assert "== could not check: `origin/master` moved during pytest" in full, full
     assert code == 2, summary
@@ -270,8 +294,8 @@ def _repo_with_origin_master(git_repo, tmp_path, origin=True):
 
 
 def test_a_ref_moving_with_a_working_tree_change_in_one_step_names_the_working_tree(git_repo, tmp_path):
-    """同一步裡工作目錄變了、`origin/master` 也移動了：最後一行只寫工作目錄，結束碼 2（#216 第一輪審查 Spec (c)2）。
-    The working tree changing and `origin/master` moving in one step: the last line names only the working tree, and
+    """同一步裡工作目錄變了、`origin/master` 也移動了：結論行只寫工作目錄，結束碼 2（#216 第一輪審查 Spec (c)2）。
+    The working tree changing and `origin/master` moving in one step: the verdict line names only the working tree, and
     the exit code is 2 (#216 round-1 review, spec (c)2)."""
     root, git, other = _repo_with_origin_master(git_repo, tmp_path)
 
@@ -283,15 +307,15 @@ def test_a_ref_moving_with_a_working_tree_change_in_one_step_names_the_working_t
     log = tmp_path / "checks.log"
     code = tool.main(["--log", str(log)], repo=str(root), run=run)
     summary = log.read_text(encoding="utf-8").splitlines()
-    assert summary[-1] == "== could not check: the working tree changed during golden", summary
+    assert summary[-2] == "== could not check: the working tree changed during golden", summary
     assert code == 2, summary
 
 
 def test_against_origin_master_names_origin_master_when_it_moves(git_repo, tmp_path):
-    """`--against origin/master` 時 `--against` 和 bi_english 的基準是同一個 ref，只比一次；它移動時最後一行點名
+    """`--against origin/master` 時 `--against` 和 bi_english 的基準是同一個 ref，只比一次；它移動時結論行點名
     `origin/master`，結束碼 2（#216 第一輪審查 Spec (c)2）。
     With `--against origin/master` the `--against` ref and bi_english's base are one ref, compared once; when it moves
-    the last line names `origin/master`, and the exit code is 2 (#216 round-1 review, spec (c)2)."""
+    the verdict line names `origin/master`, and the exit code is 2 (#216 round-1 review, spec (c)2)."""
     root, git, other = _repo_with_origin_master(git_repo, tmp_path)
     run, called = _changing("ruff", lambda: git("update-ref", "refs/remotes/origin/master", other),
                             against="origin/master")
@@ -299,12 +323,12 @@ def test_against_origin_master_names_origin_master_when_it_moves(git_repo, tmp_p
     code = tool.main(["--log", str(log), "--against", "origin/master"], repo=str(root), run=run)
     summary = log.read_text(encoding="utf-8").splitlines()
     assert called[-1] == "ruff", called
-    assert summary[-1] == "== could not check: `origin/master` moved during ruff", summary
+    assert summary[-2] == "== could not check: `origin/master` moved during ruff", summary
     assert code == 2, summary
 
 
 def test_origin_master_created_during_a_step_counts_as_moving(git_repo, tmp_path):
-    """開始時還沒有 `origin/master`，跑到一半 `git fetch` 建立了它：被建立也算移動，最後一行點名它，結束碼 2
+    """開始時還沒有 `origin/master`，跑到一半 `git fetch` 建立了它：被建立也算移動，結論行點名它，結束碼 2
     （#216 第一輪審查 Spec (c)2）。
     No `origin/master` at the start, and a `git fetch` creates it midway: being created counts as moving, so the last
     line names it and the exit code is 2 (#216 round-1 review, spec (c)2)."""
@@ -314,7 +338,7 @@ def test_origin_master_created_during_a_step_counts_as_moving(git_repo, tmp_path
     code = tool.main(["--log", str(log)], repo=str(root), run=run)
     summary = log.read_text(encoding="utf-8").splitlines()
     assert called[-1] == "mypy", called
-    assert summary[-1] == "== could not check: `origin/master` moved during mypy", summary
+    assert summary[-2] == "== could not check: `origin/master` moved during mypy", summary
     assert code == 2, summary
 
 
@@ -363,10 +387,10 @@ def _run_main(root, tmp_path, change=lambda: None, step="golden"):
 
 @POSIX_USER
 def test_an_untracked_file_that_cannot_be_read_stops_before_any_step(git_repo, tmp_path):
-    """開始時就有讀不到的未追蹤檔（權限 000）：它的內容不在雜湊裡，途中改了也看不出來，所以一步都不跑，最後一行
+    """開始時就有讀不到的未追蹤檔（權限 000）：它的內容不在雜湊裡，途中改了也看不出來，所以一步都不跑，結論行
     點名那個檔案，結束碼 2（#216 第一輪審查 Standards 第 3 條；原本只雜湊例外名稱，兩次都讀不到就算沒變）。
     An untracked file that cannot be read at the start (mode 000): its content is not in the hash, so a change to it
-    would go unseen, and no step runs; the last line names the file and the exit code is 2 (#216 round-1 review,
+    would go unseen, and no step runs; the verdict line names the file and the exit code is 2 (#216 round-1 review,
     standards item 3; it used to hash only the exception's name, so two failed reads counted as no change)."""
     root, _ = _plain_repo(git_repo, tmp_path)
     locked = root / "notes.txt"
@@ -377,16 +401,16 @@ def test_an_untracked_file_that_cannot_be_read_stops_before_any_step(git_repo, t
     finally:
         locked.chmod(0o600)
     assert called == [], called
-    assert summary[-1] == "== could not check: `notes.txt` cannot be read (PermissionError)", summary
+    assert summary[-2] == "== could not check: `notes.txt` cannot be read (PermissionError)", summary
     assert "== could not check: `notes.txt` cannot be read (PermissionError)" in full, full
     assert code == 2, summary
 
 
 @POSIX_USER
 def test_two_untracked_files_that_cannot_be_read_name_the_first_and_count_the_rest(git_repo, tmp_path):
-    """開始時有兩個讀不到的未追蹤檔：最後一行點名第一個（git 列出的順序），後面寫還有幾個（#216 第一輪審查
+    """開始時有兩個讀不到的未追蹤檔：結論行點名第一個（git 列出的順序），後面寫還有幾個（#216 第一輪審查
     Standards 第 3 條）。
-    Two untracked files that cannot be read at the start: the last line names the first (in git's order) and counts
+    Two untracked files that cannot be read at the start: the verdict line names the first (in git's order) and counts
     the rest (#216 round-1 review, standards item 3)."""
     root, _ = _plain_repo(git_repo, tmp_path)
     locked = [root / "a.txt", root / "b.txt"]
@@ -399,7 +423,7 @@ def test_two_untracked_files_that_cannot_be_read_name_the_first_and_count_the_re
         for path in locked:
             path.chmod(0o600)
     assert called == [], called
-    assert summary[-1] == "== could not check: `a.txt` cannot be read (PermissionError) (+1 more)", summary
+    assert summary[-2] == "== could not check: `a.txt` cannot be read (PermissionError) (+1 more)", summary
     assert code == 2, summary
 
 
@@ -416,7 +440,7 @@ def test_an_untracked_symlink_is_hashed_by_its_target_and_does_not_stop_the_run(
     (root / "subdir" / "inner.txt").write_text("x\n", encoding="utf-8")
     os.symlink(target, root / "link")
     code, summary, _, called = _run_main(root, tmp_path)
-    assert called[-1:] == ["red_on_base"], summary[-1]
+    assert called[-1:] == ["red_on_base"], summary[-2]
     assert code == 0, summary
 
 
@@ -434,8 +458,8 @@ def test_an_untracked_symlink_pointed_elsewhere_during_a_step_is_could_not_check
         os.symlink("two", root / "link")
 
     code, summary, _, called = _run_main(root, tmp_path, repoint)
-    assert called[-1:] == ["golden"], summary[-1]
-    assert summary[-1] == "== could not check: the working tree changed during golden", summary
+    assert called[-1:] == ["golden"], summary[-2]
+    assert summary[-2] == "== could not check: the working tree changed during golden", summary
     assert code == 2, summary
 
 
@@ -451,17 +475,17 @@ def test_an_untracked_nested_git_repo_is_hashed_by_name_and_does_not_stop_the_ru
     (root / "nested" / "inner.py").write_text("y = 1\n", encoding="utf-8")
     git_repo(root / "nested")
     code, summary, _, called = _run_main(root, tmp_path)
-    assert called[-1:] == ["red_on_base"], summary[-1]
+    assert called[-1:] == ["red_on_base"], summary[-2]
     assert code == 0, summary
 
 
 @POSIX_USER
 def test_an_untracked_directory_git_cannot_list_stops_before_any_step(git_repo, tmp_path):
     """權限 000 的未追蹤目錄：`git ls-files` 列不出裡面的檔案，只在 stderr 警告、結束碼照樣是 0，那些檔案的改動
-    看不到。一步都不跑，最後一行寫 git 列出未追蹤檔案時有警告並引用那一行，結束碼 2（#216 第一輪審查 Standards
+    看不到。一步都不跑，結論行寫 git 列出未追蹤檔案時有警告並引用那一行，結束碼 2（#216 第一輪審查 Standards
     第 3 條的第二次審查：`890cffa` 照樣跑完）。
     An untracked directory with mode 000: `git ls-files` cannot list the files inside, warns on stderr and still
-    exits 0, so changes to them go unseen. No step runs, the last line says git warned while listing untracked files
+    exits 0, so changes to them go unseen. No step runs, the verdict line says git warned while listing untracked files
     and quotes the warning, and the exit code is 2 (second review of #216 round-1 standards item 3: `890cffa` ran
     every step)."""
     root, _ = _plain_repo(git_repo, tmp_path)
@@ -473,20 +497,20 @@ def test_an_untracked_directory_git_cannot_list_stops_before_any_step(git_repo, 
     finally:
         (root / "sub").chmod(0o700)
     assert called == [], called
-    assert summary[-1].startswith("== could not check: git warned while listing untracked files: "), summary
-    assert "sub/" in summary[-1], summary
-    assert summary[-1] in full, full
+    assert summary[-2].startswith("== could not check: git warned while listing untracked files: "), summary
+    assert "sub/" in summary[-2], summary
+    assert summary[-2] in full, full
     assert code == 2, summary
 
 
 @POSIX_USER
 def test_two_untracked_directories_git_cannot_list_count_every_warning(git_repo, tmp_path):
-    """兩個權限 000 的未追蹤目錄：git 各印一行警告，每一行各算一個問題，最後一行點名 git 印出的第一行，後面寫還有
+    """兩個權限 000 的未追蹤目錄：git 各印一行警告，每一行各算一個問題，結論行點名 git 印出的第一行，後面寫還有
     幾個（#216 第一輪審查 Standards 第 3 條的第二次審查：`c38bec1` 只取 stderr 的第一行，沒有 `(+1 more)`）。哪個
     目錄排第一跟著 git 讀目錄的順序，這裡不寫死。
     Two untracked directories with mode 000: git prints one warning line for each, each counts as a problem, and the
-    last line names the first line git printed and counts the rest (second review of #216 round-1 standards item 3:
-    `c38bec1` kept only the first stderr line, with no "(+1 more)"). Which directory comes first follows git's
+    verdict line names the first line git printed and counts the rest (second review of #216 round-1 standards item
+    3: `c38bec1` kept only the first stderr line, with no "(+1 more)"). Which directory comes first follows git's
     directory order, so it is not fixed here."""
     root, _ = _plain_repo(git_repo, tmp_path)
     dirs = [root / "d1", root / "d2"]
@@ -499,9 +523,9 @@ def test_two_untracked_directories_git_cannot_list_count_every_warning(git_repo,
     finally:
         for path in dirs:
             path.chmod(0o700)
-    assert summary[-1].endswith(" (+1 more)"), summary[-1]
-    assert summary[-1].startswith("== could not check: git warned while listing untracked files: warning: could not "
-                                  "open directory 'd"), summary[-1]
+    assert summary[-2].endswith(" (+1 more)"), summary[-2]
+    assert summary[-2].startswith("== could not check: git warned while listing untracked files: warning: could not "
+                                  "open directory 'd"), summary[-2]
     assert called == [], called
     assert code == 2, summary
 
@@ -525,7 +549,7 @@ def test_a_commit_made_during_a_step_is_could_not_check(git_repo, tmp_path):
     code = tool.main(["--log", str(log)], repo=str(root), run=run)
     summary = log.read_text(encoding="utf-8").splitlines()
     assert called[-1] == "golden", called
-    assert summary[-1] == "== could not check: the working tree changed during golden", summary
+    assert summary[-2] == "== could not check: the working tree changed during golden", summary
     assert code == 2, summary
 
 
@@ -546,7 +570,7 @@ def test_an_untracked_file_whose_content_changes_during_a_step_is_could_not_chec
     code = tool.main(["--log", str(log)], repo=str(root), run=run)
     summary = log.read_text(encoding="utf-8").splitlines()
     assert called[-1] == "mypy", called
-    assert summary[-1] == "== could not check: the working tree changed during mypy", summary
+    assert summary[-2] == "== could not check: the working tree changed during mypy", summary
     assert code == 2, summary
 
 
@@ -580,7 +604,7 @@ def test_a_file_already_modified_at_the_start_and_edited_again_during_a_step_is_
     code = tool.main(["--log", str(log)], repo=str(root), run=run)
     summary = log.read_text(encoding="utf-8").splitlines()
     assert called[-1] == "ruff", called
-    assert summary[-1] == "== could not check: the working tree changed during ruff", summary
+    assert summary[-2] == "== could not check: the working tree changed during ruff", summary
     assert code == 2, summary
 
 
@@ -599,7 +623,7 @@ def test_a_log_inside_the_repo_at_a_path_git_does_not_ignore_is_no_change(git_re
     log = root / "out" / "checks.log"
     code = tool.main(["--log", str(log)], repo=str(root), run=run)
     summary = log.read_text(encoding="utf-8").splitlines()
-    assert summary[-1] == "== all steps exited 0", summary
+    assert summary[-2] == "== all steps exited 0", summary
     assert called == list(tool.STEP_NAMES), called
     assert code == 0, summary
 
@@ -620,6 +644,6 @@ def test_a_log_at_a_tracked_file_in_the_repo_is_no_change(git_repo, tmp_path):
     log = root / "checks.log"
     code = tool.main(["--log", str(log)], repo=str(root), run=run)
     summary = log.read_text(encoding="utf-8").splitlines()
-    assert summary[-1] == "== all steps exited 0", summary
+    assert summary[-2] == "== all steps exited 0", summary
     assert called == list(tool.STEP_NAMES), called
     assert code == 0, summary
