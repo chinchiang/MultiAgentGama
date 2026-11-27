@@ -144,7 +144,7 @@ def test_every_step_passing_exits_zero(tmp_path):
     log = tmp_path / "checks.log"
     assert tool.main(["--log", str(log)], repo=str(tmp_path), run=run) == 0
     assert called == list(tool.STEP_NAMES)
-    assert log.read_text(encoding="utf-8").splitlines()[-2] == "== all steps exited 0"
+    assert _verdict(log.read_text(encoding="utf-8").splitlines()) == "== all steps exited 0"
 
 
 def test_a_failing_or_timed_out_step_makes_the_exit_code_non_zero(tmp_path):
@@ -388,10 +388,12 @@ def _plain_repo(git_repo, tmp_path):
 
 
 def _verdict(summary):
-    """摘要的結論行：最後一行 `exit=<結束碼>` 的前一行。最後一行不是 `exit=` 時直接失敗，摘要格式再變時只要改這裡。
-    The summary's verdict line: the line before the last one, `exit=<exit code>`. Fails at once when the last line is
-    not `exit=`, so a later change to the summary's layout is made here alone."""
-    assert summary and summary[-1].startswith("exit="), summary[-2:]
+    """摘要的結論行：最後一行 `exit=<結束碼>` 的前一行。不到兩行或最後一行不是 `exit=` 時直接失敗；結論行的位置
+    再變時，讀它的測試只要改這裡。
+    The summary's verdict line: the line before the last one, `exit=<exit code>`. Fails at once when the summary has
+    fewer than two lines or its last line is not `exit=`; when the verdict line moves again, the tests that read it
+    change here alone."""
+    assert len(summary) >= 2 and summary[-1].startswith("exit="), summary[-2:]
     return summary[-2]
 
 
@@ -464,7 +466,7 @@ def test_an_untracked_symlink_is_hashed_by_its_target_and_does_not_stop_the_run(
     (root / "subdir" / "inner.txt").write_text("x\n", encoding="utf-8")
     os.symlink(target, root / "link")
     code, summary, _, called = _run_main(root, tmp_path)
-    assert called[-1:] == ["red_on_base"], _verdict(summary)
+    assert called[-1:] == ["red_on_base"], summary
     assert code == 0, summary
 
 
@@ -482,7 +484,7 @@ def test_an_untracked_symlink_pointed_elsewhere_during_a_step_is_could_not_check
         os.symlink("two", root / "link")
 
     code, summary, _, called = _run_main(root, tmp_path, repoint)
-    assert called[-1:] == ["golden"], _verdict(summary)
+    assert called[-1:] == ["golden"], summary
     assert _verdict(summary) == "== could not check: the working tree changed during golden", summary
     assert code == 2, summary
 
@@ -499,7 +501,7 @@ def test_an_untracked_nested_git_repo_is_hashed_by_name_and_does_not_stop_the_ru
     (root / "nested" / "inner.py").write_text("y = 1\n", encoding="utf-8")
     git_repo(root / "nested")
     code, summary, _, called = _run_main(root, tmp_path)
-    assert called[-1:] == ["red_on_base"], _verdict(summary)
+    assert called[-1:] == ["red_on_base"], summary
     assert code == 0, summary
 
 
@@ -521,9 +523,10 @@ def test_an_untracked_directory_git_cannot_list_stops_before_any_step(git_repo, 
     finally:
         (root / "sub").chmod(0o700)
     assert called == [], called
-    assert _verdict(summary).startswith("== could not check: git warned while listing untracked files: "), summary
-    assert "sub/" in _verdict(summary), summary
-    assert _verdict(summary) in full, full
+    verdict = _verdict(summary)
+    assert verdict.startswith("== could not check: git warned while listing untracked files: "), summary
+    assert "sub/" in verdict, summary
+    assert verdict in full, full
     assert code == 2, summary
 
 
@@ -547,9 +550,10 @@ def test_two_untracked_directories_git_cannot_list_count_every_warning(git_repo,
     finally:
         for path in dirs:
             path.chmod(0o700)
-    assert _verdict(summary).endswith(" (+1 more)"), _verdict(summary)
-    assert _verdict(summary).startswith("== could not check: git warned while listing untracked files: warning: "
-                                        "could not open directory 'd"), _verdict(summary)
+    verdict = _verdict(summary)
+    assert verdict.endswith(" (+1 more)"), summary
+    assert verdict.startswith("== could not check: git warned while listing untracked files: warning: could not open "
+                              "directory 'd"), summary
     assert called == [], called
     assert code == 2, summary
 
