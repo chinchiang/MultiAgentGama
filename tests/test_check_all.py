@@ -7,6 +7,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _spec = importlib.util.spec_from_file_location("check_all", os.path.join(REPO_ROOT, "scripts", "check_all.py"))
 assert _spec and _spec.loader
@@ -332,6 +334,176 @@ def test_bi_english_without_a_base_compares_against_bi_english_base(monkeypatch)
     monkeypatch.setattr(bi_english, "_git", fake_git)
     bi_english.main([])
     assert calls[:1] == [("merge-base", "HEAD", tool.BI_ENGLISH_BASE)], calls
+
+
+POSIX_USER = pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0,
+                                reason="needs POSIX file modes and a user that mode 000 locks out")
+POSIX = pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+
+
+def _plain_repo(git_repo, tmp_path):
+    """已提交 `calc.py` 的 repo，回傳 (根目錄, git)。
+    A repo with `calc.py` committed; returns (root, git)."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "calc.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+    return root, git_repo(root)
+
+
+def _run_main(root, tmp_path, change=lambda: None, step="golden"):
+    """在 root 跑 `main`，step 那一步呼叫 change()；回傳 (結束碼, 摘要的每一行, `.full.log` 的內容, 被呼叫的步驟)。
+    Runs `main` in root, calling change() during step; returns (exit code, the summary's lines, the `.full.log`
+    text, the steps called)."""
+    run, called = _changing(step, change)
+    log = tmp_path / "checks.log"
+    code = tool.main(["--log", str(log)], repo=str(root), run=run)
+    full = (tmp_path / "checks.full.log").read_text(encoding="utf-8")
+    return code, log.read_text(encoding="utf-8").splitlines(), full, called
+
+
+@POSIX_USER
+def test_an_untracked_file_that_cannot_be_read_stops_before_any_step(git_repo, tmp_path):
+    """開始時就有讀不到的未追蹤檔（權限 000）：它的內容不在雜湊裡，途中改了也看不出來，所以一步都不跑，最後一行
+    點名那個檔案，結束碼 2（#216 第一輪審查 Standards 第 3 條；原本只雜湊例外名稱，兩次都讀不到就算沒變）。
+    An untracked file that cannot be read at the start (mode 000): its content is not in the hash, so a change to it
+    would go unseen, and no step runs; the last line names the file and the exit code is 2 (#216 round-1 review,
+    standards item 3; it used to hash only the exception's name, so two failed reads counted as no change)."""
+    root, _ = _plain_repo(git_repo, tmp_path)
+    locked = root / "notes.txt"
+    locked.write_text("draft\n", encoding="utf-8")
+    locked.chmod(0)
+    try:
+        code, summary, full, called = _run_main(root, tmp_path)
+    finally:
+        locked.chmod(0o600)
+    assert called == [], called
+    assert summary[-1] == "== could not check: `notes.txt` cannot be read (PermissionError)", summary
+    assert "== could not check: `notes.txt` cannot be read (PermissionError)" in full, full
+    assert code == 2, summary
+
+
+@POSIX_USER
+def test_two_untracked_files_that_cannot_be_read_name_the_first_and_count_the_rest(git_repo, tmp_path):
+    """開始時有兩個讀不到的未追蹤檔：最後一行點名第一個（git 列出的順序），後面寫還有幾個（#216 第一輪審查
+    Standards 第 3 條）。
+    Two untracked files that cannot be read at the start: the last line names the first (in git's order) and counts
+    the rest (#216 round-1 review, standards item 3)."""
+    root, _ = _plain_repo(git_repo, tmp_path)
+    locked = [root / "a.txt", root / "b.txt"]
+    for path in locked:
+        path.write_text("draft\n", encoding="utf-8")
+        path.chmod(0)
+    try:
+        code, summary, _, called = _run_main(root, tmp_path)
+    finally:
+        for path in locked:
+            path.chmod(0o600)
+    assert called == [], called
+    assert summary[-1] == "== could not check: `a.txt` cannot be read (PermissionError) (+1 more)", summary
+    assert code == 2, summary
+
+
+@POSIX
+@pytest.mark.parametrize("target", ["missing", "subdir"], ids=["dangling", "to-a-directory"])
+def test_an_untracked_symlink_is_hashed_by_its_target_and_does_not_stop_the_run(git_repo, tmp_path, target):
+    """未追蹤的 symlink（壞掉的、或指向目錄的）不是讀不到：git 追蹤的是連結的目標文字，所以照雜湊那段文字，每一步
+    照常跑（#216 第一輪審查 Standards 第 3 條的第二次審查：`890cffa` 把 `open()` 的錯誤都當成讀不到，誤停）。
+    An untracked symlink (dangling, or to a directory) is not unreadable: git tracks the link's target text, so that
+    text is hashed and every step runs (second review of #216 round-1 standards item 3: `890cffa` took every `open()`
+    error for unreadable and stopped)."""
+    root, _ = _plain_repo(git_repo, tmp_path)
+    (root / "subdir").mkdir()
+    (root / "subdir" / "inner.txt").write_text("x\n", encoding="utf-8")
+    os.symlink(target, root / "link")
+    code, summary, _, called = _run_main(root, tmp_path)
+    assert called[-1:] == ["red_on_base"], summary[-1]
+    assert code == 0, summary
+
+
+@POSIX
+def test_an_untracked_symlink_pointed_elsewhere_during_a_step_is_could_not_check(git_repo, tmp_path):
+    """未追蹤的 symlink 在某一步跑的時候改指到別處：雜湊的是連結的目標文字，所以停在那一步（#216 第一輪審查
+    Standards 第 3 條的第二次審查）。
+    An untracked symlink pointed elsewhere while a step runs: the link's target text is hashed, so the run stops after
+    that step (second review of #216 round-1 standards item 3)."""
+    root, _ = _plain_repo(git_repo, tmp_path)
+    os.symlink("one", root / "link")
+
+    def repoint():
+        os.remove(root / "link")
+        os.symlink("two", root / "link")
+
+    code, summary, _, called = _run_main(root, tmp_path, repoint)
+    assert called[-1:] == ["golden"], summary[-1]
+    assert summary[-1] == "== could not check: the working tree changed during golden", summary
+    assert code == 2, summary
+
+
+def test_an_untracked_nested_git_repo_is_hashed_by_name_and_does_not_stop_the_run(git_repo, tmp_path):
+    """repo 裡沒追蹤的另一個 git repo（例如 clone 或 worktree）：git 把它列成 `nested/`，裡面的改動本來就看不到
+    （#216 第一輪審查已判斷可以接受），只雜湊名稱，每一步照常跑（第二次審查：`890cffa` 開它時遇到 IsADirectoryError
+    就誤停）。
+    Another git repo left untracked inside the repo (a clone or a worktree, say): git lists it as `nested/`, and
+    changes inside it go unseen anyway (judged acceptable in the #216 round-1 review), so only its name is hashed and
+    every step runs (second review: `890cffa` stopped on the IsADirectoryError from opening it)."""
+    root, _ = _plain_repo(git_repo, tmp_path)
+    (root / "nested").mkdir()
+    (root / "nested" / "inner.py").write_text("y = 1\n", encoding="utf-8")
+    git_repo(root / "nested")
+    code, summary, _, called = _run_main(root, tmp_path)
+    assert called[-1:] == ["red_on_base"], summary[-1]
+    assert code == 0, summary
+
+
+@POSIX_USER
+def test_an_untracked_directory_git_cannot_list_stops_before_any_step(git_repo, tmp_path):
+    """權限 000 的未追蹤目錄：`git ls-files` 列不出裡面的檔案，只在 stderr 警告、結束碼照樣是 0，那些檔案的改動
+    看不到。一步都不跑，最後一行寫 git 列出未追蹤檔案時有警告並引用那一行，結束碼 2（#216 第一輪審查 Standards
+    第 3 條的第二次審查：`890cffa` 照樣跑完）。
+    An untracked directory with mode 000: `git ls-files` cannot list the files inside, warns on stderr and still
+    exits 0, so changes to them go unseen. No step runs, the last line says git warned while listing untracked files
+    and quotes the warning, and the exit code is 2 (second review of #216 round-1 standards item 3: `890cffa` ran
+    every step)."""
+    root, _ = _plain_repo(git_repo, tmp_path)
+    (root / "sub").mkdir()
+    (root / "sub" / "inner.txt").write_text("x\n", encoding="utf-8")
+    (root / "sub").chmod(0)
+    try:
+        code, summary, full, called = _run_main(root, tmp_path)
+    finally:
+        (root / "sub").chmod(0o700)
+    assert called == [], called
+    assert summary[-1].startswith("== could not check: git warned while listing untracked files: "), summary
+    assert "sub/" in summary[-1], summary
+    assert summary[-1] in full, full
+    assert code == 2, summary
+
+
+@POSIX_USER
+def test_two_untracked_directories_git_cannot_list_count_every_warning(git_repo, tmp_path):
+    """兩個權限 000 的未追蹤目錄：git 各印一行警告，每一行各算一個問題，最後一行點名 git 印出的第一行，後面寫還有
+    幾個（#216 第一輪審查 Standards 第 3 條的第二次審查：`c38bec1` 只取 stderr 的第一行，沒有 `(+1 more)`）。哪個
+    目錄排第一跟著 git 讀目錄的順序，這裡不寫死。
+    Two untracked directories with mode 000: git prints one warning line for each, each counts as a problem, and the
+    last line names the first line git printed and counts the rest (second review of #216 round-1 standards item 3:
+    `c38bec1` kept only the first stderr line, with no "(+1 more)"). Which directory comes first follows git's
+    directory order, so it is not fixed here."""
+    root, _ = _plain_repo(git_repo, tmp_path)
+    dirs = [root / "d1", root / "d2"]
+    for path in dirs:
+        path.mkdir()
+        (path / "inner.txt").write_text("x\n", encoding="utf-8")
+        path.chmod(0)
+    try:
+        code, summary, _, called = _run_main(root, tmp_path)
+    finally:
+        for path in dirs:
+            path.chmod(0o700)
+    assert summary[-1].endswith(" (+1 more)"), summary[-1]
+    assert summary[-1].startswith("== could not check: git warned while listing untracked files: warning: could not "
+                                  "open directory 'd"), summary[-1]
+    assert called == [], called
+    assert code == 2, summary
 
 
 def test_a_commit_made_during_a_step_is_could_not_check(git_repo, tmp_path):
