@@ -42,8 +42,8 @@ A black-box test that failed on its own assertion, where cross-model verificatio
 _Avoid_: hardening breach, soft breach, low-severity breach
 
 **未分類失敗 ／ Unclassified failure**:
-FAILED、但不符合資安突破判定的黑箱測試；它是證據缺口，不證明有缺陷，也絕不能被略過。
-A black-box test that FAILED without being classified as a Breach; it is an Evidence gap, proves no defect, and is never dropped.
+FAILED、但既不符合資安突破判定、也不是強化建議的黑箱測試；它是證據缺口，不證明有缺陷，也絕不能被略過。
+A black-box test that FAILED without being classified as a Breach or a Hardening recommendation; it is an Evidence gap, proves no defect, and is never dropped.
 _Avoid_: black-box crash, unclassified result
 
 **未執行 ／ Not run**:
@@ -52,8 +52,8 @@ A test whose status is ERROR or SKIPPED; it is not Executed evidence.
 _Avoid_: errored (it covers SKIPPED too)
 
 **證據計數 ／ Evidence tally**:
-一次執行裡決定判定結果的項目，依種類計數（資安突破、FAILED 的白箱測試、未分類失敗、未執行、阻擋性規則命中、未測試的威脅），每一種都分成全部、新的與已知問題。
-What decides one run's Verdict, counted by kind (Breaches, FAILED white-box tests, Unclassified failures, Not run, blocking rule hits, untested threats), each split into all, new and Known problems.
+一次執行裡決定判定結果的項目，依種類計數（資安突破、強化建議、FAILED 的白箱測試、未分類失敗、未執行、阻擋性規則命中、未測試的威脅），每一種都分成全部、新的與已知問題。
+What decides one run's Verdict, counted by kind (Breaches, Hardening recommendations, FAILED white-box tests, Unclassified failures, Not run, blocking rule hits, untested threats), each split into all, new and Known problems.
 _Avoid_: counts, stats, summary numbers
 
 ### 設定檔來源 ／ Config origin

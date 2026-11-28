@@ -59,7 +59,8 @@ flowchart TD
         CHK2["測試靜態檢查 codecheck.py<br/>斷言檢查、圍欄剝除、拒絕套件安裝"]
         BEX["黑箱測試執行<br/>test_executor.py → 同一沙盒；HTTP / in-process"]
         ATT2["結果歸因 attribution.py<br/>JUnit 解析、突破確認判定 (Breach)"]
-        TM --> ATK --> CHK2 --> BEX --> ATT2
+        HARD["強化建議分類 hardening.py<br/>排除攻擊合成模型的驗證者投 defect／hardening／unsure<br/>hardening 過半數 → 強化建議"]
+        TM --> ATK --> CHK2 --> BEX --> ATT2 --> HARD
     end
 
     SBX --> TM
@@ -79,7 +80,8 @@ flowchart TD
     ATT1 -- "白箱 FAILED；未執行、JS/TS 未執行" --> TALLY
     MUT -- "證據缺口：分數過低、被截斷、沒有結論" --> GATE
     TM -- "未測試的威脅／沒有威脅" --> TALLY
-    ATT2 -- "資安突破；未分類 FAILED；未執行" --> TALLY
+    HARD -- "資安突破；強化建議；<br/>未分類 FAILED；未執行" --> TALLY
+    DEB -. "同一組驗證者代理" .-> HARD
     TALLY -- "計數與已知問題分離後交由閘門" --> GATE
     GW -- "call_log：模擬、invalid、預算用盡、快取未命中" --> GATE
     GATE --> OUT["審計報告 report_generator.py<br/>md / json (含指紋) / SARIF；CLI 的 --summary-json<br/>崩潰時寫 &lt;output&gt;.partial.json"]
@@ -98,7 +100,7 @@ flowchart TD
 | 防禦與資源審查（`whitebox_reviewer_deepseek`） | deepseek (`deepseek/deepseek-v4-pro`) | 輸入清洗、注入（SQL／命令／路徑）、防禦護欄、資源耗盡、並行安全 | 0.1 |
 | 規格與合約審查（`whitebox_reviewer_glm`） | glm (`zai/glm-5.3`) | API 簽章合規、業務規格、契約違反、授權檢查（BOLA／BFLA） | 0.2 |
 | AI 整合與供應鏈審查（`whitebox_reviewer_gemini`） | gemini (`gemini/gemini-3.8-flash`) | 依 OWASP Top 10 for LLM Applications 2026 審查呼叫模型的程式（LLM01～LLM08、LLM10）：提示注入、提示／日誌中的密鑰、工具越權、模型與套件供應鏈、無上限消耗、未驗證的模型輸出；另查寫死的憑證與未固定版本的第三方依賴 | 0.2 |
-| 交叉驗證投票（`whitebox_verifier_*` ×4） | claude／deepseek／glm／gemini | 只對「別的模型」回報的發現投票：confirm／reject／unsure；每個 model alias 只投一票（同一 alias 的第二個驗證者會被略過） | 0.0 |
+| 交叉驗證投票（`whitebox_verifier_*` ×4） | claude／deepseek／glm／gemini | 只對「別的模型」回報的發現投票：confirm／reject／unsure；每個 model alias 只投一票（同一 alias 的第二個驗證者會被略過）。同一組代理（排除 `blackbox_test_synthesizer` 的模型）也替每個本來會算資安突破的黑箱失敗分類：defect／hardening／unsure | 0.0 |
 | 白箱測試生成器（`whitebox_test_generator`） | deepseek (`deepseek/deepseek-v4-pro`) | 針對已確認或未經驗證的發現生成可執行的 pytest 測試（JS/TS 為 `node:test`） | 0.3 |
 | STRIDE 威脅建模師（`blackbox_threat_modeler`） | claude (`claude-sonnet-5-5`) | 擷取信任邊界與資產、建立 STRIDE＋OWASP（API；AI 目標另加 LLM Top 10 2026）攻擊矩陣，並標註 MITRE ATLAS 技術 | 0.2 |
 | 攻擊場景合成器（`blackbox_test_synthesizer`） | deepseek (`deepseek/deepseek-v4-pro`) | 把威脅場景轉成黑箱攻擊腳本（BOLA、注入、限流、提示注入） | 0.2 |
@@ -116,7 +118,7 @@ flowchart TD
    - 審查者少於兩個不同的模型（依解析後的 `models.<alias>.model` 字串計算，兩個別名指向同一個模型只算一個；缺口訊息會把它們併在一起，例如 `claude/claude_alt`）時列為證據缺口（判定不會是 `READY_TO_SHIP`；同一模型的「共識」只是一致性，不是佐證；OWASP LLM07:2026）。驗證者從不評審自己模型回報的發現，所以單一模型家族時沒有任何驗證票，發現不經過濾，報告的共識率與已確認數都標示為 N/A（發現列為未經驗證的假設）。
    - **交叉驗證（Cross-Model Verification）**：不設單一仲裁模型。每筆發現由「沒有回報它」的其他模型各自獨立判定 confirm／reject／unsure；不論有幾個驗證者條目或別名指向同一個模型，它都只投一票，驗證者也不會以另一個別名評審自家模型的發現。其他模型也回報了同一缺陷（去重合併時記錄；合併採 complete-linkage，泛泛的發現無法把兩個不同缺陷串在一起）則算一票確認，但單靠佐證永遠不算驗證：驗證者沒有投下任何真正的 confirm／reject 時，發現仍是未經驗證的假設。審查模型 ≥ 2 但獨立驗證模型 < 2（同樣依解析後的模型計算），或有非模擬發現卻缺乏有效的跨模型裁決（例如全部投 unsure）時，也會列為證據缺口（`NO_CROSS_VERIFICATION`，不會得到 `READY_TO_SHIP`）。只有否決票超過「被分派評審它的驗證者加上已佐證它的模型」的半數，發現才列為爭議（不生成測試），所以一張否決配上一張 unsure 或一個失敗的驗證批次仍會保留去測試；其餘情況中確認票多於否決票即確認，其他都列為未決，保留交給測試決定。共識率依實際票數計算。
 3. **黑箱強制威脅建模先行（Threat-Modeling First）**：拒絕盲目暴力測試，先依據 STRIDE（S 仿冒、T 竄改、R 否認、I 資訊洩漏、D 拒絕服務、E 越權）與 OWASP API Security Top 10 建立攻擊矩陣，再針對性生成攻擊測試。威脅建模的輸入是 `--desc`（或預設描述）、階段 1 擷取的路由與符號，以及確定性規則偵測到的 `ai_components`，不依賴白箱結果。與白箱審查相同，目標符號會分批送審（以 token 預算切分），確保每個符號都進入威脅模型的視野；各批產出的威脅合併並去重編號。
-4. **以執行結果為準的品質閘門**：模型發現與威脅僅是假設；只有實際執行的測試或確定性規則能讓閘門失敗或封鎖。黑箱測試只有以 `AssertionError`、裸 `assert` 或 `pytest.fail` 失敗才算確認突破（JS/TS 的 `node:test` 模組為 `ERR_ASSERTION`／`AssertionError`／失敗的 `expect(`）。無斷言的空測試、無效的模型輸出（非 JSON／缺欄位，或審查、驗證、威脅建模的批次或攻擊合成在閘道之外崩潰，皆記錄為 `invalid`）、未測試的威脅、以及「失敗但未分類為 exploit」的黑箱攻擊測試，都列為證據缺口。
+4. **以執行結果為準的品質閘門**：模型發現與威脅僅是假設；只有實際執行的測試或確定性規則能讓閘門失敗或封鎖。黑箱測試只有以 `AssertionError`、裸 `assert` 或 `pytest.fail` 失敗才算確認突破（JS/TS 的 `node:test` 模組為 `ERR_ASSERTION`／`AssertionError`／失敗的 `expect(`）；但被問到的驗證者過半數認為它要求的是目標沒有承諾的防禦時，它改記為強化建議，不算資安突破，判定結果仍至少是 `NEEDS_FIXES`（`docs/adr/0001-hardening-recommendations-stop-at-needs-fixes.md`）。無斷言的空測試、無效的模型輸出（非 JSON／缺欄位，或審查、驗證、威脅建模的批次或攻擊合成在閘道之外崩潰，皆記錄為 `invalid`）、未測試的威脅、以及「失敗但未分類為 exploit」的黑箱攻擊測試，都列為證據缺口。
 5. **確定性 AI 安全規則（不經模型）**：在任何模型看到程式碼之前，先以 AST／文字規則掃描目標，結果無法被提示注入說服：
 
    | 規則 | 偵測內容 | 嚴重度 | 對應 |
@@ -153,7 +155,7 @@ VibeHarness 本身就是一個 LLM 應用：待審程式碼是每個審查、驗
 | LLM06 無上限消耗（AML.T0034） | `max_model_calls`（硬上限，用完即停止真實呼叫）、`max_output_tokens`（全域與每模型）、請求與沙盒逾時、並行上限 `max_concurrent_calls`、批次 token 預算；live 失敗或 Ctrl-C 時取消仍在排隊的呼叫；自動發現的設定檔只能調低這些上限，不能改成 `live` 或新增審查者 |
 | LLM07 錯誤資訊 | 模型的發現與威脅只是假設；只有執行過的測試或確定性規則能讓閘門失敗；模型不評審自己的發現；審查者或驗證者少於兩個不同的模型別名，或非模擬發現缺乏有效跨模型裁決時，都列為證據缺口 |
 | LLM10 輸出處理不當（AML.T0077） | 模型文字進入 Markdown 前停用圖片與原始 HTML（防圖片 URL 外洩）、移除 ANSI／OSC 控制序列並收合換行（無法開出偽造的標題或表格）；模型選的 id 放進程式碼區段並跳脫管線符號；console 輸出跳脫 rich markup；SARIF 訊息去除控制字元 |
-| 威脅模型的限制 | 已執行的證據假設目標「誠實但有缺陷」：測試與目標在同一個行程裡執行，刻意欺騙稽核的程式碼可以修改 pytest、印出假的涵蓋率表或偵測 `PYTEST_CURRENT_TEST`；harness 會揭露最便宜的幾種（目標頂替測試執行器是 `runner_shadowed` 缺口，指到目標之外的連結是 `unsafe_files_skipped`），但無法排除其他做法。測試預言是模型寫的：攻擊測試預期了錯的狀態碼，也會變成突破（Breach）。沒有模型發現的執行沒有白箱測試，得不到 `READY_TO_SHIP`（`no_whitebox_tests`）。`local_subprocess` 不是隔離邊界，不受信任的程式碼請用 Docker 沙盒。 |
+| 威脅模型的限制 | 已執行的證據假設目標「誠實但有缺陷」：測試與目標在同一個行程裡執行，刻意欺騙稽核的程式碼可以修改 pytest、印出假的涵蓋率表或偵測 `PYTEST_CURRENT_TEST`；harness 會揭露最便宜的幾種（目標頂替測試執行器是 `runner_shadowed` 缺口，指到目標之外的連結是 `unsafe_files_skipped`），但無法排除其他做法。測試預言是模型寫的：攻擊測試預期了錯的狀態碼，也會變成突破（Breach），除非驗證者把它分類為強化建議（最低仍是 `NEEDS_FIXES`）。沒有模型發現的執行沒有白箱測試，得不到 `READY_TO_SHIP`（`no_whitebox_tests`）。`local_subprocess` 不是隔離邊界，不受信任的程式碼請用 Docker 沙盒。 |
 | 稽核可追溯 | 每筆呼叫紀錄（live、retried、invalid 或 simulated）都帶 `prompt_sha256`，重問過的呼叫也一律是原始提示的雜湊，可把判定對回實際輸入，而報告不必保存（可能敏感的）程式碼；批次（審查、驗證、威脅建模、攻擊合成）在閘道之外崩潰時經 `record_failure` 記為 `invalid`（附例外原因，無雜湊） |
 
 ### 🧭 尚未實作（規劃中）
@@ -547,7 +549,7 @@ Action 的 inputs（都可省略）：
 
 **突變測試開關**：`--mutation` 開啟、`--no-mutation` 關閉；優先順序為 CLI 旗標 > 設定檔 `global.mutation_testing` > 預設關閉，因此設定檔開啟時可用 `--no-mutation` 單次關掉，設定檔關閉時可用 `--mutation` 單次打開。`--mutation-max-mutants N`（≥ 1）覆蓋變異體上限（預設 20）；每個變異體跑一批沙盒、不呼叫模型，`--estimate` 在開啟時會列出上限。報告的指標表有 Mutation Score 一列並列出存活的變異體；其餘鍵見 [`docs/configuration.md`](https://github.com/chinchiang/MultiAgentGama/blob/master/docs/configuration.md)。
 
-**只對新問題把關（`--baseline`）**：把一次 `--format json` 的報告存起來（例如提交到 repo 的 `.vibeharness/baseline.json`），之後以 `--baseline` 指定它：報告中已經存在的白箱測試失敗（以其來源發現識別）、探針失敗、黑箱突破與 HIGH 以上的規則命中仍會列在報告的「基準中的已知問題（不計入） ／ Known from baseline (not counted)」清單與建議中，但不再計入判定與 exit code，只有新出現的問題會讓 CI 失敗。已知問題依次數計算：基準報告裡出現 K 次的指紋，這次最多抵掉 K 筆，第 K+1 筆同指紋的項目算新的（VH-AI-007 的 key 不含行號，一筆舊命中不再能藏住同檔更多新命中）。比對 key 與執行次序無關（finding 以檔案相對路徑＋符號＋標題正規化、突破以威脅的 STRIDE 分類＋標題＋攻擊向量、靜態命中以規則＋檔案＋證據但不含行號、探針以符號名），所以模型重新編號或無關的行數位移不會讓舊問題變新的。JSON 報告每個項目都帶 `fingerprint` 欄位；0.3.0 之前沒有該欄位的報告會自動重算。崩潰產生的 `.partial.json` 不能當 baseline。
+**只對新問題把關（`--baseline`）**：把一次 `--format json` 的報告存起來（例如提交到 repo 的 `.vibeharness/baseline.json`），之後以 `--baseline` 指定它：報告中已經存在的白箱測試失敗（以其來源發現識別）、探針失敗、黑箱突破與 HIGH 以上的規則命中仍會列在報告的「基準中的已知問題（不計入） ／ Known from baseline (not counted)」清單與建議中，但不再計入判定與 exit code，只有新出現的問題會讓 CI 失敗。強化建議目前還不和基準比對（#232）：每一個都算新的。已知問題依次數計算：基準報告裡出現 K 次的指紋，這次最多抵掉 K 筆，第 K+1 筆同指紋的項目算新的（VH-AI-007 的 key 不含行號，一筆舊命中不再能藏住同檔更多新命中）。比對 key 與執行次序無關（finding 以檔案相對路徑＋符號＋標題正規化、突破以威脅的 STRIDE 分類＋標題＋攻擊向量、靜態命中以規則＋檔案＋證據但不含行號、探針以符號名），所以模型重新編號或無關的行數位移不會讓舊問題變新的。JSON 報告每個項目都帶 `fingerprint` 欄位；0.3.0 之前沒有該欄位的報告會自動重算。崩潰產生的 `.partial.json` 不能當 baseline。
 
 > 註：SARIF 中的檔案路徑以包含 `--target` 的 git repo 根目錄為基準做相對化（找不到 repo 時才以 `--target` 目錄為基準），所以 `--target src` 也會產生 `src/app.py` 這樣與 Code Scanning 對齊的路徑。根目錄之外的檔案改用絕對 `file://` URI（不帶 `uriBaseId`），模型回報的相對路徑若會以 `..` 跳出根目錄就不給位置；絕不輸出 `..`。
 
