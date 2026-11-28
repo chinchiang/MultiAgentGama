@@ -36,6 +36,11 @@ _Avoid_: confirmed finding (unless cross-model verified)
 A black-box test failure classified as a confirmed exploit; any new Breach makes the Verdict `BLOCKED_CRITICAL_RISK`.
 _Avoid_: exploit, black-box failure
 
+**強化建議 ／ Hardening recommendation**:
+測試自己的斷言失敗的黑箱測試，而且跨模型確認它要求的是目標沒有承諾的防禦；它不是資安突破，但判定結果不能因此成為 `READY_TO_SHIP`。
+A black-box test that failed on its own assertion, where cross-model verification agrees it demands a defence the target never promised; it is not a Breach, but it keeps the Verdict from `READY_TO_SHIP`.
+_Avoid_: hardening breach, soft breach, low-severity breach
+
 **未分類失敗 ／ Unclassified failure**:
 FAILED、但不符合資安突破判定的黑箱測試；它是證據缺口，不證明有缺陷，也絕不能被略過。
 A black-box test that FAILED without being classified as a Breach; it is an Evidence gap, proves no defect, and is never dropped.

@@ -241,7 +241,8 @@ MultiAgentGama/
 │   │   └── blackbox/
 │   │       ├── __init__.py
 │   │       ├── threat_modeler.py    # STRIDE／OWASP API／LLM 威脅建模引擎（含 ATLAS 對應）
-│   │       └── scenario_builder.py  # 威脅轉化可執行攻擊腳本
+│   │       ├── scenario_builder.py  # 威脅轉化可執行攻擊腳本
+│   │       └── hardening.py         # 黑箱失敗的強化建議分類：驗證者過半數投 hardening 才不算資安突破（docs/adr/0001）
 │   ├── runners/
 │   │   ├── __init__.py
 │   │   ├── attribution.py           # 結果歸因：JUnit 報告 → 每個測試的狀態、資安突破與重現 PoC（不碰沙盒，除了 log 之外沒有 I/O）
@@ -257,6 +258,8 @@ MultiAgentGama/
 │   ├── configuration.en.md      # Configuration reference (English)
 │   ├── design.md                # 設計文件：架構、資料流、閘門判定、沙盒安全模型（正體中文）
 │   ├── design.en.md             # Design document (English)
+│   ├── adr/                     # 架構決策紀錄（ADR）
+│   │   └── 0001-hardening-recommendations-stop-at-needs-fixes.md # 強化建議最多只降到 NEEDS_FIXES
 │   └── agents/                  # agent skill 的設定（/setup-matt-pocock-skills 產生，檔尾另有本 repo 的規則）
 │       ├── domain.md            # 領域文件怎麼讀：GLOSSARY.md 與 docs/adr/
 │       ├── issue-tracker.md     # GitHub Issues 的操作；本 repo 什麼時候開 issue、/code-review 的 spec 來源
@@ -297,6 +300,7 @@ MultiAgentGama/
 │   ├── test_golden.py                  # golden diff：正規化、比對、情境決定性、--against 的清除路徑（沒有 scripts/golden/ 時略過）
 │   ├── test_guard_discard.py           # .claude/ 的 guard_discard hook：擋下會丟掉未 commit 改動的 git 指令（沒有 .claude/ 時略過）
 │   ├── test_guard_pr_placeholder.py    # .claude/ 的 guard_pr_placeholder hook：PR 標題、內文或合併訊息還有佔位符時擋下 gh pr create／edit／new／merge（沒有 .claude/ 時略過）
+│   ├── test_hardening_recommendation.py # 強化建議：在 clean_live_run 上，多數 hardening 票讓判定成為 NEEDS_FIXES，其他票維持資安突破
 │   ├── test_harness_components.py      # 各元件於 mock 模式下的整合測試
 │   ├── test_i18n.py                    # 雙語工具、報告／console／CLI 字串、雙語的 docstring 與註解
 │   ├── test_i18n_output.py             # 提示詞維持英文、雙語的規則標題、執行器原因與 PoC

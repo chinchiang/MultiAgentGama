@@ -47,6 +47,7 @@ from vibeharness.agents.whitebox.deduplicator import deduplicate_findings
 from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
 from vibeharness.agents.blackbox.threat_modeler import AutomatedThreatModeler
 from vibeharness.agents.blackbox.scenario_builder import ThreatScenarioBuilder
+from vibeharness.agents.blackbox.hardening import HardeningClassifier
 from vibeharness.runners.test_executor import TestSuiteExecutor
 from vibeharness.reports.report_generator import JSON_SCHEMA_VERSION, ReportGenerator, agreement_display
 
@@ -512,7 +513,12 @@ class VibeHarnessCommander:
                 working_dir=work_dir,
                 collect_coverage=False
             )
-            bb_results = bb_suite.results
+            # 本來會算資安突破的失敗交給驗證者分類；過半數投 hardening 的改記為強化建議（docs/adr/0001）
+            # The failures that would be Breaches go to the verifiers; those a strict majority votes hardening become
+            # Hardening recommendations (docs/adr/0001)
+            bb_results = HardeningClassifier(self.gateway, self.debater.verifiers).classify(
+                bb_suite.results, bb_tests, threat_report.threats, symbols, work_dir
+            )
             bb_passed = sum(1 for r in bb_results if r.status == TestStatus.PASSED)
             progress.update(phase=5, blackbox_tests=bb_tests, blackbox_results=bb_results)
             bb_tally = tally_evidence(bb_tests=bb_tests, bb_results=bb_results, threats=threat_report.threats)
@@ -637,6 +643,7 @@ class VibeHarnessCommander:
                 blackbox_tests_passed=bb_passed,
                 blackbox_security_breaches=len(tally.breaches.all),
                 new_blackbox_security_breaches=len(tally.breaches.new),
+                blackbox_hardening_recommendations=len(tally.hardening_recommendations.all),
                 blackbox_tests_failed=len(tally.unclassified_failures.all),
                 blackbox_tests_not_run=len(tally.blackbox_not_run.all),
                 untested_threat_ids=list(tally.untested_threats.all),

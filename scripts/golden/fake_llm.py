@@ -85,6 +85,12 @@ def respond(system: str, user: str) -> str:
     if "code-review verifier" in system:
         indices = sorted({int(n) for n in re.findall(r"^\[(\d+)\]", user, re.MULTILINE)})
         return json.dumps({"verdicts": [{"index": i, "verdict": "confirm", "reason": "The code has it."} for i in indices]})
+    if "independent black-box failure classifier" in system:
+        # 強化建議的分類（#230）：每支都投 defect，資安突破維持原樣 ／ Hardening classification (#230): every test is
+        # voted defect, so the Breaches stay as they are
+        indices = sorted({int(n) for n in re.findall(r"^\[(\d+)\]", user, re.MULTILINE)})
+        return json.dumps({"verdicts": [{"index": i, "verdict": "defect", "reason": "The target has it."}
+                                        for i in indices]})
     if "QA Engineer" in system:
         title = next((t for t in _WHITEBOX_TESTS if f"Finding Title: {t}" in user), None)
         return json.dumps({"test_id": "WB-TEST-01", "title": title or "No test", "rationale": "Exposes the flaw.",

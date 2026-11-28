@@ -514,6 +514,7 @@ def _summary_json(summary: Any, execution_mode: str, sandbox_provider: Optional[
         "model_calls": {"total": len(calls), **counts, "cached": sum(1 for c in calls if c.cached)},
         "all_simulated": bool(calls) and counts["simulated"] == len(calls),
         "inconclusive_reasons": list(summary.inconclusive_reasons),
+        "hardening_recommendations": summary.blackbox_hardening_recommendations,
     }
     return json.dumps(payload, indent=2, ensure_ascii=False)
 

@@ -166,6 +166,13 @@ class TestExecutionResult(BaseModel):
     traceback: Optional[str] = None
     failure_reason: Optional[str] = None
     is_security_exploit_confirmed: bool = False
+    # 強化建議（GLOSSARY；docs/adr/0001）：本來會算資安突破，但跨模型驗證過半數認為它要求的是目標沒有承諾的防禦
+    # A Hardening recommendation (GLOSSARY; docs/adr/0001): it would be a Breach, but a cross-model majority found it
+    # demands a defence the target never promised
+    is_hardening_recommendation: bool = False
+    # 驗證者對這個失敗的分類票（defect／hardening／unsure）；沒有分類過時是空的
+    # The verifiers' classification votes on this failure (defect / hardening / unsure); empty when it was not classified
+    hardening_votes: List[VerificationVote] = Field(default_factory=list)
     reproduction_poc: Optional[str] = None
     source_ref: Optional[str] = None
     language: str = "python"
@@ -190,7 +197,7 @@ class TestExecutionResult(BaseModel):
         Unclassified failure (GLOSSARY): FAILED but not a Breach; it is an Evidence gap and is never dropped. Meaningful
         for black-box results only: a FAILED white-box result is a white-box failure, and since this property does not
         check the test type, callers pass black-box results alone."""
-        return self.is_failure and not self.is_security_exploit_confirmed
+        return self.is_failure and not self.is_security_exploit_confirmed and not self.is_hardening_recommendation
 
 
 class CallKind(str, Enum):
@@ -205,6 +212,8 @@ class CallKind(str, Enum):
     HEAL = "heal"
     THREAT_MODELER = "threat_modeler"
     SYNTHESIZER = "synthesizer"
+    # 黑箱失敗的強化建議分類（docs/adr/0001） ／ Hardening classification of black-box failures (docs/adr/0001)
+    HARDENING = "hardening"
 
 
 class AgentCallRecord(BaseModel):
@@ -335,6 +344,9 @@ class VibeHarnessSummary(BaseModel):
     critical_threats_count: int
     blackbox_tests_passed: int
     blackbox_security_breaches: int
+    # 強化建議（GLOSSARY）：不是資安突破，但判定結果不能是 READY_TO_SHIP ／ Hardening recommendations (GLOSSARY): not
+    # Breaches, but the Verdict cannot be READY_TO_SHIP
+    blackbox_hardening_recommendations: int = 0
     # 失敗卻不符合利用判斷式的攻擊測試：證據模稜兩可，
     # 必須人工調查；計為證據缺口（絕不是默默通過）
     # Attack tests that FAILED without matching the exploit predicate: ambiguous evidence that

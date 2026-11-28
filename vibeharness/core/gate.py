@@ -165,7 +165,7 @@ def evaluate(evidence: GateEvidence) -> GateResult:
     # "Known from baseline"
     if tally.breaches.new:
         verdict = Verdict.BLOCKED_CRITICAL_RISK
-    elif tally.whitebox_failures.new or tally.blocking_rule_hits.new:
+    elif tally.whitebox_failures.new or tally.blocking_rule_hits.new or tally.hardening_recommendations.new:
         verdict = Verdict.NEEDS_FIXES
     elif gaps:
         verdict = Verdict.INCONCLUSIVE

@@ -33,6 +33,7 @@ class EvidenceTally:
     """一次執行的證據計數。
     One run's Evidence tally."""
     breaches: Split[TestExecutionResult]
+    hardening_recommendations: Split[TestExecutionResult]
     whitebox_failures: Split[TestExecutionResult]
     unclassified_failures: Split[TestExecutionResult]
     whitebox_not_run: Split[TestExecutionResult]
@@ -135,6 +136,7 @@ def tally_evidence(*, wb_results: Sequence[TestExecutionResult] = (),
         )
     return EvidenceTally(
         breaches=breaches_split,
+        hardening_recommendations=_unsplit([r for r in bb_results if r.is_hardening_recommendation]),
         whitebox_failures=wb_split,
         unclassified_failures=_unsplit([r for r in bb_results if r.is_unclassified_failure]),
         whitebox_not_run=_unsplit([r for r in wb_results if r.is_not_run]),
