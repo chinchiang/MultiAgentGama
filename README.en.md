@@ -20,6 +20,7 @@ flowchart TD
     CLI["vibeharness CLI (vibeharness/cli.py)<br/>--target / --mode / --config / --desc / --base-url<br/>--format / --sarif / --summary-json / --baseline<br/>--mutation / --cache-dir / --estimate / …"] --> CMD["🧠 Commander<br/>vibeharness/core/harness.py (six phases + optional Phase 3.5)"]
     CMD --> AST["Phase 1 · Symbol extraction<br/>ast_extractor.py (AST for Python; lexer for JS/TS)<br/>counts unsupported-language files, collects config files (ScopeResult)"]
     AST --> SAST["Phase 1 · Deterministic AI-security rules<br/>ai_static_scanner.py (VH-AI-001..009)<br/>scans config files locally, detects ai_components<br/>tracks incomplete scans & capped hits (ScanResult)"]
+    SAST --> WB
 
     CALL["Agent calls & fan-out agent_call.py<br/>ask / ask_batch / fan_out concurrent execution<br/>Untrusted labeled channels (sanitize.py) & policies<br/>shape checking & item extraction (model_output.py)"]
     GW["LLM gateway llm_gateway.py<br/>model routing, fallback_model, simulation fallback<br/>response cache (--cache-dir / --cache-only)<br/>retry_invalid_output re-asks, prompt_sha256<br/>max_model_calls budget, call_log audit records"]
@@ -72,7 +73,8 @@ flowchart TD
     GATE["Phase 6 · Quality gate gate.py (evaluate)<br/>READY_TO_SHIP / NEEDS_FIXES /<br/>INCONCLUSIVE / BLOCKED_CRITICAL_RISK"]
     CMD -- "reviewer / verifier config: no whitebox_reviewer_* /<br/>fewer than 2 distinct model aliases" --> GATE
     AST -- "parse failures, skipped/oversized files, unsupported languages,<br/>config files over cap, discovered config exclusions" --> GATE
-    SAST -- "HIGH+ hits; VH-AI-008/009 integrity hits;<br/>incomplete scans (30 s); per-file capped hits (static_hits_capped)" --> GATE
+    SAST -- "HIGH+ blocking hits" --> TALLY
+    SAST -- "VH-AI-008/009 integrity hits;<br/>incomplete scans (30 s); per-file capped hits (static_hits_capped)" --> GATE
     GEN -- "findings without a model test" --> GATE
     ATT1 -- "whitebox FAILED; not run, JS/TS not run" --> TALLY
     MUT -- "evidence gaps: low score, truncated, no conclusion" --> GATE
