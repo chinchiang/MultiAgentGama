@@ -53,6 +53,10 @@ def test_a_majority_of_hardening_votes_makes_the_failure_a_hardening_recommendat
     assert summary.overall_status == "NEEDS_FIXES", (summary.overall_status, summary.inconclusive_reasons)
     assert summary.blackbox_security_breaches == 0
     assert summary.blackbox_hardening_recommendations == 1
+    # 建議要說出 NEEDS_FIXES 的原因，不能寫「沒有暴露缺陷」 ／ The recommendations name why it is NEEDS_FIXES, never "no
+    # defects were exposed"
+    hardening = [r for r in summary.key_recommendations if "BB-TEST-THREAT-01" in r]
+    assert hardening and all("never promised" in r for r in hardening), summary.key_recommendations
 
 
 def test_a_majority_of_defect_votes_keeps_the_breach(clean_live_run):

@@ -464,6 +464,14 @@ def _recommendations(tally: EvidenceTally, threat_report: ThreatModelReport, has
     for r in tally.whitebox_failures.new:
         recs.append(bi(f"修正 `{r.test_id}` 暴露的缺陷（來自 `{r.source_ref or '-'}`）",
                        f"Fix defect exposed by `{r.test_id}` (from `{r.source_ref or '-'}`)") + f": {r.failure_reason}")
+    # 強化建議（docs/adr/0001）：說出 NEEDS_FIXES 的原因，也說清楚它不是缺陷 ／ Hardening recommendations
+    # (docs/adr/0001): say why the run is NEEDS_FIXES, and that it is not a defect
+    for r in tally.hardening_recommendations.new:
+        threat = threats_by_id.get(r.source_ref or "")
+        label = f"{threat.threat_id} {threat.title}" if threat else r.test_id
+        recs.append(bi(f"考慮補強 `{r.test_id}`（{label}）要求的防禦：跨模型驗證認為目標沒有承諾這項防禦，所以它不是資安突破",
+                       f"Consider the hardening `{r.test_id}` ({label}) asks for: cross-model verification found it "
+                       "demands a defence the target never promised, so it is not a Breach") + f": {r.failure_reason}")
     for r in tally.unclassified_failures.all:
         recs.append(bi(f"調查 `{r.test_id}` 中的黑箱崩潰", f"Investigate black-box crash in `{r.test_id}`") + f": {r.failure_reason}")
     if tally.untested_threats.all:

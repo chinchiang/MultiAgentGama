@@ -46,8 +46,8 @@ def _parse_index(value: object) -> Optional[int]:
 
 
 def _usable_vote(item: Mapping[str, object], count: int) -> bool:
-    """一張票可以使用：`index` 是 0 到 `count` 之間的整數，`verdict` 是 defect、hardening 或 unsure（不分大小寫）。
-    A vote is usable: its `index` is an integer from 0 to `count` and its `verdict` is defect, hardening or unsure
+    """一張票可以使用：`index` 是 0 到 `count - 1` 之間的整數，`verdict` 是 defect、hardening 或 unsure（不分大小寫）。
+    A vote is usable: its `index` is an integer from 0 to `count - 1` and its `verdict` is defect, hardening or unsure
     (any case)."""
     local = _parse_index(item.get("index"))
     return local is not None and 0 <= local < count and str(item.get("verdict", "")).strip().lower() in _VOTES
@@ -64,7 +64,7 @@ def _schema(count: int) -> OutputSchema:
     )})
 
 
-def _votes(items: List[Mapping[str, Any]], ctx: CallContext) -> List[Tuple[int, VerificationVote]]:
+def _classification_votes(items: List[Mapping[str, Any]], ctx: CallContext) -> List[Tuple[int, VerificationVote]]:
     """把一次分類呼叫的可用票對應成 (失敗的索引, 票)：同一個 index 只算第一張；模擬輸出的票一律略過。
     Maps one classification call's usable votes to (failure index, vote): only the first vote on an index counts,
     and Simulated output's votes are always ignored."""
@@ -85,9 +85,9 @@ def _votes(items: List[Mapping[str, Any]], ctx: CallContext) -> List[Tuple[int, 
     return votes
 
 
-def _call(count: int) -> AgentCall:
+def _classification_call(count: int) -> AgentCall:
     return AgentCall(
-        schema=_schema(count), mapper=_votes,
+        schema=_schema(count), mapper=_classification_votes,
         channels=(Channel.TARGET_CODE, Channel.MODEL_OUTPUT), logger=logger, kind=CallKind.HARDENING,
         # 模擬輸出沒有票：樣板判斷不了目標承諾了什麼 ／ Simulated output holds no votes: a template cannot judge
         # what the target promised
@@ -123,7 +123,7 @@ class HardeningClassifier:
         chunks = [failures[i:i + TESTS_PER_CALL] for i in range(0, len(failures), TESTS_PER_CALL)]
         jobs = [(agent_id, chunk) for agent_id in self.verifiers for chunk in chunks]
         replies = ask_batch(
-            self.gateway, lambda job: _call(len(job[1])), jobs,
+            self.gateway, lambda job: _classification_call(len(job[1])), jobs,
             lambda job: self._prepare(job[0], job[1], results, tests_by_id, threats_by_id, symbols, root_dir),
             agent_id=lambda job: job[0],
             label=lambda job: (f"{job[0]} 的強化建議分類", f"Hardening classification for {job[0]}"),
