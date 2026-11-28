@@ -8,6 +8,7 @@
 
 ### 變更
 
+- 新增「強化建議」（GLOSSARY：Hardening recommendation；`docs/adr/0001-hardening-recommendations-stop-at-needs-fixes.md`；#229、#230）：黑箱測試以自己的斷言失敗、本來會算資安突破時，改由白箱驗證者（排除寫出那支測試的模型）投 `defect`、`hardening` 或 `unsure`；過半數投 `hardening` 才記為強化建議，不算資安突破，但判定結果至少是 `NEEDS_FIXES`，絕不會因此成為 `READY_TO_SHIP`。**結束碼會變**：新的資安突破全都被分類為強化建議的執行，原本是 `BLOCKED_CRITICAL_RISK`（exit 2），現在是 `NEEDS_FIXES`（exit 1）；分類呼叫計入 `max_model_calls`。summary 新增 `blackbox_hardening_recommendations`，`--summary-json` 新增 `hardening_recommendations`，每個黑箱結果多了 `is_hardening_recommendation` 與 `hardening_votes`。
 - **破壞性**：JSON 報告的 `schema_version` 升為 `"3"`，summary 的計數一律取自證據計數，並採用同一套定義：沒有前綴的計數算全部，`new_` 計數只算決定判定的新項目，已知問題是 `baseline_suppressed` 清單（沒有 `--baseline` 時全部等於新的）。原本有 `--baseline` 時，`whitebox_tests_failed` 與 `blackbox_security_breaches` 只算新的，未分類失敗、未執行與規則命中卻算全部，console 第 3、5 階段印的總數也和同一次執行的 summary 對不上。
   - `whitebox_tests_failed`、`blackbox_security_breaches` 改為全部；新增 `new_whitebox_tests_failed`、`new_blackbox_security_breaches`，以及阻擋性規則命中的總數 `blocking_rule_hits`（與既有的 `new_blocking_rule_hits` 並列）。不是品質閘門產生的 summary，這三個欄位是 `null`。
   - `whitebox_tests_errored`／`blackbox_tests_errored` 改名為 `whitebox_tests_not_run`／`blackbox_tests_not_run`，值不變（它們也算 SKIPPED）。
