@@ -58,7 +58,11 @@ class VerificationVote(BaseModel):
     """某個模型對一個它自己沒有回報的發現所做的獨立裁決。
     One model's independent ruling on a finding it did not report."""
     model_alias: str
-    verdict: str  # "confirm"、"reject"、"unsure" 或 "corroborated"（該模型自己也回報了同一個缺陷） ／ "confirm", "reject", "unsure", or "corroborated" (the model reported the same defect itself)
+    # 白箱驗證："confirm"、"reject"、"unsure" 或 "corroborated"（該模型自己也回報了同一個缺陷）；強化建議分類：
+    # "defect"、"hardening" 或 "unsure"
+    # White-box verification: "confirm", "reject", "unsure", or "corroborated" (the model reported the same defect
+    # itself); Hardening classification: "defect", "hardening" or "unsure"
+    verdict: str
     reason: str = ""
 
 
@@ -179,9 +183,9 @@ class TestExecutionResult(BaseModel):
 
     @property
     def is_failure(self) -> bool:
-        """測試狀態是 FAILED（白箱失敗就是 FAILED 的白箱測試；黑箱的 FAILED 再分成資安突破與未分類失敗）。
-        The test FAILED (a white-box failure is a FAILED white-box test; a black-box FAILED is either a Breach or an
-        Unclassified failure)."""
+        """測試狀態是 FAILED（白箱失敗就是 FAILED 的白箱測試；黑箱的 FAILED 再分成資安突破、強化建議與未分類失敗）。
+        The test FAILED (a white-box failure is a FAILED white-box test; a black-box FAILED is a Breach, a Hardening
+        recommendation or an Unclassified failure)."""
         return self.status == TestStatus.FAILED
 
     @property
