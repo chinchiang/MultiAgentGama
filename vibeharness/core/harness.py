@@ -415,9 +415,10 @@ class VibeHarnessCommander:
             # Phase 3: White-Box Test Generation & Sandbox Execution
             # -------------------------------------------------------------
             self.console.print(f"\n[bold blue]=== {bi('第 3 階段：白箱測試產生與沙盒執行', 'Phase 3: White-Box Test Generation & Sandbox Execution')} ===[/bold blue]")
-            wb_tests = self.whitebox_test_gen.generate_tests_for_findings(
+            wb_generated = self.whitebox_test_gen.generate_tests_for_findings(
                 debate_result.confirmed_findings, symbols, root_dir=work_dir
             )
+            wb_tests = wb_generated.tests
             self.console.print(f"[+] {bi(f'已產生 [bold]{len(wb_tests)}[/bold] 個針對性的 Pytest 單元／邊界測試（含自我修復驗證）。', f'Generated [bold]{len(wb_tests)}[/bold] targeted Pytest unit/boundary tests (with self-healing validation).')}")
 
             wb_suite = self.executor.execute_test_suite(
@@ -560,7 +561,7 @@ class VibeHarnessCommander:
                         sorted(set(self.debater.verifiers.values()))),
                     arbitration_applied=debate_result.arbitration_applied,
                     confirmed_findings=debate_result.confirmed_findings,
-                    findings_without_model_tests=self.whitebox_test_gen.findings_without_model_tests,
+                    findings_without_model_tests=wb_generated.findings_without_model_tests,
                     truncated_symbols=self.multi_reviewer.truncated_symbols(symbols, root_dir=work_dir),
                 ),
                 scope=ScopeDisclosure(

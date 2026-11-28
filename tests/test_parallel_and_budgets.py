@@ -76,7 +76,7 @@ def _live(transport, config=CONFIG):
 def test_whitebox_generation_runs_concurrently_and_keeps_finding_order(scripted, tmp_path):
     probe = _ConcurrencyProbe(6, "defect")
     gen = WhiteboxTestGenerator(_live(scripted({"whitebox_test_generator": probe})))
-    tests = gen.generate_tests_for_findings([_finding(i) for i in range(6)], [], root_dir=str(tmp_path))
+    tests = gen.generate_tests_for_findings([_finding(i) for i in range(6)], [], root_dir=str(tmp_path)).tests
     assert probe.peak > 1
     assert [(t.test_id, t.source_ref, t.title) for t in tests] == [
         (f"WB-TEST-{i + 1:02d}", f"F{i}", f"for {i}") for i in range(6)
@@ -155,12 +155,12 @@ def test_a_crashed_test_generation_is_booked_as_an_invalid_call(scripted, tmp_pa
         return generate(agent_id, system, user, **kwargs)
     gateway.generate = crash_on_f1
     gen = WhiteboxTestGenerator(gateway)
-    tests = gen.generate_tests_for_findings([_finding(i) for i in range(3)], [], root_dir=str(tmp_path))
-    assert [t.source_ref for t in tests if t.test_type == "whitebox_unit"] == ["F0", "F2"]
+    generated = gen.generate_tests_for_findings([_finding(i) for i in range(3)], [], root_dir=str(tmp_path))
+    assert [t.source_ref for t in generated.tests if t.test_type == "whitebox_unit"] == ["F0", "F2"]
     (record,) = gen.gateway.invalid_calls
     assert record.agent_id == "whitebox_test_generator"
     assert record.reason.startswith(REASON_CALL_CRASHED) and "RuntimeError: parser exploded" in record.reason
-    assert gen.findings_without_model_tests == ["F1"]
+    assert generated.findings_without_model_tests == ["F1"]
 
 
 def test_a_live_failure_starts_no_queued_reviewer_call(scripted, tmp_path):

@@ -90,7 +90,7 @@ def test_null_fields_from_the_test_generator_fall_back_to_the_finding(fake_live,
     from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
     fake_live(lambda s, u: json.dumps({"code": "def test_x():\n    assert True\n", **_NULL_FIELDS}))
     gen = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="live"))
-    tests = gen.generate_tests_for_findings([_finding()], [], root_dir=str(tmp_path))
+    tests = gen.generate_tests_for_findings([_finding()], [], root_dir=str(tmp_path)).tests
     assert [t.test_type for t in tests] == ["whitebox_unit"]
     assert tests[0].title == "None crash"
     assert tests[0].rationale == "call f(None)"
@@ -103,8 +103,9 @@ def test_non_string_test_code_is_ignored_not_fatal(fake_live, tmp_path):
     from vibeharness.agents.whitebox.test_generator import WhiteboxTestGenerator
     fake_live(lambda s, u: json.dumps({"tests": [{"code": ["not", "a", "string"]}, {"code": None}]}))
     gen = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="live"))
-    assert gen.generate_tests_for_findings([_finding()], [], root_dir=str(tmp_path)) == []
-    assert gen.findings_without_model_tests == ["WB-CLA-01"]
+    generated = gen.generate_tests_for_findings([_finding()], [], root_dir=str(tmp_path))
+    assert generated.tests == []
+    assert generated.findings_without_model_tests == ["WB-CLA-01"]
 
 
 def test_null_reviewer_fields_fall_back_but_empty_findings_are_dropped(fake_live, tmp_path):

@@ -422,7 +422,7 @@ def test_prepare_test_code_across_generator_and_scenario_builder(scripted, tmp_p
         return {"code": "```python\n```"}
 
     gw = LLMGateway(CONFIG, execution_mode="live", transport=scripted({"whitebox_test_generator": wb_responder}))
-    wb_tests = WhiteboxTestGenerator(gw).generate_tests_for_findings([finding], [], root_dir=str(tmp_path))
+    wb_tests = WhiteboxTestGenerator(gw).generate_tests_for_findings([finding], [], root_dir=str(tmp_path)).tests
     assert [t.code.strip() for t in wb_tests] == ["def test_healed():\n    assert 1 == 1"]
     assert [(r.kind, r.mode) for r in gw.call_log] == [("test_generator", "live"), ("heal", "live")]
 

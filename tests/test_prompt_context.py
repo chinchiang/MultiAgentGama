@@ -183,7 +183,7 @@ def test_generated_test_imports_target_as_instructed_and_runs(fake_live, tmp_pat
     )
     tests = WhiteboxTestGenerator(LLMGateway(CONFIG, execution_mode="live")).generate_tests_for_findings(
         [finding], symbols, root_dir=str(target)
-    )
+    ).tests
     assert "from shop.cart import total" in prompts[0]
     assert "return sum(i['price'] for i in items)" in prompts[0]
     assert [t.test_type for t in tests] == ["whitebox_unit"]  # 不需要退回探針 ／ no fallback probes needed
