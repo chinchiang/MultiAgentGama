@@ -28,10 +28,10 @@ logger = logging.getLogger("VibeHarness.TestGenerator")
 
 @dataclass(frozen=True)
 class GeneratedTests:
-    """一次 generate_tests_for_findings 的結果。`tests` 是產生的測試（有發現沒拿到可用模型測試時，後面接著目標推導
-    的探測）；`findings_without_model_tests` 是沒有可用模型測試的發現 id，依發現順序，是證據缺口
+    """一次 generate_tests_for_findings 的結果。`tests` 是產生的測試（有發現沒拿到可用模型測試時，後面接著可能有的
+    目標推導探測）；`findings_without_model_tests` 是沒有可用模型測試的發現 id，依發現順序，是證據缺口
     FINDINGS_WITHOUT_MODEL_TESTS 的來源。
-    The outcome of one generate_tests_for_findings call. `tests` are the generated tests (followed by target-derived
+    The outcome of one generate_tests_for_findings call. `tests` are the generated tests (followed by any target-derived
     probes when a finding got no usable model test); `findings_without_model_tests` are the ids of the findings with
     no usable model-generated test, in finding order, the source of the FINDINGS_WITHOUT_MODEL_TESTS evidence gap."""
     tests: List[GeneratedTest] = field(default_factory=list)

@@ -203,7 +203,7 @@ flowchart TD
 每個會呼叫模型的階段都把彼此獨立的呼叫交給 `fan_out`（`vibeharness/core/agent_call.py:388-405`），所以這套規則只寫在一處：
 
 - `LLMGatewayError` 往上拋。live 模式的失敗要大聲，CLI 以 exit 4 結束。往上拋之前（以及 Ctrl-C 時），該階段仍在排隊的呼叫會被取消、絕不送出：失敗的工作執行緒在自己的執行緒裡就設下中止旗標（`_run_ordered`，`:422-471`），不會再接手排隊中的下一個呼叫，即使主執行緒還在等前面較慢的呼叫。已經在進行中的呼叫會跑完。
-- 其他例外由 `fan_out` 記一行 log（用代理自己的 logger 與它給的雙語標籤，`_book`，`:408-419`），經 `gateway.record_failure` 記成一筆 `invalid` 呼叫，種類是該 `Call` 宣告的 `kind`（`vibeharness/core/llm_gateway.py:608-618`），該呼叫的結果換成代理給的 fallback，其餘呼叫不受影響。五個代理都一樣，所以缺席的那批會成為 evidence gap #3，不會被當成「沒有發現」（測試生成崩潰時，該發現另外留在 `findings_without_model_tests`，即 gap #4）。
+- 其他例外由 `fan_out` 記一行 log（用代理自己的 logger 與它給的雙語標籤，`_book`，`:408-419`），經 `gateway.record_failure` 記成一筆 `invalid` 呼叫，種類是該 `Call` 宣告的 `kind`（`vibeharness/core/llm_gateway.py:608-618`），該呼叫的結果換成代理給的 fallback，其餘呼叫不受影響。五個代理都一樣，所以缺席的那批會成為 evidence gap #3，不會被當成「沒有發現」（測試生成崩潰時，該發現另外留在回傳的 `GeneratedTests.findings_without_model_tests`，即 gap #4）。
 - 空結果會在後續階段變成 evidence gap（沒有測試、威脅未測），不會變成「通過」。
 - **崩潰時的部分報告**：這個 `try` 裡（Phase 1 到寫出報告）的任何例外或 Ctrl-C 都會先由 `_write_partial_report`（`vibeharness/core/harness.py:706-740`）把已完成階段的結果寫到 `<output>.partial.json`（`partial: true`、`schema_version`、`phase_reached`、錯誤型別與經 `_safe_reason` 遮蔽的訊息、與摘要相同穩定順序的完整 `agent_calls`（`sorted_call_log`，`vibeharness/core/harness.py:67-77`），以及 `progress` 裡每個階段結束時放進去的靜態命中、發現、驗證結果、白箱測試與結果、威脅、黑箱測試與結果），再 `raise`（`:701-703`）；已付費的模型結果不歸零。CLI 對 Ctrl-C 以 `INTERRUPTED_EXIT_CODE` 130 結束並說明只有 partial 報告（`vibeharness/cli.py:652-656`），其他崩潰經 `_crash_exit`（`vibeharness/cli.py:154-160`）印 traceback 後 exit 5。partial 報告不能當 `--baseline`。
 
@@ -783,7 +783,7 @@ console 輸出另外用 `rich.markup.escape`（`vibeharness/core/harness.py:9`�
 | :--- | :--- | :--- | :--- |
 | 白箱審查 | reviewer × batch | `vibeharness/agents/whitebox/multi_reviewer.py:168-173` | `NO_REPLY`：該批沒有發現 |
 | 交叉驗證 | verifier × 每 15 筆 | `vibeharness/agents/whitebox/debater.py:157-162` | `NO_REPLY`：該批零票 |
-| 白箱測試生成 | 每筆 finding | `vibeharness/agents/whitebox/test_generator.py:120-132` | `([], False)`：該發現進 `findings_without_model_tests` |
+| 白箱測試生成 | 每筆 finding | `vibeharness/agents/whitebox/test_generator.py:120-132` | `([], False)`：該發現進回傳的 `GeneratedTests.findings_without_model_tests` |
 | 威脅建模 | 每批符號 | `vibeharness/agents/blackbox/threat_modeler.py:317-326` | `NO_REPLY`：略過該批，報告層級欄位取自下一個可用的批次 |
 | 攻擊合成 | 每個威脅 | `vibeharness/agents/blackbox/scenario_builder.py:251-259` | `None`：該威脅 untested |
 
