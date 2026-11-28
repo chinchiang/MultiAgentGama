@@ -58,7 +58,11 @@ class VerificationVote(BaseModel):
     """某個模型對一個它自己沒有回報的發現所做的獨立裁決。
     One model's independent ruling on a finding it did not report."""
     model_alias: str
-    verdict: str  # "confirm"、"reject"、"unsure" 或 "corroborated"（該模型自己也回報了同一個缺陷） ／ "confirm", "reject", "unsure", or "corroborated" (the model reported the same defect itself)
+    # 白箱驗證："confirm"、"reject"、"unsure" 或 "corroborated"（該模型自己也回報了同一個缺陷）；強化建議分類：
+    # "defect"、"hardening" 或 "unsure"
+    # White-box verification: "confirm", "reject", "unsure", or "corroborated" (the model reported the same defect
+    # itself); Hardening classification: "defect", "hardening" or "unsure"
+    verdict: str
     reason: str = ""
 
 
@@ -166,15 +170,22 @@ class TestExecutionResult(BaseModel):
     traceback: Optional[str] = None
     failure_reason: Optional[str] = None
     is_security_exploit_confirmed: bool = False
+    # 強化建議（GLOSSARY；docs/adr/0001）：本來會算資安突破，但跨模型驗證過半數認為它要求的是目標沒有承諾的防禦
+    # A Hardening recommendation (GLOSSARY; docs/adr/0001): it would be a Breach, but a cross-model majority found it
+    # demands a defence the target never promised
+    is_hardening_recommendation: bool = False
+    # 驗證者對這個失敗的分類票（defect／hardening／unsure）；沒有分類過時是空的
+    # The verifiers' classification votes on this failure (defect / hardening / unsure); empty when it was not classified
+    hardening_votes: List[VerificationVote] = Field(default_factory=list)
     reproduction_poc: Optional[str] = None
     source_ref: Optional[str] = None
     language: str = "python"
 
     @property
     def is_failure(self) -> bool:
-        """測試狀態是 FAILED（白箱失敗就是 FAILED 的白箱測試；黑箱的 FAILED 再分成資安突破與未分類失敗）。
-        The test FAILED (a white-box failure is a FAILED white-box test; a black-box FAILED is either a Breach or an
-        Unclassified failure)."""
+        """測試狀態是 FAILED（白箱失敗就是 FAILED 的白箱測試；黑箱的 FAILED 再分成資安突破、強化建議與未分類失敗）。
+        The test FAILED (a white-box failure is a FAILED white-box test; a black-box FAILED is a Breach, a Hardening
+        recommendation or an Unclassified failure)."""
         return self.status == TestStatus.FAILED
 
     @property
@@ -185,12 +196,13 @@ class TestExecutionResult(BaseModel):
 
     @property
     def is_unclassified_failure(self) -> bool:
-        """未分類失敗（GLOSSARY）：FAILED 但不是資安突破；它是證據缺口，絕不能被略過。只對黑箱結果有意義：
+        """未分類失敗（GLOSSARY）：FAILED 但不是資安突破，也不是強化建議；它是證據缺口，絕不能被略過。只對黑箱結果有意義：
         白箱結果的 FAILED 是白箱失敗，這個屬性不檢查測試類型，呼叫端只傳入黑箱結果。
-        Unclassified failure (GLOSSARY): FAILED but not a Breach; it is an Evidence gap and is never dropped. Meaningful
+        Unclassified failure (GLOSSARY): FAILED but neither a Breach nor a Hardening recommendation; it is an Evidence
+        gap and is never dropped. Meaningful
         for black-box results only: a FAILED white-box result is a white-box failure, and since this property does not
         check the test type, callers pass black-box results alone."""
-        return self.is_failure and not self.is_security_exploit_confirmed
+        return self.is_failure and not self.is_security_exploit_confirmed and not self.is_hardening_recommendation
 
 
 class CallKind(str, Enum):
@@ -205,6 +217,8 @@ class CallKind(str, Enum):
     HEAL = "heal"
     THREAT_MODELER = "threat_modeler"
     SYNTHESIZER = "synthesizer"
+    # 黑箱失敗的強化建議分類（docs/adr/0001） ／ Hardening classification of black-box failures (docs/adr/0001)
+    HARDENING = "hardening"
 
 
 class AgentCallRecord(BaseModel):
@@ -335,6 +349,9 @@ class VibeHarnessSummary(BaseModel):
     critical_threats_count: int
     blackbox_tests_passed: int
     blackbox_security_breaches: int
+    # 強化建議（GLOSSARY）：不是資安突破，但判定結果不能是 READY_TO_SHIP ／ Hardening recommendations (GLOSSARY): not
+    # Breaches, but the Verdict cannot be READY_TO_SHIP
+    blackbox_hardening_recommendations: int = 0
     # 失敗卻不符合利用判斷式的攻擊測試：證據模稜兩可，
     # 必須人工調查；計為證據缺口（絕不是默默通過）
     # Attack tests that FAILED without matching the exploit predicate: ambiguous evidence that

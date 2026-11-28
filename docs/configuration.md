@@ -21,7 +21,7 @@ CLI 啟動時可用 `--config <路徑>` 改用其他設定檔、`--mode` 覆蓋 
 | `max_retries` | `2` | litellm 層級的重試次數（同一主模型重試；全部失敗後才會嘗試 `fallback_model` 一次）；須為 ≥ 0 的整數，`null` 等同預設 2 |
 | `max_output_tokens` | `16384` | 單次模型回應的 token 上限；`models.<alias>.max_output_tokens` 可個別覆蓋；須為 ≥ 1 的整數，`null` 等同預設 16384 |
 | `max_model_calls` | `null`（不限） | 成本護欄：每次執行最多幾次真實模型呼叫（同一次呼叫內 litellm 的重試與 `fallback_model` 不另計）。用完後 `hybrid` 改走模擬引擎、列為證據缺口（判定不會是 `READY_TO_SHIP`）；`live` 直接擲出 `LLMGatewayError`（exit 4）。須為非負整數，`0` 等同不限 |
-| `max_concurrent_calls` | `6` | 每個 Agent 階段（審查、驗證、白箱測試生成、威脅建模、黑箱攻擊合成）同時進行的模型呼叫上限；設 `1` 即完全循序。須為非負整數；`0`／`null` 維持 6，負數、bool 或非整數是 `ConfigError`（exit 5） |
+| `max_concurrent_calls` | `6` | 每個 Agent 階段（審查、驗證、白箱測試生成、威脅建模、黑箱攻擊合成、強化建議分類）同時進行的模型呼叫上限；設 `1` 即完全循序。須為非負整數；`0`／`null` 維持 6，負數、bool 或非整數是 `ConfigError`（exit 5） |
 | `max_file_bytes` | `1000000` | 單一原始碼檔案的大小上限（bytes），超過的檔案不分析並列入證據缺口（minified bundle、產生碼）。只在本機做 VH-AI-007 密鑰掃描的設定類檔案（`.env`、YAML、JSON、TOML、`Dockerfile`、Terraform 等；每次最多 200 個）也受同一上限約束，超過的同樣列為證據缺口。須為非負整數，`0`／`null` 等同預設 |
 | `include` | `[]` | 單一 glob 字串或 glob 清單，只分析相對於 `--target` 的路徑或檔名符合其一的檔案（例如 `["src/*"]`）；空清單＝全部。在本機做密鑰掃描的設定類檔案，以及計入證據缺口的不支援語言檔案，也依同樣的篩選。CLI `--include` 會整個覆蓋此清單；若來自自動發現的設定檔且實際排除了檔案（未由 `--config` 或 CLI `--include` 指定），記為證據缺口；空字串或非字串的項目是 `ConfigError`（exit 5） |
 | `exclude` | `[]` | 單一 glob 字串或 glob 清單，符合其一的檔案不分析（例如 `["tests/*", "vendor/*", "*.min.js"]`；exclude 的 `vendor` 或 `vendor/` 也匹配整個目錄）；以 `--config` 或 CLI `--exclude` 明確排除的檔案不算證據缺口，自動發現的設定檔實際排除的檔案則算證據缺口。CLI `--exclude` 會整個覆蓋；空字串或非字串的項目是 `ConfigError`（exit 5） |
@@ -107,6 +107,7 @@ CLI 啟動時可用 `--config <路徑>` 改用其他設定檔、`--mode` 覆蓋 
 - **白箱審查者由設定檔決定**：所有以 `whitebox_reviewer_` 為前綴的條目都是審查者，各自使用自己的 `name`、`model_alias`、`temperature` 與 `focus`；**新增或刪除條目即改變審查陣容**。發現編號以模型別名前三碼為前綴（`WB-CLA-01`、`WB-DEE-01`、`WB-GLM-01`、`WB-GEM-01`）。審查者可選擇性回傳 `owasp_mapping`（例如 `LLM01:2026`、`API1:2023`），報告會標在該發現旁。若完全沒有 `whitebox_reviewer_*` 條目，白箱審查會跳過並列為證據缺口（判定不會是 `READY_TO_SHIP`）。
 - **交叉驗證者是動態的**：所有以 `whitebox_verifier_` 為前綴的條目都會參與投票；**新增或刪除條目即增減該模型的票數**。每個 model alias 只投一票：路由到已經有驗證者的 alias 的第二個 verifier 條目會被略過並記警告（保留排序後的第一個 agent id）。每筆發現只由「沒有回報它」的模型投票（模型不評審自己的發現）；其他模型也回報過同一缺陷（去重合併時記錄）則算一票確認，但單靠佐證不會讓驗證「已套用」：沒有任何驗證者真正投下 confirm／reject 時，發現仍是未經驗證的假設（已確認數顯示 N/A）。當設定了至少兩個不同的審查模型時，若設定的獨立驗證模型少於兩個，或存在非模擬的審查發現但未完成有效交叉驗證（全為 `unsure` 或無法使用），品質閘門會記錄 `NO_CROSS_VERIFICATION` 證據缺口（判定最多為 `INCONCLUSIVE`，不會是 `READY_TO_SHIP`）。
 - 其餘 agent（測試生成、威脅建模、攻擊場景合成）由程式以固定 `agent_id` 呼叫，設定檔控制其模型與溫度。
+- **驗證者也替黑箱失敗分類**：每個本來會算資安突破的黑箱失敗，交給 `whitebox_verifier_*` 中排除 `blackbox_test_synthesizer` 模型的驗證者（寫出測試的模型不判斷自己的測試），投 `defect`／`hardening`／`unsure`；被問到的驗證者過半數投 `hardening`，才記為強化建議（`NEEDS_FIXES`，不是 `BLOCKED_CRITICAL_RISK`；`docs/adr/0001-hardening-recommendations-stop-at-needs-fixes.md`）。所以改掉攻擊合成的 `model_alias`，會改變由哪些驗證者分類。
 
 ### 現行 agent 一覽
 
@@ -116,7 +117,7 @@ CLI 啟動時可用 `--config <路徑>` 改用其他設定檔、`--mode` 覆蓋 
 | `whitebox_reviewer_deepseek` | deepseek | 0.1 | 安全與防禦：輸入清洗、注入（SQL／命令／路徑）、防禦性檢查、資源耗盡、不安全的並行 |
 | `whitebox_reviewer_glm` | glm | 0.2 | 規格與契約：API 簽章遵守、業務規格一致性、契約違反、授權檢查（BOLA／BFLA） |
 | `whitebox_reviewer_gemini` | gemini | 0.2 | AI 整合與供應鏈：呼叫模型的程式碼對照 OWASP Top 10 for LLM Applications 2026（LLM01–LLM10），以及寫死的憑證與未鎖版的相依套件 |
-| `whitebox_verifier_claude`／`_deepseek`／`_glm`／`_gemini` | 各自同名模型 | 0.0 | 對非自家模型回報的發現投票：confirm／reject／unsure |
+| `whitebox_verifier_claude`／`_deepseek`／`_glm`／`_gemini` | 各自同名模型 | 0.0 | 對非自家模型回報的發現投票：confirm／reject／unsure；排除攻擊合成的模型後，也對黑箱失敗投 defect／hardening／unsure |
 | `whitebox_test_generator` | deepseek | 0.3 | 針對確認缺陷生成可執行 pytest 測試 |
 | `blackbox_threat_modeler` | claude | 0.2 | STRIDE、OWASP API 與（AI 整合型目標的）OWASP LLM 威脅建模 |
 | `blackbox_test_synthesizer` | deepseek | 0.2 | 威脅場景轉黑箱攻擊腳本（BOLA、注入、限流、提示詞注入） |
@@ -155,7 +156,7 @@ agents:
     model_alias: "gemini"      # 原為 deepseek
 ```
 
-> 註：只有單一模型家族時，**跨模型驗證無法執行**：所有發現都來自 `gemini`，而驗證者不評審自家模型的發現，因此沒有任何發現會得到投票（不會被過濾，共識率與已確認數都顯示 N/A；四個 verifier 條目都路由到 `gemini`，所以只保留第一個），終端機會警告「Fewer than two distinct reviewer models」，並列為證據缺口（判定不會是 `READY_TO_SHIP`）。四位審查者仍會各自依不同的 `focus` 審查，但同一顆模型的多份副本彼此同意只是一致，不是佐證（OWASP LLM07:2026）。
+> 註：只有單一模型家族時，**跨模型驗證無法執行**：所有發現都來自 `gemini`，而驗證者不評審自家模型的發現，因此沒有任何發現會得到投票；攻擊合成也是 `gemini`，所以沒有驗證者能替黑箱失敗分類，每個以自己斷言失敗的黑箱測試都維持資安突破（不會被過濾，共識率與已確認數都顯示 N/A；四個 verifier 條目都路由到 `gemini`，所以只保留第一個），終端機會警告「Fewer than two distinct reviewer models」，並列為證據缺口（判定不會是 `READY_TO_SHIP`）。四位審查者仍會各自依不同的 `focus` 審查，但同一顆模型的多份副本彼此同意只是一致，不是佐證（OWASP LLM07:2026）。
 
 ### 改用 Docker 沙盒
 
