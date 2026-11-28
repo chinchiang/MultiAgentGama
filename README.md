@@ -20,6 +20,7 @@ flowchart TD
     CLI["vibeharness CLI（vibeharness/cli.py）<br/>--target / --mode / --config / --desc / --base-url<br/>--format / --sarif / --summary-json / --baseline<br/>--mutation / --cache-dir / --estimate / …"] --> CMD["🧠 總指揮官 Commander<br/>vibeharness/core/harness.py（六個階段＋選用的 Phase 3.5）"]
     CMD --> AST["階段 1・符號擷取<br/>ast_extractor.py（Python 用 AST；JS/TS 用 lexer）<br/>計算不支援語言檔案、收集設定類檔案 (ScopeResult)"]
     AST --> SAST["階段 1・確定性 AI 安全規則<br/>ai_static_scanner.py（VH-AI-001～009）<br/>本機掃設定類檔案、偵測 ai_components<br/>記錄未完整掃描與單檔上限略過 (ScanResult)"]
+    SAST --> WB
 
     CALL["代理呼叫與扇出 agent_call.py<br/>ask / ask_batch / fan_out 並行執行<br/>Untrusted 標記通道 (sanitize.py) 與政策注入<br/>形狀檢查與物件擷取 (model_output.py)"]
     GW["LLM 閘道 llm_gateway.py<br/>模型路由、fallback_model、模擬回退<br/>回應快取 (--cache-dir / --cache-only)<br/>retry_invalid_output 重問、prompt_sha256<br/>max_model_calls 預算、call_log 稽核日誌"]
@@ -72,7 +73,8 @@ flowchart TD
     GATE["階段 6・品質門禁 gate.py (evaluate)<br/>READY_TO_SHIP / NEEDS_FIXES /<br/>INCONCLUSIVE / BLOCKED_CRITICAL_RISK"]
     CMD -- "審查者／驗證者設定：無 whitebox_reviewer_*、<br/>少於 2 個相異模型別名" --> GATE
     AST -- "解析失敗、略過／過大檔案、不支援語言檔案、<br/>設定類檔案超限、自動發現設定檔排除" --> GATE
-    SAST -- "HIGH+ 命中；VH-AI-008/009 完整性命中；<br/>未完整掃描 (30 秒)；單檔上限略過 (static_hits_capped)" --> GATE
+    SAST -- "HIGH+ 阻擋性命中" --> TALLY
+    SAST -- "VH-AI-008/009 完整性命中；<br/>未完整掃描 (30 秒)；單檔上限略過 (static_hits_capped)" --> GATE
     GEN -- "沒有模型測試的發現" --> GATE
     ATT1 -- "白箱 FAILED；未執行、JS/TS 未執行" --> TALLY
     MUT -- "證據缺口：分數過低、被截斷、沒有結論" --> GATE
