@@ -154,7 +154,7 @@ class HardeningClassifier:
             "Each black-box security test below was written by another AI model from a modeled threat, and it failed "
             "on its own assertion against the target. For each one, decide from the target's code, docstrings and "
             "type hints whether the failure shows a defect or a defence the target never promised: 'defect' (the "
-            "target breaks what its code or documentation promises, or a basic security property any such code must "
+            "target breaks what its code or docstrings promise, or a basic security property any such code must "
             "keep), 'hardening' (the test demands a defence, such as logging, rate or size limits, or checks the "
             "target documents as the caller's job, that the target never promised), or 'unsure'.\n\n"
             "Output a JSON object:\n"

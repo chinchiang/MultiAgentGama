@@ -151,6 +151,11 @@ agents:
   # Cross-model verification: each finding is ruled on by every verifier whose model did NOT report it,
   # so no model judges its own finding. Every whitebox_verifier_* entry is used (one per model alias; duplicates are
   # skipped); remove one to drop that model.
+  # 同一組驗證者（排除 blackbox_test_synthesizer 的模型）也替本來會算資安突破的黑箱失敗分類：defect／hardening／unsure，
+  # 過半數投 hardening 才記為強化建議（docs/adr/0001）。
+  # The same verifiers (minus the model of blackbox_test_synthesizer) also classify the black-box failures that would be
+  # Breaches: defect / hardening / unsure; only a strict majority of hardening makes a Hardening recommendation
+  # (docs/adr/0001).
   whitebox_verifier_claude:
     name: "Finding Verifier (Claude)"
     model_alias: "claude"
