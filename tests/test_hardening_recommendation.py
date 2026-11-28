@@ -100,3 +100,18 @@ def test_the_summary_json_carries_the_hardening_recommendation_count(clean_live_
 
     summary = clean_live_run(responder=_responder(lambda alias, test_id: "hardening"))
     assert json.loads(_summary_json(summary, "live"))["hardening_recommendations"] == 1
+
+
+def test_a_tie_of_hardening_and_defect_votes_keeps_the_breach(clean_live_run):
+    """拿掉 Gemini 驗證者：排除攻擊合成的 deepseek 之後只剩 claude 與 glm 被問到，一票 hardening、一票 defect 是平手，
+    平手不過半，維持資安突破。
+    Without the Gemini verifier, only claude and glm are asked once the attack synthesizer's deepseek is left out;
+    one hardening and one defect vote is a tie, a tie is no strict majority, and the Breach stays."""
+    def two_verifiers(config):
+        del config["agents"]["whitebox_reviewer_gemini"], config["agents"]["whitebox_verifier_gemini"]
+
+    votes = {"claude": "hardening", "glm": "defect"}
+    summary = clean_live_run(config=two_verifiers, responder=_responder(lambda alias, test_id: votes[alias]))
+    assert _classified(summary) == ["claude", "glm"]
+    assert summary.overall_status == "BLOCKED_CRITICAL_RISK", summary.overall_status
+    assert summary.blackbox_hardening_recommendations == 0
