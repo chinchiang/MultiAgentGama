@@ -2,7 +2,7 @@
 
 [English](design.en.md) ｜ 正體中文（臺灣）
 
-本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.15.0`（`CHANGELOG.md` 的 `[0.15.0]`，2026-10-31，相依套件與支援版本整理輪：最低支援版本改為 Python 3.11、鎖定檔升級有已知漏洞的套件，程式碼不變；`[0.14.0]`，2026-10-17，代理呼叫整理輪：五個代理的模型呼叫改經同一個代理呼叫模組、各代理的呼叫計畫與執行共用同一套規則、呼叫紀錄帶上呼叫的種類；`[0.13.0]`，2026-10-17，架構整理輪：品質閘門、設定、模型呼叫傳輸、並行呼叫、身分識別與模型回答的形狀檢查各自集中到一個模組，沙盒、檔案範圍、規則掃描與模型回答以型別化的值回傳，形狀不對的模型回答不再被讀成零個發現；`[0.12.0]`，2026-10-12，第六輪審查：中文的威脅與發現不再被誤合併、`--changed-since` 收得到非 ASCII 檔名與 symlink 目標下的檔案、探針的基準線鍵含檔案、`--estimate` 計入未變異複本的那一批、保留名稱含 `key` 的 litellm 參數；`[0.11.0]`，2026-10-11，第五輪審查：Action 的判定只取自稽核摘要、`extra-args` 以 CLI 的解析器檢查、自動發現的設定檔只能調低花費、保留 litellm 的 callback 參數、揭露不支援語言的檔案與設定檔裡的密鑰、強化報告讀回與 Docker 輸出上限；`[0.10.1]`，2026-10-11，為修正版：Windows 的 JS/TS 涵蓋率也收得到 `node_modules` 底下的目標；`[0.10.0]` 為更嚴格的自動發現設定檔、Action 不再蓋掉設定檔的成本防護、null 保留預設值；`[0.9.0]` 為第三輪審查修正：自動發現設定檔的防護、Action 以 `exec` 執行稽核、SARIF 不收模擬項目、VH-AI-006 改寫、確定性規則的單檔時間上限、`--summary-json`；`[0.8.0]` 新增 JS/TS 行涵蓋率；`[0.7.1]` 為修正版：剩餘逾時預算不再多出一秒、`--init-config` 的提示；`[0.7.0]` 為第二輪審查修正、PyPI 打包、`--init-config` 與設定檔自動尋找；`[0.6.0]` 為依審查結果的強化並新增 `--cache-only`，`[0.5.1]` 為修正版，`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。文中的 `path:line` 引用以 commit `68e5057` 的檔案為準（發布時改為 release tag）。
+本文說明 VibeHarness-MAS 的設計：為什麼這樣設計、每個元件怎麼運作、資料如何在階段之間流動、品質閘門怎麼判定、沙盒的安全模型，以及已知的限制。對應版本：`vibeharness/__init__.py` 的 `0.15.0`（`CHANGELOG.md` 的 `[0.15.0]`，2026-10-31，相依套件與支援版本整理輪：最低支援版本改為 Python 3.11、鎖定檔升級有已知漏洞的套件，程式碼不變；`[0.14.0]`，2026-10-17，代理呼叫整理輪：五個代理的模型呼叫改經同一個代理呼叫模組、各代理的呼叫計畫與執行共用同一套規則、呼叫紀錄帶上呼叫的種類；`[0.13.0]`，2026-10-17，架構整理輪：品質閘門、設定、模型呼叫傳輸、並行呼叫、身分識別與模型回答的形狀檢查各自集中到一個模組，沙盒、檔案範圍、規則掃描與模型回答以型別化的值回傳，形狀不對的模型回答不再被讀成零個發現；`[0.12.0]`，2026-10-12，第六輪審查：中文的威脅與發現不再被誤合併、`--changed-since` 收得到非 ASCII 檔名與 symlink 目標下的檔案、探針的基準線鍵含檔案、`--estimate` 計入未變異複本的那一批、保留名稱含 `key` 的 litellm 參數；`[0.11.0]`，2026-10-11，第五輪審查：Action 的判定只取自稽核摘要、`extra-args` 以 CLI 的解析器檢查、自動發現的設定檔只能調低花費、保留 litellm 的 callback 參數、揭露不支援語言的檔案與設定檔裡的密鑰、強化報告讀回與 Docker 輸出上限；`[0.10.1]`，2026-10-11，為修正版：Windows 的 JS/TS 涵蓋率也收得到 `node_modules` 底下的目標；`[0.10.0]` 為更嚴格的自動發現設定檔、Action 不再蓋掉設定檔的成本防護、null 保留預設值；`[0.9.0]` 為第三輪審查修正：自動發現設定檔的防護、Action 以 `exec` 執行稽核、SARIF 不收模擬項目、VH-AI-006 改寫、確定性規則的單檔時間上限、`--summary-json`；`[0.8.0]` 新增 JS/TS 行涵蓋率；`[0.7.1]` 為修正版：剩餘逾時預算不再多出一秒、`--init-config` 的提示；`[0.7.0]` 為第二輪審查修正、PyPI 打包、`--init-config` 與設定檔自動尋找；`[0.6.0]` 為依審查結果的強化並新增 `--cache-only`，`[0.5.1]` 為修正版，`[0.5.0]` 新增選用的突變測試，`[0.4.0]` 含 `--baseline`、`--estimate`、JS/TS 動態測試執行、中／英雙語輸出）。文中的 `path:line` 引用以 commit `9d915b0` 的檔案為準（發布時改為 release tag）。
 
 與其他文件的分工：
 
@@ -133,7 +133,7 @@ flowchart TD
 | `vibeharness/agents/whitebox/test_generator.py` | `WhiteboxTestGenerator` | 白箱測試生成與離線探針；`plan` 回報呼叫計畫 |
 | `vibeharness/agents/blackbox/threat_modeler.py` | `AutomatedThreatModeler` | 威脅建模；`plan` 回報呼叫計畫 |
 | `vibeharness/agents/blackbox/scenario_builder.py` | `ThreatScenarioBuilder` | 威脅轉攻擊測試；`plan` 回報呼叫計畫 |
-| `vibeharness/agents/blackbox/hardening.py` | `HardeningClassifier` | 本來會算資安突破的黑箱失敗的強化建議分類：`whitebox_verifier_*` 中排除攻擊合成模型的驗證者投 `defect`／`hardening`／`unsure`，每次呼叫 `TESTS_PER_CALL`（15）支失敗的測試；威脅、測試程式碼（`TEST_CODE_TOKENS`）與失敗訊息（`FAILURE_TOKENS`）走不可信模型輸出，點名符號的原始碼（`CODE_CONTEXT_TOKENS`）走不可信目標程式碼；被問到的驗證者過半數投 `hardening` 才是強化建議（`docs/adr/0001-hardening-recommendations-stop-at-needs-fixes.md`）；還沒有 `plan`（#234） |
+| `vibeharness/agents/blackbox/hardening.py` | `HardeningClassifier` | 本來會算資安突破的黑箱失敗的強化建議分類：`whitebox_verifier_*` 中排除攻擊合成模型的驗證者投 `defect`／`hardening`／`unsure`，每次呼叫 `TESTS_PER_CALL`（15）支失敗的測試；威脅、測試程式碼（`TEST_CODE_TOKENS`）與失敗訊息（`FAILURE_TOKENS`）走不可信模型輸出，點名符號的原始碼（`CODE_CONTEXT_TOKENS`；威脅沒有點名任何符號時送全部符號）走不可信目標程式碼；被問到的驗證者過半數投 `hardening` 才是強化建議（`docs/adr/0001-hardening-recommendations-stop-at-needs-fixes.md`）；還沒有 `plan`（#234） |
 | `vibeharness/runners/test_executor.py` | `TestSuiteExecutor`、`SuiteResult` | 一測試一模組、在沙盒中執行、逾時後逐測重跑；每組測試回傳一個 `SuiteResult`（結果、Python 與 JS/TS 的行涵蓋率、JS 執行器的問題與 Node 執行環境） |
 | `vibeharness/runners/attribution.py` | `parse_junit`、`attribute`、`attribute_module`、`not_run_for_sandbox`、`not_run`、`mutant_outcome` | 結果歸因（不碰沙盒，除了 log 之外沒有 I/O）：JUnit 解析、單一測試模組與無報告沙盒執行的歸因、每個測試的狀態與失敗原因、資安突破的判定、FAILED 結果的重現 PoC、變異體批次的判定 |
 | `vibeharness/reports/report_generator.py` | `ReportGenerator` | Markdown、JSON、SARIF |
@@ -194,7 +194,7 @@ flowchart TD
 
 - 每個威脅合成一個測試；合成失敗、程式碼為空、或指向非目標主機的威脅不會有測試，進 `untested_threats`（`vibeharness/core/harness.py:532`），由這一階段的證據計數從沒有測試的威脅算出（`vibeharness/core/tally.py:127`、`:145`）。
 - 計數之前，`HardeningClassifier.classify`（`vibeharness/agents/blackbox/hardening.py`）把每個本來會算資安突破的失敗，交給 `whitebox_verifier_*` 中排除 `blackbox_test_synthesizer` 那個模型的驗證者，每次呼叫最多 15 支失敗的測試（`CallKind.HARDENING`）；每位驗證者對每支測試投 `defect`、`hardening` 或 `unsure`。被問到的驗證者過半數投 `hardening`，結果才改為強化建議（`is_hardening_recommendation`，票在 `hardening_votes`）；平手、`unsure`、缺票、模擬輸出或沒有驗證者都維持資安突破（`docs/adr/0001-hardening-recommendations-stop-at-needs-fixes.md`）。
-- 結果分五類：`bb_passed`（防禦成立）、`bb_breaches`（`is_security_exploit_confirmed`）、強化建議（`is_hardening_recommendation`）、`bb_failed_unclassified`（FAILED 但既不是資安突破也不是強化建議）、`bb_not_run`（未執行）；console 的後三者讀自這一階段的部分證據計數；summary 讀第 6 階段的完整計數。
+- 結果分五類：`bb_passed`（防禦成立）、`bb_breaches`（`is_security_exploit_confirmed`）、強化建議（`is_hardening_recommendation`）、`bb_failed_unclassified`（FAILED 但既不是資安突破也不是強化建議）、`bb_not_run`（未執行）；console 的資安突破、未分類失敗與未執行三個數字讀自這一階段的部分證據計數（console 還沒有印強化建議的數量，#233）；summary 讀第 6 階段的完整計數。
 
 ### Phase 6：閘門與報告（`vibeharness/core/harness.py:542-710`）
 
@@ -222,20 +222,20 @@ flowchart TD
 | `STRIDECategory` | 25-31 | STRIDE 六類 |
 | `TestStatus` | 34-39 | PASSED／FAILED／ERROR／SKIPPED |
 | `CodeSymbol` | 42-54 | 擷取出的符號：`name`、`symbol_type`（function／class／method／route）、`file_path`、行號範圍、`signature`、`source_code`、`parameters` |
-| `VerificationVote` | 57-62 | 一票：`model_alias`、`verdict`（confirm／reject／unsure／corroborated；強化建議分類的票是 defect／hardening／unsure）、`reason` |
-| `ReviewFinding` | 65-87 | 審查發現：`finding_id`、`reviewer_name`、`model_alias`、位置、`severity`、`title`、`root_cause`、`suggested_test_scenario`、`owasp_mapping`、`is_simulated`、去重資訊（`corroborated_by`、`corroborating_models`、`merged_finding_ids`）、`verification_votes` |
-| `MultiModelDebateResult` | 90-105 | `confirmed_findings`、`disputed_findings`、`consensus_summary`（報告顯示的一行結論）、`undecided_count`、`model_agreement_ratio`（Optional）、`arbitration_applied`、`is_simulated` |
-| `ThreatItem` | 108-126 | `threat_id`、`stride_category`、`owasp_mapping`、`atlas_mapping`、`attack_vector`、`severity`、`attack_scenario`、`test_verification_goal` |
-| `ThreatModelReport` | 129-137 | `entrypoints`、`trust_boundaries`、`assets`、`threats`、`is_simulated` |
-| `GeneratedTest` | 140-153 | `test_id`、`test_type`（whitebox_unit／whitebox_probe／blackbox_security）、`code`、`source_ref`（來源 finding 或 threat）、`language`（python／javascript／typescript：決定靜態閘門、沙盒與報告圍欄） |
-| `TestExecutionResult` | 156-201 | `status`、`failure_reason`、`traceback`、`is_security_exploit_confirmed`、`is_hardening_recommendation`、`hardening_votes`、`reproduction_poc`、`source_ref`、`language` |
-| `CallKind` | 204-217 | 模型呼叫的種類：`reviewer`、`verifier`、`test_generator`、`heal`（修復呼叫）、`threat_modeler`、`synthesizer`、`hardening`（強化建議分類）；值寫進 `AgentCallRecord.kind`，是報告的對外契約 |
-| `AgentCallRecord` | 220-246 | 每次模型呼叫：`agent_id`、`model_alias`、`model_name`、`mode`（live／simulated／invalid／retried）、`reason`、`prompt_sha256`、`cached`（回應來自回應快取，沒有呼叫供應商）、`attempt`（同一次邏輯呼叫的第幾次詢問：第一次為 0，重問為 1、2……；`sorted_call_log` 依代理、原始提示 SHA 與 `attempt` 排序，所以同一次呼叫的 `retried` 一定排在最後那筆之前）、`kind`（呼叫的種類 `CallKind`：`reviewer`、`verifier`、`test_generator`、`heal`、`threat_modeler`、`synthesizer`，這六個值是報告的對外契約；`record_failure` 記的崩潰紀錄是當掉的那個呼叫的種類，所以修復在 gateway 之外當掉時記成外層呼叫的種類——白箱為 `test_generator`、黑箱為 `synthesizer`；沒有帶種類的呼叫是 `null`） |
-| `StaticFinding` | 258-277 | 確定性規則命中：`rule_id`、`severity`、位置、`evidence`、`remediation`、OWASP／ATLAS／CWE、`affects_review_integrity` |
-| `RunMetadata` | 280-296 | 報告的產生脈絡：`generated_at`（UTC）、`harness_version`、`execution_mode`、`config_path`、`sandbox_provider`、`target_path`、`target_git_commit`／`target_git_dirty`、`file_filters`、`mutation_enabled`／`mutation_source`（突變測試最終是否開啟與開關來源：`cli`／`config`／`default`）、`node_runtime`（實際跑 JS/TS 測試的 Node 版本，沒跑則 None） |
-| `MutantResult`／`MutationReport` | 299-324 | 一個變異體（`file`、`line`、`operator`、`original`／`mutated`、`status` killed／survived／invalid）與突變測試的整體結果（`enabled`、`score`、各項計數、`candidate_sites`（涵蓋到的符號裡所有可變異的位置）、`truncated`、`eligible_tests`（符合資格的測試數）、`skipped_reason`、`mutants`），見 Phase 3.5 |
-| `VibeHarnessSummary` | 327-389 | 頂層摘要：`overall_status`、`run`（`RunMetadata`）、各階段計數（沒有前綴的算全部，`new_` 只算新的，讀自第 6 階段的證據計數；未執行的是 `whitebox_tests_not_run`／`blackbox_tests_not_run`；`confirmed_whitebox_bugs` 是 `Optional`：沒有套用驗證時為 `null`）、`untested_threat_ids`、`agent_calls`（經 `sorted_call_log` 排序，JSON 逐次一致；每筆帶 `kind`）、`inconclusive_reasons`、`line_coverage_pct`（只有 Python）／`js_line_coverage_pct`（JS/TS，只計入載入過的目標檔案；第 9.5 節）、`mutation`、`static_findings`、`ai_components`、`reviewer_models`、`key_recommendations`、`blocking_rule_hits`／`new_blocking_rule_hits`（HIGH 以上規則命中的全部與新的）、`blackbox_hardening_recommendations`（全部的強化建議；還沒依基準拆分，#232）、`new_whitebox_tests_failed`／`new_blackbox_security_breaches`（新的白箱失敗與資安突破；這三個 `new_` 計數與 `blocking_rule_hits` 在不是品質閘門產生的摘要中為 `null`）、`baseline_path`／`baseline_suppressed`（`--baseline` 時未計入判定的已知問題） |
-| `BaselineSuppressedItem` | 392-396 | 一筆被 baseline 壓下的問題：`kind`（breach／whitebox_failure／static）、`id`、`title`、`fingerprint` |
+| `VerificationVote` | 57-66 | 一票：`model_alias`、`verdict`（confirm／reject／unsure／corroborated；強化建議分類的票是 defect／hardening／unsure）、`reason` |
+| `ReviewFinding` | 69-91 | 審查發現：`finding_id`、`reviewer_name`、`model_alias`、位置、`severity`、`title`、`root_cause`、`suggested_test_scenario`、`owasp_mapping`、`is_simulated`、去重資訊（`corroborated_by`、`corroborating_models`、`merged_finding_ids`）、`verification_votes` |
+| `MultiModelDebateResult` | 94-109 | `confirmed_findings`、`disputed_findings`、`consensus_summary`（報告顯示的一行結論）、`undecided_count`、`model_agreement_ratio`（Optional）、`arbitration_applied`、`is_simulated` |
+| `ThreatItem` | 112-130 | `threat_id`、`stride_category`、`owasp_mapping`、`atlas_mapping`、`attack_vector`、`severity`、`attack_scenario`、`test_verification_goal` |
+| `ThreatModelReport` | 133-141 | `entrypoints`、`trust_boundaries`、`assets`、`threats`、`is_simulated` |
+| `GeneratedTest` | 144-157 | `test_id`、`test_type`（whitebox_unit／whitebox_probe／blackbox_security）、`code`、`source_ref`（來源 finding 或 threat）、`language`（python／javascript／typescript：決定靜態閘門、沙盒與報告圍欄） |
+| `TestExecutionResult` | 160-205 | `status`、`failure_reason`、`traceback`、`is_security_exploit_confirmed`、`is_hardening_recommendation`、`hardening_votes`、`reproduction_poc`、`source_ref`、`language` |
+| `CallKind` | 208-221 | 模型呼叫的種類：`reviewer`、`verifier`、`test_generator`、`heal`（修復呼叫）、`threat_modeler`、`synthesizer`、`hardening`（強化建議分類）；值寫進 `AgentCallRecord.kind`，是報告的對外契約 |
+| `AgentCallRecord` | 224-250 | 每次模型呼叫：`agent_id`、`model_alias`、`model_name`、`mode`（live／simulated／invalid／retried）、`reason`、`prompt_sha256`、`cached`（回應來自回應快取，沒有呼叫供應商）、`attempt`（同一次邏輯呼叫的第幾次詢問：第一次為 0，重問為 1、2……；`sorted_call_log` 依代理、原始提示 SHA 與 `attempt` 排序，所以同一次呼叫的 `retried` 一定排在最後那筆之前）、`kind`（呼叫的種類 `CallKind`：`reviewer`、`verifier`、`test_generator`、`heal`、`threat_modeler`、`synthesizer`，這六個值是報告的對外契約；`record_failure` 記的崩潰紀錄是當掉的那個呼叫的種類，所以修復在 gateway 之外當掉時記成外層呼叫的種類——白箱為 `test_generator`、黑箱為 `synthesizer`；沒有帶種類的呼叫是 `null`） |
+| `StaticFinding` | 262-281 | 確定性規則命中：`rule_id`、`severity`、位置、`evidence`、`remediation`、OWASP／ATLAS／CWE、`affects_review_integrity` |
+| `RunMetadata` | 284-300 | 報告的產生脈絡：`generated_at`（UTC）、`harness_version`、`execution_mode`、`config_path`、`sandbox_provider`、`target_path`、`target_git_commit`／`target_git_dirty`、`file_filters`、`mutation_enabled`／`mutation_source`（突變測試最終是否開啟與開關來源：`cli`／`config`／`default`）、`node_runtime`（實際跑 JS/TS 測試的 Node 版本，沒跑則 None） |
+| `MutantResult`／`MutationReport` | 303-328 | 一個變異體（`file`、`line`、`operator`、`original`／`mutated`、`status` killed／survived／invalid）與突變測試的整體結果（`enabled`、`score`、各項計數、`candidate_sites`（涵蓋到的符號裡所有可變異的位置）、`truncated`、`eligible_tests`（符合資格的測試數）、`skipped_reason`、`mutants`），見 Phase 3.5 |
+| `VibeHarnessSummary` | 331-393 | 頂層摘要：`overall_status`、`run`（`RunMetadata`）、各階段計數（沒有前綴的算全部，`new_` 只算新的，讀自第 6 階段的證據計數；未執行的是 `whitebox_tests_not_run`／`blackbox_tests_not_run`；`confirmed_whitebox_bugs` 是 `Optional`：沒有套用驗證時為 `null`）、`untested_threat_ids`、`agent_calls`（經 `sorted_call_log` 排序，JSON 逐次一致；每筆帶 `kind`）、`inconclusive_reasons`、`line_coverage_pct`（只有 Python）／`js_line_coverage_pct`（JS/TS，只計入載入過的目標檔案；第 9.5 節）、`mutation`、`static_findings`、`ai_components`、`reviewer_models`、`key_recommendations`、`blocking_rule_hits`／`new_blocking_rule_hits`（HIGH 以上規則命中的全部與新的）、`blackbox_hardening_recommendations`（全部的強化建議；還沒依基準拆分，#232）、`new_whitebox_tests_failed`／`new_blackbox_security_breaches`（新的白箱失敗與資安突破；這三個 `new_` 計數與 `blocking_rule_hits` 在不是品質閘門產生的摘要中為 `null`）、`baseline_path`／`baseline_suppressed`（`--baseline` 時未計入判定的已知問題） |
+| `BaselineSuppressedItem` | 396-400 | 一筆被 baseline 壓下的問題：`kind`（breach／whitebox_failure／static）、`id`、`title`、`fingerprint` |
 
 兩個設計重點：
 
@@ -1006,7 +1006,7 @@ DAST／fuzzing、以 hypothesis 為測試策略（Docker 沙盒映像已附 `hyp
 
 ## 18. 附錄
 
-行號對應 commit `68e5057` 的程式碼（發布時改為 release tag）；`python scripts/recite_design_refs.py --check` 核對每個引用（`tests/test_design_refs.py` 在 CI 跑同一套檢查），不帶參數執行則把引用重新對應到目前的程式碼。
+行號對應 commit `9d915b0` 的程式碼（發布時改為 release tag）；`python scripts/recite_design_refs.py --check` 核對每個引用（`tests/test_design_refs.py` 在 CI 跑同一套檢查），不帶參數執行則把引用重新對應到目前的程式碼。
 
 ### 18.1 關鍵常數
 
@@ -1032,6 +1032,10 @@ DAST／fuzzing、以 hypothesis 為測試策略（Docker 沙盒映像已附 `hyp
 | `_MIN_TRUNCATED_BLOCK_TOKENS` | 80 | `vibeharness/core/codecontext.py:28` |
 | `SIMILARITY_THRESHOLD` | 0.6 | `vibeharness/agents/whitebox/deduplicator.py:20` |
 | `FINDINGS_PER_CALL` | 15 | `vibeharness/agents/whitebox/debater.py:38` |
+| `TESTS_PER_CALL` | 15 | `vibeharness/agents/blackbox/hardening.py:28` |
+| `CODE_CONTEXT_TOKENS` （強化建議分類） | 8000 | `vibeharness/agents/blackbox/hardening.py:29` |
+| `TEST_CODE_TOKENS` | 1500 | `vibeharness/agents/blackbox/hardening.py:31` |
+| `FAILURE_TOKENS` | 300 | `vibeharness/agents/blackbox/hardening.py:32` |
 | `MAX_PROBES` | 10 | `vibeharness/agents/whitebox/test_generator.py:90` |
 | `HEAL_ATTEMPTS`（修復次數上限） | 2（白箱）／1（黑箱） | `vibeharness/agents/whitebox/test_generator.py:66`、`vibeharness/agents/blackbox/scenario_builder.py:37` |
 | `HEAL_CODE_TOKENS`（修復提示帶的測試估計大小，不是上限） | 1200 | `vibeharness/core/agent_call.py:202` |
@@ -1081,7 +1085,7 @@ DAST／fuzzing、以 hypothesis 為測試策略（Docker 沙盒映像已附 `hyp
 - `vibeharness/core/model_output.py`：`FieldType` 28、`LIST_OF_OBJECTS` 75、`OutputSchema` 96、`extract_items` 107、`parse_json_object` 134、`check_output` 203、`mark_cached` 230
 - `vibeharness/core/transport.py`：`ModelRequest` 33、`ModelReply` 51、`ModelTransport` 56、`LiteLLMTransport` 68
 - `vibeharness/core/agent_call.py`：`Channel` 37、`Content` 45、`Untrusted` 68、`CallContext` 79、`AgentCall` 94、`AgentReply` 123、`NO_REPLY` 147、`_system_prompt` 150、`_user_prompt` 155、`ask` 159、`_usable_items` 178、`TextReply` 191、`ask_text` 205、`HealSpec` 219、`heal_invalid_test` 240、`Call` 297、`PlannedCalls` 309、`AgentInput` 340、`ask_batch` 349、`fan_out` 388、`_book` 408、`_run_ordered` 422、`_fatal_error` 474
-- `vibeharness/core/models.py`：`CallKind` 204
+- `vibeharness/core/models.py`：`CallKind` 208
 - `vibeharness/core/settings.py`：`_is_reserved_param_name` 190、`is_reserved_extra_param` 200、`ConfigError` 210、`_read_discovered_config_text` 224、`load_config_file` 245、`_builtin_cost_default` 362、`_effective_cost_limit` 377、`_raises_limit` 389、`discovered_config_violations` 412、`check_discovered_config` 506、`relative_executable_warnings` 539、`FrozenDict` 597、`freeze` 616、`positive_int` 627、`number` 638、`prepare_cache_dir` 660、`Overrides` 704、`GatewaySettings` 720、`ScopeSettings` 798、`ScopeSettings.trusted_baseline` 809、`Settings` 819、`load_settings` 833、`_gateway_settings` 912、`_validate_endpoints` 948、`_validate_models_and_agents` 975、`_per_test_timeout` 1071、`_sandbox_settings` 1080、`_docker_settings` 1122、`_mutation_settings` 1150、`_pattern_list` 1175、`GatewaySettings.alias_for` 733
 - `vibeharness/core/i18n.py`：`bi` 18、`_bilingual_split` 24、`en_only` 41、`zh_only` 75、`has_cjk` 82
 - `vibeharness/core/stdio.py`：`force_utf8_stdio` 13
@@ -1105,6 +1109,7 @@ DAST／fuzzing、以 hypothesis 為測試策略（Docker 沙盒映像已附 `hyp
 - `vibeharness/agents/whitebox/test_generator.py`：`plan` 95、`generate_tests_for_findings` 109、`_tests_for_finding` 149、`_validate_and_heal` 230、`_has_required_params` 271、`build_offline_probes` 295、`is_usable_test` 41、`_test_drafts` 384、`TESTS_CALL` 410
 - `vibeharness/agents/blackbox/threat_modeler.py`：`_batches` 44、`_listing` 52、`_stride_category` 91、`_rules_guidance` 152、`_llm_rules_guidance` 186、`plan` 243、`model_system` 255、`_merge_duplicate_threats` 356、`_threat_drafts` 382、`_assign_threat_ids` 431、`THREAT_MODEL_CALL` 524、`_simulated_threat_model` 456
 - `vibeharness/agents/blackbox/scenario_builder.py`：`validate_base_url` 53、`check_server_live` 103、`_code_context` 119、`_hosts_outside_base_url` 143、`_effective_port` 189、`plan` 197、`build_test_cases_from_threats` 210、`_test_for_threat` 260、`_reject_offending_hosts` 379、`_attack_test` 393、`_simulated_attack_test` 417、`ATTACK_CALL` 428
+- `vibeharness/agents/blackbox/hardening.py`：`_classification_votes` 67、`_classification_call` 88、`HardeningClassifier` 98、`classify` 112、`_prepare` 148
 - `vibeharness/runners/test_executor.py`：`SuiteResult` 55、`_js_sandbox_or_none` 101、`execute_test_suite` 122、`run_mutant_batch` 163、`_run_group` 220、`_run_individually` 316、`_js_coverage_or_none` 349、`_per_test_budget` 359、`_run_js_modules` 370
 - `vibeharness/runners/attribution.py`：`parse_junit` 129、`attribute` 217、`not_run` 321、`mutant_outcome` 331、`_is_harness_failure` 347、`_target_failed_to_load` 419、`_raised_in_target_code` 473、`_js_is_harness_failure` 490、`_js_raised_in_target_code` 513、`_js_exception_summary` 522、`_js_raw_exception_summary` 528、`_js_is_assertion` 558、`_is_assertion` 567、`header_field` 631、`ModuleOutcome` 655、`not_run_for_sandbox` 704、`attribute_module` 730
 - `vibeharness/reports/report_generator.py`：`generate_markdown_report` 143、`generate_json_report` 429、`generate_sarif_report` 466、`add_rule` 498、`_sarif_root` 688、`_sarif_uri` 734、`_sarif_uri_windows` 780、`_inline` 849、`_cell_code` 879、`_generated_tests_section` 897

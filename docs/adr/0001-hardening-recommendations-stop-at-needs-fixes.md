@@ -16,7 +16,7 @@ CODING_STANDARDS rule 2 forbids a model answer from changing the Verdict directl
 
 ## 降級的條件 ／ What a demotion takes
 
-分類、投票與過半數規則在 #230 實作；確定性的底線與其餘的 fail closed 情況（預算用盡、只剩寫測試的模型等）在 #231。 ／ Classification, the votes and the strict-majority rule are built in #230; the deterministic floor and the remaining fail-closed cases (an exhausted budget, only the test's own model left, and so on) in #231.
+分類、投票與過半數規則在 #230 實作；確定性的底線在 #231 實作；其餘的 fail closed 情況（預算用盡、只剩寫測試的模型等）程式碼已經會維持資安突破，#231 補上它們的測試。 ／ Classification, the votes and the strict-majority rule are built in #230; the deterministic floor is built in #231; the remaining fail-closed cases (an exhausted budget, only the test's own model left, and so on) already keep the Breach in the code, and #231 adds their tests.
 
 - 只在測試失敗之後分類，只看本來會算 Breach 的那些。 ／ Classification happens only after a test failed, and only for the ones that would be a Breach.
 - 驗證者沿用 `whitebox_verifier_*`，排除 `blackbox_test_synthesizer` 設定的模型（寫出那些測試的模型）；被問到的驗證者過半數回答「目標沒有承諾這個防禦」才降級。平手、`unsure`、拒絕都維持 Breach。 ／ The verifiers are the `whitebox_verifier_*` agents minus the model configured for `blackbox_test_synthesizer` (the model that wrote the tests); a strict majority of those asked must answer "the target never promised this defence". A tie, `unsure` or a refusal keeps the Breach.
